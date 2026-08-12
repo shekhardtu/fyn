@@ -1,0 +1,15 @@
+.env
+.env.local
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.egg-info/
+backend/fyn_ai.db
+frontend/.next/
+frontend/node_modules/
+frontend/playwright-report/
+frontend/test-results/
+frontend/tsconfig.tsbuildinfo
+/test-results/
+.DS_Store
