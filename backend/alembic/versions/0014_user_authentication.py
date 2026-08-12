@@ -11,6 +11,12 @@ Revises: 0013_recommendation_evidence
 """
 
 from alembic import op
+from app.migration_guards import (
+    add_column_if_absent,
+    create_index_if_absent,
+    create_table_if_absent,
+    create_unique_constraint_if_absent,
+)
 import sqlalchemy as sa
 
 
@@ -25,10 +31,10 @@ def upgrade() -> None:
     # required. The unique index survives the change and PostgreSQL keeps
     # allowing repeated NULLs under it.
     op.alter_column("users", "email", existing_type=sa.String(length=255), nullable=True)
-    op.add_column("users", sa.Column("phone", sa.String(length=20), nullable=True))
-    op.create_unique_constraint("uq_users_phone", "users", ["phone"])
+    add_column_if_absent("users", sa.Column("phone", sa.String(length=20), nullable=True))
+    create_unique_constraint_if_absent("uq_users_phone", "users", ["phone"])
 
-    op.create_table(
+    create_table_if_absent(
         "user_identities",
         sa.Column("id", sa.Uuid(), primary_key=True),
         sa.Column("user_id", sa.Uuid(), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
@@ -44,11 +50,11 @@ def upgrade() -> None:
         sa.UniqueConstraint("provider", "identifier", name="uq_identity_provider_identifier"),
         sa.UniqueConstraint("user_id", "provider", name="uq_identity_user_provider"),
     )
-    op.create_index("ix_user_identities_user_id", "user_identities", ["user_id"])
-    op.create_index("ix_user_identities_provider", "user_identities", ["provider"])
+    create_index_if_absent("ix_user_identities_user_id", "user_identities", ["user_id"])
+    create_index_if_absent("ix_user_identities_provider", "user_identities", ["provider"])
     op.alter_column("user_identities", "source", server_default=None)
 
-    op.create_table(
+    create_table_if_absent(
         "user_sessions",
         sa.Column("id", sa.Uuid(), primary_key=True),
         sa.Column("user_id", sa.Uuid(), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
@@ -59,10 +65,10 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     )
-    op.create_index("ix_user_sessions_user_id", "user_sessions", ["user_id"])
-    op.create_index("ix_user_sessions_expires_at", "user_sessions", ["expires_at"])
+    create_index_if_absent("ix_user_sessions_user_id", "user_sessions", ["user_id"])
+    create_index_if_absent("ix_user_sessions_expires_at", "user_sessions", ["expires_at"])
 
-    op.create_table(
+    create_table_if_absent(
         "otp_challenges",
         sa.Column("id", sa.Uuid(), primary_key=True),
         sa.Column("user_id", sa.Uuid(), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=True),
@@ -76,11 +82,11 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     )
-    op.create_index("ix_otp_challenges_user_id", "otp_challenges", ["user_id"])
-    op.create_index("ix_otp_challenges_destination", "otp_challenges", ["destination"])
-    op.create_index("ix_otp_challenges_expires_at", "otp_challenges", ["expires_at"])
+    create_index_if_absent("ix_otp_challenges_user_id", "otp_challenges", ["user_id"])
+    create_index_if_absent("ix_otp_challenges_destination", "otp_challenges", ["destination"])
+    create_index_if_absent("ix_otp_challenges_expires_at", "otp_challenges", ["expires_at"])
     # Serves the send-rate window, which counts recent challenges per destination.
-    op.create_index("ix_otp_destination_window", "otp_challenges", ["destination", "purpose", "created_at"])
+    create_index_if_absent("ix_otp_destination_window", "otp_challenges", ["destination", "purpose", "created_at"])
     op.alter_column("otp_challenges", "attempts_remaining", server_default=None)
 
 

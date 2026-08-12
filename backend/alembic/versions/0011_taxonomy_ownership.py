@@ -5,6 +5,12 @@ Revises: 0010_widget_receipts
 """
 
 from alembic import op
+from app.migration_guards import (
+    add_column_if_absent,
+    create_check_constraint_if_absent,
+    create_foreign_key_if_absent,
+    create_index_if_absent,
+)
 import sqlalchemy as sa
 from uuid import UUID
 
@@ -16,17 +22,17 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("categories", sa.Column("scope", sa.String(length=20), server_default="system", nullable=False))
-    op.add_column("categories", sa.Column("owner_user_id", sa.Uuid(), nullable=True))
-    op.create_foreign_key("fk_categories_owner_user", "categories", "users", ["owner_user_id"], ["id"], ondelete="CASCADE")
-    op.create_index("ix_categories_scope", "categories", ["scope"])
-    op.create_index("ix_categories_owner_user_id", "categories", ["owner_user_id"])
+    add_column_if_absent("categories", sa.Column("scope", sa.String(length=20), server_default="system", nullable=False))
+    add_column_if_absent("categories", sa.Column("owner_user_id", sa.Uuid(), nullable=True))
+    create_foreign_key_if_absent("fk_categories_owner_user", "categories", "users", ["owner_user_id"], ["id"], ondelete="CASCADE")
+    create_index_if_absent("ix_categories_scope", "categories", ["scope"])
+    create_index_if_absent("ix_categories_owner_user_id", "categories", ["owner_user_id"])
 
-    op.add_column("subcategories", sa.Column("scope", sa.String(length=20), server_default="system", nullable=False))
-    op.add_column("subcategories", sa.Column("owner_user_id", sa.Uuid(), nullable=True))
-    op.create_foreign_key("fk_subcategories_owner_user", "subcategories", "users", ["owner_user_id"], ["id"], ondelete="CASCADE")
-    op.create_index("ix_subcategories_scope", "subcategories", ["scope"])
-    op.create_index("ix_subcategories_owner_user_id", "subcategories", ["owner_user_id"])
+    add_column_if_absent("subcategories", sa.Column("scope", sa.String(length=20), server_default="system", nullable=False))
+    add_column_if_absent("subcategories", sa.Column("owner_user_id", sa.Uuid(), nullable=True))
+    create_foreign_key_if_absent("fk_subcategories_owner_user", "subcategories", "users", ["owner_user_id"], ["id"], ondelete="CASCADE")
+    create_index_if_absent("ix_subcategories_scope", "subcategories", ["scope"])
+    create_index_if_absent("ix_subcategories_owner_user_id", "subcategories", ["owner_user_id"])
 
     bind = op.get_bind()
     metadata = sa.MetaData()
@@ -79,12 +85,12 @@ def upgrade() -> None:
             .values(scope="user", owner_user_id=category.owner_user_id)
         )
 
-    op.create_check_constraint(
+    create_check_constraint_if_absent(
         "ck_category_scope_owner",
         "categories",
         "(scope = 'system' AND owner_user_id IS NULL) OR (scope = 'user' AND owner_user_id IS NOT NULL)",
     )
-    op.create_check_constraint(
+    create_check_constraint_if_absent(
         "ck_subcategory_scope_owner",
         "subcategories",
         "(scope = 'system' AND owner_user_id IS NULL) OR (scope = 'user' AND owner_user_id IS NOT NULL)",

@@ -8,7 +8,12 @@ from app.database import Base
 from app import models  # noqa: F401
 
 config = context.config
-config.set_main_option("sqlalchemy.url", get_settings().database_url.replace("%", "%%"))
+# Callers may point the migrations at another database by setting this before
+# invoking a command. The test suite uses it to build a throwaway database from
+# the migrations alone, which is the only way to catch a broken revision:
+# the app's own schema is created from the models and never replays them.
+url_override = config.attributes.get("sqlalchemy.url")
+config.set_main_option("sqlalchemy.url", (url_override or get_settings().database_url).replace("%", "%%"))
 if config.config_file_name:
     fileConfig(config.config_file_name)
 target_metadata = Base.metadata

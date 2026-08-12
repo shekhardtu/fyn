@@ -7,6 +7,12 @@ Revises: 0011_taxonomy_ownership
 from uuid import uuid4
 
 from alembic import op
+from app.migration_guards import (
+    add_column_if_absent,
+    create_check_constraint_if_absent,
+    create_foreign_key_if_absent,
+    create_index_if_absent,
+)
 import sqlalchemy as sa
 
 
@@ -17,11 +23,11 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("merchants", sa.Column("scope", sa.String(length=20), server_default="system", nullable=False))
-    op.add_column("merchants", sa.Column("owner_user_id", sa.Uuid(), nullable=True))
-    op.create_foreign_key("fk_merchants_owner_user", "merchants", "users", ["owner_user_id"], ["id"], ondelete="CASCADE")
-    op.create_index("ix_merchants_scope", "merchants", ["scope"])
-    op.create_index("ix_merchants_owner_user_id", "merchants", ["owner_user_id"])
+    add_column_if_absent("merchants", sa.Column("scope", sa.String(length=20), server_default="system", nullable=False))
+    add_column_if_absent("merchants", sa.Column("owner_user_id", sa.Uuid(), nullable=True))
+    create_foreign_key_if_absent("fk_merchants_owner_user", "merchants", "users", ["owner_user_id"], ["id"], ondelete="CASCADE")
+    create_index_if_absent("ix_merchants_scope", "merchants", ["scope"])
+    create_index_if_absent("ix_merchants_owner_user_id", "merchants", ["owner_user_id"])
 
     bind = op.get_bind()
     metadata = sa.MetaData()
@@ -87,7 +93,7 @@ def upgrade() -> None:
                 .values(merchant_id=owned_merchant_id)
             )
 
-    op.create_check_constraint(
+    create_check_constraint_if_absent(
         "ck_merchant_scope_owner",
         "merchants",
         "(scope = 'system' AND owner_user_id IS NULL) OR (scope = 'user' AND owner_user_id IS NOT NULL)",

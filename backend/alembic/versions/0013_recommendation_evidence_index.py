@@ -9,6 +9,9 @@ Revises: 0012_merchant_ownership
 """
 
 from alembic import op
+from app.migration_guards import (
+    create_index_if_absent,
+)
 
 
 revision = "0013_recommendation_evidence"
@@ -18,7 +21,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_index(
+    create_index_if_absent(
         "ix_transactions_user_date_category",
         "transactions",
         ["user_id", "transaction_date", "category_id"],
