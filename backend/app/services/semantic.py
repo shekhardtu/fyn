@@ -15,16 +15,13 @@ from ..models import (
     AccountBalanceSnapshot,
     Budget,
     Category,
-    FinancialObservation,
     Goal,
     GoalContribution,
     InvestmentHolding,
     InvestmentValuationSnapshot,
-    Loan,
     Merchant,
     RecurringTransaction,
     Subcategory,
-    Subscription,
     Tag,
     Transaction,
     TransactionTag,
@@ -33,7 +30,9 @@ from ..visualization_contracts import (
     ORDERED_SERIES_MARKS,
     ORDERED_VISUAL_FIELD_TYPES,
     VisualEncodingContract as VisualEncodingSet,
-    VisualFieldEncoding as VisualEncoding,
+    # Unused here but re-exported: agents.py and conversation.py import
+    # VisualEncoding from this module.
+    VisualFieldEncoding as VisualEncoding,  # noqa: F401
     VisualMark,
 )
 from ..validation import SemanticIdentifier

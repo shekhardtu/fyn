@@ -24,7 +24,7 @@ from .tool_models import (
     SpendingSummaryResult,
     SubcategoryBreakdownInput,
 )
-from .transactions import apply_canonical_transaction_scope, apply_expense_transaction_scope, canonical_transactions, expense_transactions
+from .transactions import apply_canonical_transaction_scope, apply_expense_transaction_scope, expense_transactions
 
 
 def month_bounds(day: date) -> tuple[date, date]:

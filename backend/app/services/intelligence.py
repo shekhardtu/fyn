@@ -5,19 +5,19 @@ from datetime import date
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..domain import ACTIVE_STATUS, SpendNature, TransactionType
+from ..domain import ACTIVE_STATUS, SpendNature
 from ..models import Account, Budget, Goal, Loan, Transaction
-from ..schemas import DataReference, Widget, WidgetAction, WidgetType
+from ..schemas import DataReference, Widget, WidgetType
 from .analytics import category_breakdown, month_bounds, recurring_expenses, shift_month, spending_summary
 from .calculators import loan_strategy_options
 from .currency import format_money_minor, user_currency
 from .semantic import BINARY_TRANSFORM_OPERATIONS, WINDOW_TRANSFORM_OPERATIONS, AnalysisPlan, AnalysisTransform, execute_finance_query
-from .semantic_registry import TIME_GRAIN_SPECS, semantic_schema_registry
+from .semantic_registry import TIME_GRAIN_SPECS
 from .taxonomy import TaxonomyRepository
-from .transactions import canonical_transactions, expense_transactions
+from .transactions import expense_transactions
 from .widget_library import WidgetLibrary
 
 
