@@ -76,33 +76,16 @@ def static_prior_distribution(
     raw_text: str,
     amount_minor: int | None,
     local_hour: int,
-) -> dict[str, float]:
-    """Normalise the cold-start signals into a probability distribution."""
+) -> tuple[dict[str, float], dict[str, list[str]]]:
+    """Normalise the cold-start signals into a distribution and its reasons.
+
+    The reasons travel with the weights so a cold-start guess can say what
+    actually drove it ("Typical meal time") rather than a generic placeholder.
+    """
     scores = score_static_signals(categories, raw_text, amount_minor, local_hour)
+    reasons = {slug: entry.reasons[:2] for slug, entry in scores.items()}
     total = sum(entry.score for entry in scores.values())
     if total <= 0:
         uniform = 1 / len(scores) if scores else 0.0
-        return {slug: uniform for slug in scores}
-    return {slug: entry.score / total for slug, entry in scores.items()}
-
-
-def rank_category_suggestions(
-    categories: list[Category],
-    raw_text: str,
-    amount_minor: int | None,
-    local_hour: int,
-) -> list[dict]:
-    """Rank category guesses using explainable, available signals only."""
-    scores = score_static_signals(categories, raw_text, amount_minor, local_hour)
-    ranked = sorted(categories, key=lambda category: (-scores[category.slug].score, category.name))[:3]
-    return [
-        {
-            "id": str(category.id),
-            "slug": category.slug,
-            "label": category.name,
-            "icon": category.icon,
-            "score": round(min(scores[category.slug].score, 0.99), 2),
-            "reasons": scores[category.slug].reasons[:2],
-        }
-        for category in ranked
-    ]
+        return {slug: uniform for slug in scores}, reasons
+    return {slug: entry.score / total for slug, entry in scores.items()}, reasons

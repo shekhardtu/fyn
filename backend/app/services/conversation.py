@@ -16,7 +16,7 @@ from sqlalchemy import String, func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 
-from ..config import DEFAULT_TIMEZONE, get_settings
+from ..config import get_settings
 from ..domain import (
     EDITABLE_TRANSACTION_TYPES,
     DraftState,
@@ -63,7 +63,7 @@ from .accounts import AccountRepository
 from .adapters import import_summary
 from .agents import ACCEPTED_COPILOT_VALIDATION_OUTCOMES, GROUPED_QUERY_OPERATIONS, RECENT_CONTEXT_MESSAGE_LIMIT, CopilotDecision, CopilotDecisionValidation, QueryInterpretation, interpret_with_financial_copilot, validate_copilot_decision
 from .analysis_harness import HarnessValidationError, discover_analysis_tools, execute_generated_tool
-from .calculators import affordability, amortize_with_fixed_payment, investment_projection, loan_amortization_schedule, loan_payment, loan_strategy_options, loan_with_prepayment
+from .calculators import affordability, investment_projection, loan_with_prepayment
 from .capabilities import CapabilityId, ExecutorKind, SAFE_READ_CAPABILITIES, capability_spec
 from .recommendation import (
     AMOUNT,
@@ -80,7 +80,6 @@ from .recommendation import (
 from .currency import format_money_minor
 from .extraction import ExtractedTransaction, extract_transaction, infer_expense_category, looks_like_financial_query, normalize_merchant, parse_amount_minor, parse_spending_period
 from .merchants import MerchantRepository
-from .preferences import set_user_preference, user_preference
 from .reconciliation import attach_observation, ingest_observation, resolve_reconciliation
 from .repositories import UserScopedRepository
 from .runtime_tools import build_runtime_tools
@@ -517,7 +516,7 @@ def _apply_explicit_taxonomy(
 def _suggestion_body(recommendation: Recommendation, noun: str) -> str:
     """Describe only the evidence that actually produced these guesses."""
     if not any(item.evidence_backed for item in recommendation.suggestions):
-        return f"No history to learn from yet, so these are common starting points. They adapt as you categorize."
+        return "No history to learn from yet, so these are common starting points. They adapt as you categorize."
     channels = {item.dominant_channel for item in recommendation.suggestions}
     named = [
         label for channel, label in (
@@ -3186,9 +3185,6 @@ def _commit_draft(db: Session, user: User, draft: TransactionDraft) -> Transacti
             source_observation_id=observation.id,
             user_confirmed=provenance.get("origin") == "explicit",
         ))
-    if normalized and draft.category_id and "category" not in draft.inferred_fields:
-        value = {"categoryId": str(draft.category_id), "subcategoryId": str(draft.subcategory_id) if draft.subcategory_id else None, "merchant": draft.merchant_name}
-        set_user_preference(db, user.id, f"merchant:{normalized}", value)
     category, subcategory = TaxonomyRepository(db, user.id).path(
         draft.category_id,
         draft.subcategory_id,
@@ -3587,9 +3583,6 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
             merchant = MerchantRepository(db, user.id).get_or_create(transaction.merchant_name, normalized)
             transaction.merchant_id = merchant.id
             transaction.merchant_name = merchant.canonical_name
-            if transaction.category_id:
-                value = {"categoryId": str(transaction.category_id), "subcategoryId": str(transaction.subcategory_id) if transaction.subcategory_id else None, "merchant": transaction.merchant_name}
-                set_user_preference(db, user.id, f"merchant:{normalized}", value)
         for field_name, value in changed_fields.items():
             db.add(TransactionFieldValue(
                 transaction_id=transaction.id,

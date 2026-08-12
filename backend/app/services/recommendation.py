@@ -564,6 +564,7 @@ def _reasons(
     ledger: EvidenceLedger,
     candidate_id: str,
     prior_rank: int | None,
+    static_reasons: list[str] | None = None,
 ) -> list[str]:
     """Render reason strings from the arithmetic that actually produced the score.
 
@@ -605,8 +606,10 @@ def _reasons(
             low, high = _band_range(contribution.key)
             reasons.append(f"{hits} of {total} entries between ₹{low:,} and ₹{high:,}")
         elif contribution.channel == PRIOR:
+            # With no history the cold-start signals are the whole story, so
+            # say which one fired instead of a placeholder.
             if ledger.is_empty:
-                reasons.append("Common starting point")
+                reasons.extend(static_reasons or ["Common starting point"])
             elif prior_rank:
                 reasons.append(f"Your #{prior_rank} category overall")
 
@@ -626,7 +629,9 @@ def _assemble(
     context: Context,
     entities: dict[str, tuple[str, str, str | None]],
     prior_ranks: dict[str, int],
+    static_reasons: dict[str, list[str]] | None = None,
 ) -> list[Suggestion]:
+    static_reasons = static_reasons or {}
     suggestions: list[Suggestion] = []
     for candidate_id, contributions in breakdown.items():
         slug, label, icon = entities[candidate_id]
@@ -639,7 +644,7 @@ def _assemble(
             label=label,
             icon=icon,
             score=score,
-            reasons=_reasons(contributions, label, context, ledger, candidate_id, prior_ranks.get(candidate_id)),
+            reasons=_reasons(contributions, label, context, ledger, candidate_id, prior_ranks.get(candidate_id), static_reasons.get(candidate_id)),
             evidence_backed=bool(evidenced),
             dominant_channel=dominant.channel,
             support=max((item.hits for item in evidenced), default=0),
@@ -766,8 +771,9 @@ def recommend_categories(
     context = context_from_draft(draft, local_now=now)
 
     entities = {str(category.id): (category.slug, category.name, category.icon) for category in categories}
-    by_slug = static_prior_distribution(categories, draft.raw_text, draft.amount_minor, now.hour)
+    by_slug, reasons_by_slug = static_prior_distribution(categories, draft.raw_text, draft.amount_minor, now.hour)
     static = {str(category.id): by_slug.get(category.slug, 0.0) for category in categories}
+    static_reasons = {str(category.id): reasons_by_slug.get(category.slug, []) for category in categories}
     background = _global_background(ledger.category_totals, entities, static)
 
     ranked_by_use = sorted(
@@ -779,7 +785,7 @@ def recommend_categories(
     prior_ranks = {candidate_id: index + 1 for index, candidate_id in enumerate(ranked_by_use)}
 
     breakdown = _score_candidates(ledger.category_channels, ledger.category_totals, context, entities, background)
-    suggestions = _assemble(breakdown, ledger, context, entities, prior_ranks)
+    suggestions = _assemble(breakdown, ledger, context, entities, prior_ranks, static_reasons)
     return Recommendation(_select_slots(suggestions, ledger, limit), suggestions)
 
 

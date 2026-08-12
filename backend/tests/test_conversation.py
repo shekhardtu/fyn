@@ -7,7 +7,7 @@ from sqlalchemy import Uuid, func, select
 
 from app.api import action as execute_widget_action, delete_conversation, list_conversations
 from app.database import Base
-from app.models import AIAction, Account, AnalysisTool, AnalysisToolRun, Budget, Category, Conversation, DraftState, Goal, Message, Subcategory, Tag, TaxonomyScope, Transaction, TransactionDraft, TransactionFieldValue, TransactionTag, User, UserPreference
+from app.models import AIAction, Account, AnalysisTool, AnalysisToolRun, Budget, Category, Conversation, DraftState, Goal, Message, Subcategory, Tag, TaxonomyScope, Transaction, TransactionDraft, TransactionFieldValue, TransactionTag, User
 from app.seed import default_user
 from app.services.agents import CopilotDecision, CopilotDecisionValidation, PresentationIntent, QueryBundleInterpretation, QueryInterpretation, QueryView, TaxonomyInterpretation, ToolGrounding, TransactionInterpretation
 from app.services import conversation as conversation_service
