@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import pytest
@@ -7,13 +7,31 @@ from sqlalchemy import Uuid, func, select
 
 from app.api import action as execute_widget_action, delete_conversation, list_conversations
 from app.database import Base
-from app.models import AIAction, Account, AnalysisTool, AnalysisToolRun, Budget, Category, Conversation, DraftState, Goal, Message, Subcategory, Tag, TaxonomyScope, Transaction, TransactionDraft, TransactionFieldValue, TransactionTag, User
+from app.models import AIAction, Account, AnalysisTool, AnalysisToolRun, Budget, Category, Conversation, DraftState, Goal, GoalContribution, Message, Subcategory, Tag, TaxonomyScope, Transaction, TransactionDraft, TransactionFieldValue, TransactionTag, User
 from app.seed import default_user
 from app.services.agents import CopilotDecision, CopilotDecisionValidation, PresentationIntent, QueryBundleInterpretation, QueryInterpretation, QueryView, TaxonomyInterpretation, ToolGrounding, TransactionInterpretation
 from app.services import conversation as conversation_service
 from app.services.calculators import loan_amortization_schedule
 from app.schemas import ActionRequest
 from app.services.conversation import get_or_create_conversation, handle_action, handle_chat
+
+
+def test_missing_date_defaults_to_current_utc_instant_and_survives_amount_clarification(db, monkeypatch):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    current = datetime(2026, 8, 12, 7, 55, 15, tzinfo=timezone.utc)
+    monkeypatch.setattr(conversation_service, "now_utc", lambda: current)
+
+    draft = conversation_service._create_draft(db, user, conversation, "Add Transactions")
+    assert draft.transaction_at == current
+
+    response = handle_action(db, user, conversation, "update_transaction_draft", {
+        "draftId": str(draft.id),
+        "amountMinor": 50_000,
+    })
+
+    assert draft.transaction_at == current
+    assert response.widgets[0].type == "transaction_type_selector"
 
 
 def test_bare_amount_complete_conversation(db):
@@ -336,7 +354,10 @@ def test_rejected_read_only_analysis_never_falls_through_to_transaction_creation
 
     assert after == before
     assert response.widgets == []
-    assert response.message == "I couldn’t validate that read-only analysis yet. No financial record was created or changed."
+    # The refusal has to name what actually failed. The generic version of this
+    # message left users retyping the same prompt with nothing to correct.
+    assert "heatmap contract is incomplete" in response.message.casefold()
+    assert "Nothing was created or changed." in response.message
 
 
 def test_ambiguous_addition_prefers_hitl_transaction_type_selector(db, monkeypatch):
@@ -472,25 +493,6 @@ def test_typed_query_route_cannot_be_overridden_by_prompt_keywords(db):
     assert response.widgets[0].data["count"] == 0
 
 
-def test_empty_saved_analyses_explains_how_to_create_one(db):
-    user = default_user(db)
-    conversation = get_or_create_conversation(db, user)
-    decision = CopilotDecision(
-        tool="show_saved_analyses",
-        confidence=0.99,
-        reason="The user requested their saved analyses.",
-    )
-
-    response = conversation_service._query_response(
-        db, user, conversation, "Show my saved analyses", decision
-    )
-
-    assert "don’t have any saved analyses" in response.message
-    assert response.widgets[0].type == "data_table"
-    assert response.widgets[0].data["rows"] == []
-    assert "Save this analysis" in response.widgets[0].data["emptyMessage"]
-
-
 def test_llm_classifier_can_supply_a_structured_transaction(db, monkeypatch):
     user = default_user(db)
     conversation = get_or_create_conversation(db, user)
@@ -555,11 +557,11 @@ def test_user_can_edit_an_automatically_saved_transaction(db):
     transaction_id = response.widgets[0].data["transactionId"]
     response = handle_action(db, user, conversation, "edit_saved_transaction", {"transactionId": transaction_id})
     assert response.widgets[0].type == "transaction_edit"
-    response = handle_action(db, user, conversation, "update_saved_transaction", {"transactionId": transaction_id, "amountMinor": 225_000, "merchant": "Toit Indiranagar", "date": "2026-08-09", "categoryId": response.widgets[0].data["categoryId"], "subcategoryId": response.widgets[0].data["subcategoryId"]})
+    response = handle_action(db, user, conversation, "update_saved_transaction", {"transactionId": transaction_id, "amountMinor": 225_000, "merchant": "Toit Indiranagar", "transactionAt": "2026-08-09T00:00:00Z", "categoryId": response.widgets[0].data["categoryId"], "subcategoryId": response.widgets[0].data["subcategoryId"]})
     assert response.widgets[0].type == "transaction_preview"
     assert response.widgets[0].data["amountMinor"] == 225_000
     assert response.widgets[0].data["title"] == "Toit Indiranagar"
-    assert response.widgets[0].data["date"] == "2026-08-09"
+    assert response.widgets[0].data["transactionAt"] == datetime(2026, 8, 9, tzinfo=timezone.utc)
 
 
 def test_user_can_cancel_saved_transaction_edit_without_mutation(db):
@@ -658,7 +660,7 @@ def test_structured_transaction_edit_records_user_corrections(db):
         "transactionId": transaction_id,
         "amountMinor": 30_000,
         "merchant": "Local Coffee",
-        "date": date.today().isoformat(),
+        "transactionAt": datetime.combine(date.today(), datetime.min.time(), tzinfo=timezone.utc).isoformat(),
         "transactionType": "expense",
         "location": "Indiranagar",
         "spendNature": "discretionary",
@@ -731,6 +733,10 @@ def test_goal_creation_and_contribution_require_confirmation(db):
     response = handle_action(db, user, conversation, action.action, action.payload)
     assert goal.current_minor == 2_000_000
     assert response.widgets[0].data["percentComplete"] == 10.0
+    contribution = db.scalar(select(GoalContribution))
+    assert contribution.amount_minor == 2_000_000
+    assert contribution.contribution_at.tzinfo is None  # SQLite strips offsets on round-trip.
+    assert contribution.contribution_at.replace(tzinfo=timezone.utc) <= datetime.now(timezone.utc)
 
 
 def test_explicit_merchant_correction_is_learned_and_overrides_inference(db):
@@ -741,7 +747,7 @@ def test_explicit_merchant_correction_is_learned_and_overrides_inference(db):
     edit = handle_action(db, user, conversation, "edit_saved_transaction", {"transactionId": transaction_id})
     entertainment_id = next(item["id"] for item in edit.widgets[0].data["categories"] if item["label"] == "Entertainment")
     events_id = next(item["id"] for item in edit.widgets[0].data["subcategories"] if item["categoryId"] == entertainment_id and item["label"] == "Events")
-    handle_action(db, user, conversation, "update_saved_transaction", {"transactionId": transaction_id, "amountMinor": 90_000, "merchant": "Toit", "date": date.today().isoformat(), "categoryId": entertainment_id, "subcategoryId": events_id})
+    handle_action(db, user, conversation, "update_saved_transaction", {"transactionId": transaction_id, "amountMinor": 90_000, "merchant": "Toit", "transactionAt": datetime.combine(date.today(), datetime.min.time(), tzinfo=timezone.utc).isoformat(), "categoryId": entertainment_id, "subcategoryId": events_id})
 
     response = handle_chat(db, user, conversation, "Paid ₹1,100 at Toit today")
     assert response.widgets[0].type == "transaction_preview"
@@ -1779,3 +1785,73 @@ def test_subcategory_selector_learns_from_past_choices(db):
     assert learned, "the subcategory step must now carry ranked guesses"
     assert learned[0]["slug"] == "coffee"
     assert learned[0]["reasons"]
+
+
+def test_non_converging_repair_stops_before_spending_a_second_validation(db, monkeypatch):
+    """A repair that reproduces the rejected contract is not progress.
+
+    For a chart the plan is compiled from the typed intent, so the repair model
+    cannot edit what the compiler owns and returns the same contract. Detecting
+    that is what keeps the turn from paying for a second verdict it already has.
+    """
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    validations = []
+
+    def router(*args, **kwargs):
+        return CopilotDecision(
+            tool="run_analysis_harness",
+            presentation={"mode": "chart", "requested_mark": "arc", "unit_of_analysis": "category"},
+            confidence=0.99,
+            reason="The user requested a read-only donut.",
+        )
+
+    def reject(*args, **kwargs):
+        validations.append(args)
+        return CopilotDecisionValidation(
+            outcome="reject",
+            confidence=0.99,
+            issues=["The composition has no coherent total."],
+            summary="Reject the incoherent composition.",
+        )
+
+    monkeypatch.setattr(conversation_service, "interpret_with_financial_copilot", router)
+    monkeypatch.setattr(conversation_service, "validate_copilot_decision", reject)
+
+    response = handle_chat(db, user, conversation, "Draw a breakdown of all transactions in donut form")
+
+    assert len(validations) == 1
+    assert "composition has no coherent total" in response.message.casefold()
+
+
+def test_universal_request_releases_the_previous_result_scope(db, monkeypatch):
+    """"All transactions" cannot be a refinement of the records already shown."""
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    conversation.active_data_scope = {"entityIds": [], "entityCount": 20, "query": {"category_slug": "food"}}
+    conversation.active_analysis_state = {
+        "query": {"category_slug": "food", "subcategory_slug": "delivery", "result_mode": "transaction_list"},
+        "queries": [{"category_slug": "food", "result_mode": "transaction_list"}],
+        "entityType": "transaction",
+        "resultShapes": ["transaction_list"],
+        "answerSummary": "I found 20 transactions.",
+        "sourceMessageId": "irrelevant",
+    }
+    db.commit()
+    seen = {}
+
+    def router(text, taxonomy, today, timezone, recent, **kwargs):
+        seen["workflow_context"] = kwargs.get("workflow_context")
+        return CopilotDecision(tool="conversation", reply="Sure.", confidence=0.99, reason="Chat.")
+
+    monkeypatch.setattr(conversation_service, "interpret_with_financial_copilot", router)
+    monkeypatch.setattr(
+        conversation_service,
+        "validate_copilot_decision",
+        lambda *args, **kwargs: CopilotDecisionValidation(outcome="approve", confidence=0.99, summary="Fine."),
+    )
+
+    handle_chat(db, user, conversation, "Draw a breakdown of all transactions in donut form")
+
+    assert seen["workflow_context"]["activeDataScope"] is None
+    assert seen["workflow_context"]["activeAnalysisState"] is None

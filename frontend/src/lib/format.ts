@@ -35,8 +35,30 @@ export function formatCount(value: unknown, maximumFractionDigits = 3) {
 }
 
 /** A parsed timestamp, in the one style the tables print. */
-export function formatTimestamp(value: Date) {
-  return reuse("stamp", () => new Intl.DateTimeFormat("en-IN", { dateStyle: "medium", timeStyle: "short" })).format(value);
+export function formatTimestamp(value: Date, timeZone?: string) {
+  return reuse(`stamp:${timeZone ?? "local"}`, () => new Intl.DateTimeFormat("en-IN", { dateStyle: "medium", timeStyle: "short", timeZone })).format(value);
+}
+
+export function formatInstant(value: unknown, timeZone?: string) {
+  if (typeof value !== "string" || !value) return "";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.valueOf()) ? "" : formatTimestamp(parsed, timeZone);
+}
+
+/** Convert a UTC ISO instant to the browser's wall clock for datetime-local. */
+export function timestampInputValue(value: unknown) {
+  if (typeof value !== "string" || !value) return "";
+  const instant = new Date(value);
+  if (Number.isNaN(instant.valueOf())) return "";
+  const local = new Date(instant.getTime() - instant.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+/** Convert a browser-local wall clock value to the canonical UTC ISO instant. */
+export function timestampInputToUtc(value: string) {
+  if (!value) return null;
+  const instant = new Date(value);
+  return Number.isNaN(instant.valueOf()) ? null : instant.toISOString();
 }
 
 /** Accepts what people actually type: "1,500", "₹500", "1,50,000", "1.5". */
@@ -46,6 +68,55 @@ export function parseAmountToMinor(input: string): number | null {
   const major = Number(cleaned);
   if (!Number.isFinite(major) || major <= 0) return null;
   return Math.round(major * 100);
+}
+
+/** What the composer thinks you have typed, before anything is sent.
+ *
+ *  The server takes seconds to answer, and for most of that time the only
+ *  question on the writer's mind is whether the amount was understood. That is
+ *  answerable here, for free, on every keystroke — the same Indian notation the
+ *  backend accepts is parseable in the browser.
+ *
+ *  Deliberately silent when unsure. A wrong reading is worse than none, so a
+ *  bare number only counts as money when something in the sentence says it is:
+ *  a rupee marker, a scale word, or a verb about paying or being paid. "Show my
+ *  last 5 transactions" reads as nothing at all, which is correct. */
+export type ComposerReading = { amountMinor: number; kind: "expense" | "income" | "transfer" | "investment" };
+
+const SCALES: Array<[RegExp, number]> = [
+  [/^(k|thousand)$/, 1_000],
+  [/^(l|lakh|lakhs|lac|lacs)$/, 100_000],
+  [/^(cr|crore|crores)$/, 10_000_000],
+];
+
+/** Nouns that follow a count, not an amount. */
+const COUNTED = /^(transactions?|months?|days?|weeks?|years?|times?|people|items?|rows?|%)/;
+const INCOME = /\b(salary|income|received|refund(ed)?|credited|earned|bonus|got paid|reimbursed)\b/;
+const TRANSFER = /\b(transfer(red)?|moved|sent to|paid into)\b/;
+const INVESTMENT = /\b(invest(ed|ment)?|sip|mutual fund|stocks?|shares?)\b/;
+const MONEY_VERB = /\b(spent|spend|paid|pay|bought|buy|cost|got|received|earned|salary|income|refund(ed)?|transfer(red)?|invest(ed)?|deposit(ed)?|withdrew|withdraw|sent|credited|debited|bill|recharge)\b/;
+
+export function readComposerEntry(input: string): ComposerReading | null {
+  const text = input.toLowerCase();
+  const match = /(?:₹|rs\.?|inr)?\s*(\d[\d,]*(?:\.\d+)?)\s*([a-z]*)/.exec(text);
+  if (!match) return null;
+
+  const trailing = text.slice(match.index + match[0].length).trimStart();
+  const unit = match[2] ?? "";
+  const scale = SCALES.find(([pattern]) => pattern.test(unit))?.[1] ?? null;
+  // "5 transactions" is a count. So is "5" followed by one, once the unit slot
+  // has eaten a word that turned out not to be a scale.
+  if (COUNTED.test(unit) || (!scale && unit === "" && COUNTED.test(trailing))) return null;
+  if (unit && !scale && !/^(on|for|at|to|from|of|in)$/.test(unit)) return null;
+
+  const marked = /₹|\brs\.?\b|\binr\b/.test(text);
+  if (!marked && !scale && !MONEY_VERB.test(text)) return null;
+
+  const major = Number(match[1].replace(/,/g, "")) * (scale ?? 1);
+  if (!Number.isFinite(major) || major <= 0) return null;
+
+  const kind = INVESTMENT.test(text) ? "investment" : TRANSFER.test(text) ? "transfer" : INCOME.test(text) ? "income" : "expense";
+  return { amountMinor: Math.round(major * 100), kind };
 }
 
 export function parseNumber(input: string): number | null {

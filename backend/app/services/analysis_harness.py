@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 import hashlib
 import json
 import math
@@ -13,6 +13,8 @@ from uuid import UUID
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
+
+from ..event_time import now_utc
 from openai import OpenAI
 
 from ..config import get_settings
@@ -271,7 +273,7 @@ def validate_analysis_tool(proposal: AnalysisToolProposal, today: date) -> dict[
         ),
     })
     passed = all(check["passed"] for check in checks)
-    return {"passed": passed, "checks": checks, "validated_at": datetime.now(timezone.utc).isoformat()}
+    return {"passed": passed, "checks": checks, "validated_at": now_utc().isoformat()}
 
 
 def _repair_incomplete_analysis(proposal: AnalysisToolProposal, today: date) -> AnalysisToolProposal | None:
@@ -541,7 +543,7 @@ def execute_generated_tool(
             db.execute(delete(AnalysisToolRun).where(AnalysisToolRun.tool_id == predecessor.id))
             db.delete(predecessor)
         tool.success_count += 1
-        tool.last_used_at = datetime.now(timezone.utc)
+        tool.last_used_at = now_utc()
         tool.validation_report = {**validation, "result_verification": verification}
         serialized_result = json.dumps(
             {

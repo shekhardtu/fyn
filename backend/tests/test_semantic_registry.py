@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 from datetime import date, datetime, timezone
 
 import pytest
 from sqlalchemy import select
 
 from app.models import Account, AccountBalanceSnapshot, Budget, Category, FinancialObservation, Goal, GoalContribution, InvestmentHolding, InvestmentValuationSnapshot, Loan, Transaction, User
+from app.event_time import from_local_parts
 from app.seed import default_user
 from app.services.semantic import (
     FinanceFilter,
@@ -17,6 +20,10 @@ from app.services.semantic import (
 )
 from app.services.semantic_registry import semantic_schema_registry
 from app.services.analytics import cash_position, category_breakdown, spending_summary
+
+
+def occurred(day: date, clock: str | None = None):
+    return from_local_parts(day, clock, "Asia/Kolkata")
 
 
 def _query(metric: str, **changes) -> FinanceQueryPlan:
@@ -106,11 +113,11 @@ def test_snapshot_query_builder_supports_multiple_finance_entities_and_tenant_sc
 def test_finance_ontology_keeps_cash_flow_investment_and_transfer_semantics_distinct(db):
     user = default_user(db)
     db.add_all([
-        Transaction(user_id=user.id, transaction_type="income", amount_minor=100_000, currency="INR", transaction_date=date(2026, 8, 11)),
-        Transaction(user_id=user.id, transaction_type="expense", amount_minor=30_000, currency="INR", transaction_date=date(2026, 8, 11)),
-        Transaction(user_id=user.id, transaction_type="investment", amount_minor=20_000, currency="INR", transaction_date=date(2026, 8, 11)),
-        Transaction(user_id=user.id, transaction_type="refund", amount_minor=5_000, currency="INR", transaction_date=date(2026, 8, 11)),
-        Transaction(user_id=user.id, transaction_type="transfer", amount_minor=500_000, currency="INR", transaction_date=date(2026, 8, 11)),
+        Transaction(user_id=user.id, transaction_type="income", amount_minor=100_000, currency="INR", transaction_at=occurred(date(2026, 8, 11))),
+        Transaction(user_id=user.id, transaction_type="expense", amount_minor=30_000, currency="INR", transaction_at=occurred(date(2026, 8, 11))),
+        Transaction(user_id=user.id, transaction_type="investment", amount_minor=20_000, currency="INR", transaction_at=occurred(date(2026, 8, 11))),
+        Transaction(user_id=user.id, transaction_type="refund", amount_minor=5_000, currency="INR", transaction_at=occurred(date(2026, 8, 11))),
+        Transaction(user_id=user.id, transaction_type="transfer", amount_minor=500_000, currency="INR", transaction_at=occurred(date(2026, 8, 11))),
     ])
     db.flush()
 
@@ -128,9 +135,9 @@ def test_money_analytics_never_sum_different_currencies(db):
     user.currency = "USD"
     food = db.scalar(select(Category).where(Category.slug == "food"))
     db.add_all([
-        Transaction(user_id=user.id, transaction_type="expense", amount_minor=1_000, currency="USD", category_id=food.id, transaction_date=date(2026, 8, 11)),
-        Transaction(user_id=user.id, transaction_type="income", amount_minor=5_000, currency="USD", transaction_date=date(2026, 8, 11)),
-        Transaction(user_id=user.id, transaction_type="expense", amount_minor=9_999_999, currency="INR", category_id=food.id, transaction_date=date(2026, 8, 11)),
+        Transaction(user_id=user.id, transaction_type="expense", amount_minor=1_000, currency="USD", category_id=food.id, transaction_at=occurred(date(2026, 8, 11))),
+        Transaction(user_id=user.id, transaction_type="income", amount_minor=5_000, currency="USD", transaction_at=occurred(date(2026, 8, 11))),
+        Transaction(user_id=user.id, transaction_type="expense", amount_minor=9_999_999, currency="INR", category_id=food.id, transaction_at=occurred(date(2026, 8, 11))),
     ])
     db.flush()
 
@@ -153,9 +160,9 @@ def test_observation_analytics_are_tenant_scoped_and_not_labelled_canonical(db):
     db.add(other)
     db.flush()
     db.add_all([
-        FinancialObservation(user_id=user.id, source_type="sms", source_hash="a" * 64, transaction_type="expense", amount_minor=2_000, currency="INR", transaction_date=date(2026, 8, 11), processing_state="attached"),
-        FinancialObservation(user_id=user.id, source_type="email", source_hash="b" * 64, transaction_type="expense", amount_minor=2_000, currency="INR", transaction_date=date(2026, 8, 11), processing_state="attached"),
-        FinancialObservation(user_id=other.id, source_type="bank", source_hash="c" * 64, transaction_type="expense", amount_minor=99_999, currency="INR", transaction_date=date(2026, 8, 11), processing_state="attached"),
+        FinancialObservation(user_id=user.id, source_type="sms", source_hash="a" * 64, transaction_type="expense", amount_minor=2_000, currency="INR", transaction_at=occurred(date(2026, 8, 11)), processing_state="attached"),
+        FinancialObservation(user_id=user.id, source_type="email", source_hash="b" * 64, transaction_type="expense", amount_minor=2_000, currency="INR", transaction_at=occurred(date(2026, 8, 11)), processing_state="attached"),
+        FinancialObservation(user_id=other.id, source_type="bank", source_hash="c" * 64, transaction_type="expense", amount_minor=99_999, currency="INR", transaction_at=occurred(date(2026, 8, 11)), processing_state="attached"),
     ])
     db.flush()
 
@@ -181,7 +188,7 @@ def test_historical_balance_portfolio_and_goal_facts_are_queryable(db):
     db.add_all([
         AccountBalanceSnapshot(user_id=user.id, account_id=account.id, balance_minor=10_000, currency="INR", observed_at=observed_at),
         InvestmentValuationSnapshot(user_id=user.id, holding_id=holding.id, market_value_minor=120_000, cost_basis_minor=100_000, currency="INR", observed_at=observed_at),
-        GoalContribution(user_id=user.id, goal_id=goal.id, amount_minor=50_000, currency="INR", contribution_date=date(2026, 8, 11)),
+        GoalContribution(user_id=user.id, goal_id=goal.id, amount_minor=50_000, currency="INR", contribution_at=observed_at),
     ])
     db.flush()
 
@@ -203,15 +210,15 @@ def test_event_and_snapshot_time_semantics_are_explicit():
     assert snapshot["time_semantics"] == "current_snapshot"
 
 
-def test_generic_time_grouping_buckets_hours_and_excludes_unknown_times(db):
+def test_generic_time_grouping_buckets_canonical_utc_instants(db):
     user = User(email="temporal-query@example.com", display_name="Temporal")
     db.add(user)
     db.flush()
     db.add_all([
-        Transaction(user_id=user.id, transaction_type="expense", amount_minor=10_000, currency="INR", transaction_date=date(2026, 8, 11), transaction_time="10:05:00", timezone="Asia/Kolkata"),
-        Transaction(user_id=user.id, transaction_type="income", amount_minor=20_000, currency="INR", transaction_date=date(2026, 8, 11), transaction_time="10:50:00", timezone="Asia/Kolkata"),
-        Transaction(user_id=user.id, transaction_type="expense", amount_minor=30_000, currency="INR", transaction_date=date(2026, 8, 11), transaction_time="11:15:00", timezone="Asia/Kolkata"),
-        Transaction(user_id=user.id, transaction_type="expense", amount_minor=40_000, currency="INR", transaction_date=date(2026, 8, 11), transaction_time=None, timezone="Asia/Kolkata"),
+        Transaction(user_id=user.id, transaction_type="expense", amount_minor=10_000, currency="INR", transaction_at=occurred(date(2026, 8, 11), "10:05:00")),
+        Transaction(user_id=user.id, transaction_type="income", amount_minor=20_000, currency="INR", transaction_at=occurred(date(2026, 8, 11), "10:50:00")),
+        Transaction(user_id=user.id, transaction_type="expense", amount_minor=30_000, currency="INR", transaction_at=occurred(date(2026, 8, 11), "11:15:00")),
+        Transaction(user_id=user.id, transaction_type="expense", amount_minor=40_000, currency="INR", transaction_at=occurred(date(2026, 8, 11))),
     ])
     db.flush()
 
@@ -239,7 +246,7 @@ def test_generic_time_grouping_buckets_hours_and_excludes_unknown_times(db):
         {"time_bucket": "2026-08-11 10:00", "value": 2},
         {"time_bucket": "2026-08-11 11:00", "value": 1},
     ]
-    assert hourly["requires_transaction_time"] is True
+    assert hourly["requires_transaction_time"] is False
     assert daily["rows"] == [{"time_bucket": "2026-08-11", "value": 4}]
     assert daily["requires_transaction_time"] is False
     assert pivot["dimensions"] == ["transaction_type", "time_bucket", "time_segment"]
@@ -248,6 +255,7 @@ def test_generic_time_grouping_buckets_hours_and_excludes_unknown_times(db):
         (row["transaction_type"], row["time_bucket"], row["time_segment"]): row["value"]
         for row in pivot["rows"]
     } == {
+        ("expense", "2026-08-11", "00"): 40_000,
         ("expense", "2026-08-11", "10"): 10_000,
         ("income", "2026-08-11", "10"): 20_000,
         ("expense", "2026-08-11", "11"): 30_000,
@@ -263,7 +271,7 @@ def test_governed_time_grouping_zero_fills_bounded_additive_series(db):
         transaction_type="expense",
         amount_minor=12_300,
         currency="INR",
-        transaction_date=date(2026, 8, 10),
+        transaction_at=occurred(date(2026, 8, 10)),
     ))
     db.flush()
 
@@ -293,9 +301,9 @@ def test_negative_category_filters_are_governed_and_preserve_uncategorized_rows(
     food = db.scalar(select(Category).where(Category.slug == "food"))
     transport = db.scalar(select(Category).where(Category.slug == "transport"))
     db.add_all([
-        Transaction(user_id=user.id, transaction_type="expense", amount_minor=30_000, currency="INR", category_id=food.id, transaction_date=date(2026, 8, 10)),
-        Transaction(user_id=user.id, transaction_type="expense", amount_minor=20_000, currency="INR", category_id=transport.id, transaction_date=date(2026, 8, 10)),
-        Transaction(user_id=user.id, transaction_type="expense", amount_minor=10_000, currency="INR", transaction_date=date(2026, 8, 10)),
+        Transaction(user_id=user.id, transaction_type="expense", amount_minor=30_000, currency="INR", category_id=food.id, transaction_at=occurred(date(2026, 8, 10))),
+        Transaction(user_id=user.id, transaction_type="expense", amount_minor=20_000, currency="INR", category_id=transport.id, transaction_at=occurred(date(2026, 8, 10))),
+        Transaction(user_id=user.id, transaction_type="expense", amount_minor=10_000, currency="INR", transaction_at=occurred(date(2026, 8, 10))),
     ])
     db.flush()
 

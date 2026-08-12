@@ -9,6 +9,7 @@ Revises: 0007_conversation_analysis_state
 """
 
 from alembic import op
+from app.migration_guards import has_column
 
 
 revision = "0008_manual_time_utc"
@@ -18,6 +19,11 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # A fresh database is built from the current ORM schema by 0001. Once UTC
+    # event timestamps became canonical, that schema no longer contained the
+    # legacy split date/time columns this historical data migration targets.
+    if not all(has_column("transactions", column) for column in ("transaction_date", "transaction_time", "timezone")):
+        return
     op.execute("""
         UPDATE transaction_sources AS source
         SET field_values = (
@@ -57,6 +63,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if not all(has_column("transactions", column) for column in ("transaction_date", "transaction_time", "timezone")):
+        return
     op.execute("""
         UPDATE transactions AS transaction
         SET transaction_time = NULL,

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from enum import Enum
 import json
 from typing import Annotated, Any, Literal, Union
 from uuid import UUID
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from agno.agent import Agent
 from agno.models.openai import OpenAIResponses
@@ -14,8 +14,9 @@ from pydantic import BaseModel, Field, WithJsonSchema, field_validator, model_va
 
 from ..config import Settings, get_settings
 from ..domain import SpendNature, TaxonomyOperation, TransactionType, ValueEnum
+from ..event_time import local_now as current_local_time
 from ..validation import SemanticIdentifier
-from ..visualization_contracts import ORDERED_SERIES_MARKS, RequestedVisualMark
+from ..visualization_contracts import RequestedVisualMark
 from .capabilities import CapabilityId, SAFE_READ_CAPABILITIES, capability_for_metric
 from .semantic import AnalysisPlan, AnalysisToolProposal, AnalysisTransform, FinanceFilter, FinanceQueryPlan, TimeGrouping, TimePivot, VisualEncoding, VisualEncodingSet, VisualizationSpec, semantic_catalog
 from .semantic_registry import SortDirection, TIME_GRAIN_SPECS, TimeGrain, semantic_schema_registry
@@ -28,6 +29,9 @@ QueryOperation = Literal["total", "breakdown", "rank", "list"]
 QueryGroupBy = Literal["none", "category", "subcategory", "merchant", "account", "month"]
 GROUPED_QUERY_OPERATIONS = frozenset({"rank", "breakdown"})
 TEMPORAL_PRESENTATION_UNITS = frozenset({"date", "month"})
+# FinanceQueryPlan caps a governed window at five years, so this is the widest
+# period an "all records" request can be compiled into without being rejected.
+_WIDEST_GOVERNED_WINDOW_DAYS = 1825
 
 
 def _agent_enabled(settings) -> bool:
@@ -219,7 +223,15 @@ class PresentationIntent(BaseModel):
     # Legacy route hint retained for persisted decisions. The governed
     # visualization grammar below is authoritative for new analysis plans.
     chart_type: Literal["auto", "bar", "line", "area", "pie", "heatmap"] = "auto"
-    unit_of_analysis: Literal["auto", "transaction", "category", "subcategory", "merchant", "account", "month", "date", "installment", "calculation_step"] = "auto"
+    # Grains the governed chart compiler can bind, plus the two calculator-only
+    # units. CHART_CAPABILITIES is authoritative for which of these a database
+    # chart can actually use; it is derived from the semantic registry, so this
+    # list grows with the registry rather than capping it.
+    unit_of_analysis: Literal[
+        "auto", "transaction", "category", "subcategory", "merchant", "account",
+        "transaction_type", "tag", "spend_nature", "location", "currency", "status",
+        "month", "date", "installment", "calculation_step",
+    ] = "auto"
     value_semantics: Literal["auto", "amount", "count", "percentage"] = "auto"
     time_grain: Union[Literal["auto"], TimeGrain] = "auto"
     rolling_value: int | None = Field(default=None, ge=1, le=10_000)
@@ -293,6 +305,28 @@ class ToolGrounding(BaseModel):
         return self
 
 
+class CompilationAssumption(BaseModel):
+    """One narrowing or substitution the compiler applied to reach a plan.
+
+    The compiler cannot always honour a prompt exactly: a period may be
+    unstated, a part-to-whole may have no coherent whole, a requested mark may
+    not fit the grain. Making each of those a declared value rather than a
+    silent rewrite is what keeps the rest of the pipeline honest — the
+    validator can tell a disclosed narrowing from a betrayed intent, and the
+    user can see and correct what was assumed on their behalf.
+    """
+
+    code: Literal[
+        "defaulted_period",
+        "direction_composed",
+        "direction_restricted",
+        "grain_substituted",
+        "mark_substituted",
+        "scope_released",
+    ]
+    detail: str = Field(min_length=3, max_length=200)
+
+
 class CopilotDecision(BaseModel):
     tool: CapabilityId
     transaction: TransactionInterpretation | None = None
@@ -301,6 +335,7 @@ class CopilotDecision(BaseModel):
     taxonomy: TaxonomyInterpretation | None = None
     presentation: PresentationIntent = Field(default_factory=PresentationIntent)
     analysis_tool: AnalysisToolProposal | None = None
+    assumptions: list[CompilationAssumption] = Field(default_factory=list, max_length=5)
     reuse_tool_id: UUID | None = None
     safe_reasoning_summary: list[str] = Field(default_factory=list, max_length=5)
     reply: str | None = None
@@ -328,13 +363,67 @@ _PRESENTATION_UNIT_ALIASES: dict[str, set[str]] = {
     "subcategory": {"subcategory", "subcategories"},
     "merchant": {"merchant", "merchants", "vendor", "vendors", "restaurant", "restaurants", "store", "stores"},
     "account": {"account", "accounts"},
+    "transaction_type": {"type", "types", "direction", "directions"},
+    "tag": {"tag", "tags"},
+    "location": {"location", "locations", "place", "places"},
+    "spend_nature": {"nature", "essentials", "discretionary"},
     "month": set(TIME_GRAIN_SPECS["month"].aliases),
     "date": set(TIME_GRAIN_SPECS["day"].aliases) | {"date", "dates", "time", "timeline"},
 }
+
+
+def _prompt_words(text: str) -> list[str]:
+    return [part.strip(".,?!:;()[]{}\n") for part in text.casefold().split()]
+
+
+def _explicit_presentation_unit(text: str) -> str | None:
+    """Return the grain the prompt names outright, or None if it names none.
+
+    The compiler needs this apart from the bound presentation: a grain the user
+    typed is a constraint to honour, while a grain a model inferred is only a
+    guess and may be replaced by a better-founded one.
+    """
+    words = _prompt_words(text)
+    for index, word in enumerate(words[:-1]):
+        if word != "by":
+            continue
+        for candidate in words[index + 1:index + 4]:
+            if candidate in {"the", "each", "individual", "per"}:
+                continue
+            unit = next((name for name, aliases in _PRESENTATION_UNIT_ALIASES.items() if candidate in aliases), None)
+            if unit:
+                return unit
+            break
+    return None
+
+
+# Words that ask for a picture rather than a number. "bar" and "line" are
+# deliberately absent: both are ordinary English in a spending transcript.
+_CHART_REQUEST_WORDS = frozenset({
+    "chart", "charts", "graph", "graphs", "plot", "plots", "plotted",
+    "visualise", "visualize", "visualisation", "visualization",
+    "donut", "doughnut", "pie", "heatmap", "histogram", "scatter", "scatterplot",
+    "dashboard",
+})
+
+
+def requests_chart(text: str) -> bool:
+    """Report whether the prompt asks to be shown a chart.
+
+    The router also classifies this, but as a model output it varies between
+    samples and a successful runtime tool call used to override it. Reading it
+    off the prompt makes the request a constraint the pipeline has to satisfy
+    rather than a preference any later stage can drop.
+    """
+    return bool(_CHART_REQUEST_WORDS & set(_prompt_words(text)))
+
+
 def _bind_explicit_presentation_unit(text: str, presentation: PresentationIntent) -> PresentationIntent:
     """Bind only an explicitly named `by <entity>` grain to the semantic schema."""
-    words = [part.strip(".,?!:;()[]{}\n") for part in text.casefold().split()]
+    words = _prompt_words(text)
     updates: dict = {}
+    if requests_chart(text):
+        updates["mode"] = "chart"
     if "dashboard" in words:
         updates.update({"mode": "chart", "layout": "dashboard"})
     if "heatmap" in words or ("heat" in words and "map" in words):
@@ -363,17 +452,112 @@ def _bind_explicit_presentation_unit(text: str, presentation: PresentationIntent
                 break
     if updates:
         presentation = presentation.model_copy(update=updates)
-    for index, word in enumerate(words[:-1]):
-        if word != "by":
-            continue
-        for candidate in words[index + 1:index + 4]:
-            if candidate in {"the", "each", "individual", "per"}:
-                continue
-            unit = next((name for name, aliases in _PRESENTATION_UNIT_ALIASES.items() if candidate in aliases), None)
-            if unit:
-                return presentation.model_copy(update={"unit_of_analysis": unit})
-            break
+    explicit_unit = _explicit_presentation_unit(text)
+    if explicit_unit:
+        return presentation.model_copy(update={"unit_of_analysis": explicit_unit})
     return presentation
+
+
+_UNIVERSAL_QUANTIFIERS = frozenset({"all", "every"})
+# Nouns that name a population of records rather than one financial direction.
+_POPULATION_NOUNS = frozenset({
+    "transaction", "transactions", "record", "records", "entry", "entries",
+    "spending", "spendings", "spend", "spends", "expense", "expenses",
+    "payment", "payments", "purchase", "purchases", "income", "earnings",
+})
+_RECORD_NOUNS = frozenset({"transaction", "transactions", "record", "records", "entry", "entries"})
+
+
+def _quantified_nouns(text: str, nouns: frozenset[str]) -> bool:
+    words = _prompt_words(text)
+    return any(
+        word in _UNIVERSAL_QUANTIFIERS and any(candidate in nouns for candidate in words[index + 1:index + 4])
+        for index, word in enumerate(words)
+    )
+
+
+def states_universal_scope(text: str) -> bool:
+    """Report whether the prompt quantifies over every transaction *direction*.
+
+    Deterministic and lexical on purpose: "all transactions" is a constraint
+    the user typed, so neither the router nor a repair model may reinterpret
+    it, and every stage that has to respect it reads the same signal. Note the
+    narrow reading — "all my spending" quantifies over a population but still
+    names one direction, so it is deliberately not universal here.
+    """
+    return _quantified_nouns(text, _RECORD_NOUNS)
+
+
+# Words that name one financial direction. A prompt naming two or more is
+# asking for a comparison between them, which is a different governed shape
+# from any single-direction metric.
+_DIRECTION_WORDS: dict[str, frozenset[str]] = {
+    "income": frozenset({"income", "earning", "earnings", "earned", "salary", "credits", "credited", "inflow", "inflows"}),
+    "expense": frozenset({"expense", "expenses", "spending", "spendings", "spend", "spends", "spent", "debits", "outflow", "outflows"}),
+    "transfer": frozenset({"transfer", "transfers"}),
+    "refund": frozenset({"refund", "refunds", "refunded"}),
+    "cash_withdrawal": frozenset({"withdrawal", "withdrawals", "withdrawn"}),
+}
+
+
+def names_multiple_directions(text: str) -> bool:
+    """Report whether the prompt compares two or more financial directions.
+
+    "Earning and expenses" is not a request for either metric; it is a request
+    for both side by side, which only transaction_amount grouped by
+    transaction_type can express. Reading it off the prompt keeps the router
+    from proposing an income-only query that the validator then rightly
+    rejects for dropping half the question.
+    """
+    words = set(_prompt_words(text))
+    return sum(1 for aliases in _DIRECTION_WORDS.values() if words & aliases) >= 2
+
+
+def releases_prior_scope(text: str) -> bool:
+    """Report whether the prompt widens away from the records already shown.
+
+    Broader than `states_universal_scope`: "all my spending" keeps its expense
+    direction but is still no kind of refinement of the previous turn's food
+    and delivery rows, so the conversational scope has to be let go either way.
+    """
+    return "everything" in _prompt_words(text) or _quantified_nouns(text, _POPULATION_NOUNS)
+
+
+_PERIOD_CUE_WORDS = frozenset({
+    "january", "february", "march", "april", "may", "june", "july",
+    "august", "september", "october", "november", "december",
+    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+    "today", "yesterday", "tomorrow", "ytd", "mtd", "since", "until", "till",
+    "between", "before", "after", "during", "last", "past", "previous", "next", "recent", "ago",
+})
+
+
+def states_explicit_period(text: str) -> bool:
+    """Report whether the prompt itself names a period to analyse over.
+
+    A universal request carries no period, so any dates on the typed query came
+    from the previous analytical turn. Distinguishing the two is what stops
+    "all transactions" from silently inheriting yesterday's two-day window.
+    """
+    words = _prompt_words(text)
+    if any(word in _PERIOD_CUE_WORDS for word in words):
+        return True
+    if any(len(word) == 4 and word.isdigit() and word.startswith(("19", "20")) for word in words):
+        return True
+    return any(
+        word in spec.aliases
+        for spec in TIME_GRAIN_SPECS.values()
+        for word in words
+    )
+
+
+def _directional_money_metrics() -> frozenset[str]:
+    """Governed metrics that answer for one financial direction only."""
+    return frozenset(
+        metric.name
+        for metric in semantic_schema_registry().metrics
+        if "transaction_type" in (metric.fixed_filters or {})
+    ) | {"net_spend"}
 
 
 def _bind_explicit_universal_scope(text: str, query: QueryInterpretation | None) -> QueryInterpretation | None:
@@ -384,23 +568,19 @@ def _bind_explicit_universal_scope(text: str, query: QueryInterpretation | None)
     intent or parse arbitrary language; the semantic router has already done
     that work.
     """
-    words = [part.strip(".,?!:;()[]{}\n") for part in text.casefold().split()]
-    universal = any(
-        word == "all" and any(candidate in {"transaction", "transactions"} for candidate in words[index + 1:index + 3])
-        for index, word in enumerate(words)
-    )
-    if not universal:
+    every_direction = states_universal_scope(text)
+    if not releases_prior_scope(text):
         return query
     if not query:
+        if not every_direction:
+            return None
         query = QueryInterpretation(
             metric="transaction_summary",
             result_mode="complex_analysis",
             operation="breakdown",
             limit=100,
         )
-    return query.model_copy(update={
-        "metric": "transaction_summary",
-        "transaction_type": None,
+    updates: dict = {
         "merchant": None,
         "category_slug": None,
         "subcategory_slug": None,
@@ -410,10 +590,37 @@ def _bind_explicit_universal_scope(text: str, query: QueryInterpretation | None)
         "max_amount_minor": None,
         "use_active_scope": False,
         "scope_transaction_ids": [],
-    })
+    }
+    # Dates are a filter like any other. A prompt that names no period has not
+    # asked for the previous turn's window, so releasing the dates here is what
+    # lets the compiler declare a period rather than inherit one unnoticed.
+    if not states_explicit_period(text):
+        updates |= {"start_date": None, "end_date": None}
+    # Direction is released only by a prompt that quantifies over records.
+    # "All my spending" widens the population while keeping its own direction,
+    # and turning that into an all-directions query would answer a different
+    # question than the one asked.
+    if every_direction:
+        updates |= {"metric": "transaction_summary", "transaction_type": None}
+    return query.model_copy(update=updates)
 
 
-def _presentation_contract_issues(decision: CopilotDecision) -> list[str]:
+def _bind_multi_direction_scope(text: str, query: QueryInterpretation | None) -> QueryInterpretation | None:
+    """Release a single-direction metric when the prompt compares directions.
+
+    A directional metric answers for one direction by construction, so leaving
+    one in place would drop half of an "income versus expenses" question. The
+    direction-neutral metric with transaction_type preserved is the only
+    governed shape that keeps both sides.
+    """
+    if not query or not names_multiple_directions(text):
+        return query
+    if query.transaction_type is None and query.metric not in _directional_money_metrics():
+        return query
+    return query.model_copy(update={"metric": "transaction_summary", "transaction_type": None})
+
+
+def _presentation_contract_issues(decision: CopilotDecision, text: str = "") -> list[str]:
     """Check generated query grain against the independent presentation contract."""
     presentation = decision.presentation
     if presentation.mode != "chart":
@@ -425,11 +632,40 @@ def _presentation_contract_issues(decision: CopilotDecision) -> list[str]:
         return ["Chart presentation requires at least one visualization specification."]
     if presentation.layout == "dashboard" and len(proposal.plan.visualizations) < 2:
         return ["Dashboard presentation requires multiple independently governed views."]
+    declared = {item.code for item in decision.assumptions}
+    # A substitution the compiler declared has been disclosed to the user and
+    # is a legitimate outcome. The same substitution left undeclared is a
+    # silent rewrite of the request, and that is what this gate exists to stop.
+    if presentation.requested_mark != "auto" and "mark_substituted" not in declared:
+        substituted = [
+            visualization.mark
+            for visualization in proposal.plan.visualizations
+            if visualization.mark != presentation.requested_mark
+        ]
+        if substituted:
+            return [f"Chart must use the requested {presentation.requested_mark} mark, not {substituted[0]}, unless the substitution is declared."]
+    if text and states_universal_scope(text) and "direction_restricted" not in declared:
+        directional = _directional_money_metrics()
+        narrowed = [query.name for query in proposal.plan.queries if query.metric in directional]
+        if narrowed:
+            return [f"Query “{narrowed[0]}” restricts an all-transaction request to one financial direction without declaring it."]
     if presentation.unit_of_analysis == "auto":
         return []
-    temporal = presentation.unit_of_analysis in TEMPORAL_PRESENTATION_UNITS
-    heatmap = presentation.requested_mark == "rect" or presentation.visual_goal == "density" or presentation.chart_type == "heatmap"
-    expected = "time_segment" if heatmap else "time_bucket" if temporal else presentation.unit_of_analysis
+    capability = chart_capability(presentation.unit_of_analysis)
+    if capability is None:
+        return [f"No governed chart can be drawn at a {presentation.unit_of_analysis.replace('_', ' ')} grain."]
+    marks = {visualization.mark for visualization in proposal.plan.visualizations}
+    # A multi-view answer is coverage across panels, so a trend panel may hold a
+    # mark the top-level grain could not carry alone. Only a single chart has to
+    # satisfy the manifest outright — the same rule the grain check below uses.
+    if len(proposal.plan.visualizations) == 1 and not marks <= capability.marks:
+        unsupported = sorted(marks - capability.marks)[0]
+        return [f"A {capability.grain.replace('_', ' ')} chart cannot be drawn with a {unsupported} mark."]
+    temporal = capability.temporal
+    heatmap = "rect" in marks
+    # The manifest names the field each grain's query produces, so the gate no
+    # longer restates the compiler's mapping and cannot drift from it.
+    expected = "time_segment" if heatmap else "time_bucket" if temporal else capability.produces
     expected_grain = (
         "month" if presentation.unit_of_analysis == "month"
         else "day" if presentation.time_grain == "auto"
@@ -492,21 +728,293 @@ def _presentation_contract_issues(decision: CopilotDecision) -> list[str]:
     return issues
 
 
-def _compile_governed_chart(route: CopilotRouteDecision, current_date: date, user_timezone: str) -> AnalysisToolProposal | None:
+@dataclass(frozen=True)
+class ChartCapability:
+    """One chart shape the governed compiler can actually emit.
+
+    This manifest is the single description of the compiler's reach. The router
+    is shown it so it only proposes expressible charts, the compiler resolves
+    against it instead of re-deciding in ad-hoc conditionals, and the contract
+    gate checks compiled plans against it. Keeping one description means a
+    request outside the surface is caught deterministically, in the same pass
+    that builds the plan, rather than discovered later by a model reading prose
+    rules that restate all of this in English.
+    """
+
+    grain: str
+    produces: str
+    marks: frozenset[str]
+    preferred_mark: str
+    temporal: bool = False
+    note: str = ""
+
+
+# Marks each family of grain can carry. Categorical grains partition a total,
+# so they support part-to-whole; identity grains do not, because separate
+# records share no total; ordered series need a real axis, so they are temporal.
+_TEMPORAL_GRAIN_MARKS = frozenset({"line", "area", "bar", "point"})
+_CATEGORICAL_GRAIN_MARKS = frozenset({"bar", "arc", "point"})
+_IDENTITY_GRAIN_MARKS = frozenset({"bar", "point"})
+# Dimensions the temporal capabilities below already cover, or that name an
+# instant rather than a grouping the compiler can bucket.
+_NON_GRAIN_DIMENSIONS = frozenset({"transaction_date", "month", "posted_date"})
+
+
+def _build_chart_capabilities() -> tuple[ChartCapability, ...]:
+    """Derive the chart surface from the semantic registry.
+
+    Hand-listing the grains would make the manifest a second place to remember,
+    and it would quietly cap the product at whatever was typed here. Reading it
+    from the registry means every governed transaction dimension is chartable
+    the day it is defined, and the surface can only describe things the query
+    compiler can genuinely bind.
+    """
+    capabilities = [
+        ChartCapability(
+            grain="date", produces="time_bucket",
+            marks=_TEMPORAL_GRAIN_MARKS | {"rect"}, preferred_mark="line", temporal=True,
+            note="Time series at the requested grain. rect is the day-by-hour heatmap pivot.",
+        ),
+        ChartCapability(
+            grain="month", produces="time_bucket",
+            marks=_TEMPORAL_GRAIN_MARKS, preferred_mark="line", temporal=True,
+            note="Monthly time series.",
+        ),
+    ]
+    for dimension in semantic_schema_registry().dimensions:
+        if dimension.base_entity != "transactions" or dimension.name in _NON_GRAIN_DIMENSIONS:
+            continue
+        identity = dimension.name == "transaction"
+        capabilities.append(ChartCapability(
+            grain=dimension.name,
+            produces=dimension.name,
+            marks=_IDENTITY_GRAIN_MARKS if identity else _CATEGORICAL_GRAIN_MARKS,
+            preferred_mark="bar",
+            note=(
+                f"{dimension.description} No part-to-whole: separate records share no total."
+                if identity else dimension.description
+            ),
+        ))
+    return tuple(capabilities)
+
+
+CHART_CAPABILITIES: tuple[ChartCapability, ...] = _build_chart_capabilities()
+
+_CAPABILITY_BY_GRAIN = {capability.grain: capability for capability in CHART_CAPABILITIES}
+_MARK_FOR_CHART_TYPE = {"bar": "bar", "line": "line", "area": "area", "pie": "arc", "heatmap": "rect"}
+_MARK_FOR_VISUAL_GOAL = {
+    "trend": "line", "comparison": "bar", "composition": "arc",
+    "distribution": "bar", "relationship": "point", "density": "rect",
+}
+
+
+def chart_capability(grain: str) -> ChartCapability | None:
+    return _CAPABILITY_BY_GRAIN.get(grain)
+
+
+def chart_capability_catalog() -> list[dict[str, Any]]:
+    """Render the manifest for a model prompt."""
+    return [
+        {
+            "grain": capability.grain,
+            "produces": capability.produces,
+            "marks": sorted(capability.marks),
+            "default_mark": capability.preferred_mark,
+            "note": capability.note,
+        }
+        for capability in CHART_CAPABILITIES
+    ]
+
+
+@dataclass(frozen=True)
+class ChartShape:
+    capability: ChartCapability
+    mark: str
+    assumptions: tuple[CompilationAssumption, ...] = ()
+
+
+def resolve_chart_shape(presentation: PresentationIntent) -> ChartShape | None:
+    """Pick the mark this grain can carry, or decline the grain outright.
+
+    Declining is a real answer: `installment` and `calculation_step` belong to
+    calculator datasets and have no governed transaction dimension, so
+    compiling them would emit a query the semantic registry cannot validate.
+    """
+    capability = chart_capability(presentation.unit_of_analysis)
+    if capability is None:
+        return None
+    requested = presentation.requested_mark
+    if requested == "auto":
+        requested = (
+            _MARK_FOR_CHART_TYPE.get(presentation.chart_type)
+            or _MARK_FOR_VISUAL_GOAL.get(presentation.visual_goal)
+            or capability.preferred_mark
+        )
+    mark = requested if requested in capability.marks else capability.preferred_mark
+    assumptions: tuple[CompilationAssumption, ...] = ()
+    if presentation.requested_mark != "auto" and mark != presentation.requested_mark:
+        assumptions = (CompilationAssumption(
+            code="mark_substituted",
+            detail=(
+                f"Drawn as a {mark} chart: a {presentation.requested_mark} cannot express "
+                f"a {capability.grain.replace('_', ' ')} grain."
+            ),
+        ),)
+    return ChartShape(capability=capability, mark=mark, assumptions=assumptions)
+
+
+def _chartable_grounding(tool_grounding: list[ToolGrounding]) -> ToolGrounding | None:
+    """Return the first grounded result that can actually be drawn.
+
+    A runtime tool succeeding is not the same as a runtime tool answering a
+    chart request: `spending_summary` returns one scalar, which no axis can be
+    bound to. Checking that here keeps a successful-but-unchartable call from
+    committing the turn to a visual route it cannot complete.
+    """
+    for item in tool_grounding:
+        data = item.result.data
+        if isinstance(data, str):
+            try:
+                data = ast.literal_eval(data)
+            except (ValueError, SyntaxError):
+                continue
+        if not isinstance(data, dict) or data.get("kind") != "computed_dataset":
+            continue
+        rows = data.get("rows")
+        fields = data.get("fields")
+        if not isinstance(rows, list) or not rows or not isinstance(fields, list):
+            continue
+        roles = {field.get("name"): field.get("role") for field in fields if isinstance(field, dict)}
+        if "dimension" in roles.values() and "measure" in roles.values():
+            return item
+    return None
+
+
+def _inferred_presentation_unit(query: QueryInterpretation, presentation: PresentationIntent) -> str | None:
+    """Choose a defensible grain for a chart whose request named none.
+
+    Returns None when nothing in the typed intent supports a choice, which
+    hands the request back to the model-authored factory rather than inventing
+    a grouping the prompt cannot justify.
+    """
+    if query.group_by and query.group_by != "none":
+        return query.group_by
+    if presentation.time_grain != "auto" or presentation.rolling_unit:
+        return "date"
+    return {
+        "trend": "date",
+        "density": "date",
+        "composition": "category",
+        "comparison": "category",
+        "distribution": "category",
+    }.get(presentation.visual_goal)
+
+
+@dataclass(frozen=True)
+class ChartCompilation:
+    """A compiled chart plus everything the compiler had to assume to reach it.
+
+    `presentation` is the contract the plan actually satisfies, which is not
+    always the one the router asked for. Downstream checks validate against
+    this effective contract and read `assumptions` to see why it differs.
+    """
+
+    proposal: AnalysisToolProposal
+    presentation: PresentationIntent
+    assumptions: tuple[CompilationAssumption, ...] = ()
+
+
+def _compile_governed_chart(
+    route: CopilotRouteDecision,
+    current_date: date,
+    user_timezone: str,
+    text: str = "",
+) -> ChartCompilation | None:
     """Compile a typed chart intent without allowing a model to author query code.
 
     The router decides semantics; this compiler merely maps that decision onto
-    the versioned finance schema and visualization protocol.
+    the versioned finance schema and visualization protocol. Where the two
+    cannot be reconciled exactly, the compiler resolves the conflict itself and
+    declares the resolution instead of narrowing the request in silence.
     """
     query = route.query
     presentation = route.presentation
-    if not query or presentation.mode != "chart" or presentation.layout == "dashboard" or presentation.unit_of_analysis == "auto":
+    if not query or presentation.mode != "chart" or presentation.layout == "dashboard":
         return None
 
+    assumptions: list[CompilationAssumption] = []
+    if (
+        names_multiple_directions(text)
+        and not _explicit_presentation_unit(text)
+        and presentation.unit_of_analysis in {"auto", "category", "transaction"}
+    ):
+        # The comparison the prompt asked for *is* the grain. Grouping by
+        # anything else answers a question about composition instead.
+        presentation = presentation.model_copy(update={
+            "unit_of_analysis": "transaction_type",
+            "x_field": None,
+            "y_fields": [],
+            "color_field": None,
+        })
+    if presentation.unit_of_analysis == "auto":
+        # Handing plan authoring to a model because no grain was named is the
+        # one path here that lets an LLM write the query, and it is the path
+        # that produces plans referencing fields their own query never emits.
+        # A grain the compiler can defend and declare beats a generated plan.
+        inferred = _inferred_presentation_unit(query, presentation)
+        if not inferred:
+            return None
+        presentation = presentation.model_copy(update={"unit_of_analysis": inferred})
+        assumptions.append(CompilationAssumption(
+            code="grain_substituted",
+            detail=f"No grouping was named, so this is grouped by {inferred.replace('_', ' ')}.",
+        ))
+    # "All transactions" is the router's declared universal quantifier: no
+    # direction was requested, so no direction may be imposed. Carrying that
+    # signal into metric selection is what stops an all-transaction chart from
+    # quietly becoming an expenses-only chart.
+    universal = query.transaction_type is None and query.metric in {"transaction_summary", "transaction_count"}
+    composition = presentation.requested_mark == "arc" or presentation.visual_goal == "composition" or presentation.chart_type == "pie"
+    named_unit = _explicit_presentation_unit(text) if text else None
+    if universal and composition and presentation.value_semantics != "count":
+        # A part-to-whole needs a whole. Expenses and income share no total, so
+        # a mixed-direction composition over any other grain is not a chart
+        # that can be drawn honestly — it can only be drawn by direction, or by
+        # picking one direction and saying so.
+        if named_unit in {None, "transaction", "transaction_type"}:
+            # x_field/color_field are renderer bindings the router chose for the
+            # grain it guessed. Carrying them past a grain change leaves the
+            # effective contract describing two different charts at once.
+            presentation = presentation.model_copy(update={
+                "unit_of_analysis": "transaction_type",
+                "x_field": None,
+                "y_fields": [],
+                "color_field": None,
+            })
+            assumptions.append(CompilationAssumption(
+                code="direction_composed",
+                detail="Composed by transaction type: expenses and income share no common total.",
+            ))
+        else:
+            query = query.model_copy(update={"metric": "gross_spend", "transaction_type": TransactionType.EXPENSE})
+            universal = False
+            assumptions.append(CompilationAssumption(
+                code="direction_restricted",
+                detail=f"Restricted to expenses so the {named_unit.replace('_', ' ')} shares total 100%; income and transfers are excluded.",
+            ))
+
+    # One lookup settles both "can this grain be drawn at all" and "which mark
+    # can carry it", replacing the chain of ad-hoc downgrades that used to
+    # decide the same thing later and silently.
+    shape = resolve_chart_shape(presentation)
+    if shape is None:
+        return None
+    assumptions.extend(shape.assumptions)
+    mark = shape.mark
     unit = presentation.unit_of_analysis
-    temporal = unit in TEMPORAL_PRESENTATION_UNITS
+    temporal = shape.capability.temporal
     time_grain = "month" if unit == "month" else "day" if presentation.time_grain == "auto" else presentation.time_grain
-    heatmap = presentation.requested_mark == "rect" or presentation.visual_goal == "density" or presentation.chart_type == "heatmap"
+    heatmap = mark == "rect"
     dimension = "time_segment" if heatmap else "time_bucket" if temporal else unit
     if unit == "transaction":
         dimensions = ["transaction", "merchant", "transaction_date"]
@@ -522,18 +1030,22 @@ def _compile_governed_chart(route: CopilotRouteDecision, current_date: date, use
     elif query.transaction_type == TransactionType.INCOME:
         metric = "income"
         value_label = "Income"
-    elif temporal and query.transaction_type is None and query.metric in {"transaction_summary", "transaction_count"}:
+    elif universal:
+        # Any grain, not only a temporal one: an undirected request compiles to
+        # the direction-neutral money metric with transaction_type preserved,
+        # so expenses, income, refunds and transfers stay distinguishable.
         metric = "transaction_amount"
         value_label = "Transaction amount"
-        dimensions.append("transaction_type")
-        series_field = "transaction_type"
+        if unit != "transaction_type":
+            dimensions.append("transaction_type")
+            series_field = "transaction_type"
     elif query.metric in {metric.name for metric in semantic_schema_registry().metrics}:
         metric = query.metric
         value_label = query.metric.replace("_", " ").title()
     else:
         metric = "gross_spend"
         value_label = "Amount"
-    if metric == "transaction_amount" and query.transaction_type is None:
+    if metric == "transaction_amount" and query.transaction_type is None and unit != "transaction_type":
         if "transaction_type" not in dimensions:
             dimensions.append("transaction_type")
         series_field = "transaction_type"
@@ -553,30 +1065,32 @@ def _compile_governed_chart(route: CopilotRouteDecision, current_date: date, use
     if metric == "transaction_count" and query.transaction_type:
         filters.append(FinanceFilter(field="transaction_type", value=query.transaction_type))
 
-    chart_type = presentation.chart_type
-    if presentation.requested_mark != "auto":
-        chart_type = {"rect": "heatmap", "arc": "pie"}.get(presentation.requested_mark, presentation.requested_mark)
-    elif chart_type == "auto":
-        chart_type = {
-            "trend": "line", "comparison": "bar", "composition": "pie",
-            "distribution": "bar", "relationship": "point", "density": "heatmap",
-        }.get(presentation.visual_goal, "line" if unit in TEMPORAL_PRESENTATION_UNITS else "bar")
-    # Time-series charts require a time axis; categorical grains use bars when
-    # the model's aesthetic preference conflicts with governed semantics.
-    if chart_type in ORDERED_SERIES_MARKS and unit not in TEMPORAL_PRESENTATION_UNITS:
-        chart_type = "bar"
-    if chart_type == "pie" and unit == "transaction":
-        chart_type = "bar"
+    # The mark came from the manifest above; this is only its display name.
+    chart_type = {"rect": "heatmap", "arc": "pie"}.get(mark, mark)
 
     start_date = query.start_date or current_date.replace(day=1)
     end_date = query.end_date or current_date
+    if query.start_date is None and not (presentation.rolling_value and presentation.rolling_unit):
+        if universal:
+            # "All transactions" states a scope, not a period. Month-to-date
+            # would silently answer a narrower question than the one asked.
+            start_date = current_date - timedelta(days=_WIDEST_GOVERNED_WINDOW_DAYS)
+            assumptions.append(CompilationAssumption(
+                code="defaulted_period",
+                detail=(
+                    "No period was given, so this covers the widest governed window: "
+                    f"five years to {end_date:%-d %b %Y}."
+                ),
+            ))
+        else:
+            assumptions.append(CompilationAssumption(
+                code="defaulted_period",
+                detail=f"No period was given, so this covers month to date ({start_date:%-d %b} to {end_date:%-d %b}).",
+            ))
     start_datetime = None
     end_datetime = None
     if presentation.rolling_value and presentation.rolling_unit:
-        try:
-            local_now = datetime.now(ZoneInfo(user_timezone)).replace(tzinfo=None, microsecond=0)
-        except (ZoneInfoNotFoundError, ValueError):
-            local_now = datetime.now().replace(microsecond=0)
+        local_now = current_local_time(user_timezone).replace(tzinfo=None, microsecond=0)
         end_datetime = local_now
         rolling_value = presentation.rolling_value
         rolling_unit = presentation.rolling_unit
@@ -596,11 +1110,13 @@ def _compile_governed_chart(route: CopilotRouteDecision, current_date: date, use
             start_datetime = local_now.replace(year=target_year, month=month_zero + 1, day=target_day)
         start_date = start_datetime.date()
         end_date = end_datetime.date()
+    # Names a population, never a filter: reviewers of the compiled plan read
+    # the old "Financial" label as an invented transaction filter.
     scope = (
         query.category_slug.replace("-", " ").title()
         if query.category_slug
         else "Spending" if metric == "gross_spend"
-        else "Financial"
+        else "All transactions"
     )
     unit_label = (time_grain if temporal else unit).replace("_", " ").title()
     query_name = f"{scope} by {unit_label}"
@@ -648,13 +1164,12 @@ def _compile_governed_chart(route: CopilotRouteDecision, current_date: date, use
         share_encoding = VisualEncoding(
             field="basis_points", type="quantitative", title="Share", value_type="percentage"
         )
-        amount_encoding = VisualEncoding(
-            field="value", type="quantitative", title=value_label, value_type="money_minor"
-        )
+        # value_encoding already carries the metric's own result type. Hard
+        # coding money here mislabelled every count composition as currency.
         encoding = VisualEncodingSet(
             theta=share_encoding,
             color=label_encoding,
-            tooltip=[label_encoding, amount_encoding, share_encoding],
+            tooltip=[label_encoding, value_encoding, share_encoding],
         )
     elif mark == "rect":
         row_encoding = VisualEncoding(
@@ -711,11 +1226,15 @@ def _compile_governed_chart(route: CopilotRouteDecision, current_date: date, use
             f"Render the validated {chart_type} chart",
         ],
     )
-    return AnalysisToolProposal(
-        name=f"{query_name} chart",
-        description=f"Plot governed {scope.lower()} records by {unit_label.lower()} using {value_label.lower()}.",
-        intent_signature=f"{scope.lower()} {unit.lower()} {presentation.value_semantics} chart",
-        plan=plan,
+    return ChartCompilation(
+        proposal=AnalysisToolProposal(
+            name=f"{query_name} chart",
+            description=f"Plot governed {scope.lower()} records by {unit_label.lower()} using {value_label.lower()}.",
+            intent_signature=f"{scope.lower()} {unit.lower()} {presentation.value_semantics} chart",
+            plan=plan,
+        ),
+        presentation=presentation,
+        assumptions=tuple(assumptions),
     )
 
 
@@ -782,6 +1301,13 @@ def build_financial_copilot(
             f"Current date: {current_date.isoformat()}. User timezone: {user_timezone}.",
             f"Available expense taxonomy names for routing context: {taxonomy}",
             f"Queryable finance capabilities for routing (the analysis factory receives the full schema): {routing_schema}",
+            (
+                "Governed chart surface. These are the only grains the deterministic chart compiler can emit, "
+                "with the marks each one can carry and the dimension field its query produces. Choose "
+                "unit_of_analysis from this list, and choose requested_mark only from that grain's marks; a "
+                "request outside the surface is rejected before any data is read. "
+                f"{json.dumps(chart_capability_catalog(), default=str)}"
+            ),
             f"Semantically retrieved validated capabilities (context only; do not copy answers): {retrieved}",
         ],
     )
@@ -935,7 +1461,9 @@ def interpret_with_financial_copilot(
     tool_grounding = _runtime_tool_grounding(route_result, runtime_tools)
     route.presentation = _bind_explicit_presentation_unit(text, route.presentation)
     route.query = _bind_explicit_universal_scope(text, route.query)
-    if route.presentation.mode == "chart" and tool_grounding:
+    route.query = _bind_multi_direction_scope(text, route.query)
+    wants_chart = route.presentation.mode == "chart"
+    if wants_chart and _chartable_grounding(tool_grounding):
         return CopilotDecision(
             tool=CapabilityId.VISUALIZE_COMPUTATION,
             presentation=route.presentation,
@@ -944,7 +1472,7 @@ def interpret_with_financial_copilot(
             reason=route.reason,
             tool_grounding=tool_grounding,
         )
-    if tool_grounding:
+    if tool_grounding and not wants_chart:
         # Runtime evidence outranks a mistaken route label. A model may call a
         # sufficient calculator and still classify the turn as "analysis";
         # discarding that successful result would allow a later model to
@@ -957,6 +1485,12 @@ def interpret_with_financial_copilot(
             reason=route.reason,
             tool_grounding=tool_grounding,
         )
+    if wants_chart and route.route in {CopilotRoute.CONVERSATION, CopilotRoute.UNKNOWN}:
+        # A chart was asked for and no tool returned anything chartable. The
+        # governed compiler can still answer from canonical records, so the
+        # turn is routed there instead of ending in a model-authored apology
+        # about the one scalar a calculator happened to return.
+        route.route = CopilotRoute.ANALYSIS
     if route.route is CopilotRoute.TRANSACTION:
         extractor = build_transaction_intelligence(categories, current_date, user_timezone, user_id)
         if not extractor:
@@ -975,8 +1509,12 @@ def interpret_with_financial_copilot(
         return CopilotDecision(tool=CapabilityId.MANAGE_TAXONOMY, taxonomy=route.taxonomy, safe_reasoning_summary=route.safe_reasoning_summary, confidence=route.confidence, reason=route.reason)
     elif route.route is CopilotRoute.ANALYSIS:
         if route.presentation.mode == "chart":
-            proposal = _compile_governed_chart(route, current_date, user_timezone)
-            if not proposal:
+            compilation = _compile_governed_chart(route, current_date, user_timezone, text)
+            if compilation:
+                proposal = compilation.proposal
+                presentation = compilation.presentation
+                assumptions = list(compilation.assumptions)
+            else:
                 factory = build_analysis_tool_factory(categories, current_date, user_timezone, enable_reasoning, reusable_tools, user_id)
                 if not factory:
                     return None
@@ -986,10 +1524,13 @@ def interpret_with_financial_copilot(
                 )
                 proposal_result = factory.run(factory_prompt, user_id=str(user_id)) if user_id else factory.run(factory_prompt)
                 proposal = proposal_result.content if isinstance(proposal_result.content, AnalysisToolProposal) else AnalysisToolProposal.model_validate(proposal_result.content)
+                presentation = route.presentation
+                assumptions = []
             return CopilotDecision(
                 tool=CapabilityId.RUN_ANALYSIS_HARNESS,
                 analysis_tool=proposal,
-                presentation=route.presentation,
+                presentation=presentation,
+                assumptions=assumptions,
                 safe_reasoning_summary=proposal.plan.safe_reasoning_summary,
                 confidence=route.confidence,
                 reason=route.reason,
@@ -1102,6 +1643,8 @@ def validate_copilot_decision(
             "A temporal heatmap uses FinanceQueryPlan.time_pivot and produces time_bucket for rows plus time_segment for columns. Its renderer-neutral VisualizationSpec uses mark=rect with x=time_segment, y=time_bucket, and color=value. This is a valid governed projection, not an invented database field.",
             "A composition chart may query canonical money with gross_spend, derive share_of_total in the deterministic transform layer, and encode the transform's label as color plus basis_points as theta while retaining value as a money tooltip. That is the preferred governed part-to-whole contract and satisfies percentage semantics without changing the source metric.",
             "For a mixed-direction amount visualization, metric=transaction_amount is valid only when query dimensions include transaction_type and the visualization encodes transaction_type as color or a row/column facet. This keeps expenses, income, refunds, transfers, and other directions separate; approve that shape when it matches the prompt and never reinterpret it as spending or net cash flow.",
+            "A part-to-whole chart requires one coherent total. An all-transaction composition therefore compiles either to a composition over transaction_type itself, or to one declared direction; both are correct governed answers. Do not demand that mixed directions be summed into a single pie.",
+            "The decision's `assumptions` list is the compiler's disclosure of what it had to assume: an unstated period, a narrowed direction, a substituted mark or grain. Each one is shown to the user, who can correct it. Judge the plan against the prompt as qualified by these declared assumptions, and reject a narrowing only when it is absent from that list. A declared assumption is a disclosure, never an issue in itself.",
             f"Current date: {current_date.isoformat()}. User timezone: {user_timezone}.",
             f"Authoritative semantic schema (versioned entities, fields, relationships, metrics and policy): {governed_schema}",
         ],
@@ -1115,7 +1658,7 @@ def validate_copilot_decision(
         f"Active domain workflow:\n{context}\n\nTyped decision to validate:\n{payload}"
     )
     validation = result.content if isinstance(result.content, CopilotDecisionValidation) else CopilotDecisionValidation.model_validate(result.content)
-    contract_issues = _presentation_contract_issues(decision)
+    contract_issues = _presentation_contract_issues(decision, text)
     if contract_issues:
         return CopilotDecisionValidation(
             outcome="reject",

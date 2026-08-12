@@ -5,10 +5,15 @@ import pytest
 from sqlalchemy import select
 
 from app.models import AnalysisTool, AnalysisToolRun, Budget, Category, Transaction, User
+from app.event_time import from_local_parts
 from app.seed import default_user
 from app.services.analysis_harness import HarnessValidationError, discover_analysis_tools, execute_generated_tool
 from app.services.intelligence import _semantic_message
 from app.services.semantic import AnalysisPlan, AnalysisToolProposal, AnalysisTransform, FinanceFilter, FinanceQueryPlan, VisualEncoding, VisualEncodingSet, VisualizationSpec
+
+
+def occurred(day: date):
+    return from_local_parts(day, None, "Asia/Kolkata")
 
 
 def _proposal(today: date) -> AnalysisToolProposal:
@@ -41,7 +46,7 @@ def test_generated_tool_is_validated_saved_executed_and_reused(db):
         currency="INR",
         merchant_name="Ice Cream Shop",
         category_id=food.id,
-        transaction_date=date.today(),
+        transaction_at=occurred(date.today()),
     ))
     db.flush()
     proposal = _proposal(date.today())
@@ -71,8 +76,8 @@ def test_generated_tool_never_reads_another_users_transactions(db):
     db.add(other)
     db.flush()
     db.add_all([
-        Transaction(user_id=user.id, transaction_type="expense", amount_minor=10_000, currency="INR", category_id=food.id, transaction_date=date.today()),
-        Transaction(user_id=other.id, transaction_type="expense", amount_minor=99_900, currency="INR", category_id=food.id, transaction_date=date.today()),
+        Transaction(user_id=user.id, transaction_type="expense", amount_minor=10_000, currency="INR", category_id=food.id, transaction_at=occurred(date.today())),
+        Transaction(user_id=other.id, transaction_type="expense", amount_minor=99_900, currency="INR", category_id=food.id, transaction_at=occurred(date.today())),
     ])
     db.flush()
 
@@ -125,8 +130,8 @@ def test_generated_comparison_is_calculated_by_the_harness(db):
     food = db.scalar(select(Category).where(Category.slug == "food"))
     transport = db.scalar(select(Category).where(Category.slug == "transport"))
     db.add_all([
-        Transaction(user_id=user.id, transaction_type="expense", amount_minor=30_000, currency="INR", category_id=food.id, transaction_date=date.today()),
-        Transaction(user_id=user.id, transaction_type="expense", amount_minor=10_000, currency="INR", category_id=transport.id, transaction_date=date.today()),
+        Transaction(user_id=user.id, transaction_type="expense", amount_minor=30_000, currency="INR", category_id=food.id, transaction_at=occurred(date.today())),
+        Transaction(user_id=user.id, transaction_type="expense", amount_minor=10_000, currency="INR", category_id=transport.id, transaction_at=occurred(date.today())),
     ])
     db.flush()
     proposal = AnalysisToolProposal(
@@ -165,9 +170,9 @@ def test_ranked_exclusion_preserves_limit_and_complete_query_lineage(db):
     food = db.scalar(select(Category).where(Category.slug == "food"))
     transport = db.scalar(select(Category).where(Category.slug == "transport"))
     db.add_all([
-        Transaction(user_id=user.id, transaction_type="expense", amount_minor=30_000, currency="INR", category_id=food.id, transaction_date=date.today()),
-        Transaction(user_id=user.id, transaction_type="expense", amount_minor=20_000, currency="INR", category_id=transport.id, transaction_date=date.today()),
-        Transaction(user_id=user.id, transaction_type="expense", amount_minor=10_000, currency="INR", transaction_date=date.today()),
+        Transaction(user_id=user.id, transaction_type="expense", amount_minor=30_000, currency="INR", category_id=food.id, transaction_at=occurred(date.today())),
+        Transaction(user_id=user.id, transaction_type="expense", amount_minor=20_000, currency="INR", category_id=transport.id, transaction_at=occurred(date.today())),
+        Transaction(user_id=user.id, transaction_type="expense", amount_minor=10_000, currency="INR", transaction_at=occurred(date.today())),
     ])
     db.flush()
     proposal = AnalysisToolProposal(
@@ -207,8 +212,8 @@ def test_transaction_amount_graph_uses_generic_validated_chart_protocol(db):
     user = default_user(db)
     entertainment = db.scalar(select(Category).where(Category.slug == "entertainment"))
     db.add_all([
-        Transaction(user_id=user.id, transaction_type="expense", amount_minor=10_000, currency="INR", merchant_name="Toit", category_id=entertainment.id, transaction_date=date.today()),
-        Transaction(user_id=user.id, transaction_type="expense", amount_minor=50_000, currency="INR", merchant_name="Cinema", category_id=entertainment.id, transaction_date=date.today()),
+        Transaction(user_id=user.id, transaction_type="expense", amount_minor=10_000, currency="INR", merchant_name="Toit", category_id=entertainment.id, transaction_at=occurred(date.today())),
+        Transaction(user_id=user.id, transaction_type="expense", amount_minor=50_000, currency="INR", merchant_name="Cinema", category_id=entertainment.id, transaction_at=occurred(date.today())),
     ])
     db.flush()
     proposal = AnalysisToolProposal(
@@ -326,10 +331,10 @@ def test_change_drivers_are_computed_from_two_periods(db):
     transport = db.scalar(select(Category).where(Category.slug == "transport"))
     previous = (date.today().replace(day=1) - timedelta(days=1)).replace(day=10)
     db.add_all([
-        Transaction(user_id=user.id, transaction_type="expense", amount_minor=10_000, currency="INR", category_id=food.id, transaction_date=previous),
-        Transaction(user_id=user.id, transaction_type="expense", amount_minor=5_000, currency="INR", category_id=transport.id, transaction_date=previous),
-        Transaction(user_id=user.id, transaction_type="expense", amount_minor=35_000, currency="INR", category_id=food.id, transaction_date=date.today()),
-        Transaction(user_id=user.id, transaction_type="expense", amount_minor=10_000, currency="INR", category_id=transport.id, transaction_date=date.today()),
+        Transaction(user_id=user.id, transaction_type="expense", amount_minor=10_000, currency="INR", category_id=food.id, transaction_at=occurred(previous)),
+        Transaction(user_id=user.id, transaction_type="expense", amount_minor=5_000, currency="INR", category_id=transport.id, transaction_at=occurred(previous)),
+        Transaction(user_id=user.id, transaction_type="expense", amount_minor=35_000, currency="INR", category_id=food.id, transaction_at=occurred(date.today())),
+        Transaction(user_id=user.id, transaction_type="expense", amount_minor=10_000, currency="INR", category_id=transport.id, transaction_at=occurred(date.today())),
     ])
     db.flush()
     proposal = AnalysisToolProposal(

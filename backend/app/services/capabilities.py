@@ -18,7 +18,6 @@ class CapabilityId(ValueEnum):
     CALCULATE_AFFORDABILITY = "calculate_affordability"
     CALCULATE_LOAN = "calculate_loan"
     CALCULATE_INVESTMENT_PROJECTION = "calculate_investment_projection"
-    SHOW_SAVED_ANALYSES = "show_saved_analyses"
     SHOW_RECONCILIATION_REVIEW = "show_reconciliation_review"
     RUN_ANALYSIS_HARNESS = "run_analysis_harness"
     RUN_QUERY_BUNDLE = "run_query_bundle"
@@ -76,7 +75,6 @@ CAPABILITY_REGISTRY: tuple[CapabilitySpec, ...] = (
     CapabilitySpec(CapabilityId.CALCULATE_AFFORDABILITY, AccessMode.COMPUTE, ExecutorKind.QUERY, "Calculating affordability", "affordability"),
     CapabilitySpec(CapabilityId.CALCULATE_LOAN, AccessMode.COMPUTE, ExecutorKind.QUERY, "Opening deterministic loan calculator", "loan"),
     CapabilitySpec(CapabilityId.CALCULATE_INVESTMENT_PROJECTION, AccessMode.COMPUTE, ExecutorKind.QUERY, "Opening deterministic investment calculator", "investment_projection"),
-    CapabilitySpec(CapabilityId.SHOW_SAVED_ANALYSES, AccessMode.READ, ExecutorKind.QUERY, "Loading saved analyses", "saved_analyses"),
     CapabilitySpec(CapabilityId.SHOW_RECONCILIATION_REVIEW, AccessMode.READ, ExecutorKind.QUERY, "Loading reconciliation review", "reconciliation_review"),
     CapabilitySpec(CapabilityId.RUN_ANALYSIS_HARNESS, AccessMode.READ, ExecutorKind.HARNESS, "Running the governed analysis harness"),
     CapabilitySpec(CapabilityId.RUN_QUERY_BUNDLE, AccessMode.READ, ExecutorKind.BUNDLE, "Running coordinated data views"),

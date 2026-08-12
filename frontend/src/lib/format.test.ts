@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatCount, formatMoney, formatTimestamp } from "@/lib/format";
+import { formatCount, formatMoney, formatTimestamp, readComposerEntry, timestampInputToUtc, timestampInputValue } from "@/lib/format";
 
 /** The formatters are cached across calls, so these assert two things at once:
  *  the printed figure, and that a second call through the same cached formatter
@@ -73,5 +73,39 @@ describe("formatTimestamp", () => {
     const stamp = new Date("2026-08-11T09:30:00Z");
     expect(formatTimestamp(stamp)).toBe(stamp.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }));
     expect(formatTimestamp(stamp)).toBe(stamp.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }));
+  });
+
+  it("projects a UTC instant into an explicit user timezone", () => {
+    const stamp = new Date("2026-08-11T23:30:00Z");
+    expect(formatTimestamp(stamp, "Asia/Kolkata")).toBe(
+      stamp.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Kolkata" }),
+    );
+  });
+
+  it("round-trips the browser-local editor value back to the same UTC instant", () => {
+    const instant = "2026-08-11T09:30:00.000Z";
+    expect(timestampInputToUtc(timestampInputValue(instant))).toBe(instant);
+  });
+});
+
+describe("readComposerEntry", () => {
+  it("reads the Indian notation the backend already accepts", () => {
+    expect(readComposerEntry("Spent 2000 on lunch")).toEqual({ amountMinor: 200_000, kind: "expense" });
+    expect(readComposerEntry("₹2,000 for groceries")).toEqual({ amountMinor: 200_000, kind: "expense" });
+    expect(readComposerEntry("20k rent")).toEqual({ amountMinor: 2_000_000, kind: "expense" });
+    expect(readComposerEntry("Got 3 lakh salary today")).toEqual({ amountMinor: 30_000_000, kind: "income" });
+    expect(readComposerEntry("1.5 cr invested in mutual funds")).toEqual({ amountMinor: 1_500_000_000, kind: "investment" });
+    expect(readComposerEntry("Transferred 5000 to savings")).toEqual({ amountMinor: 500_000, kind: "transfer" });
+  });
+
+  it("stays silent rather than guessing wrong", () => {
+    expect(readComposerEntry("Show my last 5 transactions")).toBeNull();
+    expect(readComposerEntry("How much did I spend this month?")).toBeNull();
+    expect(readComposerEntry("")).toBeNull();
+    expect(readComposerEntry("remind me about 12")).toBeNull();
+  });
+
+  it("treats a rupee marker as enough on its own", () => {
+    expect(readComposerEntry("₹450")).toEqual({ amountMinor: 45_000, kind: "expense" });
   });
 });

@@ -2,17 +2,18 @@
 
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Archive, ArrowDown, Check, CheckCircle2, Copy, Download, FileText, Loader2, MapPin, Menu, MessageSquareText, Paperclip, Plus, RotateCcw, SendHorizontal, Settings, ShieldCheck, Sparkles, Trash2, TriangleAlert, UserRound, X } from "lucide-react";
+import { ArrowDown, Check, CheckCircle2, Copy, Download, FileText, Loader2, MapPin, Menu, MessageSquareText, Paperclip, RotateCcw, SendHorizontal, Settings, ShieldCheck, Sparkles, SquarePen, Trash2, TriangleAlert, X } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
-import { createContext, FormEvent, memo, RefObject, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { createContext, FormEvent, memo, RefObject, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
+import { ConversationTitle } from "@/components/conversation-title";
 import { Textarea } from "@/components/ui/textarea";
 import { Toast, ToastAction, ToastContent, ToastDescription, ToastPortal, ToastProvider, ToastTitle, ToastViewport, toast, useToastManager } from "@/components/ui/toast";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { WidgetRenderer } from "@/components/widget-renderer";
 import { MarkdownMessage } from "@/components/widget-library/markdown-message";
 import { bootstrap, createConversation, deleteAllData, deleteConversation, downloadDataExport, flushConversationDeletion, getPrivacyStatus, isUnauthorized, listConversations, loadConversation, revokeSource, sendAction, sendChatStream, setLocationEnabled, uploadCsv, type AgentActivity } from "@/lib/api";
-import { formatBytes } from "@/lib/format";
+import { formatBytes, formatMoney, readComposerEntry } from "@/lib/format";
 import { widgetTypeIds, type AgentResponse, type Bootstrap, type ConversationSummary, type Message, type Widget, type WidgetActionId } from "@/lib/protocol";
 import { cn } from "@/lib/utils";
 import { contractLimits } from "@/lib/generated/contracts";
@@ -60,28 +61,56 @@ function completedWidgetIds(messages: Message[]) {
 }
 
 /** The rail is a drawer below `md` and a docked column above it; the layout,
- *  the focus behaviour, and the scroll lock all hinge on knowing which. */
+ *  the focus behaviour, and the scroll lock all hinge on knowing which.
+ *
+ *  `useSyncExternalStore` rather than state seeded from `matchMedia`, and the
+ *  distinction matters now that the shell renders before its data: the server
+ *  has no viewport, so a seeded initial value disagrees with the client's first
+ *  render and React reports a hydration mismatch on the one attribute that
+ *  depends on it. Giving it an explicit server snapshot means the server and
+ *  the hydration pass agree by construction, and the real value arrives in the
+ *  commit straight after. The rail's *appearance* never depended on this — that
+ *  is carried by `md:` variants in CSS — so there is nothing to flash. */
 function useMediaQuery(query: string) {
-  const [matches, setMatches] = useState(() => typeof window !== "undefined" && window.matchMedia(query).matches);
-  useEffect(() => {
+  const subscribe = useCallback((onChange: () => void) => {
     const media = window.matchMedia(query);
-    const update = () => setMatches(media.matches);
-    update();
-    media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
   }, [query]);
-  return matches;
+  return useSyncExternalStore(
+    subscribe,
+    () => window.matchMedia(query).matches,
+    // No viewport to measure, so assume the narrow case: a drawer that is shut
+    // is the safe thing to render, because it is the one that stays out of the
+    // tab order until it is opened.
+    () => false,
+  );
 }
 
-/** Reports whether a scroll container has content hidden above or below, so a
- *  cut-off list can say so with a fade instead of ending on a hard edge. */
+/** Marks whether a scroll container has content hidden above or below, so a
+ *  cut-off list can say so with a fade instead of ending on a hard edge.
+ *
+ *  Written to the DOM rather than to state, deliberately. This fires on every
+ *  scroll event, and in React state that is a re-render of the whole rail per
+ *  frame of scrolling — for two fades whose only job is to be visible or not.
+ *  The flags land as data attributes and CSS does the rest, so scrolling the
+ *  rail now costs nothing in React at all. */
 function useScrollEdges<T extends HTMLElement>(dependency: unknown) {
   const ref = useRef<T>(null);
-  const [edges, setEdges] = useState({ top: false, bottom: false });
   useEffect(() => {
     const node = ref.current;
-    if (!node) return;
-    const update = () => setEdges({ top: node.scrollTop > 4, bottom: Math.ceil(node.scrollTop + node.clientHeight) < node.scrollHeight - 4 });
+    const host = node?.parentElement;
+    if (!node || !host) return;
+    // Held so the attribute is only written when the answer actually changes;
+    // a scroll within the same state is the common case.
+    let top: boolean | null = null;
+    let bottom: boolean | null = null;
+    const update = () => {
+      const nextTop = node.scrollTop > 4;
+      const nextBottom = Math.ceil(node.scrollTop + node.clientHeight) < node.scrollHeight - 4;
+      if (nextTop !== top) { top = nextTop; host.dataset.edgeTop = String(nextTop); }
+      if (nextBottom !== bottom) { bottom = nextBottom; host.dataset.edgeBottom = String(nextBottom); }
+    };
     update();
     node.addEventListener("scroll", update, { passive: true });
     if (typeof ResizeObserver === "undefined") return () => node.removeEventListener("scroll", update);
@@ -90,7 +119,7 @@ function useScrollEdges<T extends HTMLElement>(dependency: unknown) {
     if (node.firstElementChild) observer.observe(node.firstElementChild);
     return () => { node.removeEventListener("scroll", update); observer.disconnect(); };
   }, [dependency]);
-  return [ref, edges] as const;
+  return ref;
 }
 
 /** Asks for the next page once the end of the list comes into view, so history
@@ -127,10 +156,110 @@ function groupConversations(conversations: ConversationSummary[]) {
   return [...groups];
 }
 
-function ConversationRail({ conversations, activeId, user, open, docked, switching, loading, loadingMore, hasMore, onClose, onSelect, onDelete, onLoadMore, onNew, onSavedAnalyses, onOpenSettings, onOpenProfile }: {
+/** The wordmark and the one action that belongs to the workspace rather than
+ *  to a thread.
+ *
+ *  Starting a conversation used to own a 52px band of its own, directly under
+ *  this one. That is a lot of rail for a control that is not the primary action
+ *  in this product — the composer is always on screen, so most turns start by
+ *  typing into the thread already open, not by making a new one. Folding it up
+ *  here returns the space to the list, which is what the rail is actually for.
+ *
+ *  A compose glyph rather than a bare plus: next to a wordmark, "+" reads as
+ *  ambiguously as "add an account". The tooltip explains it to a pointer and
+ *  the label explains it to a screen reader; on touch the icon carries it,
+ *  which is why it is the conventional one rather than a clever one. */
+const RailHeader = memo(function RailHeader({ creating, onNew, onClose }: { creating: boolean; onNew: () => void; onClose: () => void }) {
+  return <header className="rail-header">
+    <div className="min-w-0 flex-1">
+      <p className="truncate font-heading text-title leading-none font-semibold tracking-[-0.03em] text-ink">fyn AI</p>
+      <p className="ledger-meta mt-0.5 truncate">Private workspace</p>
+    </div>
+    <Tooltip>
+      <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-lg" disabled={creating} onClick={onNew} aria-label="New conversation" className="shrink-0 text-ink-muted hover:text-secondary" />}><SquarePen className="size-[22px]" /></TooltipTrigger>
+      <TooltipContent>New conversation</TooltipContent>
+    </Tooltip>
+    <Button variant="ghost" size="icon" aria-label="Close navigation" className="shrink-0 md:hidden" onClick={onClose}><X /></Button>
+  </header>;
+});
+
+/** One band: who you are, and the two things that belong to you rather than to
+ *  a thread.
+ *
+ *  These were three rows of equal weight, which made the account — the anchor
+ *  of the whole rail — read as just another menu item. Collapsing the utilities
+ *  to icons beside it puts the weight where it belongs and returns a row of
+ *  height to the list above.
+ *
+ *  The account is a sibling of the icons rather than their parent: nesting a
+ *  button inside a button is invalid, and the whole block is the target for
+ *  opening your profile. */
+const RailFooter = memo(function RailFooter({ user, onOpenSettings, onOpenProfile }: {
+  user: Bootstrap["user"] | null;
+  onOpenSettings: () => void;
+  onOpenProfile: () => void;
+}) {
+  return <footer className="rail-footer">
+    <div className="flex items-center gap-1 px-1">
+      {/* One line, because that is all the row is for: whose workspace this is
+          and a way into it. Currency and timezone are ambient facts you check
+          rarely and never act on from here, so they move to the tooltip and
+          stop making a two-line block out of a one-line answer. */}
+      <Tooltip>
+        <TooltipTrigger render={
+          <button
+            type="button"
+            disabled={!user}
+            onClick={onOpenProfile}
+            aria-label={user ? `${user.name} — profile and sign-in methods` : "Profile and sign-in methods"}
+            className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 text-left transition-colors duration-[110ms] ease-linear hover:bg-surface-sunken active:scale-[.995] disabled:pointer-events-none"
+          />
+        }>
+          <span className="ledger-stamp shrink-0">{user ? user.name.slice(0, 1) : ""}</span>
+          {user
+            ? <span className="truncate text-control font-medium text-ink-body">{user.name}</span>
+            : <span className="h-2.5 w-24 animate-pulse rounded-full bg-line" />}
+        </TooltipTrigger>
+        {user ? <TooltipContent>{user.currency} · {user.timezone}</TooltipContent> : null}
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger render={<Button type="button" variant="ghost" size="icon" onClick={onOpenSettings} aria-label="Settings" className="shrink-0" />}><Settings size={15} /></TooltipTrigger>
+        <TooltipContent>Settings</TooltipContent>
+      </Tooltip>
+    </div>
+  </footer>;
+});
+
+const RailEntry = memo(function RailEntry({ conversation, active, entryRef, onSelect, onPrefetch, onDelete }: {
+  conversation: ConversationSummary;
+  active: boolean;
+  entryRef?: RefObject<HTMLButtonElement | null>;
+  onSelect: (id: string) => void;
+  onPrefetch: (id: string) => void;
+  onDelete: (conversation: ConversationSummary) => void;
+}) {
+  return <div className="ledger-row">
+    <button
+      ref={entryRef}
+      type="button"
+      aria-current={active ? "page" : undefined}
+      onClick={() => onSelect(conversation.id)}
+      onPointerEnter={() => onPrefetch(conversation.id)}
+      onFocus={() => onPrefetch(conversation.id)}
+      className="ledger-entry"
+    >
+      <span aria-hidden className="ledger-mark" />
+      <span className="line-clamp-2">{conversation.title}</span>
+    </button>
+    <button type="button" onClick={() => onDelete(conversation)} aria-label={`Delete conversation: ${conversation.title}`} className="ledger-strike"><Trash2 size={14} /></button>
+  </div>;
+});
+
+const ConversationRail = memo(function ConversationRail({ conversations, activeId, user, open, docked, switching, loading, loadingMore, hasMore, onClose, onSelect, onPrefetch, onDelete, onLoadMore, onNew, onOpenSettings, onOpenProfile }: {
   conversations: ConversationSummary[];
   activeId: string;
-  user: Bootstrap["user"];
+  /** Null until bootstrap answers; the rail draws its own placeholder. */
+  user: Bootstrap["user"] | null;
   open: boolean;
   docked: boolean;
   switching: boolean;
@@ -139,15 +268,16 @@ function ConversationRail({ conversations, activeId, user, open, docked, switchi
   hasMore: boolean;
   onClose: () => void;
   onSelect: (id: string) => void;
+  /** Warms a thread the pointer is heading for, so opening it is a paint. */
+  onPrefetch: (id: string) => void;
   onDelete: (conversation: ConversationSummary) => void;
   onLoadMore: () => void;
   onNew: () => void;
-  onSavedAnalyses: () => void;
   onOpenSettings: () => void;
   onOpenProfile: () => void;
 }) {
   const groups = useMemo(() => groupConversations(conversations), [conversations]);
-  const [listRef, edges] = useScrollEdges<HTMLDivElement>(conversations.length);
+  const listRef = useScrollEdges<HTMLDivElement>(conversations.length);
   const endRef = useEndOfList(listRef, hasMore && !loadingMore, onLoadMore);
   const activeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => { activeRef.current?.scrollIntoView({ block: "nearest" }); }, [activeId]);
@@ -156,65 +286,38 @@ function ConversationRail({ conversations, activeId, user, open, docked, switchi
     id="conversation-rail"
     aria-label="Conversations"
     inert={!docked && !open}
-    className={cn("ledger fixed inset-y-0 left-0 z-40 flex min-h-0 w-[min(17.5rem,85vw)] flex-col border-r border-line bg-rail pt-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))] transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] md:static md:h-full md:w-auto md:translate-x-0 md:py-3 md:shadow-none md:transition-none", open ? "translate-x-0 shadow-[10px_0_44px_rgba(23,35,31,0.2)]" : "-translate-x-full")}
+    className={cn("ledger fixed inset-y-0 left-0 z-40 flex min-h-0 w-[min(var(--rail-w),85vw)] flex-col border-r border-line bg-ground transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] md:static md:h-full md:w-auto md:translate-x-0 md:transition-none", open ? "translate-x-0 shadow-[var(--shadow-overlay)]" : "-translate-x-full")}
   >
-    <div className="flex shrink-0 items-center pr-2 pl-3">
-      <span className="ledger-seal shrink-0">₹</span>
-      <div className="min-w-0 pl-2">
-        <p className="truncate font-heading text-[13.5px] leading-tight font-semibold tracking-[-0.015em] text-ink">fyn AI</p>
-        <p className="ledger-meta mt-1 truncate">Private workspace</p>
-      </div>
-      <Button variant="ghost" size="icon" aria-label="Close navigation" className="ml-auto shrink-0 rounded-xl text-ink-muted md:hidden" onClick={onClose}><X size={17} /></Button>
-    </div>
+    <RailHeader creating={switching} onNew={onNew} onClose={onClose} />
 
-    <Button onClick={onNew} disabled={switching} className="ledger-new mx-3 mt-4 h-10 shrink-0"><Plus size={15} className="ledger-axis-mark" /> New conversation</Button>
-
-    <div className="relative mt-1 min-h-0 flex-1">
+    <div className="rail-body">
       <div ref={listRef} className="panel-scroll h-full overflow-y-auto">
         {loading
-          ? <div role="status" aria-label="Loading your conversations" className="space-y-3 px-4 pt-6">{[0, 1, 2, 3].map((row) => <div key={row} className="h-3 animate-pulse rounded-full bg-line-soft" style={{ width: `${88 - row * 13}%` }} />)}</div>
+          ? <div role="status" aria-label="Loading your conversations" className="space-y-3 px-4 pt-6">{[0, 1, 2, 3].map((row) => <div key={row} className="h-3 animate-pulse rounded-full bg-line" style={{ width: `${88 - row * 13}%` }} />)}</div>
           : conversations.length === 0
-            ? <div className="pt-8 pr-4 pl-[var(--column)]"><p className="text-[12.5px] font-medium text-ink-body">No conversations yet</p><p className="mt-1 text-[11.5px] leading-5 text-ink-muted">Start one and it appears here.</p></div>
+            ? <div className="pt-8 px-3"><p className="text-control font-medium text-ink-body">No conversations yet</p><p className="mt-1 text-note leading-5 text-ink-muted">Start one and it appears here.</p></div>
             : <nav aria-label="Conversation history" className="relative pb-3">
-              <span aria-hidden className="ledger-margin" />
               {groups.map(([label, items]) => <div key={label}>
                 <p className="ledger-band">{label}</p>
-                {items.map((conversation) => {
-                  const posted = conversation.id === activeId;
-                  return <div key={conversation.id} className="ledger-row">
-                    <button ref={posted ? activeRef : undefined} type="button" aria-current={posted ? "page" : undefined} onClick={() => onSelect(conversation.id)} className="ledger-entry">
-                      <span aria-hidden className="ledger-mark" />
-                      <span className="line-clamp-2">{conversation.title}</span>
-                    </button>
-                    <button type="button" onClick={() => onDelete(conversation)} aria-label={`Delete conversation: ${conversation.title}`} className="ledger-strike"><Trash2 size={13} /></button>
-                  </div>;
-                })}
+                {items.map((conversation) => <RailEntry
+                  key={conversation.id}
+                  conversation={conversation}
+                  active={conversation.id === activeId}
+                  entryRef={conversation.id === activeId ? activeRef : undefined}
+                  onSelect={onSelect}
+                  onPrefetch={onPrefetch}
+                  onDelete={onDelete}
+                />)}
               </div>)}
               <div ref={endRef} aria-hidden className="h-px" />
-              {loadingMore ? <p role="status" className="ledger-meta py-4 pr-4 pl-[var(--column)]">Loading earlier</p> : null}
+              {loadingMore ? <p role="status" className="ledger-meta py-4 px-3">Loading earlier</p> : null}
             </nav>}
       </div>
-      <div aria-hidden className={cn("pointer-events-none absolute inset-x-0 top-0 h-5 bg-[linear-gradient(to_bottom,var(--rail),transparent)] transition-opacity duration-200", edges.top ? "opacity-100" : "opacity-0")} />
-      <div aria-hidden className={cn("pointer-events-none absolute inset-x-0 bottom-0 h-7 bg-[linear-gradient(to_top,var(--rail),transparent)] transition-opacity duration-200", edges.bottom ? "opacity-100" : "opacity-0")} />
     </div>
 
-    <div className="ledger-close mt-2 shrink-0 pt-2">
-      <button type="button" onClick={onSavedAnalyses} className="ledger-link"><Archive size={15} className="ledger-axis-mark" /> Saved analyses</button>
-      <button type="button" onClick={onOpenSettings} className="ledger-link"><Settings size={15} className="ledger-axis-mark" /> Settings</button>
-      {/* The account block is the button: where you go to see how you sign in is
-          where your name already is, rather than a second entry beside it. */}
-      <button type="button" onClick={onOpenProfile} className="mt-2 flex w-full items-center rounded-xl px-3 pt-1 pb-1 text-left hover:bg-line-soft/60">
-        <span className="ledger-stamp shrink-0">{user.name.slice(0, 1)}</span>
-        <div className="min-w-0 pl-2">
-          <p className="truncate text-[12.5px] font-medium text-ink-body">{user.name}</p>
-          <p className="ledger-meta mt-1 truncate">{user.currency} · {user.timezone}</p>
-        </div>
-        <UserRound size={15} aria-hidden className="ml-auto shrink-0 text-ink-muted" />
-        <span className="sr-only">Profile and sign-in methods</span>
-      </button>
-    </div>
+    <RailFooter user={user} onOpenSettings={onOpenSettings} onOpenProfile={onOpenProfile} />
   </aside>;
-}
+});
 
 /** Sends a caller without a session to the sign-in page.
  *
@@ -243,7 +346,7 @@ const noAction = () => undefined;
 /** Marks where the copilot's turn starts. Shared so the reply being written and
  *  the reply already written begin at exactly the same pixel. */
 function AssistantByline() {
-  return <div className="mb-2 flex items-center gap-2"><span className="grid size-6 place-items-center rounded-full bg-evergreen-tint text-evergreen-ink"><Sparkles size={12} /></span><span className="text-[11px] font-semibold tracking-[0.1em] text-ink-muted uppercase">Copilot</span></div>;
+  return <div className="mb-2 flex items-center gap-2"><span className="grid size-6 place-items-center rounded-full bg-secondary-tint text-secondary"><Sparkles size={14} /></span><span className="text-meta font-semibold tracking-[0.08em] text-ink-muted uppercase">Copilot</span></div>;
 }
 
 /** The reply forming in place: same byline and same run card the finished message
@@ -277,15 +380,15 @@ function AgentActivityIndicator({ activities }: { activities: AgentActivity[] })
 }
 
 function AppSkeleton({ label = "Opening your financial conversation…" }: { label?: string }) {
-  return <div role="status" className="grid h-dvh place-items-center bg-paper"><div className="flex flex-col items-center gap-3 text-ink-muted"><span className="grid size-12 animate-pulse place-items-center rounded-[18px] bg-evergreen-tint text-evergreen-ink"><Sparkles size={20} /></span><p className="text-sm">{label}</p></div></div>;
+  return <div role="status" className="grid h-dvh place-items-center bg-ground"><div className="flex flex-col items-center gap-3 text-ink-muted"><span className="grid size-12 animate-pulse place-items-center rounded-lg bg-secondary-tint text-secondary"><Sparkles size={20} /></span><p className="text-control">{label}</p></div></div>;
 }
 
 function ThreadSkeleton() {
-  return <div role="status" aria-label="Loading this conversation" className="space-y-7 pt-2">
-    {[0, 1].map((row) => <div key={row} className="space-y-2.5">
-      <div className="h-3 w-24 animate-pulse rounded-full bg-line-soft" />
-      <div className="h-4 w-3/4 animate-pulse rounded-full bg-line-soft" />
-      <div className="h-24 animate-pulse rounded-[22px] bg-line-soft/70" />
+  return <div role="status" aria-label="Loading this conversation" className="space-y-6 pt-2">
+    {[0, 1].map((row) => <div key={row} className="space-y-3">
+      <div className="h-3 w-24 animate-pulse rounded-full bg-line" />
+      <div className="h-4 w-3/4 animate-pulse rounded-full bg-line" />
+      <div className="h-24 animate-pulse rounded-lg bg-line/70" />
     </div>)}
   </div>;
 }
@@ -341,14 +444,14 @@ function UndoToastList() {
     key={slip.id}
     toast={slip}
     style={{ "--undo-window": `${UNDO_WINDOW_MS}ms` } as CSSProperties}
-    className="rounded-[18px] border-line bg-surface shadow-[0_16px_44px_rgba(26,48,40,0.18)]"
+    className="rounded-lg border-line bg-surface shadow-[var(--shadow-overlay)]"
   >
-    <ToastContent className="flex-col items-stretch gap-1.5 p-3.5">
+    <ToastContent className="flex-col items-stretch gap-2 p-4">
       <div className="flex items-center gap-2">
         <ToastTitle className="ledger-meta" />
         <ToastAction className="strike-slip-undo ml-auto" render={<button type="button" />} />
       </div>
-      <ToastDescription className="strike-slip-entry text-[12.5px] leading-[1.35] font-medium text-ink-body">
+      <ToastDescription className="strike-slip-entry text-control leading-[1.35] font-medium text-ink-body">
         <span className="line-clamp-1">{slip.description}</span>
         <span aria-hidden className="strike-slip-rule" />
       </ToastDescription>
@@ -390,57 +493,57 @@ function PrivacyDrawer({ onClose, onDeleted }: { onClose: () => void; onDeleted:
   const sources = Object.entries(privacy.data?.sources ?? {});
 
   return <>
-    <button type="button" tabIndex={-1} aria-hidden onClick={onClose} className="scrim-fade fixed inset-0 z-40 bg-[#17231f]/30 backdrop-blur-[2px]" />
-    <section ref={panelRef} role="dialog" aria-modal="true" aria-labelledby="privacy-title" className="drawer-right fixed inset-y-0 right-0 z-50 flex w-full max-w-md flex-col border-l border-line bg-surface shadow-[-24px_0_60px_rgba(31,49,42,0.16)]">
-      <div className="flex shrink-0 items-center border-b border-line-soft px-5 pt-[max(1.25rem,env(safe-area-inset-top))] pb-4 sm:px-7">
-        <span className="grid size-10 shrink-0 place-items-center rounded-2xl bg-evergreen-tint text-evergreen-ink"><ShieldCheck size={19} /></span>
-        <div className="ml-3 min-w-0"><h2 id="privacy-title" className="font-heading text-base font-semibold text-ink">Privacy &amp; data</h2><p className="text-xs text-ink-muted">Nothing is collected until you switch it on.</p></div>
-        <Button type="button" variant="ghost" size="icon-lg" aria-label="Close privacy settings" onClick={onClose} className="-mr-1 ml-auto rounded-xl text-ink-muted"><X size={17} /></Button>
+    <button type="button" tabIndex={-1} aria-hidden onClick={onClose} className="scrim-fade fixed inset-0 z-40 bg-ink/25 backdrop-blur-[2px]" />
+    <section ref={panelRef} role="dialog" aria-modal="true" aria-labelledby="privacy-title" className="drawer-right fixed inset-y-0 right-0 z-50 flex w-full max-w-md flex-col border-l border-line bg-surface shadow-[var(--shadow-overlay)]">
+      <div className="flex shrink-0 items-center border-b border-line px-4 pt-[max(1.25rem,env(safe-area-inset-top))] pb-4 sm:px-6">
+        <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-secondary-tint text-secondary"><ShieldCheck size={20} /></span>
+        <div className="ml-3 min-w-0"><h2 id="privacy-title" className="font-heading text-title font-semibold text-ink">Privacy &amp; data</h2><p className="text-note text-ink-muted">Nothing is collected until you switch it on.</p></div>
+        <Button type="button" variant="ghost" size="icon-lg" aria-label="Close privacy settings" onClick={onClose} className="-mr-1 ml-auto rounded-xl text-ink-muted"><X /></Button>
       </div>
 
-      <div className="panel-scroll min-h-0 flex-1 space-y-6 overflow-y-auto px-5 pt-6 pb-[max(1.75rem,env(safe-area-inset-bottom))] sm:px-7">
-        {problem ? <p role="alert" className="flex items-start gap-2 rounded-2xl border border-clay-line bg-clay-tint px-3.5 py-3 text-xs leading-5 text-clay-ink"><TriangleAlert size={15} className="mt-0.5 shrink-0" />{problem}</p> : null}
-        {notice ? <p role="status" className="flex items-start gap-2 rounded-2xl border border-evergreen-line bg-evergreen-tint/60 px-3.5 py-3 text-xs leading-5 text-evergreen-ink"><CheckCircle2 size={15} className="mt-0.5 shrink-0" />{notice}</p> : null}
-        {privacy.isError ? <p role="alert" className="rounded-2xl border border-clay-line bg-clay-tint px-3.5 py-3 text-xs leading-5 text-clay-ink">Your privacy settings couldn’t be loaded, so they’re hidden rather than shown wrong. <button type="button" onClick={() => privacy.refetch()} className="font-semibold underline">Load them again</button></p> : null}
-        {privacy.isLoading ? <div role="status" aria-label="Loading privacy settings" className="space-y-3">{[0, 1, 2].map((row) => <div key={row} className="h-16 animate-pulse rounded-[20px] bg-line-soft/70" />)}</div> : null}
+      <div className="panel-scroll min-h-0 flex-1 space-y-6 overflow-y-auto px-4 pt-6 pb-[max(1.75rem,env(safe-area-inset-bottom))] sm:px-6">
+        {problem ? <p role="alert" className="flex items-start gap-2 rounded-lg border border-danger-line bg-danger-tint px-4 py-3 text-note leading-5 text-danger-ink"><TriangleAlert className="mt-0.5 shrink-0" />{problem}</p> : null}
+        {notice ? <p role="status" className="flex items-start gap-2 rounded-lg border border-secondary-line bg-secondary-tint px-4 py-3 text-note leading-5 text-secondary-hover"><CheckCircle2 className="mt-0.5 shrink-0" />{notice}</p> : null}
+        {privacy.isError ? <p role="alert" className="rounded-lg border border-danger-line bg-danger-tint px-4 py-3 text-note leading-5 text-danger-ink">Your privacy settings couldn’t be loaded, so they’re hidden rather than shown wrong. <button type="button" onClick={() => privacy.refetch()} className="font-semibold underline">Load them again</button></p> : null}
+        {privacy.isLoading ? <div role="status" aria-label="Loading privacy settings" className="space-y-3">{[0, 1, 2].map((row) => <div key={row} className="h-16 animate-pulse rounded-lg bg-line/70" />)}</div> : null}
 
         {privacy.data ? <>
-          <div className="rounded-[20px] border border-line p-4">
+          <div className="rounded-lg border border-line p-4">
             <div className="flex items-center gap-3">
-              <MapPin size={17} className="shrink-0 text-evergreen-ink" />
-              <div className="min-w-0"><p className="text-sm font-semibold text-ink-body">Location enrichment</p><p className="mt-0.5 text-xs leading-5 text-ink-muted">Adds the place a transaction happened. Precise location is never stored.</p></div>
+              <MapPin className="shrink-0 text-secondary" />
+              <div className="min-w-0"><p className="text-control font-semibold text-ink-body">Location enrichment</p><p className="mt-0.5 text-note leading-5 text-ink-muted">Adds the place a transaction happened. Precise location is never stored.</p></div>
               <button type="button" role="switch" aria-label="Location enrichment" aria-checked={locationEnabled} disabled={run.isPending} onClick={() => run.mutate({ kind: "location", value: !locationEnabled })} className={cn("ml-auto grid h-11 w-14 shrink-0 place-items-center rounded-full disabled:opacity-60", busyControl === "location" && "opacity-70")}>
-                <span className={cn("flex h-6 w-11 items-center rounded-full p-0.5 transition-colors", locationEnabled ? "bg-evergreen" : "bg-[#c6cfc9]")}><span className={cn("block size-5 rounded-full bg-white shadow-sm transition-transform", locationEnabled && "translate-x-5")} /></span>
+                <span className={cn("flex h-6 w-11 items-center rounded-full p-0.5 transition-colors", locationEnabled ? "bg-secondary" : "bg-line-strong")}><span className={cn("block size-5 rounded-full bg-surface ring-1 ring-black/5 transition-transform duration-[110ms] ease-linear", locationEnabled && "translate-x-5")} /></span>
               </button>
             </div>
           </div>
 
           <div>
-            <p className="mb-2 text-[11px] font-semibold tracking-[0.13em] text-ink-muted uppercase">Where transactions can come from</p>
-            <div className="divide-y divide-line-soft rounded-[20px] border border-line">
+            <p className="mb-2 text-meta font-semibold tracking-[0.08em] text-ink-muted uppercase">Where transactions can come from</p>
+            <div className="divide-y divide-line rounded-lg border border-line">
               {sources.map(([source, active]) => <div key={source} className="px-4 py-3">
                 <div className="flex items-center gap-3">
-                  <div className="min-w-0 flex-1"><p className="text-sm font-medium uppercase text-ink-body">{source}</p><p className="mt-0.5 text-xs leading-5 text-ink-muted">{active ? "Allowed to add transactions" : "Revoked — it can no longer add transactions"}</p></div>
-                  {active ? <Button type="button" variant="outline" size="lg" disabled={run.isPending} onClick={() => setConfirmingRevoke(source)} className="shrink-0 rounded-xl px-3 text-xs">Revoke</Button> : <span className="shrink-0 text-xs font-semibold text-clay-ink">Revoked</span>}
+                  <div className="min-w-0 flex-1"><p className="text-control font-medium uppercase text-ink-body">{source}</p><p className="mt-0.5 text-note leading-5 text-ink-muted">{active ? "Allowed to add transactions" : "Revoked — it can no longer add transactions"}</p></div>
+                  {active ? <Button type="button" variant="outline" size="sm" disabled={run.isPending} onClick={() => setConfirmingRevoke(source)}>Revoke</Button> : <span className="shrink-0 text-note font-semibold text-danger-ink">Revoked</span>}
                 </div>
-                {confirmingRevoke === source ? <div className="mt-3 rounded-2xl bg-surface-sunken p-3">
-                  <p className="text-xs leading-5 text-ink-body">Revoke {source.toUpperCase()}? Transactions already recorded stay; this source just can’t add more.</p>
-                  <div className="mt-2.5 flex flex-wrap gap-2">
-                    <Button type="button" size="lg" disabled={run.isPending} onClick={() => run.mutate({ kind: "revoke", value: source })} className="rounded-xl bg-clay px-3 text-xs text-white hover:bg-clay-ink">{busyControl === `revoke:${source}` ? <Loader2 size={14} className="animate-spin" /> : null}Revoke {source.toUpperCase()}</Button>
-                    <Button type="button" variant="ghost" size="lg" onClick={() => setConfirmingRevoke(null)} className="rounded-xl px-3 text-xs">Keep it on</Button>
+                {confirmingRevoke === source ? <div className="mt-3 rounded-lg bg-surface-sunken p-3">
+                  <p className="text-note leading-5 text-ink-body">Revoke {source.toUpperCase()}? Transactions already recorded stay; this source just can’t add more.</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button type="button" size="lg" disabled={run.isPending} onClick={() => run.mutate({ kind: "revoke", value: source })} variant="danger">{busyControl === `revoke:${source}` ? <Loader2 size={14} className="animate-spin" /> : null}Revoke {source.toUpperCase()}</Button>
+                    <Button type="button" variant="ghost" size="lg" onClick={() => setConfirmingRevoke(null)} >Keep it on</Button>
                   </div>
                 </div> : null}
               </div>)}
-              {!sources.length ? <p className="px-4 py-5 text-xs text-ink-muted">No sources are connected yet.</p> : null}
+              {!sources.length ? <p className="px-4 py-4 text-note text-ink-muted">No sources are connected yet.</p> : null}
             </div>
           </div>
 
-          <Button type="button" variant="outline" disabled={run.isPending} onClick={() => run.mutate({ kind: "export" })} className="h-11 w-full rounded-xl">{busyControl === "export" ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}{busyControl === "export" ? "Preparing your export…" : "Export my data"}</Button>
+          <Button type="button" variant="outline" disabled={run.isPending} onClick={() => run.mutate({ kind: "export" })} size="lg" className="w-full">{busyControl === "export" ? <Loader2 className="animate-spin" /> : <Download />}{busyControl === "export" ? "Preparing your export…" : "Export my data"}</Button>
 
-          <div className="rounded-[20px] border border-clay-line bg-clay-tint p-4">
-            <div className="flex gap-3"><Trash2 size={17} className="mt-0.5 shrink-0 text-clay" /><div><p className="text-sm font-semibold text-clay-ink">Delete all data</p><p className="mt-1 text-xs leading-5 text-clay-ink/85">Permanently removes conversations, transactions, observations, goals, budgets, and preferences. This cannot be undone.</p></div></div>
-            <input value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} placeholder="Type DELETE MY DATA" aria-label="Deletion confirmation" className="mt-4 h-11 w-full rounded-xl border border-clay-line bg-white px-3 text-sm outline-none focus:border-clay" />
-            <Button type="button" disabled={deleteConfirmation !== "DELETE MY DATA" || run.isPending} onClick={() => run.mutate({ kind: "delete" })} className="mt-2 h-11 w-full rounded-xl bg-clay text-white hover:bg-clay-ink disabled:bg-[#e0d3cc] disabled:text-[#8c7b73]">{busyControl === "delete" ? <Loader2 size={15} className="animate-spin" /> : null}{busyControl === "delete" ? "Deleting everything…" : "Delete permanently"}</Button>
+          <div className="rounded-lg border border-danger-line bg-danger-tint p-4">
+            <div className="flex gap-3"><Trash2 className="mt-0.5 shrink-0 text-danger" /><div><p className="text-control font-semibold text-danger-ink">Delete all data</p><p className="mt-1 text-note leading-5 text-danger-ink/85">Permanently removes conversations, transactions, observations, goals, budgets, and preferences. This cannot be undone.</p></div></div>
+            <input value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} placeholder="Type DELETE MY DATA" aria-label="Deletion confirmation" className="mt-4 h-[var(--h-field)] w-full rounded-lg border border-danger-line bg-surface px-3 text-body text-ink outline-none transition-colors duration-[110ms] ease-linear focus:border-danger" />
+            <Button type="button" disabled={deleteConfirmation !== "DELETE MY DATA" || run.isPending} onClick={() => run.mutate({ kind: "delete" })} variant="danger" size="lg" className="mt-2 w-full">{busyControl === "delete" ? <Loader2 className="animate-spin" /> : null}{busyControl === "delete" ? "Deleting everything…" : "Delete permanently"}</Button>
           </div>
         </> : null}
       </div>
@@ -472,22 +575,36 @@ function Composer({ variant, value, onValueChange, onSubmit, textRef, fileRef, o
   upload: { name: string; percent: number } | null;
 }) {
   const focused = variant === "focused";
-  return <form onSubmit={onSubmit} className={cn("pointer-events-auto mx-auto w-full", !focused && "max-w-[790px]")}>
-    {upload ? <div role="status" className="mb-2 flex items-center gap-3 rounded-2xl border border-line bg-surface px-3.5 py-2.5 text-xs text-ink-body shadow-sm"><Loader2 size={14} className="shrink-0 animate-spin text-evergreen-ink" /><span className="min-w-0 flex-1 truncate">Uploading {upload.name}</span><span className="money shrink-0 text-ink-muted">{upload.percent}%</span><span aria-hidden className="h-1 w-20 shrink-0 overflow-hidden rounded-full bg-line-soft"><span className="block h-full rounded-full bg-evergreen transition-[width]" style={{ width: `${upload.percent}%` }} /></span></div> : null}
-    <div data-dropping={dragging || undefined} className="entry-card p-1.5">
+  // Recomputed per keystroke, which costs one regex over a short string.
+  const reading = useMemo(() => readComposerEntry(value), [value]);
+  return <form onSubmit={onSubmit} className={cn("pointer-events-auto mx-auto w-full", !focused && "max-w-[var(--column-w)]")}>
+    {upload ? <div role="status" className="mb-2 flex items-center gap-3 rounded-lg border border-line bg-surface px-4 py-3 text-note text-ink-body"><Loader2 size={14} className="shrink-0 animate-spin text-secondary" /><span className="min-w-0 flex-1 truncate">Uploading {upload.name}</span><span className="money shrink-0 text-ink-muted">{upload.percent}%</span><span aria-hidden className="h-1 w-20 shrink-0 overflow-hidden rounded-full bg-surface-sunken"><span data-motion="informational" className="block h-full rounded-full bg-secondary transition-[width] duration-[240ms]" style={{ width: `${upload.percent}%` }} /></span></div> : null}
+    <div data-dropping={dragging || undefined} className="entry-card p-2">
       {/* 14px of text inset is not arbitrary: it is where a 16px glyph lands
           inside a 44px control, so the first character of what you write sits
           on the same vertical as the paperclip below it. */}
-      <Textarea id="composer" ref={textRef} value={value} disabled={disabled} onChange={(event) => onValueChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); onSubmit(); } }} placeholder={disabled ? "Opening conversation…" : focused ? "Spent ₹500 on lunch" : "Ask anything about your finances…"} aria-label="Message fyn AI" aria-describedby="composer-hint" rows={1} className="max-h-36 min-h-11 resize-none border-0 bg-transparent px-3.5 py-2.5 text-[15px] leading-6 shadow-none placeholder:text-ink-muted focus-visible:ring-0" />
+      <Textarea id="composer" ref={textRef} value={value} disabled={disabled} onChange={(event) => onValueChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); onSubmit(); } }} placeholder={disabled ? "Opening conversation…" : focused ? "Spent ₹500 on lunch" : "Ask anything about your finances…"} aria-label="Message fyn AI" aria-describedby="composer-hint" rows={1} className="max-h-36 min-h-10 resize-none border-0 bg-transparent px-3 py-2 text-control leading-6 shadow-none placeholder:text-ink-muted focus-visible:border-transparent" />
       <div className="flex items-center gap-2">
         <input ref={fileRef} type="file" accept=".csv,text/csv" className="sr-only" tabIndex={-1} aria-hidden aria-label="Choose a CSV statement" onChange={(event) => { onAttach(event.target.files?.[0]); event.currentTarget.value = ""; }} />
-        <Tooltip><TooltipTrigger render={<Button type="button" variant="ghost" size="icon-lg" disabled={busy} onClick={() => fileRef.current?.click()} className="size-11 shrink-0 rounded-[13px] text-ink-muted hover:bg-surface-sunken hover:text-evergreen-ink" aria-label="Attach a CSV statement" />}><Paperclip size={16} /></TooltipTrigger><TooltipContent>Attach a CSV statement, or drop one anywhere</TooltipContent></Tooltip>
-        {/* The one piece of small print the composer carries, and only because
-            filing happens without asking. That it can be undone is not said
-            here: every filed entry carries its own Edit and Remove. Nor is
-            whose data this is — the header already says so. */}
-        <p id="composer-hint" className="entry-hint -ml-1"><CheckCircle2 size={12} className="shrink-0" /><span className="truncate">Complete entries are added automatically</span></p>
-        <Button type="submit" size="icon-lg" disabled={!value.trim() || busy} className="ml-auto size-11 shrink-0 rounded-[13px] bg-evergreen text-white hover:bg-evergreen-deep disabled:bg-[#e4e8e3] disabled:text-[#9aa49e]" aria-label="Send message">{sending ? <Loader2 size={16} className="animate-spin" /> : <SendHorizontal size={16} />}</Button>
+        <Tooltip><TooltipTrigger render={<Button type="button" variant="ghost" size="icon" disabled={busy} onClick={() => fileRef.current?.click()} className="shrink-0" aria-label="Attach a CSV statement" />}><Paperclip /></TooltipTrigger><TooltipContent>Attach a CSV statement, or drop one anywhere</TooltipContent></Tooltip>
+        {/* Two things share this line, and only one is ever on it.
+            Ordinarily it is the single piece of small print the composer
+            carries, there because filing happens without asking.
+            The moment what you have typed reads as an amount, it becomes the
+            reading instead — the answer to the only question anyone has while
+            a run is going, given before the run starts. It is also the last
+            chance to correct the figure without filing it first. */}
+        <p id="composer-hint" className="entry-hint -ml-1" aria-live="polite">
+          {reading
+            ? <span key={`${reading.amountMinor}:${reading.kind}`} className="composer-reading">
+              <span className={cn("money font-semibold", reading.kind === "income" ? "text-money-in" : reading.kind === "expense" ? "text-money-out" : "text-ink-body")}>
+                {reading.kind === "income" ? "+" : reading.kind === "expense" ? "−" : ""}{formatMoney(reading.amountMinor)}
+              </span>
+              <span className="truncate text-ink-muted">{reading.kind}</span>
+            </span>
+            : <><CheckCircle2 size={14} className="shrink-0" /><span className="truncate">Complete entries are added automatically</span></>}
+        </p>
+        <Button type="submit" size="icon" disabled={!value.trim() || busy} className="ml-auto shrink-0" aria-label="Send message">{sending ? <Loader2 className="animate-spin" /> : <SendHorizontal />}</Button>
       </div>
     </div>
   </form>;
@@ -567,9 +684,9 @@ const MessageArticle = memo(function MessageArticle({ message, activeWidget, use
   return <article className={cn("group", message.role === "user" ? "flex justify-end" : "max-w-[680px]")}>
     <div className={cn("min-w-0", message.role === "user" && "max-w-[82%]")}>
       {message.role === "assistant" ? <AssistantByline /> : null}
-      {trace ? <div className="mb-2.5 pl-0 sm:pl-8"><WidgetRenderer widget={trace} disabled onAction={noAction} /></div> : null}
+      {trace ? <div className="mb-3 pl-0 sm:pl-8"><WidgetRenderer widget={trace} disabled onAction={noAction} /></div> : null}
       {message.content ? message.role === "user"
-        ? <div className="w-fit break-words whitespace-pre-wrap rounded-[20px_20px_5px_20px] bg-[#234f44] px-4 py-2.5 text-[15px] leading-6 text-[#f5faf7] shadow-sm">{message.content}</div>
+        ? <div className="w-fit break-words whitespace-pre-wrap rounded-xl rounded-br-sm bg-secondary px-4 py-3 text-body leading-6 text-on-secondary">{message.content}</div>
         : <div className="break-words pl-8"><MarkdownMessage>{message.content}</MarkdownMessage></div>
       : null}
       {widgets.length ? <div className="mt-3 space-y-3 pl-0 sm:pl-8">{widgets.map((widget) => {
@@ -587,8 +704,8 @@ const MessageArticle = memo(function MessageArticle({ message, activeWidget, use
         </div>;
       })}</div> : null}
       {message.citations.length ? <div className="mt-2 ml-8">
-        <button type="button" aria-expanded={citationsOpen} onClick={() => onToggleCitations(message.id)} className="flex min-h-8 items-center gap-1.5 rounded-lg text-[11px] font-medium text-ink-muted hover:text-evergreen-ink"><FileText size={12} /> {message.citations.length} data source{message.citations.length === 1 ? "" : "s"}</button>
-        {citationsOpen ? <ul className="mt-1.5 space-y-1 rounded-2xl border border-line-soft bg-surface px-3.5 py-3">{message.citations.map((citation, index) => <li key={index} className="flex gap-2 text-[11px] leading-5 text-ink-muted"><span aria-hidden className="text-evergreen-ink">•</span><span><span className="font-medium text-ink-body">{typeof citation.label === "string" ? citation.label : "Recorded data"}</span>{typeof citation.entity_type === "string" ? ` · ${citation.entity_type.replaceAll("_", " ")}` : ""}</span></li>)}</ul> : null}
+        <button type="button" aria-expanded={citationsOpen} onClick={() => onToggleCitations(message.id)} className="flex min-h-8 items-center gap-2 rounded-lg text-meta font-medium text-ink-muted hover:text-secondary"><FileText size={14} /> {message.citations.length} data source{message.citations.length === 1 ? "" : "s"}</button>
+        {citationsOpen ? <ul className="mt-2 space-y-1 rounded-lg border border-line bg-surface px-4 py-3">{message.citations.map((citation, index) => <li key={index} className="flex gap-2 text-meta leading-5 text-ink-muted"><span aria-hidden className="text-secondary">•</span><span><span className="font-medium text-ink-body">{typeof citation.label === "string" ? citation.label : "Recorded data"}</span>{typeof citation.entity_type === "string" ? ` · ${citation.entity_type.replaceAll("_", " ")}` : ""}</span></li>)}</ul> : null}
       </div> : null}
     </div>
   </article>;
@@ -625,6 +742,11 @@ const Transcript = memo(function Transcript({ messages, agentActivities, streami
   const virtualizer = useVirtualizer({
     count: messages.length,
     getScrollElement: () => scrollRef.current,
+    // A measurement can arrive while React is committing this transcript.
+    // TanStack's synchronous mode uses flushSync for that update, which React
+    // 19 rejects inside a lifecycle. A normal scheduled render keeps the same
+    // measurements without nesting another React flush inside the commit.
+    useFlushSync: false,
     // Only an opening guess. Turns here run from a one-line question to a chart,
     // so every row is measured once it mounts and the estimate stops mattering.
     estimateSize: () => 220,
@@ -668,7 +790,7 @@ const Transcript = memo(function Transcript({ messages, agentActivities, streami
       }
       target.scrollIntoView({ block: "start", inline: "nearest", behavior: prefersReducedMotion() ? "auto" : "smooth" });
     };
-    reveal();
+    focusFrame.current = requestAnimationFrame(reveal);
     return () => cancelAnimationFrame(focusFrame.current);
   }, [activeWidget, activeWidgetFocusKey, messages, onActiveWidgetFocus, scrollRef, virtualizer]);
 
@@ -681,10 +803,10 @@ const Transcript = memo(function Transcript({ messages, agentActivities, streami
         ref={virtualizer.measureElement}
         style={{ position: "absolute", insetInlineStart: 0, top: 0, width: "100%", transform: `translateY(${row.start - scrollMargin}px)` }}
       >
-        {/* The rhythm the removed `space-y-7` used to hold. It belongs on the
+        {/* The rhythm the removed `space-y-6` used to hold. It belongs on the
             row rather than between rows now, because absolutely positioned
             siblings have no gap to share. */}
-        <div className="pb-7">
+        <div className="pb-6">
           <MessageArticle
             message={messages[row.index]}
             activeWidget={activeWidget}
@@ -699,8 +821,8 @@ const Transcript = memo(function Transcript({ messages, agentActivities, streami
       </div>)}
     </div>
     {streaming ? <div aria-hidden><AgentActivityIndicator activities={agentActivities} /></div> : null}
-    {busy && !streaming ? <div className="mt-7 flex items-center gap-3 px-1 py-2 text-sm text-ink-muted"><span className="grid size-7 place-items-center rounded-full bg-evergreen-tint text-evergreen-ink"><Sparkles size={13} /></span><span className="flex gap-1" aria-hidden><i className="typing-dot" /><i className="typing-dot" /><i className="typing-dot" /></span><span className="sr-only">Working on it</span></div> : null}
-    {error ? <div role="alert" className="mt-7 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-2xl border border-clay-line bg-clay-tint px-4 py-3 text-xs leading-5 text-clay-ink sm:mx-8"><TriangleAlert size={15} className="shrink-0" /><span className="min-w-0 flex-1">{error}</span>{retry ? <Button type="button" variant="outline" size="lg" onClick={onRetry} className="rounded-xl border-clay-line bg-white text-xs text-clay-ink hover:bg-clay-tint"><RotateCcw size={14} /> Try again</Button> : null}</div> : null}
+    {busy && !streaming ? <div className="mt-6 flex items-center gap-3 px-1 py-2 text-control text-ink-muted"><span className="grid size-7 place-items-center rounded-full bg-secondary-tint text-secondary"><Sparkles size={14} /></span><span className="flex gap-1" aria-hidden><i className="typing-dot" /><i className="typing-dot" /><i className="typing-dot" /></span><span className="sr-only">Working on it</span></div> : null}
+    {error ? <div role="alert" className="mt-6 flex flex-wrap items-center gap-3 gap-2 rounded-lg border border-danger-line bg-danger-tint px-4 py-3 text-note leading-5 text-danger-ink sm:mx-8"><TriangleAlert className="shrink-0" /><span className="min-w-0 flex-1">{error}</span>{retry ? <Button type="button" variant="outline" size="lg" onClick={onRetry} className="rounded-xl border-danger-line text-danger-ink hover:bg-danger-tint"><RotateCcw size={14} /> Try again</Button> : null}</div> : null}
   </div>;
 });
 
@@ -734,6 +856,41 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
   const [upload, setUpload] = useState<{ name: string; percent: number } | null>(null);
   const [atBottom, setAtBottom] = useState(true);
   const [announcement, setAnnouncement] = useState("");
+  // Switching threads used to replace this whole component — a `key` on it
+  // meant the header, the composer, the scroll container and every widget were
+  // thrown away and rebuilt for what is really a change of contents. Re-seeding
+  // here instead keeps all of that mounted, so a switch swaps the transcript
+  // and moves the mark in the rail, and nothing else moves.
+  //
+  // Adjusted during render rather than in an effect, which is what React
+  // recommends for resetting state when a prop changes: the reset lands in the
+  // same commit, so the previous thread's messages are never painted under the
+  // new thread's title.
+  //
+  // Two things reset it, and they are not the same thing. A different `id` is a
+  // different conversation and clears everything, the half-typed draft
+  // included. The same `id` going from loading to ready is the transcript
+  // arriving for the thread already on screen — that adopts the messages and
+  // deliberately leaves the draft alone, because it was typed into this thread.
+  const [seeded, setSeeded] = useState({ id: conversationId, loading: Boolean(loadingThread) });
+  if (seeded.id !== conversationId || seeded.loading !== Boolean(loadingThread)) {
+    const changedThread = seeded.id !== conversationId;
+    setSeeded({ id: conversationId, loading: Boolean(loadingThread) });
+    setMessages(initialData.active_conversation.messages);
+    setUsedWidgets(completedWidgetIds(initialData.active_conversation.messages));
+    setPendingWidget(null);
+    setError(null);
+    setRetry(null);
+    setConnectionLost(false);
+    setAgentActivities([]);
+    setOpenCitations(new Set());
+    setUpload(null);
+    setAtBottom(true);
+    setAnnouncement("");
+    setLinkCopied(false);
+    if (changedThread) setInput("");
+  }
+
   const scrollRef = useRef<HTMLDivElement>(null);
   const textRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -742,10 +899,15 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
   // so they are held rather than fired and forgotten.
   const copiedTimer = useRef<number | undefined>(undefined);
   const settleFrame = useRef(0);
-  // One controller for everything this thread has in flight. A conversation is
-  // torn down and rebuilt whenever you switch to another one, so aborting here
-  // is what tells a run nobody is watching it any more — a reply takes seconds
-  // to arrive, which is long enough to walk away from.
+  // Which transcript was last placed on screen; reset when the thread changes.
+  const arrivals = useRef<string | null>(null);
+  // One controller for everything this thread has in flight. Aborting is what
+  // tells a run that nobody is watching it any more — a reply takes seconds to
+  // arrive, which is long enough to walk away from.
+  //
+  // Keyed on the conversation rather than on the mount, and that is the whole
+  // reason this is safe now that the component survives a switch: leaving a
+  // thread has to cancel its run, and before it was the unmount that did so.
   //
   // Created inside the effect, deliberately. Holding it in state instead keeps
   // a single controller across React's development remount, so the discarded
@@ -760,8 +922,11 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
       cancelAnimationFrame(settleFrame.current);
       controller.abort();
       inFlight.current = null;
+      // The next thread is a new transcript, so it is placed at its end rather
+      // than smooth-scrolled there as if a reply had just landed.
+      arrivals.current = null;
     };
-  }, []);
+  }, [conversationId]);
 
   const succeeded = useCallback((response: AgentResponse) => {
     setMessages((current) => [...applyWidgetUpdates(current, response.widgetUpdates), responseToMessage(response)]);
@@ -1024,7 +1189,6 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
     return () => observer.disconnect();
   }, [focusedMode, atBottom]);
 
-  const arrivals = useRef<string | null>(null);
   const focusedArrival = useRef(activeWidgetFocusKey);
   useLayoutEffect(() => {
     const node = scrollRef.current;
@@ -1061,14 +1225,16 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
     return () => { handleRef.current = null; };
   });
 
-  return <main className="relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-paper-raised">
-        <header className="z-20 flex h-16 shrink-0 items-center gap-2 border-b border-line-soft bg-paper-raised/90 px-3 backdrop-blur-xl sm:px-6">
-          <Button variant="ghost" size="icon-lg" aria-label="Open navigation" aria-expanded={navOpen} aria-controls="conversation-rail" className="rounded-xl md:hidden" onClick={onOpenNav}><Menu size={18} /></Button>
+  return <>
+      <ConversationTitle title={title} />
+      <main className="thread-enter relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-surface">
+        <header className="z-20 flex h-14 shrink-0 items-center gap-2 border-b border-line bg-surface px-3 sm:px-6">
+          <Button variant="ghost" size="icon-lg" aria-label="Open navigation" aria-expanded={navOpen} aria-controls="conversation-rail" className="rounded-xl md:hidden" onClick={onOpenNav}><Menu size={20} /></Button>
           <div className="min-w-0">
-            <h1 className="truncate font-heading text-sm font-semibold text-ink">{title}</h1>
-            <p className={cn("mt-0.5 flex items-center gap-1.5 text-[11px] font-medium", connectionLost ? "text-clay-ink" : "text-ink-muted")}><span className={cn("size-1.5 rounded-full", connectionLost ? "bg-clay" : "bg-[#3f8a68]")} />{connectionLost ? "Can’t reach your financial data" : "Financial data connected"}</p>
+            <h1 className="truncate font-heading text-body font-semibold tracking-[-0.015em] text-ink">{title}</h1>
+            <p className={cn("mt-0.5 flex items-center gap-2 text-meta", connectionLost ? "font-medium text-danger-ink" : "text-ink-muted")}><span className={cn("size-1 rounded-full", connectionLost ? "bg-danger" : "bg-ink-muted")} />{connectionLost ? "Can’t reach your financial data" : "Financial data connected"}</p>
           </div>
-          <Tooltip><TooltipTrigger render={<Button type="button" variant="ghost" size="icon-lg" onClick={copyConversationLink} aria-label={linkCopied ? "Conversation link copied" : "Copy conversation link"} className="ml-auto rounded-xl text-ink-muted" />}>{linkCopied ? <Check size={17} /> : <Copy size={16} />}</TooltipTrigger><TooltipContent>{linkCopied ? "Link copied" : "Copy conversation link"}</TooltipContent></Tooltip>
+          <Tooltip><TooltipTrigger render={<Button type="button" variant="ghost" size="icon-lg" onClick={copyConversationLink} aria-label={linkCopied ? "Conversation link copied" : "Copy conversation link"} className="ml-auto rounded-xl text-ink-muted" />}>{linkCopied ? <Check /> : <Copy />}</TooltipTrigger><TooltipContent>{linkCopied ? "Link copied" : "Copy conversation link"}</TooltipContent></Tooltip>
         </header>
 
         <div
@@ -1077,17 +1243,15 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
           onWheel={noteReaderScroll}
           onTouchMove={noteReaderScroll}
           onKeyDown={noteReaderScroll}
-          data-docked={!focusedMode}
-          className="conversation-scroll flex-1 overflow-y-auto"
+          className="conversation-scroll min-h-0 flex-1 overflow-y-auto"
         >
-          {loadingThread ? <div className="mx-auto flex min-h-full w-full max-w-[790px] flex-col px-4 pt-8 pb-[calc(var(--dock-h)+2.5rem)] sm:px-6 sm:pt-12"><ThreadSkeleton /></div> : focusedMode ? <div className="leaf mx-auto flex min-h-full w-full max-w-[34rem] flex-col justify-center px-4 py-12 sm:px-6">
-            <span aria-hidden className="leaf-seal">₹</span>
-            <h2 className="leaf-title mt-5">What happened?</h2>
+          {loadingThread ? <div className="mx-auto flex min-h-full w-full max-w-[var(--column-w)] flex-col px-4 pt-8 pb-10 sm:px-6 sm:pt-12"><ThreadSkeleton /></div> : focusedMode ? <div className="leaf mx-auto flex min-h-full w-full max-w-[34rem] flex-col justify-center px-4 py-12 sm:px-6">
+            <h2 className="leaf-title">What happened?</h2>
             <div className="mt-6"><Composer variant="focused" value={input} onValueChange={setInput} onSubmit={submit} textRef={textRef} fileRef={fileRef} onAttach={attach} busy={busy} sending={chatPending} disabled={switchingConversation} dragging={dragging} upload={upload} /></div>
-            {error ? <div role="alert" className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-2xl border border-clay-line bg-clay-tint px-4 py-3 text-xs leading-5 text-clay-ink"><TriangleAlert size={15} className="shrink-0" /><span className="min-w-0 flex-1">{error}</span>{retry ? <Button type="button" variant="outline" size="lg" onClick={retryLast} className="rounded-xl border-clay-line bg-white text-xs text-clay-ink hover:bg-clay-tint"><RotateCcw size={14} /> Try again</Button> : null}</div> : null}
+            {error ? <div role="alert" className="mt-3 flex flex-wrap items-center gap-3 gap-2 rounded-lg border border-danger-line bg-danger-tint px-4 py-3 text-note leading-5 text-danger-ink"><TriangleAlert className="shrink-0" /><span className="min-w-0 flex-1">{error}</span>{retry ? <Button type="button" variant="outline" size="lg" onClick={retryLast} className="rounded-xl border-danger-line text-danger-ink hover:bg-danger-tint"><RotateCcw size={14} /> Try again</Button> : null}</div> : null}
             <p className="leaf-band mt-9">Try</p>
             <div className="mt-1">{STARTERS.map((starter) => <button key={starter} type="button" onClick={() => applyStarter(starter)} className="leaf-example"><span aria-hidden className="ledger-mark" />{starter}</button>)}</div>
-          </div> : <div ref={contentRef} className="mx-auto flex min-h-full w-full max-w-[790px] flex-col px-4 pt-8 pb-[calc(var(--dock-h)+2.5rem)] sm:px-6 sm:pt-12">
+          </div> : <div ref={contentRef} className="mx-auto flex min-h-full w-full max-w-[var(--column-w)] flex-col px-4 pt-8 pb-10 sm:px-6 sm:pt-12">
             <Transcript
               messages={messages}
               agentActivities={agentActivities}
@@ -1112,15 +1276,16 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
         <p aria-live="polite" aria-atomic className="sr-only">{announcement}</p>
 
         {!focusedMode ? <>
-          {/* Rides above the dock rather than inside it: were it measured with
-              the dock, appearing would enlarge the transcript's bottom margin
-              and jolt the very scroll position it exists to restore. */}
-          {!atBottom ? <div style={{ bottom: `calc(var(--dock-h) + 0.75rem)` }} className="pointer-events-none absolute inset-x-0 z-20 flex justify-center px-3 sm:px-6"><Button type="button" onClick={jumpToLatest} className="pointer-events-auto h-10 rounded-full bg-surface px-4 text-xs text-ink-body shadow-[0_6px_20px_rgba(26,48,40,0.16)] ring-1 ring-line hover:bg-surface"><ArrowDown size={14} /> Jump to latest</Button></div> : null}
-          <div ref={dockRef} className="entry-dock pointer-events-auto absolute inset-x-0 bottom-0 z-20 px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6 sm:pt-3.5 sm:pb-4">
+          {/* Sits just above the composer rather than inside it, so appearing
+              cannot change the composer's height and jolt the very scroll
+              position it exists to restore. */}
+          {!atBottom ? <div style={{ bottom: `calc(var(--dock-h) + 0.75rem)` }} className="pointer-events-none absolute inset-x-0 z-20 flex justify-center px-3 sm:px-6"><Button type="button" onClick={jumpToLatest} variant="outline" className="pointer-events-auto rounded-full shadow-[var(--shadow-overlay)]"><ArrowDown size={14} /> Jump to latest</Button></div> : null}
+          <div ref={dockRef} className="entry-dock z-20 shrink-0 px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6 sm:pt-4 sm:pb-4">
             <Composer variant="docked" value={input} onValueChange={setInput} onSubmit={submit} textRef={textRef} fileRef={fileRef} onAttach={attach} busy={busy} sending={chatPending} disabled={switchingConversation} dragging={dragging} upload={upload} />
           </div>
         </> : null}
-      </main>;
+      </main>
+    </>;
 }
 
 type ShellValue = { navOpen: boolean; openNav: () => void; switching: boolean; dragging: boolean; handleRef: RefObject<ThreadHandle | null>; conversations: ConversationSummary[] };
@@ -1153,6 +1318,9 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
   const [switchingFrom, setSwitchingFrom] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [navError, setNavError] = useState<string | null>(null);
+  // Reported up by the open thread. The rail needs it because two of its
+  // controls send messages, and a message cannot be sent during a run.
+  const [creating, setCreating] = useState(false);
   // Threads held back from the rail: those inside an undo window, and those past
   // it and being erased. Withholding covers both, so a row never flickers back
   // between the window closing and the server confirming.
@@ -1181,6 +1349,21 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
   // end-of-list observer is not torn down and rebuilt on every render.
   const { fetchNextPage } = history;
   const loadMore = useCallback(() => { void fetchNextPage(); }, [fetchNextPage]);
+
+  // Opening a thread you have hovered should be a paint, not a request. The
+  // transcript is the largest thing the app fetches, and the pointer travelling
+  // to a rail entry is several hundred milliseconds of free warning.
+  // `prefetchQuery` is a no-op when the thread is already cached and fresh, so
+  // sweeping the pointer down the rail does not stampede the API.
+  const prefetchConversation = useCallback((id: string) => {
+    if (!id) return;
+    void queryClient.prefetchQuery({
+      queryKey: ["conversation", id],
+      queryFn: () => loadConversation(id),
+      staleTime: 15_000,
+    });
+    router.prefetch(`/c/${encodeURIComponent(id)}`);
+  }, [queryClient, router]);
 
   const erase = useMutation({
     mutationFn: deleteConversation,
@@ -1220,7 +1403,40 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("pagehide", flush);
   }, []);
 
-  function removeConversation(conversation: ConversationSummary) {
+  // Every handler the rail receives is stabilised, because memoising the rail
+  // buys nothing while its props are fresh closures on each shell render.
+  // Declared in dependency order: `const` bindings do not hoist.
+  const closeNav = useCallback(() => setSidebarOpen(false), []);
+  const openSettings = useCallback(() => { setSettingsOpen(true); setSidebarOpen(false); }, []);
+  const openProfile = useCallback(() => { setSidebarOpen(false); router.push("/profile"); }, [router]);
+
+  const openThreadId = useRef(conversationId);
+  useEffect(() => { openThreadId.current = conversationId; }, [conversationId]);
+
+  const startConversation = useCallback(async (mode: "push" | "replace" = "push") => {
+    setSwitchingFrom(openThreadId.current);
+    setCreating(true);
+    setNavError(null);
+    try {
+      const conversation = await createConversation();
+      setSidebarOpen(false);
+      await Promise.all([queryClient.invalidateQueries({ queryKey: ["bootstrap"] }), queryClient.invalidateQueries({ queryKey: ["conversations"] })]);
+      router[mode](`/c/${encodeURIComponent(conversation.id)}`, { scroll: false });
+    } catch { setSwitchingFrom(null); setNavError("The conversation couldn’t be started. Try again."); }
+    finally { setCreating(false); }
+  }, [queryClient, router]);
+
+  const newConversation = useCallback(() => { void startConversation(); }, [startConversation]);
+
+  const selectThread = useCallback((id: string) => {
+    if (id === conversationId) { setSidebarOpen(false); return; }
+    setSwitchingFrom(conversationId);
+    setNavError(null);
+    setSidebarOpen(false);
+    router.push(`/c/${encodeURIComponent(id)}`, { scroll: false });
+  }, [conversationId, router]);
+
+  const deleteThread = useCallback((conversation: ConversationSummary) => {
     setNavError(null);
     const wasOpen = conversation.id === conversationId;
     pending.current.set(conversation.id, { conversation, wasOpen, undone: false });
@@ -1247,7 +1463,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
     setSwitchingFrom(conversationId);
     if (next) router.replace(`/c/${encodeURIComponent(next.id)}`, { scroll: false });
     else void startConversation("replace");
-  }
+  }, [conversationId, conversations, router, startConversation]);
 
   // The rail is permanently visible once it docks, so drop the drawer state
   // rather than let it re-open behind the user on the way back down.
@@ -1264,55 +1480,40 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [sidebarOpen, settingsOpen]);
 
-  function selectConversation(id: string) {
-    if (id === conversationId) { setSidebarOpen(false); return; }
-    setSwitchingFrom(conversationId);
-    setNavError(null);
-    setSidebarOpen(false);
-    router.push(`/c/${encodeURIComponent(id)}`, { scroll: false });
-  }
-
-  async function startConversation(mode: "push" | "replace" = "push") {
-    setSwitchingFrom(conversationId);
-    setNavError(null);
-    try {
-      const conversation = await createConversation();
-      setSidebarOpen(false);
-      await Promise.all([queryClient.invalidateQueries({ queryKey: ["bootstrap"] }), queryClient.invalidateQueries({ queryKey: ["conversations"] })]);
-      router[mode](`/c/${encodeURIComponent(conversation.id)}`, { scroll: false });
-    } catch { setSwitchingFrom(null); setNavError("The conversation couldn’t be started. Try again."); }
-  }
 
   if (signedOut) return <AppSkeleton label="Taking you to sign in…" />;
   if (initial.isError) return <WorkspaceUnreachable onRetry={() => initial.refetch()} retrying={initial.isFetching} />;
-  if (initial.isLoading || !initial.data) return <AppSkeleton />;
 
   return <ToastProvider toastManager={toast} limit={5}>
     <ShellContext.Provider value={{ navOpen: sidebarOpen, openNav, switching, dragging, handleRef: thread, conversations }}>
-    <div className="h-dvh overflow-hidden bg-paper text-ink" onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDragging(true); } }} onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }} onDrop={(event) => { if (!event.dataTransfer.files.length) return; event.preventDefault(); setDragging(false); thread.current?.attach(event.dataTransfer.files[0]); }}>
-      <div className="relative mx-auto grid h-full max-w-[1600px] md:grid-cols-[280px_1fr]">
-        <button type="button" tabIndex={-1} aria-hidden onClick={() => setSidebarOpen(false)} className={cn("fixed inset-0 z-30 bg-[#17231f]/30 backdrop-blur-[2px] transition-opacity duration-300 md:hidden", sidebarOpen ? "opacity-100" : "pointer-events-none opacity-0")} />
+    <div className="h-dvh overflow-hidden bg-ground text-ink" onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDragging(true); } }} onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }} onDrop={(event) => { if (!event.dataTransfer.files.length) return; event.preventDefault(); setDragging(false); thread.current?.attach(event.dataTransfer.files[0]); }}>
+      <div className="relative mx-auto grid h-full max-w-[1600px] md:grid-cols-[var(--rail-w)_1fr]">
+        <button type="button" tabIndex={-1} aria-hidden onClick={() => setSidebarOpen(false)} className={cn("fixed inset-0 z-30 bg-ink/25 backdrop-blur-[2px] transition-opacity duration-300 md:hidden", sidebarOpen ? "opacity-100" : "pointer-events-none opacity-0")} />
         <ConversationRail
           conversations={conversations}
           activeId={conversationId}
-          user={initial.data.user}
+          user={initial.data?.user ?? null}
           open={sidebarOpen}
           docked={isDesktop}
-          switching={switching}
+          switching={creating}
           loading={history.isPending}
           loadingMore={history.isFetchingNextPage}
           hasMore={Boolean(history.hasNextPage)}
-          onClose={() => setSidebarOpen(false)}
-          onSelect={selectConversation}
-          onDelete={removeConversation}
+          onClose={closeNav}
+          onSelect={selectThread}
+          onPrefetch={prefetchConversation}
+          onDelete={deleteThread}
           onLoadMore={loadMore}
-          onNew={() => startConversation()}
-          onSavedAnalyses={() => { setSidebarOpen(false); thread.current?.sendPrompt("Show my saved analyses"); }}
-          onOpenSettings={() => { setSettingsOpen(true); setSidebarOpen(false); }}
-          onOpenProfile={() => { setSidebarOpen(false); router.push("/profile"); }}
+          onNew={newConversation}
+          onOpenSettings={openSettings}
+          onOpenProfile={openProfile}
         />
+        {/* Rendered here rather than as `children` so it sits above the
+            segment boundary and is re-seeded rather than rebuilt. `children`
+            is the page, which renders nothing. */}
+        {conversationId ? <ConversationThread conversationId={conversationId} /> : null}
         {children}
-        {navError ? <div role="alert" className="fixed inset-x-0 bottom-4 z-50 mx-auto w-fit max-w-[90vw] rounded-2xl border border-clay-line bg-clay-tint px-4 py-2.5 text-xs text-clay-ink shadow-[0_8px_28px_rgba(31,49,42,0.14)]">{navError}</div> : null}
+        {navError ? <div role="alert" className="fixed inset-x-0 bottom-4 z-50 mx-auto w-fit max-w-[90vw] rounded-lg border border-danger-line bg-danger-tint px-4 py-3 text-note text-danger-ink shadow-[var(--shadow-overlay)]">{navError}</div> : null}
         {/* Deleting everything deletes the account itself, so there is nothing
             left to return to — the session is already void server-side. */}
         {settingsOpen ? <PrivacyDrawer onClose={closeSettings} onDeleted={() => { queryClient.clear(); router.replace("/login"); }} /> : null}
@@ -1324,7 +1525,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
         It rides on the measured dock rather than a matching guess, so the two
         cannot drift apart when the box grows. */}
     <ToastPortal>
-      <ToastViewport className="inset-x-3 bottom-[calc(var(--dock-h)+0.75rem)] mx-auto w-auto max-w-[20rem] md:right-auto md:left-[max(292px,calc(50vw-508px))] md:mx-0 md:w-full">
+      <ToastViewport className="inset-x-3 bottom-[calc(var(--dock-h)+0.75rem)] mx-auto w-auto max-w-[20rem] md:right-auto md:left-[max(calc(var(--rail-w)+0.75rem),calc(50vw-var(--column-w)/2))] md:mx-0 md:w-full">
         <UndoToastList />
       </ToastViewport>
     </ToastPortal>
@@ -1332,15 +1533,14 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
 }
 
 function ConversationUnavailable({ onOpenLatest }: { onOpenLatest: () => void }) {
-  return <div className="grid h-dvh place-items-center bg-paper p-6"><div role="alert" className="max-w-sm rounded-[24px] border border-line bg-surface p-7 text-center shadow-[0_16px_50px_rgba(26,48,40,0.1)]"><span className="mx-auto grid size-11 place-items-center rounded-[17px] bg-evergreen-tint text-evergreen-ink"><MessageSquareText size={19} /></span><h1 className="mt-4 font-heading text-lg font-semibold text-ink">Conversation unavailable</h1><p className="mt-2 text-sm leading-6 text-ink-muted">This link is invalid, the conversation was deleted, or it belongs to another account.</p><Button type="button" onClick={onOpenLatest} className="mt-5 h-11 rounded-xl bg-evergreen px-4 text-white hover:bg-evergreen-deep">Open latest conversation</Button></div></div>;
+  return <div className="grid h-dvh place-items-center bg-ground p-6"><div role="alert" className="max-w-sm rounded-xl border border-line bg-surface p-6 text-center"><span className="mx-auto grid size-11 place-items-center rounded-[17px] bg-secondary-tint text-secondary"><MessageSquareText size={20} /></span><h1 className="mt-4 font-heading text-title font-semibold text-ink">Conversation unavailable</h1><p className="mt-2 text-control leading-6 text-ink-muted">This link is invalid, the conversation was deleted, or it belongs to another account.</p><Button type="button" onClick={onOpenLatest} size="lg" className="mt-4">Open latest conversation</Button></div></div>;
 }
 
 function WorkspaceUnreachable({ onRetry, retrying }: { onRetry: () => void; retrying: boolean }) {
-  return <div className="grid h-dvh place-items-center bg-paper p-6"><div role="alert" className="max-w-sm rounded-[24px] border border-clay-line bg-surface p-7 text-center shadow-[0_16px_50px_rgba(26,48,40,0.1)]"><span className="mx-auto grid size-11 place-items-center rounded-[17px] bg-clay-tint text-clay"><TriangleAlert size={19} /></span><h1 className="mt-4 font-heading text-lg font-semibold text-ink">We couldn’t load your workspace</h1><p className="mt-2 text-sm leading-6 text-ink-muted">Nothing was lost. Check your connection and try again.</p><Button type="button" onClick={onRetry} disabled={retrying} className="mt-5 h-11 rounded-xl bg-evergreen px-4 text-white hover:bg-evergreen-deep">{retrying ? <Loader2 size={15} className="animate-spin" /> : <RotateCcw size={15} />}{retrying ? "Trying again…" : "Try again"}</Button></div></div>;
+  return <div className="grid h-dvh place-items-center bg-ground p-6"><div role="alert" className="max-w-sm rounded-xl border border-danger-line bg-surface p-6 text-center"><span className="mx-auto grid size-11 place-items-center rounded-[17px] bg-danger-tint text-danger"><TriangleAlert size={20} /></span><h1 className="mt-4 font-heading text-title font-semibold text-ink">We couldn’t load your workspace</h1><p className="mt-2 text-control leading-6 text-ink-muted">Nothing was lost. Check your connection and try again.</p><Button type="button" onClick={onRetry} disabled={retrying} size="lg" className="mt-4">{retrying ? <Loader2 className="animate-spin" /> : <RotateCcw />}{retrying ? "Trying again…" : "Try again"}</Button></div></div>;
 }
 
-/** The thread for one conversation. Rendered as the shell's child, so this is
- *  the only part Next replaces when the `[conversationId]` segment changes. */
+/** The thread for one conversation. */
 export function ConversationThread({ conversationId }: { conversationId: string }) {
   const router = useRouter();
   const shell = useShell();
@@ -1351,7 +1551,7 @@ export function ConversationThread({ conversationId }: { conversationId: string 
     retry: false,
   });
 
-  if (!initial.data) return <main className="min-h-0 bg-paper-raised" />;
+  if (!initial.data) return <main className="min-h-0 bg-surface" />;
   // A thread being navigated away from — the one just deleted, say — is allowed
   // to stop loading without the shell accusing the link of being broken.
   if (conversation.isError && !shell.switching) return <ConversationUnavailable onOpenLatest={() => router.replace(`/c/${encodeURIComponent(initial.data.active_conversation.id)}`)} />;
@@ -1361,7 +1561,6 @@ export function ConversationThread({ conversationId }: { conversationId: string 
   const activeConversation = conversation.data ?? { id: conversationId, title: known?.title ?? "Opening conversation", messages: [], updated_at: known?.updatedAt ?? "" };
   const prepared = { ...initial.data, active_conversation: activeConversation };
   return <CopilotWorkspace
-    key={`${activeConversation.id}:${conversation.data ? "ready" : "loading"}`}
     initialData={prepared}
     loadingThread={!conversation.data}
     navOpen={shell.navOpen}

@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import datetime, timezone
 
 from app.services.adapters import CSVAdapter, MessageAdapter, classify_financial_message
 
@@ -33,4 +33,4 @@ def test_csv_adapter_normalizes_common_bank_columns():
     assert rows[0][1].transaction_type == "expense"
     assert rows[1][1].amount_minor == 30_000_000
     assert rows[1][1].transaction_type == "income"
-    assert rows[0][1].transaction_date == date(2026, 8, 10)
+    assert rows[0][1].transaction_at == datetime(2026, 8, 9, 18, 30, tzinfo=timezone.utc)

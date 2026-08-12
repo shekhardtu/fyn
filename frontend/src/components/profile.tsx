@@ -11,8 +11,8 @@ import type { IdentityOut } from "@/lib/protocol";
 import { cn } from "@/lib/utils";
 
 const PROVIDER_COPY: Record<IdentityOut["provider"], { label: string; icon: ReactNode }> = {
-  phone: { label: "Phone number", icon: <Smartphone size={17} /> },
-  email: { label: "Email address", icon: <Mail size={17} /> },
+  phone: { label: "Phone number", icon: <Smartphone /> },
+  email: { label: "Email address", icon: <Mail /> },
   google: { label: "Google", icon: <GoogleMark /> },
 };
 
@@ -34,11 +34,11 @@ function Notice({ tone, children }: { tone: "error" | "success"; children: React
   return <p
     role={error ? "alert" : "status"}
     className={cn(
-      "flex items-start gap-2 rounded-2xl border px-3.5 py-3 text-xs leading-5",
-      error ? "border-clay-line bg-clay-tint text-clay-ink" : "border-evergreen-line bg-evergreen-tint/60 text-evergreen-ink",
+      "flex items-start gap-2 rounded-lg border px-4 py-3 text-note leading-5",
+      error ? "border-danger-line bg-danger-tint text-danger-ink" : "border-secondary-line bg-secondary-tint text-secondary-hover",
     )}
   >
-    {error ? <TriangleAlert size={15} className="mt-0.5 shrink-0" /> : <CheckCircle2 size={15} className="mt-0.5 shrink-0" />}
+    {error ? <TriangleAlert className="mt-0.5 shrink-0" /> : <CheckCircle2 className="mt-0.5 shrink-0" />}
     <span className="min-w-0">{children}</span>
   </p>;
 }
@@ -82,33 +82,33 @@ export function ProfilePanel() {
 
   if (profile.isError) {
     if (isUnauthorized(profile.error)) { leave(); return null; }
-    return <main className="grid min-h-dvh place-items-center bg-paper p-6">
-      <div role="alert" className="max-w-sm rounded-[24px] border border-clay-line bg-surface p-7 text-center">
-        <span className="mx-auto grid size-11 place-items-center rounded-[17px] bg-clay-tint text-clay"><TriangleAlert size={19} /></span>
-        <h1 className="mt-4 font-heading text-lg font-semibold text-ink">We couldn’t load your profile</h1>
-        <p className="mt-2 text-sm leading-6 text-ink-muted">{profile.error.message}</p>
-        <Button type="button" onClick={() => profile.refetch()} className="mt-5 h-11 rounded-xl bg-evergreen px-4 text-white hover:bg-evergreen-deep">Try again</Button>
+    return <main className="grid min-h-dvh place-items-center bg-ground p-6">
+      <div role="alert" className="max-w-sm rounded-xl border border-danger-line bg-surface p-6 text-center">
+        <span className="mx-auto grid size-11 place-items-center rounded-lg bg-danger-tint text-danger"><TriangleAlert size={20} /></span>
+        <h1 className="mt-4 font-heading text-title font-semibold text-ink">We couldn’t load your profile</h1>
+        <p className="mt-2 text-control leading-6 text-ink-muted">{profile.error.message}</p>
+        <Button type="button" onClick={() => profile.refetch()} size="lg" className="mt-4">Try again</Button>
       </div>
     </main>;
   }
 
-  if (!profile.data) return <main className="grid min-h-dvh place-items-center bg-paper"><Loader2 size={20} className="animate-spin text-ink-muted" aria-label="Loading your profile" /></main>;
+  if (!profile.data) return <main className="grid min-h-dvh place-items-center bg-ground"><Loader2 size={20} className="animate-spin text-ink-muted" aria-label="Loading your profile" /></main>;
 
   const account = profile.data;
   const blocked = removalBlock(account);
   const has = (provider: IdentityOut["provider"]) => account.identities.some((item) => item.provider === provider);
   const googleOwnsEmail = account.identities.some((item) => item.provider === "email" && item.source === "google");
 
-  return <main className="min-h-dvh bg-paper px-5 py-8">
+  return <main className="min-h-dvh bg-ground px-4 py-8">
     <div className="mx-auto w-full max-w-lg">
-      <button type="button" onClick={() => router.push("/")} className="inline-flex items-center gap-1.5 text-[13px] font-medium text-ink-muted hover:text-ink-body">
+      <button type="button" onClick={() => router.push("/")} className="inline-flex items-center gap-2 text-control font-medium text-ink-muted hover:text-ink-body">
         <ArrowLeft size={14} /> Back to your workspace
       </button>
 
-      <header className="mt-5 flex items-center gap-3">
+      <header className="mt-4 flex items-center gap-3">
         <span className="ledger-stamp shrink-0">{account.displayName.slice(0, 1)}</span>
         <div className="min-w-0">
-          <h1 className="truncate font-heading text-xl font-semibold tracking-[-0.015em] text-ink">{account.displayName}</h1>
+          <h1 className="truncate font-heading text-title font-semibold tracking-[-0.015em] text-ink">{account.displayName}</h1>
           <p className="ledger-meta mt-1 truncate">{account.currency} · {account.timezone}</p>
         </div>
       </header>
@@ -118,20 +118,20 @@ export function ProfilePanel() {
         {notice ? <Notice tone="success">{notice}</Notice> : null}
       </div>
 
-      <section className="mt-6 rounded-[24px] border border-line bg-surface p-5 shadow-[0_16px_50px_rgba(26,48,40,0.06)] sm:p-6">
+      <section className="mt-6 rounded-xl border border-line bg-surface p-4 sm:p-6">
         <h2 className="font-heading text-base font-semibold text-ink">How you sign in</h2>
-        <p className="mt-1 text-xs leading-5 text-ink-muted">
+        <p className="mt-1 text-note leading-5 text-ink-muted">
           Link a phone number and an email address to the same account and either one will
           get you in. Each belongs to one account only.
         </p>
 
-        <ul className="mt-4 divide-y divide-line-soft rounded-[20px] border border-line">
-          {account.identities.map((identity) => <li key={identity.id} className="flex items-center gap-3 px-4 py-3.5">
-            <span aria-hidden className="grid size-9 shrink-0 place-items-center rounded-xl bg-evergreen-tint text-evergreen-ink">{PROVIDER_COPY[identity.provider].icon}</span>
+        <ul className="mt-4 divide-y divide-line rounded-lg border border-line">
+          {account.identities.map((identity) => <li key={identity.id} className="flex items-center gap-3 px-4 py-4">
+            <span aria-hidden className="grid size-9 shrink-0 place-items-center rounded-xl bg-secondary-tint text-secondary">{PROVIDER_COPY[identity.provider].icon}</span>
             <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium text-ink-body">{identity.value}</p>
-              <p className="mt-0.5 flex items-center gap-1 text-xs text-ink-muted">
-                <Check size={12} className="shrink-0 text-evergreen" />
+              <p className="truncate text-control font-medium text-ink-body">{identity.value}</p>
+              <p className="mt-0.5 flex items-center gap-1 text-note text-ink-muted">
+                <Check size={14} className="shrink-0 text-secondary" />
                 {PROVIDER_COPY[identity.provider].label} · verified {formatDate(identity.verifiedAt)}
               </p>
             </div>
@@ -143,24 +143,24 @@ export function ProfilePanel() {
               title={blocked ?? "Remove this sign-in method"}
               disabled={Boolean(blocked) || unlink.isPending}
               onClick={() => unlink.mutate(identity.id)}
-              className="shrink-0 rounded-xl text-ink-muted hover:text-clay"
+              className="shrink-0 rounded-xl text-ink-muted hover:text-danger"
             >
-              {unlink.isPending && unlink.variables === identity.id ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
+              {unlink.isPending && unlink.variables === identity.id ? <Loader2 className="animate-spin" /> : <Trash2 />}
             </Button>
           </li>)}
         </ul>
 
-        {blocked ? <p className="mt-2 text-xs leading-5 text-ink-muted">{blocked}</p> : null}
+        {blocked ? <p className="mt-2 text-note leading-5 text-ink-muted">{blocked}</p> : null}
 
-        <div className="mt-5 space-y-3">
+        <div className="mt-4 space-y-3">
           {(["phone", "email"] as const).map((channel) => {
             const linked = has(channel);
             // A Google-issued address is managed at Google, so the only honest
             // thing to offer here is an explanation, not a disabled button.
             const managed = channel === "email" && googleOwnsEmail;
             if (linking === channel) {
-              return <div key={channel} className="rounded-[20px] border border-evergreen-line bg-evergreen-tint/30 p-4">
-                <p className="mb-3 text-sm font-semibold text-ink-body">{linked ? `Change your ${CHANNEL_COPY[channel].noun}` : `Add a ${CHANNEL_COPY[channel].noun}`}</p>
+              return <div key={channel} className="rounded-lg border border-secondary-line bg-secondary-tint/30 p-4">
+                <p className="mb-3 text-control font-semibold text-ink-body">{linked ? `Change your ${CHANNEL_COPY[channel].noun}` : `Add a ${CHANNEL_COPY[channel].noun}`}</p>
                 <CodeExchange
                   channel={channel}
                   autoFocus
@@ -179,7 +179,7 @@ export function ProfilePanel() {
               </div>;
             }
             if (managed) {
-              return <p key={channel} className="rounded-[20px] border border-line bg-surface-sunken px-4 py-3 text-xs leading-5 text-ink-muted">
+              return <p key={channel} className="rounded-lg border border-line bg-surface-sunken px-4 py-3 text-note leading-5 text-ink-muted">
                 Your email address comes from your Google sign-in, so it’s managed in your
                 Google account rather than here.
               </p>;
@@ -191,13 +191,13 @@ export function ProfilePanel() {
               onClick={() => { setLinking(channel); setNotice(null); setProblem(null); }}
               className="h-11 w-full justify-start rounded-xl px-4"
             >
-              <Plus size={15} />{linked ? `Change your ${CHANNEL_COPY[channel].noun}` : `Add a ${CHANNEL_COPY[channel].noun}`}
+              <Plus />{linked ? `Change your ${CHANNEL_COPY[channel].noun}` : `Add a ${CHANNEL_COPY[channel].noun}`}
             </Button>;
           })}
         </div>
       </section>
 
-      <p className="mt-4 text-xs leading-5 text-ink-muted">
+      <p className="mt-4 text-note leading-5 text-ink-muted">
         If a phone number or email address is already linked to another account, it can’t be
         added here. Sign in to that account and delete it first — deleting an account releases
         its phone number and email address.
@@ -210,7 +210,7 @@ export function ProfilePanel() {
         onClick={() => leaveSession.mutate()}
         className="mt-6 h-11 w-full rounded-xl"
       >
-        {leaveSession.isPending ? <Loader2 size={15} className="animate-spin" /> : <LogOut size={15} />}
+        {leaveSession.isPending ? <Loader2 className="animate-spin" /> : <LogOut />}
         Sign out
       </Button>
     </div>

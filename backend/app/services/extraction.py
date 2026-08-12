@@ -7,6 +7,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from ..config import DEFAULT_CURRENCY
 from ..domain import FinancialSourceType, SpendNature, TAXONOMY_FIELD_NAMES, TransactionType
+from ..event_time import local_date, now_utc
 from ..taxonomy_catalog import DefaultCategorySlug, taxonomy_path
 
 @dataclass
@@ -133,7 +134,7 @@ def classify_type(text: str) -> tuple[TransactionType, bool]:
 
 
 def extract_transaction(text: str, today: date | None = None, default_currency: str = DEFAULT_CURRENCY) -> ExtractedTransaction:
-    today = today or date.today()
+    today = today or local_date(now_utc(), None)
     lowered = text.lower().strip()
     transaction_type, type_inferred = classify_type(text)
     amount_minor = parse_amount_minor(text)
@@ -287,7 +288,7 @@ def looks_like_financial_query(text: str) -> bool:
             lowered,
         )
     )
-    return question_or_request or any(token in lowered for token in ("how much", "why did", "compare", "breakdown", "biggest expense", "recurring", "subscription", "afford", "spending", "save this", "saved analys", "duplicate", "reconciliation", "need review", "prepay", "interest save", "emi", "increase my sip", "investment projection"))
+    return question_or_request or any(token in lowered for token in ("how much", "why did", "compare", "breakdown", "biggest expense", "recurring", "subscription", "afford", "spending", "duplicate", "reconciliation", "need review", "prepay", "interest save", "emi", "increase my sip", "investment projection"))
 
 
 _NUMBER_WORDS = {
@@ -308,7 +309,7 @@ _NUMBER_WORDS = {
 
 def parse_spending_period(text: str, today: date | None = None) -> tuple[date, date, str] | None:
     """Resolve common conversational expense periods to inclusive date bounds."""
-    today = today or date.today()
+    today = today or local_date(now_utc(), None)
     lowered = text.lower()
 
     if "last month" in lowered or "previous month" in lowered:

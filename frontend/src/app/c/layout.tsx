@@ -1,9 +1,14 @@
 import { WorkspaceShell } from "@/components/workspace";
 
-// The rail, the scrim and the privacy drawer live here rather than in the page
-// so they survive navigation between conversations. Next replaces the page
-// subtree whenever the [conversationId] segment changes; a layout is the only
-// place above that boundary.
+// The whole workspace lives here rather than in the page, and that is load
+// bearing: Next replaces the page subtree whenever the [conversationId] segment
+// changes, so anything rendered from the page — the header, the composer, the
+// scroll container, every mounted widget — was being destroyed and rebuilt for
+// what is only a change of contents. A layout is the one place above that
+// boundary, so the shell renders the thread itself and switching conversations
+// swaps the transcript in place.
+//
+// The page still exists, because a route needs one; it renders nothing.
 export default function ConversationLayout({ children }: LayoutProps<"/c">) {
   return <WorkspaceShell>{children}</WorkspaceShell>;
 }

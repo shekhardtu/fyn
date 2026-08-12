@@ -20,6 +20,7 @@ from ..domain import (
     TransactionStatus,
     ValueEnum,
 )
+from ..event_time import as_utc, now_utc
 from ..models import (
     FinancialObservation,
     ReconciliationCandidate,
@@ -130,7 +131,7 @@ def observation_hash(user_id: UUID, payload: ObservationIn) -> str:
         "currency": payload.currency.upper(),
         "merchant": normalize_merchant(payload.merchant),
         "transaction_type": payload.transaction_type,
-        "transaction_date": payload.transaction_date.isoformat(),
+        "transaction_at": as_utc(payload.transaction_at or now_utc()).isoformat(),
         "description": (payload.description or "").strip().lower(),
     }
     return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
@@ -155,13 +156,14 @@ def score_match(observation: FinancialObservation, transaction: Transaction, con
     }
     if observation.external_transaction_id and same_source_ids and observation.external_transaction_id not in same_source_ids:
         return Decimal("0"), {"conflicting_same_source_id": True}
-    canonical_dates = [transaction.transaction_date]
-    if transaction.posted_date:
-        canonical_dates.append(transaction.posted_date)
-    observation_dates = [observation.transaction_date]
-    if observation.posted_date:
-        observation_dates.append(observation.posted_date)
-    days = min(abs((observed - canonical).days) for observed in observation_dates for canonical in canonical_dates)
+    canonical_instants = [as_utc(transaction.transaction_at)]
+    if transaction.posted_at:
+        canonical_instants.append(as_utc(transaction.posted_at))
+    observation_instants = [as_utc(observation.transaction_at)]
+    if observation.posted_at:
+        observation_instants.append(as_utc(observation.posted_at))
+    seconds = min(abs((observed - canonical).total_seconds()) for observed in observation_instants for canonical in canonical_instants)
+    days = int(seconds // 86_400)
     description_score = Decimal(str(round(SequenceMatcher(None, (observation.description or "").lower(), (transaction.description or "").lower()).ratio(), 4))) if observation.description and transaction.description else Decimal("0.5")
     account_score = Decimal("0.5")
     # A source-account mask is strong only when the canonical account relationship is known.
@@ -183,12 +185,12 @@ def score_match(observation: FinancialObservation, transaction: Transaction, con
 
 
 def candidate_transactions(db: Session, observation: FinancialObservation, config: ReconciliationConfig = DEFAULT_CONFIG) -> list[Transaction]:
-    start = observation.transaction_date - timedelta(days=config.date_window_days)
-    end = observation.transaction_date + timedelta(days=config.date_window_days)
+    start = observation.transaction_at - timedelta(days=config.date_window_days)
+    end = observation.transaction_at + timedelta(days=config.date_window_days)
     return list(db.scalars(canonical_transactions(observation.user_id, currency=observation.currency).where(
         Transaction.amount_minor == observation.amount_minor,
         Transaction.transaction_type == observation.transaction_type,
-        or_(Transaction.transaction_date.between(start, end), Transaction.posted_date.between(start, end)),
+        or_(Transaction.transaction_at.between(start, end), Transaction.posted_at.between(start, end)),
     )))
 
 
@@ -204,8 +206,8 @@ def attach_observation(
     source_fields = field_values or {
         "amount_minor": observation.amount_minor,
         "merchant_raw": observation.merchant_raw,
-        "transaction_date": observation.transaction_date.isoformat(),
-        "posted_date": observation.posted_date.isoformat() if observation.posted_date else None,
+        "transaction_at": as_utc(observation.transaction_at).isoformat(),
+        "posted_at": as_utc(observation.posted_at).isoformat() if observation.posted_at else None,
     }
     db.add(TransactionSource(
         transaction_id=transaction.id,
@@ -237,8 +239,8 @@ def _new_transaction(db: Session, observation: FinancialObservation, config: Rec
         amount_minor=observation.amount_minor,
         currency=observation.currency,
         merchant_name=observation.merchant_raw,
-        transaction_date=observation.transaction_date,
-        posted_date=observation.posted_date,
+        transaction_at=observation.transaction_at,
+        posted_at=observation.posted_at,
         description=observation.description,
         status=TransactionStatus.CONFIRMED if config.source_authority.get(observation.source_type, 0) >= 80 else TransactionStatus.PROVISIONAL,
         confidence=observation.confidence,
@@ -282,8 +284,8 @@ def _ai_match_advice(
         "currency": observation.currency,
         "merchant_raw": observation.merchant_raw,
         "merchant_normalized": observation.merchant_normalized,
-        "transaction_date": observation.transaction_date.isoformat(),
-        "posted_date": observation.posted_date.isoformat() if observation.posted_date else None,
+        "transaction_at": as_utc(observation.transaction_at).isoformat(),
+        "posted_at": as_utc(observation.posted_at).isoformat() if observation.posted_at else None,
         "reference_number": observation.reference_number,
         "description": observation.description,
     }
@@ -292,9 +294,8 @@ def _ai_match_advice(
         "amount_minor": transaction.amount_minor,
         "currency": transaction.currency,
         "merchant": transaction.merchant_name,
-        "transaction_date": transaction.transaction_date.isoformat(),
-        "transaction_time": transaction.transaction_time,
-        "posted_date": transaction.posted_date.isoformat() if transaction.posted_date else None,
+        "transaction_at": as_utc(transaction.transaction_at).isoformat(),
+        "posted_at": as_utc(transaction.posted_at).isoformat() if transaction.posted_at else None,
         "description": transaction.description,
         "source_types": sorted({source.source_type for source in transaction.sources}),
         "source_accounts": sorted({source.source_account for source in transaction.sources if source.source_account}),
@@ -333,6 +334,11 @@ def _existing_observation(
 
 
 def ingest_observation(db: Session, user_id: UUID, payload: ObservationIn, config: ReconciliationConfig = DEFAULT_CONFIG) -> ReconciliationResultOut:
+    payload = payload.model_copy(update={
+        "transaction_at": as_utc(payload.transaction_at or now_utc()),
+        "posted_at": as_utc(payload.posted_at) if payload.posted_at else None,
+        "observed_at": as_utc(payload.observed_at or now_utc()),
+    })
     source_hash = observation_hash(user_id, payload)
     existing = _existing_observation(db, user_id, payload, source_hash)
     if existing:
@@ -360,8 +366,8 @@ def ingest_observation(db: Session, user_id: UUID, payload: ObservationIn, confi
         currency=payload.currency.upper(),
         merchant_raw=payload.merchant,
         merchant_normalized=normalize_merchant(payload.merchant),
-        transaction_date=payload.transaction_date,
-        posted_date=payload.posted_date,
+        transaction_at=payload.transaction_at,
+        posted_at=payload.posted_at,
         reference_number=payload.reference_number,
         description=payload.description,
         observed_at=payload.observed_at,

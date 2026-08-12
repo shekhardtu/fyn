@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .config import DEFAULT_CURRENCY
 from .domain import ExecutionStatus, FinancialSourceType, IdentityProvider, IdentitySource, ImportStatus, MESSAGE_SOURCE_TYPES, OtpChannel, ReconciliationOutcome, SpendNature, TaxonomyOperation, TransactionStatus, TransactionType, ValueEnum, WidgetActionId
+from .event_time import as_utc, from_local_parts, now_utc
 from .services.tool_models import AffordabilityInput, InvestmentProjectionInput, LoanWithPrepaymentInput
 from .validation import DataFieldKey
 # VisualEncodingContract and VisualFieldEncoding are unused here but re-exported:
@@ -216,7 +217,12 @@ class InvestmentScenarioActionPayload(InvestmentProjectionInput):
 class UpdateDraftPayload(DraftActionPayload):
     amount_minor: int | None = Field(default=None, alias="amountMinor", gt=0)
     merchant: str | None = Field(default=None, max_length=160)
-    date: DateValue | None = None
+    transaction_at: datetime | None = Field(default=None, alias="transactionAt")
+
+    @field_validator("transaction_at")
+    @classmethod
+    def utc_transaction_at(cls, value: datetime | None) -> datetime | None:
+        return as_utc(value) if value is not None else None
 
 
 class TransactionActionPayload(ActionPayloadBase):
@@ -226,13 +232,18 @@ class TransactionActionPayload(ActionPayloadBase):
 class UpdateSavedTransactionPayload(TransactionActionPayload):
     amount_minor: int = Field(alias="amountMinor", gt=0)
     merchant: str | None = Field(default=None, max_length=160)
-    date: DateValue | None = None
+    transaction_at: datetime | None = Field(default=None, alias="transactionAt")
     transaction_type: TransactionType | None = Field(default=None, alias="transactionType")
     location: str | None = Field(default=None, max_length=160)
     spend_nature: SpendNature | None = Field(default=None, alias="spendNature")
     category_id: UUID | None = Field(default=None, alias="categoryId")
     subcategory_id: UUID | None = Field(default=None, alias="subcategoryId")
     tags: list[str] | str | None = None
+
+    @field_validator("transaction_at")
+    @classmethod
+    def utc_transaction_at(cls, value: datetime | None) -> datetime | None:
+        return as_utc(value) if value is not None else None
 
 
 class ReconciliationActionPayload(ActionPayloadBase):
@@ -499,9 +510,7 @@ class ConfirmationCardData(WidgetDataBase):
     source_account: str | None = Field(default=None, alias="sourceAccount")
     destination_account: str | None = Field(default=None, alias="destinationAccount")
     transaction_type: TransactionType = Field(alias="transactionType")
-    date: str
-    time: str | None = None
-    timezone: str | None = None
+    transaction_at: datetime = Field(alias="transactionAt")
     category: str | None = None
     subcategory: str | None = None
     location: str | None = None
@@ -517,14 +526,12 @@ class TransactionPreviewData(WidgetDataBase):
     draft_id: str | None = Field(default=None, alias="draftId")
     amount_minor: int = Field(alias="amountMinor")
     currency: str
-    date: str
+    transaction_at: datetime = Field(alias="transactionAt")
     status: str
     source_count: int | None = Field(default=None, alias="sourceCount")
     transaction_type: TransactionType | None = Field(default=None, alias="transactionType")
     category: str | None = None
     subcategory: str | None = None
-    time: str | None = None
-    timezone: str | None = None
     location: str | None = None
     spend_nature: SpendNature | None = Field(default=None, alias="spendNature")
     tags: list[str] = Field(default_factory=list)
@@ -537,7 +544,7 @@ class TransactionEditData(WidgetDataBase):
     amount_minor: int | None = Field(default=None, alias="amountMinor")
     currency: str | None = None
     merchant: str | None = None
-    date: str | None = None
+    transaction_at: datetime | None = Field(default=None, alias="transactionAt")
     transaction_type: TransactionType | None = Field(default=None, alias="transactionType")
     location: str | None = None
     spend_nature: SpendNature | None = Field(default=None, alias="spendNature")
@@ -848,12 +855,37 @@ class ObservationIn(BaseModel):
     amount_minor: int = Field(gt=0)
     currency: str = Field(default=DEFAULT_CURRENCY, min_length=3, max_length=3)
     merchant: str | None = None
-    transaction_date: DateValue
-    posted_date: DateValue | None = None
+    transaction_at: datetime | None = None
+    posted_at: datetime | None = None
     reference_number: str | None = None
     description: str | None = None
     raw_reference: str | None = None
     observed_at: datetime | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_dates(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        for legacy, canonical in (("transaction_date", "transaction_at"), ("posted_date", "posted_at")):
+            if normalized.get(canonical) is not None or normalized.get(legacy) is None:
+                continue
+            day = normalized[legacy]
+            if not isinstance(day, DateValue):
+                day = DateValue.fromisoformat(str(day))
+            normalized[canonical] = from_local_parts(day, None, "UTC")
+        normalized.setdefault("transaction_at", now_utc())
+        return normalized
+
+    @model_validator(mode="after")
+    def utc_instants(self) -> "ObservationIn":
+        self.transaction_at = as_utc(self.transaction_at or now_utc())
+        if self.posted_at is not None:
+            self.posted_at = as_utc(self.posted_at)
+        if self.observed_at is not None:
+            self.observed_at = as_utc(self.observed_at)
+        return self
 
 
 class ReconciliationResultOut(BaseModel):
@@ -871,7 +903,7 @@ class TransactionOut(BaseModel):
     amount_minor: int
     currency: str
     merchant_name: str | None
-    transaction_date: DateValue
+    transaction_at: datetime
     status: TransactionStatus
     source_count: int
 

@@ -9,11 +9,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..domain import ACTIVE_STATUS, SpendNature
+from ..event_time import as_utc, utc_range_for_local_dates
 from ..models import Account, Budget, Goal, Loan, Transaction
 from ..schemas import DataReference, Widget, WidgetType
 from .analytics import category_breakdown, month_bounds, recurring_expenses, shift_month, spending_summary
 from .calculators import loan_strategy_options
-from .currency import format_money_minor, user_currency
+from .currency import format_money_minor, user_currency, user_timezone
 from .semantic import BINARY_TRANSFORM_OPERATIONS, WINDOW_TRANSFORM_OPERATIONS, AnalysisPlan, AnalysisTransform, execute_finance_query
 from .semantic_registry import TIME_GRAIN_SPECS
 from .taxonomy import TaxonomyRepository
@@ -341,8 +342,10 @@ def three_month_allocation(db: Session, user_id: UUID, currency: str, today: dat
 
 def avoidable_expense_candidates(db: Session, user_id: UUID, currency: str, today: date) -> IntelligenceResult:
     start = shift_month(today.replace(day=1), -2)
+    start_at, end_at = utc_range_for_local_dates(start, today, user_timezone(db, user_id))
     transactions = list(db.scalars(expense_transactions(user_id, currency=currency).where(
-        Transaction.transaction_date.between(start, today),
+        Transaction.transaction_at >= start_at,
+        Transaction.transaction_at < end_at,
     ).order_by(Transaction.amount_minor.desc()).limit(500)))
     merchant_counts: dict[str, int] = {}
     for transaction in transactions:
@@ -378,7 +381,7 @@ def avoidable_expense_candidates(db: Session, user_id: UUID, currency: str, toda
             "merchant": transaction.merchant_name or "Expense",
             "amountMinor": transaction.amount_minor,
             "currency": transaction.currency,
-            "date": transaction.transaction_date.isoformat(),
+            "transactionAt": as_utc(transaction.transaction_at).isoformat(),
             "category": category.name if category else None,
             "subcategory": subcategory.name if subcategory else None,
             "spendNature": transaction.spend_nature,

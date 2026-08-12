@@ -34,13 +34,14 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from uuid import UUID
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import DEFAULT_TIMEZONE
 from ..models import Category, Subcategory, Transaction, TransactionDraft, TransactionFieldValue, User
+from ..event_time import local_date, local_now, local_time, utc_range_for_local_dates
+from .currency import user_timezone
 from .category_prediction import static_prior_distribution
 from .extraction import normalize_merchant
 
@@ -303,8 +304,9 @@ class Suggestion:
 class EvidenceLedger:
     """Decayed, per-channel evidence read straight off ``transactions``."""
 
-    def __init__(self, reference: date) -> None:
+    def __init__(self, reference: date, timezone_name: str = DEFAULT_TIMEZONE) -> None:
         self.reference = reference
+        self.timezone_name = timezone_name
         self.category_channels: dict[str, dict[str, Tally]] = defaultdict(lambda: defaultdict(Tally))
         # Subcategory evidence is conditioned on its parent category, so the
         # same channel key can serve a different subcategory per category.
@@ -322,14 +324,15 @@ class EvidenceLedger:
             return
         category = str(transaction.category_id)
         subcategory = str(transaction.subcategory_id) if transaction.subcategory_id else None
-        weight = self.decay(transaction.transaction_date) * (CONFIRMED_WEIGHT if confirmed else OBSERVED_WEIGHT)
+        day = local_date(transaction.transaction_at, self.timezone_name)
+        weight = self.decay(day) * (CONFIRMED_WEIGHT if confirmed else OBSERVED_WEIGHT)
 
         self.category_totals.add(category, weight, confirmed=confirmed)
         if subcategory:
             self.subcategory_totals[category].add(subcategory, weight, confirmed=confirmed)
         previous = self.last_used.get(category)
-        if previous is None or transaction.transaction_date > previous:
-            self.last_used[category] = transaction.transaction_date
+        if previous is None or day > previous:
+            self.last_used[category] = day
 
         for channel, key in self._context_keys(transaction):
             self.category_channels[channel][key].add(category, weight, confirmed=confirmed)
@@ -352,7 +355,7 @@ class EvidenceLedger:
             keys.append((PLACE, place))
         if area:
             keys.append((AREA, area))
-        bucket = time_bucket(_parse_hour(transaction.transaction_time), transaction.transaction_date)
+        bucket = time_bucket(local_time(transaction.transaction_at, self.timezone_name).hour, local_date(transaction.transaction_at, self.timezone_name))
         if bucket:
             keys.append((TIME, bucket))
         band = amount_band(transaction.amount_minor)
@@ -380,15 +383,17 @@ def _location_keys(latitude, longitude, accuracy: int | None) -> tuple[str | Non
 
 def load_ledger(db: Session, user_id: UUID, *, reference: date) -> EvidenceLedger:
     """Load one user's decayed evidence within the lookback window."""
-    ledger = EvidenceLedger(reference)
+    timezone_name = user_timezone(db, user_id)
+    ledger = EvidenceLedger(reference, timezone_name)
     window_start = date.fromordinal(max(reference.toordinal() - EVIDENCE_WINDOW_DAYS, 1))
+    start_at, end_at = utc_range_for_local_dates(window_start, reference, timezone_name)
     rows = list(db.scalars(
         select(Transaction).where(
             Transaction.user_id == user_id,
             Transaction.deleted_at.is_(None),
             Transaction.category_id.is_not(None),
-            Transaction.transaction_date >= window_start,
-            Transaction.transaction_date <= reference,
+            Transaction.transaction_at >= start_at,
+            Transaction.transaction_at < end_at,
         )
     ))
     confirmed = set(db.scalars(
@@ -411,10 +416,9 @@ def context_from_draft(draft: TransactionDraft, *, local_now: datetime) -> Conte
     """Derive the context keys for the draft being categorised."""
     merchant = normalize_merchant(draft.merchant_name)
     place, area = _location_keys(draft.latitude, draft.longitude, draft.location_accuracy)
-    hour = _parse_hour(draft.transaction_time)
-    day = draft.transaction_date or local_now.date()
-    if hour is None and draft.transaction_date in (None, local_now.date()):
-        hour = local_now.hour
+    timezone_name = getattr(local_now.tzinfo, "key", None)
+    day = local_date(draft.transaction_at, timezone_name)
+    hour = local_time(draft.transaction_at, timezone_name).hour
     return Context(
         merchant=merchant,
         tokens=tokenize(draft.raw_text, draft.merchant_name, draft.description),
@@ -699,10 +703,7 @@ def _select_slots(suggestions: list[Suggestion], ledger: EvidenceLedger, limit: 
 
 
 def _local_now(user: User | None) -> datetime:
-    try:
-        return datetime.now(ZoneInfo(user.timezone if user else DEFAULT_TIMEZONE))
-    except ZoneInfoNotFoundError:
-        return datetime.now(ZoneInfo("UTC"))
+    return local_now(user.timezone if user else DEFAULT_TIMEZONE)
 
 
 @dataclass

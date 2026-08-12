@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import date, datetime
+from datetime import datetime
 from uuid import UUID
 
 import hashlib
@@ -15,6 +15,7 @@ from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from .database import SessionLocal, get_db
+from .event_time import as_utc, local_date_string, now_utc
 from .config import CSV_UPLOAD_MAX_BYTES, get_settings
 from .contracts import STREAM_EVENT_MODELS
 from .domain import ExecutionStatus, FinancialSourceType, ImportRecordStatus, ImportStatus, REVOCABLE_SOURCE_TYPES, ReconciliationOutcome, WidgetActionId
@@ -133,7 +134,7 @@ def health() -> HealthOut:
     settings = get_settings()
     return HealthOut.model_validate({
         "status": "ok",
-        "time": datetime.utcnow().isoformat(),
+        "time": now_utc().isoformat(),
         "database": "postgresql" if settings.database_url.startswith("postgresql") else "sqlite",
         "agent_mode": _agent_mode(settings),
         "models": _agent_models(settings),
@@ -478,7 +479,7 @@ def create_observation(request: ObservationIn, db: Session = Depends(get_db), us
 @router.post("/ingest/message", response_model=FinancialMessageOut)
 def ingest_message(request: FinancialMessageIn, db: Session = Depends(get_db), user: User = Depends(current_user)) -> FinancialMessageOut:
     _ensure_source_active(db, user.id, request.source_type)
-    adapted = MessageAdapter(request.source_type).adapt_message(request.text, request.message_id, request.observed_at)
+    adapted = MessageAdapter(request.source_type).adapt_message(request.text, request.message_id, request.observed_at, user.timezone)
     if not adapted.relevant or not adapted.observation:
         return FinancialMessageOut(classification=adapted.classification, relevant=False, reason=adapted.reason)
     result = ingest_observation(db, user.id, adapted.observation)
@@ -500,7 +501,7 @@ async def import_csv(conversation_id: UUID = Form(...), file: UploadFile = File(
         result = import_summary(existing, idempotent_replay=True)
         return _record_import_preview(db, conversation, file.filename, result)
     try:
-        rows = CSVAdapter().adapt(content)
+        rows = CSVAdapter().adapt(content, user.timezone)
     except (UnicodeDecodeError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     job = ImportJob(user_id=user.id, source_type=FinancialSourceType.CSV.value, filename=file.filename, file_hash=file_hash, status=ImportStatus.AWAITING_CONFIRMATION, total_records=len(rows))
@@ -561,7 +562,7 @@ def transactions(db: Session = Depends(get_db), user: User = Depends(current_use
     statement = (
         canonical_transactions(user.id)
         .options(selectinload(Transaction.sources))
-        .order_by(Transaction.transaction_date.desc(), Transaction.created_at.desc())
+        .order_by(Transaction.transaction_at.desc(), Transaction.created_at.desc())
     )
     rows = list(db.scalars(statement))
     return [TransactionOut(
@@ -570,7 +571,7 @@ def transactions(db: Session = Depends(get_db), user: User = Depends(current_use
         amount_minor=item.amount_minor,
         currency=item.currency,
         merchant_name=item.merchant_name,
-        transaction_date=item.transaction_date,
+        transaction_at=as_utc(item.transaction_at),
         status=item.status,
         source_count=len(item.sources),
     ) for item in rows]
@@ -610,7 +611,7 @@ def set_location_preference(request: LocationPreferenceIn, db: Session = Depends
 def revoke_source(source_type: str, db: Session = Depends(get_db), user: User = Depends(current_user)) -> SourceRevocationOut:
     if source_type not in {item.value for item in REVOCABLE_SOURCE_TYPES}:
         raise HTTPException(status_code=404, detail="Unknown financial source")
-    set_user_preference(db, user.id, f"source:{source_type}:revoked", {"revoked": True, "revokedAt": datetime.utcnow().isoformat()})
+    set_user_preference(db, user.id, f"source:{source_type}:revoked", {"revoked": True, "revokedAt": now_utc().isoformat()})
     db.add(AuditLog(user_id=user.id, action="privacy.source_revoked", entity_type="financial_source", metadata_redacted={"sourceType": source_type}))
     db.commit()
     return SourceRevocationOut(source_type=source_type, active=False)
@@ -619,10 +620,11 @@ def revoke_source(source_type: str, db: Session = Depends(get_db), user: User = 
 @router.get("/privacy/export")
 def export_data(db: Session = Depends(get_db), user: User = Depends(current_user)) -> Response:
     payload = {
-        "exportedAt": datetime.utcnow().isoformat(),
+        "exportedAt": now_utc().isoformat(),
         **export_user_data(db, user),
     }
-    return JSONResponse(payload, headers={"Content-Disposition": f'attachment; filename="fyn-ai-export-{date.today().isoformat()}.json"'})
+    export_day = local_date_string(now_utc(), user.timezone)
+    return JSONResponse(payload, headers={"Content-Disposition": f'attachment; filename="fyn-ai-export-{export_day}.json"'})
 
 
 @router.delete("/privacy/data", response_model=DataDeletionOut)

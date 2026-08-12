@@ -1,6 +1,7 @@
 "use client";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { LucideProvider } from "lucide-react";
 import { useState } from "react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
@@ -16,5 +17,14 @@ export function Providers({ children }: { children: React.ReactNode }) {
       mutations: { retry: 0 },
     },
   }));
-  return <QueryClientProvider client={client}><TooltipProvider>{children}</TooltipProvider></QueryClientProvider>;
+  // One place decides how icons are drawn. Lucide's default 2px stroke reads
+  // heavy beside 13px control text; 1.5 with the mitred joins set in
+  // `globals.css` is what makes the set look engraved rather than sketched.
+  // 15px matches the cap height of the body face, so an icon sitting inline
+  // with a label lines up with it instead of overhanging.
+  return <QueryClientProvider client={client}>
+    <LucideProvider size={15} strokeWidth={1.5}>
+      <TooltipProvider>{children}</TooltipProvider>
+    </LucideProvider>
+  </QueryClientProvider>;
 }

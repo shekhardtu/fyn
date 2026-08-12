@@ -208,15 +208,15 @@ MODEL_BINDINGS = {
 @lru_cache(maxsize=1)
 def semantic_schema_registry() -> SemanticSchemaRegistry:
     entities = [
-        SemanticEntity(name="transactions", table="transactions", description="Canonical financial events after reconciliation.", grain="one canonical real-world financial event", tenant_key="user_id", soft_delete_key="deleted_at", event_date_key="transaction_date", event_time_key="transaction_time", supported_time_grains=list(TIME_GRAINS), time_semantics="event", fields=[
+        SemanticEntity(name="transactions", table="transactions", description="Canonical financial events after reconciliation.", grain="one canonical real-world financial event", tenant_key="user_id", soft_delete_key="deleted_at", event_date_key="transaction_at", event_time_key="transaction_at", supported_time_grains=list(TIME_GRAINS), time_semantics="event", fields=[
             _field("id", "id", "uuid", "identifier", "Canonical transaction identifier.", "eq", "in"),
             _field("transaction_type", "transaction_type", "string", "enum", "Expense, income, transfer, investment, loan payment, refund, reimbursement, cash withdrawal or deposit.", "eq", "neq", "in"),
             _field("amount", "amount_minor", "integer", "money_minor", "Exact amount in currency minor units; never floating point.", "eq", "gt", "gte", "lt", "lte", "between"),
             _field("currency", "currency", "string", "currency", "ISO-4217 transaction currency.", "eq", "in"),
             _field("merchant", "merchant_name", "string", "merchant", "Canonical display merchant while preserving source descriptions separately.", "eq", "neq", "in", "contains"),
-            _field("transaction_date", "transaction_date", "date", "date", "Date the financial event occurred.", "eq", "between", "gte", "lte"),
-            _field("transaction_time", "transaction_time", "string", "time", "Local time the financial event occurred when recorded; nullable and never inferred for analytics.", "eq", "gte", "lte"),
-            _field("posted_date", "posted_date", "date", "date", "Date the source posted the transaction.", "eq", "between", "gte", "lte"),
+            _field("transaction_date", "transaction_at", "datetime", "date", "UTC instant of the financial event, projected to the requested timezone for calendar operations.", "eq", "between", "gte", "lte"),
+            _field("transaction_time", "transaction_at", "datetime", "time", "UTC instant of the financial event, projected to the requested timezone for sub-day operations.", "eq", "gte", "lte"),
+            _field("posted_date", "posted_at", "datetime", "date", "UTC instant when the source posted the transaction.", "eq", "between", "gte", "lte"),
             _field("spend_nature", "spend_nature", "string", "enum", "User/inference label: essential, discretionary, potentially avoidable or unknown.", "eq", "in"),
             _field("status", "status", "string", "status", "Provisional or source-confirmed canonical status.", "eq", "in"),
             _field("location", "location_label", "string", "text", "Coarse transaction location label when permitted.", "eq", "contains", sensitive=True),
@@ -281,7 +281,7 @@ def semantic_schema_registry() -> SemanticSchemaRegistry:
             _field("observed_at", "observed_at", "datetime", "date", "When this source was observed.", "between", "gte", "lte"),
             _field("confidence", "confidence", "decimal", "percentage", "Source confidence.", "gt", "gte", "lt", "lte"),
         ]),
-        SemanticEntity(name="financial_observations", table="financial_observations", description="Idempotently ingested source events before or after canonical reconciliation. Observation totals are data-quality measures and must never be labelled canonical spending.", grain="one ingested financial observation", tenant_key="user_id", event_date_key="transaction_date", supported_time_grains=list(CALENDAR_TIME_GRAINS), time_semantics="event", fields=[
+        SemanticEntity(name="financial_observations", table="financial_observations", description="Idempotently ingested source events before or after canonical reconciliation. Observation totals are data-quality measures and must never be labelled canonical spending.", grain="one ingested financial observation", tenant_key="user_id", event_date_key="transaction_at", supported_time_grains=list(CALENDAR_TIME_GRAINS), time_semantics="event", fields=[
             _field("id", "id", "uuid", "identifier", "Financial observation identifier.", "eq", "in"),
             _field("source_type", "source_type", "string", "enum", "Manual, SMS, email, bank, CSV, PDF, receipt or API source.", "eq", "in"),
             _field("processing_state", "processing_state", "string", "status", "Received, attached, review or other ingestion state.", "eq", "in"),
@@ -289,8 +289,8 @@ def semantic_schema_registry() -> SemanticSchemaRegistry:
             _field("amount", "amount_minor", "integer", "money_minor", "Observed amount in minor units; may duplicate another source observation.", "eq", "gt", "gte", "lt", "lte", "between"),
             _field("currency", "currency", "string", "currency", "Observed ISO-4217 currency.", "eq", "in"),
             _field("merchant", "merchant_normalized", "string", "merchant", "Normalized observed merchant, when present.", "eq", "in", "contains"),
-            _field("transaction_date", "transaction_date", "date", "date", "Observed event date.", "eq", "between", "gte", "lte"),
-            _field("posted_date", "posted_date", "date", "date", "Observed posting date.", "eq", "between", "gte", "lte"),
+            _field("transaction_date", "transaction_at", "datetime", "date", "UTC instant of the observed event.", "eq", "between", "gte", "lte"),
+            _field("posted_date", "posted_at", "datetime", "date", "UTC instant of source posting.", "eq", "between", "gte", "lte"),
             _field("confidence", "confidence", "decimal", "percentage", "Parsing confidence for the observation.", "gt", "gte", "lt", "lte"),
         ]),
         SemanticEntity(name="budgets", table="budgets", description="User budget limits, optionally by category.", grain="one budget", tenant_key="user_id", time_semantics="snapshot", fields=[
@@ -308,11 +308,11 @@ def semantic_schema_registry() -> SemanticSchemaRegistry:
             _field("target_date", "target_date", "date", "date", "Desired completion date.", "between", "gte", "lte"),
             _field("currency", "currency", "string", "currency", "Goal currency.", "eq", "in"),
         ]),
-        SemanticEntity(name="goal_contributions", table="goal_contributions", description="Historical contributions allocated to savings goals.", grain="one goal contribution", tenant_key="user_id", event_date_key="contribution_date", supported_time_grains=list(CALENDAR_TIME_GRAINS), time_semantics="event", fields=[
+        SemanticEntity(name="goal_contributions", table="goal_contributions", description="Historical contributions allocated to savings goals.", grain="one goal contribution", tenant_key="user_id", event_date_key="contribution_at", supported_time_grains=list(CALENDAR_TIME_GRAINS), time_semantics="event", fields=[
             _field("id", "id", "uuid", "identifier", "Goal contribution identifier.", "eq", "in"),
             _field("amount", "amount_minor", "integer", "money_minor", "Contribution amount in minor units.", "gt", "gte", "lt", "lte"),
             _field("currency", "currency", "string", "currency", "Contribution currency.", "eq", "in"),
-            _field("contribution_date", "contribution_date", "date", "date", "Date the amount was allocated to the goal.", "between", "gte", "lte"),
+            _field("contribution_date", "contribution_at", "datetime", "date", "UTC instant when the amount was allocated, projected to the requested timezone for calendar operations.", "between", "gte", "lte"),
         ]),
         SemanticEntity(name="loans", table="loans", description="Saved active and inactive loan profiles.", grain="one loan", tenant_key="user_id", time_semantics="snapshot", fields=[
             _field("id", "id", "uuid", "identifier", "Loan identifier.", "eq", "in"),

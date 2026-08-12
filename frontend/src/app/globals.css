@@ -1,167 +1,168 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-@custom-variant dark (&:is(.dark *));
+/* ── The system ───────────────────────────────────────────────────────────
+   White is the ground. One secondary carries every interactive surface, and
+   it is deliberately not a money colour: green and red mean income and
+   expense and nothing else, so a filled control can never be misread as a
+   judgement about a number. No button is ever green.
+
+   Everything below derives from the tokens in `:root`. A literal colour in a
+   component is a bug — there is a token for it, or the token is missing. */
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-body);
-  --font-heading: var(--font-display);
-  --color-paper: var(--paper);
-  --color-paper-raised: var(--paper-raised);
-  --color-rail: var(--rail);
+  /* Grounds and ink */
+  --color-background: var(--surface);
+  --color-foreground: var(--ink);
+  --color-ground: var(--ground);
   --color-surface: var(--surface);
-  --color-surface-sunken: var(--surface-sunken);
+  --color-surface-sunken: var(--sunken);
   --color-ink: var(--ink);
   --color-ink-body: var(--ink-body);
   --color-ink-muted: var(--ink-muted);
   --color-line: var(--line);
-  --color-line-soft: var(--line-soft);
-  --color-evergreen: var(--evergreen);
-  --color-evergreen-deep: var(--evergreen-deep);
-  --color-evergreen-ink: var(--evergreen-ink);
-  --color-evergreen-tint: var(--evergreen-tint);
-  --color-evergreen-line: var(--evergreen-line);
-  --color-clay: var(--clay);
-  --color-clay-ink: var(--clay-ink);
-  --color-clay-tint: var(--clay-tint);
-  --color-clay-line: var(--clay-line);
-  --color-sidebar-ring: var(--sidebar-ring);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar: var(--sidebar);
-  --color-chart-5: var(--chart-5);
-  --color-chart-4: var(--chart-4);
-  --color-chart-3: var(--chart-3);
-  --color-chart-2: var(--chart-2);
-  --color-chart-1: var(--chart-1);
-  --color-ring: var(--ring);
-  --color-input: var(--input);
-  --color-border: var(--border);
-  --color-destructive: var(--destructive);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-accent: var(--accent);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-muted: var(--muted);
-  --color-secondary-foreground: var(--secondary-foreground);
+  --color-line-strong: var(--line-strong);
+
+  /* Interactive chrome */
   --color-secondary: var(--secondary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-primary: var(--primary);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-popover: var(--popover);
-  --color-card-foreground: var(--card-foreground);
-  --color-card: var(--card);
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
-  --radius-2xl: calc(var(--radius) * 1.8);
-  --radius-3xl: calc(var(--radius) * 2.2);
-  --radius-4xl: calc(var(--radius) * 2.6);
+  --color-secondary-hover: var(--secondary-hover);
+  --color-secondary-tint: var(--secondary-tint);
+  --color-secondary-line: var(--secondary-line);
+  --color-on-secondary: var(--on-secondary);
+
+  /* Data. Never on a control. */
+  --color-money-in: var(--money-in);
+  --color-money-out: var(--money-out);
+
+  /* Chrome semantics, kept separate from the data hues so they can diverge */
+  --color-danger: var(--danger);
+  --color-danger-ink: var(--danger-ink);
+  --color-danger-tint: var(--danger-tint);
+  --color-danger-line: var(--danger-line);
+  --color-attention: var(--attention);
+  --color-attention-tint: var(--attention-tint);
+
+  /* Primitive aliases used by components/ui/* */
+  --color-card: var(--surface);
+  --color-card-foreground: var(--ink);
+  --color-popover: var(--surface);
+  --color-popover-foreground: var(--ink);
+  --color-primary: var(--secondary);
+  --color-primary-foreground: var(--on-secondary);
+  --color-secondary-foreground: var(--on-secondary);
+  --color-muted: var(--sunken);
+  --color-muted-foreground: var(--ink-muted);
+  --color-accent: var(--secondary-tint);
+  --color-accent-foreground: var(--secondary-hover);
+  --color-destructive: var(--danger);
+  --color-border: var(--line);
+  --color-input: var(--line-strong);
+  --color-ring: var(--secondary);
+
+  /* Four steps, replacing sixteen. Cards 10, controls 8, chips 6. The named
+     Tailwind steps are repointed rather than removed, so existing
+     `rounded-xl` / `rounded-2xl` usages tighten without being edited. */
+  --radius-xs: 6px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-2xl: 12px;
+  --radius-3xl: 14px;
+  --radius-4xl: 16px;
+
+  /* Six sizes: 28 / 19 / 15 / 14 / 12 / 11. The floor is 11px — nothing
+     smaller is readable on a phone.
+
+     `control` is 14 rather than 13. It sets every button label and the line
+     you write on, and at 13 those read as small print next to 15px prose —
+     which is the wrong signal for the two things you actually operate. */
+  --text-display: 1.75rem;
+  --text-title: 1.1875rem;
+  --text-body: 0.9375rem;
+  --text-control: 0.875rem;
+  --text-note: 0.75rem;
+  --text-meta: 0.6875rem;
+
+  --ease-swift: cubic-bezier(0.2, 0.7, 0.3, 1);
+
+  --font-sans: var(--font-body);
+  --font-heading: var(--font-display);
 }
 
 :root {
-  /* Ledger palette. Paper is the ground, evergreen carries every committed
-     action, clay is reserved for money leaving or data being destroyed. */
-  --paper: #f4f4ef;
-  --paper-raised: #fafaf6;
-  --rail: #eceee9;
-  --surface: #fffefa;
-  --surface-sunken: #f3f5f1;
-  --ink: #1b2b26;
-  --ink-body: #34443d;
-  --ink-muted: #5a6a63;
-  --line: #dbe0da;
-  --line-soft: #e7e9e4;
-  --evergreen: #21584b;
-  --evergreen-deep: #18483e;
-  --evergreen-ink: #285d50;
-  --evergreen-tint: #dce9e3;
-  --evergreen-line: #bcd3ca;
-  --clay: #9c4f36;
-  --clay-ink: #7f422e;
-  --clay-tint: #fff3ed;
-  --clay-line: #e8c6b6;
+  /* Grounds */
+  --surface: #ffffff;
+  --ground: #fafafb;
+  --sunken: #f2f3f6;
 
-  --background: var(--surface);
-  --foreground: var(--ink);
-  --card: var(--surface);
-  --card-foreground: var(--ink);
-  --popover: var(--surface);
-  --popover-foreground: var(--ink);
-  --primary: var(--evergreen);
-  --primary-foreground: #f5faf7;
-  --secondary: var(--surface-sunken);
-  --secondary-foreground: var(--ink-body);
-  --muted: var(--surface-sunken);
-  --muted-foreground: var(--ink-muted);
-  --accent: var(--evergreen-tint);
-  --accent-foreground: var(--evergreen-ink);
-  --destructive: var(--clay);
-  --border: var(--line);
-  --input: var(--line);
-  --ring: #4f8474;
-  --chart-1: #22594d;
-  --chart-2: #c98f4b;
-  --chart-3: #5f8880;
-  --chart-4: #a6674f;
-  --chart-5: #8a9a5b;
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
-}
+  /* Ink */
+  --ink: #101116;
+  --ink-body: #3c4048;
+  --ink-muted: #6c727c;
 
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  /* Rules */
+  --line: #e5e7ec;
+  --line-soft: #eef0f4;
+  --line-strong: #d0d4dc;
+
+  /* The one interactive colour */
+  --secondary: #4340e0;
+  --secondary-hover: #3733c4;
+  --secondary-tint: #eeeefd;
+  --secondary-line: #c9c8f7;
+  --on-secondary: #ffffff;
+
+  /* Money. Data only — a control never wears these. */
+  --money-in: #0b7d57;
+  --money-out: #c0432c;
+
+  /* Destructive and cautionary chrome. Same family as money-out today,
+     declared separately so tuning one cannot silently retint the other. */
+  --danger: #c0432c;
+  --danger-ink: #a63722;
+  --danger-tint: #fdf1ee;
+  --danger-line: #f3cfc6;
+  --attention: #9c5f19;
+  --attention-tint: #fdf6ec;
+
+  /* Control heights. The visual box; the touch target is always ≥44px and is
+     added by the control itself, never by growing these — which is what lets
+     the boxes be this small. Fields keep more height than buttons because a
+     caret and a full line of typed text need the room; a label does not. */
+  --h-compact: 1.625rem;
+  --h-control: 2rem;
+  --h-lg: 2.25rem;
+  --h-field: 2.5rem;
+
+  /* Motion. Four durations, one easing. */
+  --m-state: 110ms;
+  --m-enter: 180ms;
+  --m-surface: 240ms;
+  --m-overlay: 320ms;
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+
+  /* One shadow, and only overlays that leave the document may use it. */
+  --shadow-overlay: 0 12px 40px rgb(16 17 22 / 0.14);
+
+  /* Layout, published so breakout widths derive from the rail rather than
+     re-encoding it as a magic number in three separate files. */
+  --rail-w: 17.5rem;
+  --column-w: 49.375rem;
+
+  /* The rail's bands. The header matches the thread header exactly so the
+     wordmark and the conversation title sit on one line across the divider —
+     they used to miss each other by six pixels, which is the kind of gap you
+     cannot unsee once you have seen it. */
+  --rail-header-h: 3.5rem;
 }
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-line;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-surface text-ink-body;
     font-family: var(--font-body), sans-serif;
     overscroll-behavior: none;
   }
@@ -170,40 +171,89 @@
   }
 }
 
-button, textarea, input, select {
-  font: inherit;
+@layer base {
+  /* Form controls otherwise render in the browser's own UI font at its own
+     size. This puts them back on the page's typography.
+
+     It lives inside `base` deliberately: an unlayered rule beats every layered
+     Tailwind utility no matter how specific, so as plain CSS this silently
+     overrode the type scale on every button and the composer — they were all
+     rendering at the inherited 16px while their classes said otherwise. */
+  button, textarea, input, select {
+    font: inherit;
+  }
 }
 
 ::selection {
-  background: var(--evergreen-tint);
-  color: #193d34;
+  background: var(--secondary-tint);
+  color: var(--secondary-hover);
 }
 
-/* Every interactive surface gets the same ring, including the raw buttons
-   that do not go through the Button primitive. */
-:where(a, button, input, select, textarea, [role="switch"], [tabindex]):focus-visible {
-  outline: 2px solid var(--ring);
+/* Every tabbable interactive surface gets the same ring, including the raw
+   buttons that do not go through the Button primitive. `tabindex="-1"`
+   boundaries receive programmatic focus for screen-reader announcements, not
+   keyboard navigation, so drawing a ring around them makes an entire card
+   look selected when a response arrives. */
+:where(a, button, input, select, textarea, [role="switch"], [tabindex]):not([tabindex="-1"]):focus-visible {
+  outline: 2px solid var(--secondary);
   outline-offset: 2px;
   border-radius: inherit;
 }
 
+/* Raw controls that do not go through the Button primitive still owe the same
+   44px target. Applying this is cheaper than routing every small toggle
+   through the primitive, and it changes no layout. */
+.hit-target {
+  position: relative;
+}
+
+.hit-target::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+}
+
+/* One ring per control. A field that wraps its input in its own bordered box
+   shows focus on the box, so the input inside must not draw a second — nested,
+   offset and clipped, which is what the sign-in field was doing. */
+[data-field] :where(input, textarea):focus-visible {
+  outline: none;
+}
+
+/* Lucide ships round joins on a 2px stroke, which reads soft at UI sizes.
+   Mitred joins and a finer stroke are what make the icon set look drawn
+   rather than sketched; the caps stay round so spinners and chevrons do not
+   end in visible squared-off stubs. Stroke width itself is set once on the
+   provider in `components/providers.tsx`. */
+.lucide {
+  stroke-linejoin: miter;
+}
+
+/* A widget whose decision has been made. Legible, still selectable, visibly
+   spent — the class was applied by the renderer long before it meant
+   anything. */
+.widget-readonly {
+  opacity: 0.72;
+}
+
+.widget-readonly button:not([data-readonly-keep]),
+.widget-readonly input,
+.widget-readonly select,
+.widget-readonly textarea {
+  pointer-events: none;
+}
+
 .conversation-scroll {
-  scrollbar-color: #c3cdc7 transparent;
+  scrollbar-color: var(--line-strong) transparent;
   scrollbar-width: thin;
   overscroll-behavior: contain;
 }
 
-/* Content dissolves into the paper just above the closing rule instead of
-   being chopped off at it — a mask, not a scrim. The distinction matters:
-   a translucent overlay repaints live rows at partial alpha, so a card of
-   Edit/Remove controls caught mid-scroll renders as a greyed-out, apparently
-   disabled copy of itself. Masked, those pixels simply stop.
-   `--dock-h` is the measured height of the entry dock. */
-.conversation-scroll[data-docked="true"] {
-  --fade: 26px;
-  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - var(--dock-h) - var(--fade)), transparent calc(100% - var(--dock-h)));
-  mask-image: linear-gradient(to bottom, #000 calc(100% - var(--dock-h) - var(--fade)), transparent calc(100% - var(--dock-h)));
-}
+/* The transcript no longer needs a mask at its foot. It used to end underneath
+   the composer, which floated over it, so the last rows had to be dissolved
+   rather than chopped. The composer is a row of the column now — header,
+   messages, composer, with only the middle one scrolling — so the box simply
+   ends where the composer begins and there is nothing to hide. */
 
 /* `content-visibility: auto` was tried on each turn here and taken back out.
    It did skip the layout and paint of off-screen turns — about 12% off the time
@@ -224,7 +274,7 @@ button, textarea, input, select {
 /* Panels own their scrolling: a wheel that bottoms out inside the rail or the
    privacy drawer must not start scrolling the page behind it. */
 .panel-scroll {
-  scrollbar-color: #c3cdc7 transparent;
+  scrollbar-color: var(--line-strong) transparent;
   scrollbar-width: thin;
   overscroll-behavior: contain;
 }
@@ -241,7 +291,7 @@ button, textarea, input, select {
 
 .conversation-scroll::-webkit-scrollbar-thumb,
 .panel-scroll::-webkit-scrollbar-thumb {
-  background-color: #c3cdc7;
+  background-color: var(--line-strong);
   background-clip: content-box;
   border: 2px solid transparent;
   border-radius: 999px;
@@ -249,16 +299,16 @@ button, textarea, input, select {
 
 .conversation-scroll::-webkit-scrollbar-thumb:hover,
 .panel-scroll::-webkit-scrollbar-thumb:hover {
-  background-color: #a8b5ad;
+  background-color: var(--ink-muted);
 }
 
 /* Drawers enter from their own edge so the motion explains where they live. */
 .drawer-right {
-  animation: drawer-right 280ms cubic-bezier(0.32, 0.72, 0, 1);
+  animation: drawer-right var(--m-overlay) var(--ease);
 }
 
 .scrim-fade {
-  animation: scrim-fade 220ms ease-out;
+  animation: scrim-fade var(--m-surface) ease-out;
 }
 
 @keyframes drawer-right {
@@ -271,30 +321,59 @@ button, textarea, input, select {
   to { opacity: 1; }
 }
 
-/* ── The conversation rail ────────────────────────────────────────────────
-   The rail is the ledger's index. Records are paper and rule: entries hang
-   off one ruled margin and the open conversation is the entry posted against
-   it. The things you press stay soft objects sitting on that paper.
+/* ── The rail's four bands ────────────────────────────────────────────────
+   Header, action, body, footer, stacked in a column. Three of them are fixed
+   and declared; the body is what is left over and is the only part that
+   scrolls. Before this the sections were separated by margins alone, so every
+   height was whatever its contents happened to come to.
 
-   Two invisible lines hold the whole rail together — the margin rule and
-   every mark sit on the axis, and every piece of text in the rail starts at
-   the column. Nothing is centred, nothing is nudged. */
-.ledger {
-  --rule: #d6dcd5;
-  --rule-strong: #b6c3ba;
-  --axis: 34px;
-  --column: 48px;
+   Safe-area insets belong to the bands that touch the edges — the header at
+   the top, the footer at the bottom — rather than to the column around them,
+   so the rules stay flush with the edge of the rail on a notched screen. */
+.rail-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0.5rem;
+  height: calc(var(--rail-header-h) + env(safe-area-inset-top));
+  padding-top: env(safe-area-inset-top);
+  padding-inline: 0.75rem;
+  border-bottom: 1px solid var(--line);
 }
 
-/* The wordmark is the money it keeps, not a spark. */
+
+.rail-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.rail-footer {
+  flex: none;
+  border-top: 1px solid var(--line);
+  padding-top: 0.5rem;
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+/* ── The conversation rail ────────────────────────────────────────────────
+   The rail is the index of the workspace. Entries are rows separated by a
+   hairline, and the open one is marked on the leading edge by the secondary.
+   Structure comes from the rule and the column, not from simulated paper. */
+.ledger {
+  --rule: var(--line);
+  --rule-strong: var(--line-strong);
+  --gutter: 0.75rem;
+  --axis: 0px;
+}
+
 .ledger-seal {
   display: grid;
   place-items: center;
   width: 28px;
   height: 28px;
-  border-radius: 9px;
-  background: var(--evergreen);
-  color: #f2f8f4;
+  border-radius: var(--radius-md);
+  background: var(--secondary);
+  color: var(--on-secondary);
   font-family: var(--font-display), sans-serif;
   font-size: 15px;
   font-weight: 700;
@@ -302,28 +381,19 @@ button, textarea, input, select {
   padding-bottom: 1px;
 }
 
-/* Accounting marginalia: the one small voice used for every label, count and
-   date in the rail. Tabular figures so digits hold their column. */
+/* The one small voice used for every label, count and date in the rail.
+   Tabular figures so digits hold their column. Deliberately lighter than the
+   things it labels: uppercase at 600 was competing with the wordmark above it
+   and the entries below it. */
 .ledger-meta {
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
+  font-size: var(--text-meta);
+  font-weight: 500;
+  letter-spacing: 0.07em;
   text-transform: uppercase;
   font-variant-numeric: tabular-nums lining-nums;
   color: var(--ink-muted);
 }
 
-/* The spine is structural, so it reads firmer than the feints that divide the
-   entries — the same hierarchy ruled paper uses for its column rule. */
-.ledger-margin {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: var(--axis);
-  z-index: 2;
-  width: 1px;
-  background: var(--rule-strong);
-}
 
 .ledger-band {
   position: sticky;
@@ -332,11 +402,11 @@ button, textarea, input, select {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 15px 16px 7px var(--column);
-  background: var(--rail);
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
+  padding: 1rem var(--gutter) 0.5rem;
+  background: var(--ground);
+  font-size: var(--text-meta);
+  font-weight: 500;
+  letter-spacing: 0.07em;
   text-transform: uppercase;
   font-variant-numeric: tabular-nums lining-nums;
   color: var(--ink-muted);
@@ -359,82 +429,94 @@ button, textarea, input, select {
   position: relative;
   display: block;
   width: 100%;
-  padding: 10px 40px 10px var(--column);
+  /* The most-pressed row in the app, so it clears 44 on its own rather than
+     relying on a pseudo-element it would share with the delete control. */
+  min-height: 2.75rem;
+  padding: 0.75rem 3rem 0.75rem var(--gutter);
   text-align: left;
-  font-size: 12.5px;
+  font-size: var(--text-control);
   font-weight: 500;
   line-height: 1.35;
   color: var(--ink-muted);
-  transition: background-color 140ms ease, color 140ms ease;
+  transition: background-color var(--m-state) linear, color var(--m-state) linear;
 }
 
-/* Rules run the particulars column only; the margin stays clear. */
 .ledger-row + .ledger-row .ledger-entry::before {
   content: "";
   position: absolute;
   top: 0;
-  left: var(--column);
-  right: 16px;
+  left: var(--gutter);
+  right: var(--gutter);
   height: 1px;
   background: var(--rule);
 }
 
 .ledger-row:hover .ledger-entry {
-  background: rgb(255 254 250 / 0.55);
+  background: var(--sunken);
   color: var(--ink-body);
 }
 
-/* Posted: the page shows through and the mark on the axis is inked in. */
+.ledger-entry:active {
+  background: var(--sunken);
+}
+
+/* Open: the row is white, the way the transcript beside it is. */
 .ledger-entry[aria-current="page"] {
   background: var(--surface);
   color: var(--ink);
+  font-weight: 600;
 }
 
+/* The mark means exactly one thing: this is the thread you have open.
+   It used to appear on hover too — grey on hover, secondary when open — but
+   once both were the same 2px bar and differed only in colour, pointing at one
+   row while another was open put two marks in the rail and read as two active
+   threads. Hovering is already said by the row's background, so the mark is
+   reserved for state and nothing else. */
 .ledger-mark {
   position: absolute;
   top: 50%;
   left: var(--axis);
   z-index: 3;
-  width: 9px;
-  height: 9px;
-  margin: -4.5px 0 0 -4.5px;
-  border: 1px solid var(--rule-strong);
+  width: 2px;
+  height: 14px;
+  margin-top: -7px;
   border-radius: 999px;
-  background: var(--rail);
+  background: var(--line-strong);
   opacity: 0;
-  transform: scale(0.6);
-  transition: opacity 160ms ease, transform 160ms cubic-bezier(0.32, 0.72, 0, 1), background-color 160ms ease, border-color 160ms ease;
-}
-
-/* Hovering an entry previews the mark hollow; selecting it fills it. */
-.ledger-row:hover .ledger-mark {
-  opacity: 1;
-  transform: none;
+  transform: scaleY(0.4);
+  transition: opacity var(--m-state) linear, transform var(--m-enter) var(--ease), background-color var(--m-state) linear;
 }
 
 .ledger-entry[aria-current="page"] .ledger-mark {
   opacity: 1;
   transform: none;
-  background: var(--evergreen);
-  border-color: var(--evergreen);
+  background: var(--secondary);
 }
 
 /* Striking an entry out of the book. Quiet until the row is under the pointer,
    because deleting a thread should never be the loudest thing in the rail —
-   but on a touch screen there is no hover to reveal it, so it stays out. */
+   but on a touch screen there is no hover to reveal it, so it stays out.
+   The box is 28px; `::after` takes the target to 44. */
 .ledger-strike {
   position: absolute;
   top: 50%;
-  right: 8px;
+  right: var(--gutter);
   display: grid;
   place-items: center;
   width: 28px;
   height: 28px;
   margin-top: -14px;
-  border-radius: 9px;
+  border-radius: var(--radius-md);
   color: var(--ink-muted);
   opacity: 0;
-  transition: opacity 140ms ease, background-color 140ms ease, color 140ms ease;
+  transition: opacity var(--m-state) linear, background-color var(--m-state) linear, color var(--m-state) linear, transform 90ms var(--ease);
+}
+
+.ledger-strike::after {
+  content: "";
+  position: absolute;
+  inset: -8px;
 }
 
 .ledger-row:hover .ledger-strike,
@@ -443,8 +525,12 @@ button, textarea, input, select {
 }
 
 .ledger-strike:hover {
-  background: var(--clay-tint);
-  color: var(--clay);
+  background: var(--danger-tint);
+  color: var(--danger);
+}
+
+.ledger-strike:active {
+  transform: scale(0.92);
 }
 
 .ledger-strike:disabled {
@@ -471,27 +557,27 @@ button, textarea, input, select {
   right: 0;
   left: 0;
   height: 1px;
-  background: var(--clay);
+  background: var(--danger);
   transform: scaleX(0);
   transform-origin: left center;
   animation: strike-slip-rule var(--undo-window, 7s) linear forwards;
 }
 
 .strike-slip-undo {
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   padding: 3px 7px;
   /* Only the trailing inset is reclaimed: the row's `ml-auto` has to keep
      pushing this to the right edge. */
   margin-block: -3px;
   margin-right: -7px;
-  font-size: 11.5px;
+  font-size: var(--text-note);
   font-weight: 600;
-  color: var(--evergreen-ink);
-  transition: background-color 140ms ease;
+  color: var(--secondary-hover);
+  transition: background-color var(--m-state) linear;
 }
 
 .strike-slip-undo:hover {
-  background: var(--evergreen-tint);
+  background: var(--secondary-tint);
 }
 
 /* Reading a slip pauses its window, so the rule has to stop with it. The
@@ -516,110 +602,50 @@ button, textarea, input, select {
   }
 }
 
-/* Soft objects on the paper: the two things you press. */
-.ledger-new {
-  position: relative;
-  justify-content: flex-start;
-  padding-left: 36px;
-  padding-right: 12px;
-  border-radius: 12px;
-  background: var(--evergreen-tint);
-  color: var(--evergreen-ink);
-  font-size: 12.5px;
-  font-weight: 600;
-  box-shadow: none;
-}
+/* The two things you press in the rail. */
 
-.ledger-new:hover {
-  background: #cfe0d8;
-}
 
-.ledger-link {
-  position: relative;
-  display: block;
-  width: 100%;
-  padding: 9px 16px 9px var(--column);
-  text-align: left;
-  font-size: 12.5px;
-  font-weight: 500;
-  color: var(--ink-muted);
-  border-radius: 10px;
-  transition: background-color 140ms ease, color 140ms ease;
-}
 
-.ledger-link:hover {
-  background: rgb(255 254 250 / 0.55);
-  color: var(--ink-body);
-}
 
-/* Icons ride the same axis as the posting marks. */
-.ledger-axis-mark {
-  position: absolute;
-  top: 50%;
-  left: var(--axis);
-  transform: translate(-50%, -50%);
-}
 
-/* The new-conversation button is inset from the rail edge, so its mark
-   offsets by that inset to land on the same axis as the entries below. */
-.ledger-new .ledger-axis-mark {
-  left: calc(var(--axis) - 12px);
-}
+/* Icons ride the same axis as the row marks. */
 
-/* A double rule closes the account, the way a ledger closes a page. */
-.ledger-close {
-  border-top: 3px double var(--rule-strong);
-}
+
 
 .ledger-stamp {
   display: grid;
   place-items: center;
   width: 28px;
   height: 28px;
-  border-radius: 9px;
-  background: var(--evergreen-tint);
-  color: var(--evergreen-ink);
+  border-radius: var(--radius-md);
+  background: var(--secondary-tint);
+  color: var(--secondary-hover);
   font-family: var(--font-display), sans-serif;
-  font-size: 12px;
+  font-size: var(--text-note);
   font-weight: 700;
   line-height: 1;
   text-transform: uppercase;
 }
 
 /* ── A new conversation ───────────────────────────────────────────────────
-   A blank leaf. Until the first entry is written there is nothing to read,
-   so the composer comes to the middle of the page instead of sitting 700px
-   below the invitation. The examples under it are ruled lines carrying the
-   same hollow mark the rail uses, because that is what they are: entries you
-   could write. Pressing one loads it into the box — it never sends, since a
-   demo tap must not file a real transaction. */
+   Until the first entry is written there is nothing to read, so the composer
+   comes to the middle of the page instead of sitting 700px below the
+   invitation. The examples under it are rows you could write; pressing one
+   loads it into the box — it never sends, since a demo tap must not file a
+   real transaction. */
 .leaf {
-  --rule: #e2e6e0;
-  --rule-strong: #d3d9d2;
+  --rule: var(--line);
+  --rule-strong: var(--line-strong);
   --axis: 10px;
 }
 
-.leaf-seal {
-  display: grid;
-  place-items: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 13px;
-  background: var(--evergreen);
-  color: #f2f8f4;
-  font-family: var(--font-display), sans-serif;
-  font-size: 21px;
-  font-weight: 700;
-  line-height: 1;
-  padding-bottom: 2px;
-}
 
 .leaf-title {
   font-family: var(--font-display), sans-serif;
-  font-size: clamp(26px, 4.4vw, 34px);
-  font-weight: 700;
-  letter-spacing: -0.028em;
-  line-height: 1.08;
+  font-size: clamp(24px, 4.2vw, 30px);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
   color: var(--ink);
 }
 
@@ -627,9 +653,9 @@ button, textarea, input, select {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
+  font-size: var(--text-meta);
+  font-weight: 600;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--ink-muted);
 }
@@ -647,23 +673,21 @@ button, textarea, input, select {
   width: 100%;
   padding: 12px 12px 12px 28px;
   text-align: left;
-  font-size: 14px;
+  font-size: var(--text-body);
+  font-weight: 450;
   line-height: 1.4;
   color: var(--ink-body);
   border-top: 1px solid var(--rule);
-  transition: color 140ms ease, padding-left 160ms cubic-bezier(0.32, 0.72, 0, 1);
+  transition: color var(--m-state) linear, padding-left var(--m-enter) var(--ease);
 }
 
 .leaf-example:last-child {
   border-bottom: 1px solid var(--rule);
 }
 
-/* The mark is the rail's, on the leaf's own axis: hollow while it is only an
-   example, inked the moment you reach for it. */
 .leaf-example .ledger-mark {
   opacity: 1;
   transform: none;
-  background: transparent;
 }
 
 .leaf-example:hover {
@@ -672,8 +696,11 @@ button, textarea, input, select {
 }
 
 .leaf-example:hover .ledger-mark {
-  background: var(--evergreen);
-  border-color: var(--evergreen);
+  background: var(--secondary);
+}
+
+.leaf-example:active {
+  color: var(--secondary-hover);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -682,12 +709,24 @@ button, textarea, input, select {
   }
 }
 
+/* Switching threads. With the rail warming a thread on hover the swap is
+   usually a single frame, and a single frame of hard cut reads as a flicker;
+   this is just enough motion to say the page changed. */
+.thread-enter {
+  animation: thread-enter var(--m-enter) var(--ease);
+}
+
+@keyframes thread-enter {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: none; }
+}
+
 /* ── The entry dock ───────────────────────────────────────────────────────
-   The foot of the leaf. A ledger page closes on a ruled band, and whatever
-   has not been written yet belongs below that rule — so the composer sits
-   below it and the transcript stops at it. The band is opaque paper, which
-   is the whole point: a transcript that slid under a translucent scrim came
-   out the other side half-dissolved and looking disabled.
+   Whatever has not been written yet belongs below the transcript's closing
+   rule, so the composer sits there and the transcript stops at it. The band
+   is opaque, which is the whole point: a transcript that slid under a
+   translucent scrim came out the other side half-dissolved and looking
+   disabled.
 
    Its height is the transcript's bottom margin, so the shell measures it
    rather than guessing. `--dock-h` is that measurement, republished on the
@@ -698,28 +737,18 @@ button, textarea, input, select {
   --dock-h: 9.5rem;
 }
 
-/* A hairline, deliberately not the rail's double rule. The rail closes its
-   account at a height fixed by its footer; this edge moves as the box grows,
-   so the two can never line up — matching their weight only made the mismatch
-   look like a mistake. Instead the dock mirrors the header exactly: same
-   paper, same hairline, so the transcript is framed top and bottom by one
-   device and the double rule stays the rail's alone. */
 .entry-dock {
-  border-top: 1px solid var(--line-soft);
-  background: var(--paper-raised);
+  border-top: 1px solid var(--line);
+  background: var(--surface);
 }
 
 /* The line you write on. One ring for the whole card — the textarea's own
    outline is suppressed, so focus is not drawn twice, nested, and clipped. */
 .entry-card {
-  border-radius: 22px;
-  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--line-strong);
   background: var(--surface);
-  /* Enough lift to read as an object resting on the band, not a field cut
-     into it — the dock and the card are both near-white, so the edge alone
-     was not carrying it. */
-  box-shadow: 0 1px 2px rgb(26 48 40 / 0.05), 0 6px 18px rgb(26 48 40 / 0.05);
-  transition: border-color 160ms ease, box-shadow 160ms ease, background-color 160ms ease;
+  transition: border-color var(--m-state) linear, background-color var(--m-state) linear;
 }
 
 .entry-card textarea:focus-visible {
@@ -727,36 +756,151 @@ button, textarea, input, select {
 }
 
 .entry-card:has(textarea:focus-visible) {
-  border-color: var(--evergreen-line);
-  box-shadow: 0 0 0 3px rgb(33 88 75 / 0.09);
+  border-color: var(--secondary);
 }
 
 /* A statement being dragged over the page. Dashed, because the card is
    standing in for a drop target rather than being written in. */
 .entry-card[data-dropping="true"] {
   border-style: dashed;
-  border-color: var(--evergreen);
-  background: color-mix(in srgb, var(--evergreen-tint) 40%, var(--surface));
+  border-color: var(--secondary);
+  background: var(--secondary-tint);
 }
 
-/* Marginalia again, this time on the entry line: what happens when you send. */
+/* What happens when you send, in the one small voice. */
 .entry-hint {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
-  font-size: 11px;
+  font-size: var(--text-meta);
   line-height: 1.3;
   color: var(--ink-muted);
 }
 
+/* ── One decision, one tile ───────────────────────────────────────────────
+   Choosing a category is the most-pressed control in the product and, until
+   now, the least responsive: the tap fired an action, the parent disabled the
+   whole card, and every tile — including the one under your finger — faded to
+   50%. For the length of a round trip there was no evidence on screen of what
+   you had picked.
+
+   So the tile owns its states rather than inheriting a blanket `disabled`.
+   The pressed one inks immediately and keeps its weight; only its siblings
+   recede. The seven states live here instead of being spelled out at the
+   three call sites that need them. */
+.option-tile {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 2.5rem;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  text-align: left;
+  font-size: var(--text-control);
+  font-weight: 500;
+  color: var(--ink-body);
+  transition: border-color var(--m-state) linear, background-color var(--m-state) linear, color var(--m-state) linear, opacity var(--m-state) linear, transform 90ms var(--ease);
+}
+
+.option-tile:hover:not(:disabled):not([data-selected]) {
+  border-color: var(--ink-muted);
+  background: var(--sunken);
+}
+
+.option-tile:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+/* Chosen — set the instant you press, not when the server agrees. */
+.option-tile[data-selected] {
+  border-color: var(--secondary);
+  background: var(--secondary-tint);
+  color: var(--secondary-hover);
+  font-weight: 550;
+}
+
+/* The others step back so the choice reads. The chosen tile never dims: it is
+   the one thing on the card that has to stay legible while it commits. */
+.option-tile[data-dimmed] {
+  opacity: 0.4;
+}
+
+.option-tile:disabled {
+  cursor: default;
+}
+
+.option-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 1.5px solid var(--line-strong);
+  color: var(--on-secondary);
+  transition: border-color var(--m-state) linear, background-color var(--m-state) linear;
+}
+
+.option-tile[data-selected] .option-mark {
+  border-color: var(--secondary);
+  background: var(--secondary);
+}
+
+/* Committing: the mark becomes this tile's own progress, so the answer to
+   "did my tap land, and on what" is in one place. */
+.option-tile[data-pending] .option-mark {
+  border-color: var(--secondary);
+  background: transparent;
+  color: var(--secondary);
+}
+
+/* A widget arriving in the transcript. Same reveal for every renderer, so a
+   chart and a confirmation card land the same way. */
+.widget-enter {
+  animation: widget-enter var(--m-enter) var(--ease);
+}
+
+@keyframes widget-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* The composer's reading of what you have typed. It replaces the hint on the
+   same line rather than appearing beneath it, so the box never changes height
+   while you write — the dock's height is the transcript's bottom margin, and
+   growing it mid-keystroke would shove the thread you are reading. */
+.composer-reading {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  border-radius: var(--radius-xs);
+  /* Neutral, deliberately. The chip reports a number rather than offering an
+     action, so it does not wear the interactive colour — the only colour on it
+     is the sign of the amount. */
+  border: 1px solid var(--line);
+  background: var(--sunken);
+  padding: 2px 7px;
+  animation: reading-in var(--m-enter) var(--ease);
+}
+
+@keyframes reading-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: none; }
+}
+
 /* Money is the most-read glyph in this product: one voice everywhere,
-   lining figures of a fixed width so columns of rupees line up. */
+   lining figures of a fixed width so columns of rupees line up. This is a
+   treatment rather than a typeface, so it applies at any size. */
 .money {
-  font-family: var(--font-display), var(--font-body), sans-serif;
   font-variant-numeric: tabular-nums lining-nums;
   font-feature-settings: "tnum" 1, "lnum" 1;
-  letter-spacing: -0.015em;
+  letter-spacing: -0.02em;
 }
 
 /* Donut charts decide their composition from the widget's actual width, not
@@ -809,7 +953,7 @@ button, textarea, input, select {
 
   .chart-donut-legend-item {
     min-height: 38px;
-    border-bottom: 1px solid var(--line-soft);
+    border-bottom: 1px solid var(--line);
     padding-block: 9px;
   }
 
@@ -822,7 +966,7 @@ button, textarea, input, select {
   width: 5px;
   height: 5px;
   border-radius: 999px;
-  background: #708079;
+  background: var(--ink-muted);
   animation: typing 1.1s infinite ease-in-out;
 }
 
@@ -834,6 +978,9 @@ button, textarea, input, select {
   30% { opacity: 1; transform: translateY(-2px); }
 }
 
+/* Decoration stops; information does not. Scoped to transform and opacity so
+   a budget bar filling and an upload percentage climbing still animate — a
+   reader who asked for less motion did not ask to be told less. */
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto !important;
@@ -844,8 +991,41 @@ button, textarea, input, select {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+  /* Then hand back the transitions that carry information. A bar that grows
+     is reporting a quantity, not decorating one. */
+  [data-slot="progress-indicator"],
+  [data-motion="informational"] {
+    transition-duration: var(--m-surface) !important;
+  }
   .typing-dot {
     animation: none;
     opacity: 0.55;
   }
+}
+
+/* Charts arrive the same way whichever renderer drew them. Recharts snapped in
+   with series animation switched off for frame-cost reasons that still hold;
+   Vega faded up from behind a spinner. Animating the container instead is one
+   composited layer and makes the two agree. */
+.chart-reveal {
+  animation: widget-enter var(--m-enter) var(--ease);
+}
+
+/* The rail's cut-off edge, and the same argument the transcript makes above:
+   a mask, not a scrim.
+
+   There was a gradient overlay here painted in the rail's own grey. It sat on
+   top of whatever scrolled beneath it, so a row passing under came out
+   half-erased — and an *open* row is white rather than grey, so the overlay
+   did not even match the thing it was covering. Masking fades the pixels
+   themselves, which is colour-agnostic and cannot bisect a row.
+
+   Only the bottom edge needs it: the group band is sticky and opaque, so the
+   top of the list is already masked by something that belongs there. Masking
+   the top as well would make that band translucent and let rows show through
+   it. The flags come from data attributes the scroll handler writes directly,
+   so none of this costs a React render. */
+[data-edge-bottom="true"] > .panel-scroll {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
 }

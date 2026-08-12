@@ -58,10 +58,10 @@ describe("saved transaction editor", () => {
         title: "Edit saved transaction",
         amountMinor: 30_000,
         currency: "INR",
-        date: "2026-08-11",
+        transactionAt: "2026-08-11T10:30:00Z",
         transactionType: "expense",
         spendNature: "essential",
-        fields: ["amount", "date", "transaction_type", "spend_nature"],
+        fields: ["amount", "transaction_at", "transaction_type", "spend_nature"],
       },
       actions: [
         { id: "update", label: "Apply changes", action: "update_saved_transaction", style: "primary", payload: { transactionId: "transaction-1" } },
@@ -114,9 +114,9 @@ describe("persisted widget action receipts", () => {
         title: "Edit saved transaction",
         amountMinor: 30_000,
         currency: "INR",
-        date: "2026-08-11",
+        transactionAt: "2026-08-11T10:30:00Z",
         transactionType: "expense",
-        fields: ["amount", "date", "transaction_type"],
+        fields: ["amount", "transaction_at", "transaction_type"],
       },
       actions: [{ id: "update", label: "Apply changes", action: "update_saved_transaction", style: "primary", payload: { transactionId: "transaction-1" } }],
     };
@@ -124,9 +124,36 @@ describe("persisted widget action receipts", () => {
     render(<WidgetRenderer widget={widget} disabled onAction={() => undefined} />);
 
     expect(screen.getByRole("textbox", { name: "Transaction amount" })).toBeDisabled();
-    expect(screen.getByLabelText("Transaction date")).toBeDisabled();
+    expect(screen.getByLabelText("Transaction date and time")).toBeDisabled();
     expect(screen.getByRole("combobox", { name: "Transaction type" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Apply changes" })).toBeDisabled();
+  });
+});
+
+describe("amount-only transaction editor", () => {
+  it("submits only the field declared by the backend", () => {
+    const onAction = vi.fn();
+    const widget: Widget = {
+      id: "amount-only",
+      type: "transaction_edit",
+      version: 1,
+      data: {
+        draftId: "b85f2065-2cff-40a1-a9d0-9bfabb0a1125",
+        title: "Add the missing amount",
+        fields: ["amount"],
+      },
+      actions: [],
+    };
+
+    render(<WidgetRenderer widget={widget} onAction={onAction} />);
+    fireEvent.change(screen.getByRole("textbox", { name: "Transaction amount" }), { target: { value: "500" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save this entry" }));
+
+    expect(onAction).toHaveBeenCalledWith(
+      "amount-only",
+      "update_transaction_draft",
+      { draftId: "b85f2065-2cff-40a1-a9d0-9bfabb0a1125", amountMinor: 50_000 },
+    );
   });
 });
 

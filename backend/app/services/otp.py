@@ -17,7 +17,7 @@ from __future__ import annotations
 import hmac
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from hashlib import sha256
 from uuid import UUID, uuid4
 
@@ -26,7 +26,8 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..domain import OtpChannel, OtpPurpose
-from ..models import OtpChallenge, as_utc
+from ..event_time import as_utc, now_utc
+from ..models import OtpChallenge
 
 
 class OtpError(Exception):
@@ -48,7 +49,7 @@ class IssuedChallenge:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return now_utc()
 
 
 def _hash_code(challenge_id: UUID, code: str) -> str:

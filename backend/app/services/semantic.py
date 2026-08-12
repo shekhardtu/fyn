@@ -10,6 +10,7 @@ from sqlalchemy import DateTime, Integer, String, and_, case, cast, func, litera
 from sqlalchemy.orm import Session
 
 from ..domain import TransactionType
+from ..event_time import from_local_parts, resolve_event_time, utc_range_for_local_dates
 from ..models import (
     Account,
     AccountBalanceSnapshot,
@@ -37,7 +38,7 @@ from ..visualization_contracts import (
 )
 from ..validation import SemanticIdentifier
 from .semantic_registry import CalendarTimeGrain, FilterOperator, MODEL_BINDINGS, SemanticMetric, SortDirection, SUBDAY_TIME_GRAINS, TIME_GRAIN_SPECS, TimeComponent, TimeGrain, semantic_schema_registry
-from .currency import user_currency
+from .currency import user_currency, user_timezone
 from .transactions import apply_canonical_transaction_scope
 
 
@@ -332,15 +333,14 @@ def _month_expression(column, dialect: str):
 
 def _transaction_datetime_expression(dialect: str, target_timezone: str | None = None):
     if dialect == "sqlite":
-        return func.datetime(Transaction.transaction_date, Transaction.transaction_time)
-    combined = cast(Transaction.transaction_date, String) + literal(" ") + Transaction.transaction_time
-    local_timestamp = cast(combined, DateTime)
-    if not target_timezone:
-        return local_timestamp
-    # Interpret each recorded wall-clock time in its source timezone, then
-    # project it into the user's requested timezone before filtering/bucketing.
-    instant = func.timezone(func.coalesce(Transaction.timezone, target_timezone), local_timestamp)
-    return func.timezone(target_timezone, instant)
+        return func.to_local_datetime(Transaction.transaction_at, target_timezone or "UTC")
+    return func.timezone(target_timezone or "UTC", Transaction.transaction_at)
+
+
+def _local_datetime_expression(column, dialect: str, timezone_name: str):
+    if dialect == "sqlite":
+        return func.to_local_datetime(column, timezone_name)
+    return func.timezone(timezone_name, column)
 
 
 def _event_date_column(entity: str):
@@ -359,6 +359,8 @@ def _time_bucket_expression(entity: str, grain: str, dialect: str, timezone: str
         column = _event_time_column(entity, dialect, timezone)
     else:
         column = _event_date_column(entity)
+        if isinstance(column.property.columns[0].type, DateTime):
+            column = _local_datetime_expression(column, dialect, timezone)
     if dialect == "sqlite":
         if grain == "quarter":
             quarter = cast((cast(func.strftime("%m", column), Integer) + 2) / 3, Integer)
@@ -372,6 +374,8 @@ def _time_component_expression(entity: str, component: str, dialect: str, timezo
         column = _event_time_column(entity, dialect, timezone)
         return func.strftime("%H", column) if dialect == "sqlite" else func.to_char(column, "HH24")
     column = _event_date_column(entity)
+    if isinstance(column.property.columns[0].type, DateTime):
+        column = _local_datetime_expression(column, dialect, timezone)
     if dialect == "sqlite":
         formats = {"day_of_week": "%w", "day_of_month": "%d", "month_of_year": "%m"}
         return func.strftime(formats[component], column)
@@ -469,11 +473,15 @@ def _resolved_dimension(entity: str, name: str):
     return dimension, target_entity, target
 
 
-def _dimension_binding(entity: str, name: str, dialect: str):
+def _dimension_binding(entity: str, name: str, dialect: str, timezone_name: str):
     dimension, target_entity, target = _resolved_dimension(entity, name)
     projection_name = dimension.projection_field or dimension.field
     field = next(item for item in target.fields if item.name == projection_name)
     expression = getattr(MODEL_BINDINGS[target_entity], field.column)
+    if isinstance(expression.property.columns[0].type, DateTime) and field.semantic_type == "date":
+        expression = _local_datetime_expression(expression, dialect, timezone_name)
+        if dimension.transform != "month":
+            expression = func.strftime("%Y-%m-%d", expression) if dialect == "sqlite" else func.to_char(expression, "YYYY-MM-DD")
     if dimension.transform == "month":
         expression = _month_expression(expression, dialect)
     if dimension.null_label is not None:
@@ -549,8 +557,25 @@ def _filter_binding(entity: str, field: str):
     return getattr(MODEL_BINDINGS[target_entity], field_spec.column), list(dimension.relationship_path)
 
 
-def _apply_filter(stmt, column, item: FinanceFilter):
+def _apply_filter(stmt, column, item: FinanceFilter, timezone_name: str):
     values = item.value if isinstance(item.value, list) else [item.value]
+    if isinstance(column.property.columns[0].type, DateTime) and all(isinstance(value, date) and not isinstance(value, datetime) for value in values):
+        if item.operator == "eq":
+            start_at, end_at = utc_range_for_local_dates(values[0], values[0], timezone_name)
+            return stmt.where(column >= start_at, column < end_at)
+        if item.operator == "between":
+            start_at, end_at = utc_range_for_local_dates(values[0], values[1], timezone_name)
+            return stmt.where(column >= start_at, column < end_at)
+        if item.operator == "gte":
+            return stmt.where(column >= from_local_parts(values[0], None, timezone_name))
+        if item.operator == "gt":
+            _, end_at = utc_range_for_local_dates(values[0], values[0], timezone_name)
+            return stmt.where(column >= end_at)
+        if item.operator == "lt":
+            return stmt.where(column < from_local_parts(values[0], None, timezone_name))
+        if item.operator == "lte":
+            _, end_at = utc_range_for_local_dates(values[0], values[0], timezone_name)
+            return stmt.where(column < end_at)
     if item.operator == "eq":
         return stmt.where(column == values[0])
     if item.operator == "neq":
@@ -580,6 +605,11 @@ def execute_finance_query(db: Session, user_id: UUID, plan: FinanceQueryPlan) ->
     entity = validation["entity"]
     model = MODEL_BINDINGS[entity]
     currency = user_currency(db, user_id)
+    timezone_name = (
+        plan.time_grouping.timezone if plan.time_grouping
+        else plan.time_pivot.timezone if plan.time_pivot
+        else user_timezone(db, user_id)
+    )
     registry_entity = registry.entities_by_name[entity]
     dialect = db.get_bind().dialect.name
     metric_expression = _metric_expression(metric, model).label("value")
@@ -587,7 +617,7 @@ def execute_finance_query(db: Session, user_id: UUID, plan: FinanceQueryPlan) ->
     labels: list[str] = []
     joins = set(validation["relationships"])
     for dimension in plan.dimensions:
-        expression, required = _dimension_binding(entity, dimension, dialect)
+        expression, required = _dimension_binding(entity, dimension, dialect, timezone_name)
         joins.update(required)
         columns.append(expression.label(dimension))
         labels.append(dimension)
@@ -624,8 +654,6 @@ def execute_finance_query(db: Session, user_id: UUID, plan: FinanceQueryPlan) ->
             user_id,
             currency=currency if money_currency_column is not None else None,
         )
-        if (plan.time_grouping and plan.time_grouping.grain in SUBDAY_TIME_GRAINS) or (plan.time_pivot and plan.time_pivot.column_component == "hour_of_day"):
-            stmt = stmt.where(Transaction.transaction_time.is_not(None))
     else:
         stmt = stmt.where(getattr(model, tenant_key) == user_id)
         if money_currency_column is not None:
@@ -635,21 +663,17 @@ def execute_finance_query(db: Session, user_id: UUID, plan: FinanceQueryPlan) ->
         event_column = getattr(model, event_key)
         event_field = next(item for item in registry_entity.fields if item.column == event_key)
         if event_field.data_type == "datetime":
-            start_instant = datetime.combine(plan.start_date, time.min, tzinfo=timezone.utc)
-            end_instant = datetime.combine(plan.end_date + timedelta(days=1), time.min, tzinfo=timezone.utc)
+            start_instant, end_instant = utc_range_for_local_dates(plan.start_date, plan.end_date, timezone_name)
             stmt = stmt.where(event_column >= start_instant, event_column < end_instant)
         else:
             stmt = stmt.where(event_column.between(plan.start_date, plan.end_date))
         if plan.start_datetime and plan.end_datetime:
             if entity != "transactions":
                 raise SemanticValidationError("Sub-day event windows are only available for transactions")
-            event_datetime = _transaction_datetime_expression(
-                dialect,
-                plan.time_grouping.timezone if plan.time_grouping else plan.time_pivot.timezone if plan.time_pivot else None,
-            )
+            start_instant = resolve_event_time(transaction_at=plan.start_datetime, timezone_name=timezone_name)
+            end_instant = resolve_event_time(transaction_at=plan.end_datetime, timezone_name=timezone_name)
             stmt = stmt.where(
-                Transaction.transaction_time.is_not(None),
-                event_datetime.between(plan.start_datetime, plan.end_datetime),
+                Transaction.transaction_at.between(start_instant, end_instant),
             )
     for field, value in metric.fixed_filters.items():
         column, _ = _filter_binding(entity, field)
@@ -657,7 +681,7 @@ def execute_finance_query(db: Session, user_id: UUID, plan: FinanceQueryPlan) ->
         stmt = stmt.where(column.in_(values))
     for item in plan.filters:
         column, _ = _filter_binding(entity, item.field)
-        stmt = _apply_filter(stmt, column, item)
+        stmt = _apply_filter(stmt, column, item, timezone_name)
 
     if columns:
         stmt = stmt.group_by(*columns)
@@ -694,10 +718,7 @@ def execute_finance_query(db: Session, user_id: UUID, plan: FinanceQueryPlan) ->
         "end_datetime": plan.end_datetime.isoformat() if plan.end_datetime else None,
         "time_grouping": plan.time_grouping.model_dump(mode="json") if plan.time_grouping else None,
         "time_pivot": plan.time_pivot.model_dump(mode="json") if plan.time_pivot else None,
-        "requires_transaction_time": bool(
-            (plan.time_grouping and plan.time_grouping.grain in SUBDAY_TIME_GRAINS)
-            or (plan.time_pivot and plan.time_pivot.column_component == "hour_of_day")
-        ),
+        "requires_transaction_time": False,
         "rows": rendered,
     }
 

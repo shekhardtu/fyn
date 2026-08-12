@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+
+from ..event_time import now_utc
 
 from ..config import get_settings
 from ..domain import IdentityProvider, IdentitySource, OtpChannel
@@ -175,7 +177,7 @@ def attach_identity(
     if existing is not None:
         if existing.identifier == identifier:
             existing.email = email or existing.email
-            existing.verified_at = datetime.now(timezone.utc)
+            existing.verified_at = now_utc()
             db.flush()
             _mirror_contact_columns(db, user)
             return existing
@@ -188,7 +190,7 @@ def attach_identity(
         identifier=identifier,
         email=email,
         source=source.value,
-        verified_at=datetime.now(timezone.utc),
+        verified_at=now_utc(),
     )
     db.add(identity)
     try:
@@ -256,5 +258,5 @@ def register_user(
 
 
 def record_sign_in(db: Session, identity: UserIdentity) -> None:
-    identity.last_login_at = datetime.now(timezone.utc)
+    identity.last_login_at = now_utc()
     db.flush()

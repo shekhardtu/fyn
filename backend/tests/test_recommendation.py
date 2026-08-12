@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from app.models import Category, Subcategory, Transaction, TransactionDraft, TransactionFieldValue, User
+from app.event_time import from_local_parts
 from app.services.recommendation import (
     HALF_LIFE_DAYS,
     amount_band,
@@ -69,8 +70,7 @@ def add_transaction(
         merchant_name=merchant,
         category_id=parent.id,
         subcategory_id=child.id if child else None,
-        transaction_date=TODAY - timedelta(days=days_ago),
-        transaction_time=time,
+        transaction_at=from_local_parts(TODAY - timedelta(days=days_ago), time, user.timezone),
         description=description,
         latitude=latitude,
         longitude=longitude,
@@ -103,8 +103,7 @@ def make_draft(
         latitude=latitude,
         longitude=longitude,
         location_accuracy=accuracy,
-        transaction_time=time,
-        transaction_date=TODAY,
+        transaction_at=from_local_parts(TODAY, time, user.timezone),
     )
     return draft
 

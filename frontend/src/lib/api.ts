@@ -42,15 +42,35 @@ function describe(payload: unknown, status: number) {
   return UNREACHABLE;
 }
 
+/** How long a request may hang before it is treated as unreachable.
+ *
+ *  A socket that accepts and then never answers is the failure this exists for.
+ *  Without a deadline `fetch` waits indefinitely, react-query never rejects, and
+ *  the app sits on a spinner that can only be escaped by reloading — which is
+ *  exactly what a stalled backend produced here. Ten seconds is longer than any
+ *  healthy call and short enough that nobody wonders whether it is broken.
+ *
+ *  The agent stream is deliberately exempt: a run legitimately takes tens of
+ *  seconds, and it has its own abort signal from the thread. */
+const REQUEST_TIMEOUT_MS = 10_000;
+
 /** A thrown fetch means the network or the API is down, not a bad request.
  *
  *  `credentials: "include"` on every call is what carries the session: the
  *  cookie is httpOnly, so there is nothing for this module to read or attach by
  *  hand, and a request that omits it is simply unauthenticated. */
 async function send(path: string, init?: RequestInit) {
+  // A caller that brought its own signal — an upload, a run being abandoned —
+  // keeps it; everything else gets the deadline.
+  const signal = init?.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS);
   try {
-    return await fetch(`${API_URL}${path}`, { credentials: "include", ...init });
-  } catch {
+    return await fetch(`${API_URL}${path}`, { credentials: "include", ...init, signal });
+  } catch (cause) {
+    // An abort raised by our own deadline is unreachability, not a cancelled
+    // request; a caller's own abort is passed through so the thread can tell
+    // "nobody is listening" from "this failed".
+    if (cause instanceof DOMException && cause.name === "TimeoutError") throw new Error(UNREACHABLE);
+    if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
     throw new Error(UNREACHABLE);
   }
 }
@@ -68,22 +88,39 @@ async function request(path: string, init?: RequestInit) {
   return response.status === 204 ? null : response.json().catch(() => null);
 }
 
+/** Checks a payload against its contract without letting the failure reach a
+ *  reader as a Zod path dump.
+ *
+ *  A response that does not match is a version skew between this client and the
+ *  server — a real problem, but not one the person typing can act on, and
+ *  `[{"code":"custom","path":["widgets",0]}]` in a banner is worse than
+ *  useless. The detail belongs in the console, where whoever shipped the skew
+ *  will look; the banner gets a sentence and a way forward. */
+function conform<T>(schema: { parse: (value: unknown) => T }, payload: unknown, what: string): T {
+  try {
+    return schema.parse(payload);
+  } catch (cause) {
+    console.error(`fyn AI returned a ${what} that does not match this client's contract`, cause, payload);
+    throw new Error(`fyn AI sent back a ${what} this version of the app can’t read. Reload the page to pick up the latest version, then try again.`);
+  }
+}
+
 export async function bootstrap(): Promise<Bootstrap> {
-  return bootstrapSchema.parse(await request("/api/bootstrap"));
+  return conform(bootstrapSchema, await request("/api/bootstrap"), "workspace");
 }
 
 export async function loadConversation(id: string): Promise<ConversationOut> {
-  return conversationSchema.parse(await request(`/api/conversations/${id}`));
+  return conform(conversationSchema, await request(`/api/conversations/${id}`), "conversation");
 }
 
 export async function createConversation(): Promise<ConversationCreatedOut> {
-  return conversationCreatedSchema.parse(await request("/api/conversations", { method: "POST", body: "{}" }));
+  return conform(conversationCreatedSchema, await request("/api/conversations", { method: "POST", body: "{}" }), "new conversation");
 }
 
 /** One page of history for the rail. Pass the previous page's `nextCursor` to
  *  continue; a null cursor means there is nothing older to load. */
 export async function listConversations(cursor?: string | null): Promise<ConversationPage> {
-  return conversationPageSchema.parse(await request(`/api/conversations${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`));
+  return conform(conversationPageSchema, await request(`/api/conversations${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`), "conversation list");
 }
 
 /** Erases the thread and everything recorded against it. Transactions it
@@ -100,9 +137,9 @@ export function flushConversationDeletion(id: string): void {
 }
 
 export async function sendChat(conversationId: string, text: string): Promise<AgentResponse> {
-  return agentResponseSchema.parse(await request("/api/chat", {
+  return conform(agentResponseSchema, await request("/api/chat", {
     method: "POST", body: JSON.stringify({ conversation_id: conversationId, text }),
-  }));
+  }), "reply");
 }
 
 export type AgentActivity = AgentActivityEvent;
@@ -140,9 +177,9 @@ export async function sendChatStream(
     const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("\n");
     if (!event || !data) return;
     const payload = JSON.parse(data);
-    if (event === "activity") onActivity(agentActivityEventSchema.parse(payload));
-    if (event === "result") result = agentResponseSchema.parse(payload);
-    if (event === "error") throw new Error(streamErrorEventSchema.parse(payload).message);
+    if (event === "activity") onActivity(conform(agentActivityEventSchema, payload, "progress update"));
+    if (event === "result") result = conform(agentResponseSchema, payload, "reply");
+    if (event === "error") throw new Error(conform(streamErrorEventSchema, payload, "error").message);
   }
 
   try {
@@ -167,9 +204,9 @@ export async function sendChatStream(
 
 export async function sendAction(conversationId: string, widgetId: string, action: WidgetActionId, payload: Record<string, unknown>, completeWidget = true): Promise<AgentResponse> {
   const validatedPayload = parseActionPayload(action, payload);
-  return agentResponseSchema.parse(await request("/api/actions", {
+  return conform(agentResponseSchema, await request("/api/actions", {
     method: "POST", body: JSON.stringify({ conversation_id: conversationId, widget_id: widgetId, action, payload: validatedPayload, completeWidget }),
-  }));
+  }), "reply");
 }
 
 /** Carries the same name `fetch` gives an aborted request, so a cancelled
@@ -206,7 +243,7 @@ export function uploadCsv(conversationId: string, file: File, onProgress?: (perc
       try { payload = JSON.parse(request.responseText); } catch { payload = null; }
       if (request.status < 200 || request.status >= 300) { reject(new ApiError(describe(payload, request.status), request.status)); return; }
       onProgress?.(100);
-      try { resolve(importResultSchema.parse(payload)); } catch { reject(new Error("The import finished but the response couldn’t be read. Reload to see where it landed.")); }
+      try { resolve(conform(importResultSchema, payload, "import result")); } catch { reject(new Error("The import finished but the response couldn’t be read. Reload to see where it landed.")); }
     });
     request.addEventListener("error", () => reject(new Error(UNREACHABLE)));
     request.addEventListener("abort", () => reject(cancelled()));
@@ -217,7 +254,7 @@ export function uploadCsv(conversationId: string, file: File, onProgress?: (perc
 export type PrivacyStatus = PrivacyStatusOut;
 
 export async function getPrivacyStatus(): Promise<PrivacyStatus> {
-  return privacyStatusSchema.parse(await request("/api/privacy"));
+  return conform(privacyStatusSchema, await request("/api/privacy"), "privacy setting");
 }
 
 export async function setLocationEnabled(enabled: boolean): Promise<void> {
@@ -263,28 +300,28 @@ export type OtpSent = OtpSentOut;
 export type OtpChannel = "phone" | "email";
 
 export async function getAuthStatus(): Promise<AuthStatus> {
-  return authStatusSchema.parse(await request("/api/auth/session"));
+  return conform(authStatusSchema, await request("/api/auth/session"), "sign-in status");
 }
 
 /** Sends a sign-in code. Reveals nothing about whether an account exists. */
 export async function startSignInCode(channel: OtpChannel, value: string): Promise<OtpSent> {
-  return otpSentSchema.parse(await request("/api/auth/otp/start", {
+  return conform(otpSentSchema, await request("/api/auth/otp/start", {
     method: "POST", body: JSON.stringify({ channel, value }),
-  }));
+  }), "verification code");
 }
 
 export async function verifySignInCode(challengeId: string, code: string): Promise<AuthStatus> {
-  return authStatusSchema.parse(await request("/api/auth/otp/verify", {
+  return conform(authStatusSchema, await request("/api/auth/otp/verify", {
     method: "POST", body: JSON.stringify({ challengeId, code }),
-  }));
+  }), "sign-in status");
 }
 
 /** Exchanges the Google ID token for a session. The token is verified against
  *  Google's keys on the server; nothing here trusts what it contains. */
 export async function signInWithGoogle(credential: string): Promise<AuthStatus> {
-  return authStatusSchema.parse(await request("/api/auth/google", {
+  return conform(authStatusSchema, await request("/api/auth/google", {
     method: "POST", body: JSON.stringify({ credential }),
-  }));
+  }), "sign-in status");
 }
 
 export async function signOut(): Promise<void> {
@@ -294,23 +331,23 @@ export async function signOut(): Promise<void> {
 /* ── Profile ─────────────────────────────────────────────────────────────── */
 
 export async function getProfile(): Promise<Profile> {
-  return profileSchema.parse(await request("/api/profile"));
+  return conform(profileSchema, await request("/api/profile"), "profile");
 }
 
 /** Sends a code to a number or address this account wants to claim. Throws a
  *  409 before sending when it belongs to somebody else. */
 export async function startLinkCode(channel: OtpChannel, value: string): Promise<OtpSent> {
-  return otpSentSchema.parse(await request("/api/profile/identities/otp/start", {
+  return conform(otpSentSchema, await request("/api/profile/identities/otp/start", {
     method: "POST", body: JSON.stringify({ channel, value }),
-  }));
+  }), "verification code");
 }
 
 export async function verifyLinkCode(challengeId: string, code: string): Promise<Profile> {
-  return profileSchema.parse(await request("/api/profile/identities/otp/verify", {
+  return conform(profileSchema, await request("/api/profile/identities/otp/verify", {
     method: "POST", body: JSON.stringify({ challengeId, code }),
-  }));
+  }), "profile");
 }
 
 export async function removeIdentity(identityId: string): Promise<Profile> {
-  return profileSchema.parse(await request(`/api/profile/identities/${identityId}`, { method: "DELETE" }));
+  return conform(profileSchema, await request(`/api/profile/identities/${identityId}`, { method: "DELETE" }), "profile");
 }

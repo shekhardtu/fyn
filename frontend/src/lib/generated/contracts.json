@@ -668,10 +668,10 @@
           "default": null,
           "title": "Merchant"
         },
-        "date": {
+        "transactionAt": {
           "anyOf": [
             {
-              "format": "date",
+              "format": "date-time",
               "type": "string"
             },
             {
@@ -679,7 +679,7 @@
             }
           ],
           "default": null,
-          "title": "Date"
+          "title": "Transactionat"
         }
       },
       "required": [
@@ -757,10 +757,10 @@
           "default": null,
           "title": "Merchant"
         },
-        "date": {
+        "transactionAt": {
           "anyOf": [
             {
-              "format": "date",
+              "format": "date-time",
               "type": "string"
             },
             {
@@ -768,7 +768,7 @@
             }
           ],
           "default": null,
-          "title": "Date"
+          "title": "Transactionat"
         },
         "transactionType": {
           "anyOf": [
@@ -2365,33 +2365,10 @@
         "transactionType": {
           "$ref": "#/$defs/TransactionType"
         },
-        "date": {
-          "title": "Date",
+        "transactionAt": {
+          "format": "date-time",
+          "title": "Transactionat",
           "type": "string"
-        },
-        "time": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Time"
-        },
-        "timezone": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Timezone"
         },
         "category": {
           "anyOf": [
@@ -2464,7 +2441,7 @@
         "amountMinor",
         "currency",
         "transactionType",
-        "date",
+        "transactionAt",
         "status"
       ],
       "title": "ConfirmationCardData",
@@ -2570,8 +2547,9 @@
           "title": "Currency",
           "type": "string"
         },
-        "date": {
-          "title": "Date",
+        "transactionAt": {
+          "format": "date-time",
+          "title": "Transactionat",
           "type": "string"
         },
         "status": {
@@ -2625,30 +2603,6 @@
           "default": null,
           "title": "Subcategory"
         },
-        "time": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Time"
-        },
-        "timezone": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Timezone"
-        },
         "location": {
           "anyOf": [
             {
@@ -2684,7 +2638,7 @@
         "title",
         "amountMinor",
         "currency",
-        "date",
+        "transactionAt",
         "status"
       ],
       "title": "TransactionPreviewData",
@@ -2818,9 +2772,10 @@
           "default": null,
           "title": "Merchant"
         },
-        "date": {
+        "transactionAt": {
           "anyOf": [
             {
+              "format": "date-time",
               "type": "string"
             },
             {
@@ -2828,7 +2783,7 @@
             }
           ],
           "default": null,
-          "title": "Date"
+          "title": "Transactionat"
         },
         "transactionType": {
           "anyOf": [
@@ -8525,5 +8480,5 @@
     "result": "AgentResponse",
     "error": "StreamErrorEvent"
   },
-  "schemaHash": "79880894200af2987fe12b3bc95f6563ce6329750b643a30054fd8cbb38286c8"
+  "schemaHash": "d9be016a0900c0cdddd9145b41fe4055c56d90e423cb2a6b77f826bef5c134c5"
 }

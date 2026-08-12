@@ -11,7 +11,8 @@ from ..domain import TransactionType
 from ..models import Category, Subcategory, Transaction
 from .extraction import normalize_merchant
 from .agent_tools import tool_contract
-from .currency import user_currency
+from .currency import user_currency, user_timezone
+from ..event_time import local_date, utc_range_for_local_dates
 from .tool_models import (
     BreakdownResult,
     CashPositionResult,
@@ -55,12 +56,14 @@ def _breakdown_rows(rows, currency: str) -> list[dict]:
 ), input_model=SpendingSummaryInput, output_model=SpendingSummaryResult)
 def spending_summary(db: Session, user_id: UUID, start: date, end: date, category_slug: str | None = None) -> dict:
     currency = user_currency(db, user_id)
+    start_at, end_at = utc_range_for_local_dates(start, end, user_timezone(db, user_id))
     stmt = apply_expense_transaction_scope(
         select(func.coalesce(func.sum(Transaction.amount_minor), 0), func.count(Transaction.id)),
         user_id,
         currency=currency,
     ).where(
-        Transaction.transaction_date.between(start, end),
+        Transaction.transaction_at >= start_at,
+        Transaction.transaction_at < end_at,
     )
     if category_slug:
         stmt = stmt.join(Category, Category.id == Transaction.category_id).where(Category.slug == category_slug)
@@ -74,6 +77,7 @@ def spending_summary(db: Session, user_id: UUID, start: date, end: date, categor
 ), input_model=DateRangeInput, output_model=BreakdownResult)
 def category_breakdown(db: Session, user_id: UUID, start: date, end: date) -> list[dict]:
     currency = user_currency(db, user_id)
+    start_at, end_at = utc_range_for_local_dates(start, end, user_timezone(db, user_id))
     statement = (
         apply_expense_transaction_scope(
             select(Category.slug, Category.name, func.sum(Transaction.amount_minor), func.count(Transaction.id))
@@ -82,7 +86,8 @@ def category_breakdown(db: Session, user_id: UUID, start: date, end: date) -> li
             currency=currency,
         )
         .where(
-            Transaction.transaction_date.between(start, end),
+            Transaction.transaction_at >= start_at,
+            Transaction.transaction_at < end_at,
         )
         .group_by(Category.slug, Category.name)
         .order_by(func.sum(Transaction.amount_minor).desc())
@@ -96,6 +101,7 @@ def category_breakdown(db: Session, user_id: UUID, start: date, end: date) -> li
 ), input_model=SubcategoryBreakdownInput, output_model=BreakdownResult)
 def subcategory_breakdown(db: Session, user_id: UUID, start: date, end: date, category_slug: str) -> list[dict]:
     currency = user_currency(db, user_id)
+    start_at, end_at = utc_range_for_local_dates(start, end, user_timezone(db, user_id))
     statement = (
         apply_expense_transaction_scope(
             select(Subcategory.slug, Subcategory.name, func.sum(Transaction.amount_minor), func.count(Transaction.id))
@@ -105,7 +111,8 @@ def subcategory_breakdown(db: Session, user_id: UUID, start: date, end: date, ca
             currency=currency,
         )
         .where(
-            Transaction.transaction_date.between(start, end),
+            Transaction.transaction_at >= start_at,
+            Transaction.transaction_at < end_at,
             Category.slug == category_slug,
         )
         .group_by(Subcategory.slug, Subcategory.name)
@@ -177,9 +184,10 @@ def cash_position(db: Session, user_id: UUID) -> dict:
 ), input_model=EmptyInput, output_model=RecurringExpensesResult)
 def recurring_expenses(db: Session, user_id: UUID) -> list[dict]:
     currency = user_currency(db, user_id)
+    timezone_name = user_timezone(db, user_id)
     transactions = list(db.scalars(expense_transactions(user_id, currency=currency).where(
         Transaction.merchant_name.is_not(None),
-    ).order_by(Transaction.transaction_date)))
+    ).order_by(Transaction.transaction_at)))
     groups: dict[tuple[str, int], list[Transaction]] = {}
     for transaction in transactions:
         key = (normalize_merchant(transaction.merchant_name) or "", transaction.amount_minor)
@@ -188,7 +196,8 @@ def recurring_expenses(db: Session, user_id: UUID) -> list[dict]:
     for (merchant, amount), items in groups.items():
         if len(items) < 2:
             continue
-        gaps = [(right.transaction_date - left.transaction_date).days for left, right in zip(items, items[1:])]
+        days = [local_date(item.transaction_at, timezone_name) for item in items]
+        gaps = [(right - left).days for left, right in zip(days, days[1:])]
         monthly = sum(20 <= gap <= 40 for gap in gaps) >= max(1, len(gaps) - 1)
         weekly = sum(5 <= gap <= 9 for gap in gaps) >= max(1, len(gaps) - 1)
         if not monthly and not weekly:
@@ -200,6 +209,6 @@ def recurring_expenses(db: Session, user_id: UUID) -> list[dict]:
             "currency": items[-1].currency,
             "cadence": "monthly" if monthly else "weekly",
             "occurrences": len(items),
-            "last_date": items[-1].transaction_date.isoformat(),
+            "last_date": days[-1].isoformat(),
         })
     return sorted(recurring, key=lambda item: item["amount_minor"], reverse=True)

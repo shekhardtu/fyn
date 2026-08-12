@@ -1,10 +1,10 @@
 import { expect, test } from "@playwright/test";
-import { TEST_CONVERSATION_URL } from "./test-thread";
+import { sharedThreadUrl } from "./test-thread";
 
 test("conversation URLs are shareable and support browser navigation", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://localhost:3000" });
-  await page.goto(TEST_CONVERSATION_URL);
-  await expect(page).toHaveURL(TEST_CONVERSATION_URL);
+  await page.goto(sharedThreadUrl());
+  await expect(page).toHaveURL(sharedThreadUrl());
   const sharedUrl = page.url();
 
   await page.getByRole("button", { name: "Copy conversation link" }).click();
@@ -12,7 +12,7 @@ test("conversation URLs are shareable and support browser navigation", async ({ 
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(sharedUrl);
 
   await page.goto(sharedUrl);
-  await expect(page).toHaveURL(TEST_CONVERSATION_URL);
+  await expect(page).toHaveURL(sharedThreadUrl());
   await expect(page.getByLabel("Message fyn AI")).toBeVisible();
 });
 
@@ -21,7 +21,7 @@ test.skip("thread deletion requires a disposable thread and is disabled by the f
 test.skip("invalid-link recovery opens another thread and is disabled by the fixed-thread policy", async () => {});
 
 test("copilot activity streams the selected path with individual and cumulative timing", async ({ page }) => {
-  await page.goto(TEST_CONVERSATION_URL);
+  await page.goto(sharedThreadUrl());
   const input = page.getByLabel("Message fyn AI");
   await input.fill("How much did I spend in the last two days?");
   await input.press("Enter");
@@ -48,7 +48,7 @@ test("copilot activity streams the selected path with individual and cumulative 
 });
 
 test("bare amount follows clarification, auto-save, edit/remove controls, and refresh persistence", async ({ page }) => {
-  await page.goto(TEST_CONVERSATION_URL);
+  await page.goto(sharedThreadUrl());
   await expect(page.getByLabel("Message fyn AI")).toBeVisible();
   const input = page.getByLabel("Message fyn AI");
   await input.fill("₹1,234");
@@ -71,7 +71,7 @@ test("bare amount follows clarification, auto-save, edit/remove controls, and re
 });
 
 test("ambiguous add request becomes a HITL draft instead of a validator dead end", async ({ page }) => {
-  await page.goto(TEST_CONVERSATION_URL);
+  await page.goto(sharedThreadUrl());
   const input = page.getByLabel("Message fyn AI");
   await input.fill("Add 500");
   await input.press("Enter");
@@ -84,7 +84,7 @@ test("ambiguous add request becomes a HITL draft instead of a validator dead end
 });
 
 test("rich entry and grounded analytics work without a form", async ({ page }) => {
-  await page.goto(TEST_CONVERSATION_URL);
+  await page.goto(sharedThreadUrl());
   const input = page.getByLabel("Message fyn AI");
   await input.fill("Spent ₹2,345 at Swiggy today");
   await input.press("Enter");
@@ -97,7 +97,7 @@ test("rich entry and grounded analytics work without a form", async ({ page }) =
 });
 
 test("CSV attachment is staged, confirmed, imported, and persistent", async ({ page }) => {
-  await page.goto(TEST_CONVERSATION_URL);
+  await page.goto(sharedThreadUrl());
   const chooserPromise = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "Attach a CSV statement" }).click();
   const chooser = await chooserPromise;
@@ -116,7 +116,7 @@ test("CSV attachment is staged, confirmed, imported, and persistent", async ({ p
 });
 
 test("privacy settings expose least-privilege controls and export", async ({ page }) => {
-  await page.goto(TEST_CONVERSATION_URL);
+  await page.goto(sharedThreadUrl());
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Privacy & data" })).toBeVisible();
   const location = page.getByRole("switch");
@@ -133,19 +133,19 @@ test("privacy settings expose least-privilege controls and export", async ({ pag
 });
 
 test("refresh preserves the fixed test conversation", async ({ page }) => {
-  await page.goto(TEST_CONVERSATION_URL);
+  await page.goto(sharedThreadUrl());
   const input = page.getByLabel("Message fyn AI");
   await input.fill("Spent ₹777 at Toit today");
   await input.press("Enter");
   await expect(page.getByText("₹777", { exact: true }).last()).toBeVisible();
 
   await page.reload();
-  await expect(page).toHaveURL(TEST_CONVERSATION_URL);
+  await expect(page).toHaveURL(sharedThreadUrl());
   await expect(page.locator("article").getByText("Spent ₹777 at Toit today", { exact: true })).toBeVisible();
 });
 
 test("merchant recategorization can be saved and is learned", async ({ page }) => {
-  await page.goto(TEST_CONVERSATION_URL);
+  await page.goto(sharedThreadUrl());
   const input = page.getByLabel("Message fyn AI");
   await input.fill("Spent ₹900 at Toit today");
   await input.press("Enter");
@@ -159,7 +159,7 @@ test("merchant recategorization can be saved and is learned", async ({ page }) =
 });
 
 test("travelling query is category-aware instead of returning the generic template", async ({ page }) => {
-  await page.goto(TEST_CONVERSATION_URL);
+  await page.goto(sharedThreadUrl());
   const input = page.getByLabel("Message fyn AI");
   await input.fill("Spent ₹1,000 on a cab today");
   await input.press("Enter");
@@ -175,7 +175,7 @@ test("travelling query is category-aware instead of returning the generic templa
 });
 
 test("category selector supports prediction, search, and adding a category", async ({ page }) => {
-  await page.goto(TEST_CONVERSATION_URL);
+  await page.goto(sharedThreadUrl());
   const input = page.getByLabel("Message fyn AI");
   await input.fill("₹321");
   await input.press("Enter");
@@ -191,7 +191,7 @@ test("category selector supports prediction, search, and adding a category", asy
 });
 
 test("automatic entry requires confirmation before removal", async ({ page }) => {
-  await page.goto(TEST_CONVERSATION_URL);
+  await page.goto(sharedThreadUrl());
   const input = page.getByLabel("Message fyn AI");
   await input.fill("₹250 for coffee");
   await input.press("Enter");
@@ -203,7 +203,7 @@ test("automatic entry requires confirmation before removal", async ({ page }) =>
 
 test("contextual breakdown and merchant removal choose the correct tools", async ({ page }) => {
   test.setTimeout(120_000);
-  await page.goto(TEST_CONVERSATION_URL);
+  await page.goto(sharedThreadUrl());
   const input = page.getByLabel("Message fyn AI");
   await expect(input).toBeEnabled();
 
@@ -245,7 +245,7 @@ test("contextual breakdown and merchant removal choose the correct tools", async
 
 test("mobile layout keeps the composer and privacy controls usable", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(TEST_CONVERSATION_URL);
+  await page.goto(sharedThreadUrl());
   await expect(page.getByLabel("Message fyn AI")).toBeVisible();
   await expect(page.getByRole("button", { name: "Send message" })).toBeVisible();
   await page.getByRole("button", { name: "Open navigation" }).click();
@@ -255,18 +255,16 @@ test("mobile layout keeps the composer and privacy controls usable", async ({ pa
   // announces itself as a dialog rather than a plain region.
   const settings = page.getByRole("dialog", { name: "Privacy & data" });
   await expect(settings).toBeVisible();
+  // The drawer slides in, and `toBeVisible` resolves the moment it starts. A
+  // box measured mid-transform comes back off the compositor's float maths —
+  // 390.00003 rather than 390 — so the assertion below was testing floating
+  // point rather than layout. Wait for the entrance to settle, then measure.
+  await settings.evaluate((panel) => Promise.all(panel.getAnimations().map((animation) => animation.finished)));
   const box = await settings.boundingBox();
   expect(box?.width).toBeLessThanOrEqual(390);
   await expect(page.getByLabel("Deletion confirmation")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(settings).toBeHidden();
-});
-
-test("saved analyses navigation stays inside the conversation", async ({ page }) => {
-  await page.goto(TEST_CONVERSATION_URL);
-  await page.getByRole("button", { name: "Saved analyses", exact: true }).click();
-  await expect(page.locator("article").getByText("Show my saved analyses", { exact: true }).last()).toBeVisible();
-  await expect(page.getByText(/You have \d+ saved (analysis|analyses)\./).last()).toBeVisible();
 });
 
 test.skip("history pagination requires creating disposable threads and is disabled by the fixed-thread policy", async () => {});

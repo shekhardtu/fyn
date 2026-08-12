@@ -11,6 +11,8 @@ Revises: 0012_merchant_ownership
 from alembic import op
 from app.migration_guards import (
     create_index_if_absent,
+    drop_index_if_present,
+    has_column,
 )
 
 
@@ -21,6 +23,8 @@ depends_on = None
 
 
 def upgrade() -> None:
+    if not has_column("transactions", "transaction_date"):
+        return
     create_index_if_absent(
         "ix_transactions_user_date_category",
         "transactions",
@@ -29,4 +33,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_transactions_user_date_category", table_name="transactions")
+    drop_index_if_present("ix_transactions_user_date_category", "transactions")

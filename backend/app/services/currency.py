@@ -25,6 +25,13 @@ def user_currency(db: Session, user_id: UUID) -> str:
     return normalize_currency(value)
 
 
+def user_timezone(db: Session, user_id: UUID) -> str:
+    value = db.scalar(select(User.timezone).where(User.id == user_id))
+    if not value:
+        raise ValueError("Authenticated user has no timezone setting")
+    return value
+
+
 def format_money_minor(amount_minor: int, currency: str) -> str:
     sign = "-" if amount_minor < 0 else ""
     amount = Decimal(abs(amount_minor)) / Decimal(100)

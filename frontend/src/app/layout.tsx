@@ -20,7 +20,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return <html lang="en" className={`${body.variable} ${display.variable} h-full antialiased`}><body className="min-h-full">
-    <a href="#composer" className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-100 focus:rounded-xl focus:bg-evergreen focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-white">Skip to the message box</a>
+    <a href="#composer" className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-100 focus:rounded-lg focus:bg-secondary focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-on-secondary">Skip to the message box</a>
     <Providers>{children}</Providers>
   </body></html>;
 }

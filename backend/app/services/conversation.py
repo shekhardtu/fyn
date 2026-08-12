@@ -5,18 +5,19 @@ from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 import hashlib
+import json
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from decimal import Decimal
 from time import perf_counter
 from uuid import UUID, uuid4
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import String, func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 
 from ..config import get_settings
+from ..event_time import as_utc, from_local_parts, local_date, local_now, now_utc, resolve_event_time, utc_range_for_local_dates
 from ..domain import (
     EDITABLE_TRANSACTION_TYPES,
     DraftState,
@@ -41,11 +42,11 @@ from ..models import (
     Conversation,
     FinancialObservation,
     Goal,
+    GoalContribution,
     Import,
     ImportRecord,
     Message,
     ReconciliationCandidate,
-    SavedAnalysis,
     Subcategory,
     Tag,
     Transaction,
@@ -61,7 +62,7 @@ from ..visualization_contracts import ORDERED_VISUAL_FIELD_TYPES
 from .analytics import cash_position, category_breakdown, change_drivers, month_bounds, monthly_comparison, recurring_expenses, shift_month, spending_summary, subcategory_breakdown
 from .accounts import AccountRepository
 from .adapters import import_summary
-from .agents import ACCEPTED_COPILOT_VALIDATION_OUTCOMES, GROUPED_QUERY_OPERATIONS, RECENT_CONTEXT_MESSAGE_LIMIT, CopilotDecision, CopilotDecisionValidation, QueryInterpretation, interpret_with_financial_copilot, validate_copilot_decision
+from .agents import ACCEPTED_COPILOT_VALIDATION_OUTCOMES, GROUPED_QUERY_OPERATIONS, RECENT_CONTEXT_MESSAGE_LIMIT, CompilationAssumption, CopilotDecision, CopilotDecisionValidation, QueryInterpretation, interpret_with_financial_copilot, releases_prior_scope, validate_copilot_decision
 from .analysis_harness import HarnessValidationError, discover_analysis_tools, execute_generated_tool
 from .calculators import affordability, investment_projection, loan_with_prepayment
 from .capabilities import CapabilityId, ExecutorKind, SAFE_READ_CAPABILITIES, capability_spec
@@ -122,10 +123,7 @@ def _analysis_lifecycle_badge(stage: str, label: str, status: ExecutionStatus | 
 
 def _local_today(user: User) -> date:
     """Return the user's calendar date, never the API host's UTC date."""
-    try:
-        return datetime.now(ZoneInfo(user.timezone)).date()
-    except (ZoneInfoNotFoundError, ValueError):
-        return datetime.now(timezone.utc).date()
+    return local_now(user.timezone).date()
 
 
 def _serialize_widget(widget: Widget) -> dict:
@@ -665,9 +663,7 @@ def _confirmation(db: Session, draft: TransactionDraft) -> Widget:
             "sourceAccount": draft.source_account_name,
             "destinationAccount": draft.destination_account_name,
             "transactionType": draft.transaction_type,
-            "date": draft.transaction_date.isoformat() if draft.transaction_date else None,
-            "time": draft.transaction_time,
-            "timezone": draft.timezone,
+            "transactionAt": as_utc(draft.transaction_at),
             "category": category.name if category else None,
             "subcategory": subcategory.name if subcategory else None,
             "location": draft.location_label,
@@ -703,7 +699,15 @@ def _set_ready_if_complete(draft: TransactionDraft) -> None:
 
 
 def _create_draft(db: Session, user: User, conversation: Conversation, text: str, result: ExtractedTransaction | None = None) -> TransactionDraft:
-    result = result or extract_transaction(text, today=_local_today(user), default_currency=user.currency)
+    current = now_utc()
+    result = result or extract_transaction(text, today=local_now(user.timezone, current=current).date(), default_currency=user.currency)
+    transaction_at = resolve_event_time(
+        day=result.transaction_date,
+        clock=result.transaction_time,
+        timezone_name=result.timezone or user.timezone,
+        current=current,
+        use_current_time="transaction_date" in result.inferred_fields and not result.transaction_time,
+    )
     _apply_explicit_taxonomy(db, user, text, result)
     taxonomy = TaxonomyRepository(db, user.id)
     category = taxonomy.category_by_slug(result.category_slug) if result.category_slug else None
@@ -716,9 +720,7 @@ def _create_draft(db: Session, user: User, conversation: Conversation, text: str
         "merchant": result.merchant,
         "source_account": result.source_account,
         "destination_account": result.destination_account,
-        "transaction_date": result.transaction_date.isoformat() if result.transaction_date else None,
-        "transaction_time": result.transaction_time,
-        "timezone": result.timezone or user.timezone,
+        "transaction_at": transaction_at.isoformat(),
         "location": result.location_label,
         "category": result.category_slug,
         "subcategory": result.subcategory_slug,
@@ -735,6 +737,16 @@ def _create_draft(db: Session, user: User, conversation: Conversation, text: str
         for key, value in field_values.items()
         if value not in (None, [], "unknown")
     }
+    provenance["transaction_at"] = {
+        "origin": "explicit" if {"transaction_date", "transaction_time"} & explicit else "inferred",
+        "confidence": float(result.confidence),
+    }
+    inferred_fields = [
+        field for field in result.inferred_fields
+        if field not in {"transaction_date", "transaction_time", "timezone"}
+    ]
+    if not ({"transaction_date", "transaction_time"} & explicit):
+        inferred_fields.append("transaction_at")
     draft = TransactionDraft(
         user_id=user.id,
         conversation_id=conversation.id,
@@ -747,9 +759,7 @@ def _create_draft(db: Session, user: User, conversation: Conversation, text: str
         destination_account_name=result.destination_account,
         category_id=category.id if category else None,
         subcategory_id=subcategory.id if subcategory else None,
-        transaction_date=result.transaction_date,
-        transaction_time=result.transaction_time,
-        timezone=result.timezone or user.timezone,
+        transaction_at=transaction_at,
         location_label=result.location_label,
         location_source="user" if "location" in explicit else "inference" if result.location_label else None,
         description=text,
@@ -757,7 +767,7 @@ def _create_draft(db: Session, user: User, conversation: Conversation, text: str
         spend_nature=result.spend_nature,
         field_provenance=provenance,
         confidence=result.confidence,
-        inferred_fields=result.inferred_fields,
+        inferred_fields=list(dict.fromkeys(inferred_fields)),
         missing_fields=result.missing_fields,
         state=DraftState.ENRICHED.value,
     )
@@ -869,14 +879,12 @@ def _transaction_preview(db: Session, transaction: Transaction, draft_id: UUID |
             "title": label,
             "amountMinor": transaction.amount_minor,
             "currency": transaction.currency,
-            "date": transaction.transaction_date.isoformat(),
+            "transactionAt": as_utc(transaction.transaction_at),
             "status": status,
             "sourceCount": len(transaction.sources) or 1,
             "transactionType": transaction.transaction_type,
             "category": category.name if category else None,
             "subcategory": subcategory.name if subcategory else None,
-            "time": transaction.transaction_time,
-            "timezone": transaction.timezone,
             "location": transaction.location_label,
             "spendNature": transaction.spend_nature,
             "tags": tag_names,
@@ -1024,6 +1032,49 @@ def _user_runtime_tools(db: Session, user: User, today: date) -> list:
     return build_runtime_tools(db, user, today)
 
 
+def _decision_fingerprint(decision: CopilotDecision) -> str:
+    """Identify a typed decision by the parts a repair is supposed to change.
+
+    Confidence, prose and the reason string move on every sample, so comparing
+    whole decisions would never detect a repeat. This compares only the
+    executable contract: the tool, the governed plan and the presentation.
+    """
+    payload = decision.model_dump(
+        mode="json",
+        exclude_none=True,
+        include={"tool", "query", "query_bundle", "analysis_tool", "presentation", "taxonomy"},
+    )
+    return json.dumps(payload, sort_keys=True, default=str)
+
+
+def _rejected_read_only_analysis(
+    decision: CopilotDecision,
+    validation: CopilotDecisionValidation | None,
+) -> CopilotDecision | None:
+    """Turn an unrepairable read-only analysis into a recoverable answer.
+
+    A rejected read is not something the user can act on unless it says what
+    could not be honoured. The generic version of this message gave them
+    nothing to correct, and the transcript shows the same prompt retyped nine
+    times against it, so the specific validator issue is named here and the
+    reply asks for the one input that would resolve it.
+    """
+    if decision.tool not in SAFE_READ_CAPABILITIES:
+        return None
+    issue = next((item for item in (validation.issues if validation else []) if item), None)
+    summary = validation.summary if validation else None
+    explanation = issue or summary or "The governed semantic layer could not express that analysis."
+    return CopilotDecision(
+        tool=CapabilityId.UNKNOWN,
+        reply=(
+            f"I couldn’t draw that one safely: {explanation[0].lower()}{explanation[1:]} "
+            "Nothing was created or changed. Tell me the metric, the grouping or the period you want and I’ll run it."
+        ),
+        confidence=1.0,
+        reason="The analysis contract was rejected and cannot fall through to a write workflow.",
+    )
+
+
 def _interpret_prompt(
     db: Session,
     user: User,
@@ -1067,6 +1118,15 @@ def _interpret_prompt(
     # implicit filter. This removes phrase/regex gating from multi-turn context.
     prompt_analysis_state = active_analysis_state
     prompt_data_scope = active_data_scope
+    # ...with one exception the domain layer owns outright. "All transactions"
+    # is a universal quantifier: it cannot be a refinement of the records shown
+    # earlier, so offering that scope as context to preserve invites both the
+    # router and the validator to treat a deliberate widening as an accidental
+    # one. Releasing it here is the same policy the scope repair guard applies
+    # further down, moved to where the prompt states it outright.
+    if releases_prior_scope(text):
+        prompt_analysis_state = None
+        prompt_data_scope = None
     active_draft = _clarification_draft(db, conversation)
     workflow_context: dict = {
         "kind": "none",
@@ -1355,15 +1415,23 @@ def _interpret_prompt(
             if activity_callback:
                 activity_callback("reroute", f"{settings.analysis_model} produced a revised decision", "completed", "agno_reroute", stronger.tool if stronger else "No valid decision")
             if not stronger:
-                if decision.tool in SAFE_READ_CAPABILITIES:
-                    return CopilotDecision(
-                        tool=CapabilityId.UNKNOWN,
-                        reply="I couldn’t validate that read-only analysis yet. No financial record was created or changed.",
-                        confidence=1.0,
-                        reason="The analysis contract was rejected and cannot fall through to a write workflow.",
-                    )
-                return None
+                return _rejected_read_only_analysis(decision, validation)
             stronger = normalize_query_contract(remove_unrequested_scope(stronger))
+            if _decision_fingerprint(stronger) == _decision_fingerprint(decision):
+                # A repair that reproduces the rejected contract is lateral
+                # movement, not progress: for a chart the plan is compiled from
+                # the typed intent, so a second model cannot edit what the
+                # compiler owns. Revalidating it would spend another call to
+                # reach the same verdict.
+                if activity_callback:
+                    activity_callback(
+                        "repair_convergence",
+                        "Stopped a non-converging repair",
+                        "completed",
+                        "domain_policy",
+                        "The revised contract is identical to the rejected one",
+                    )
+                return _rejected_read_only_analysis(decision, validation)
             if activity_callback:
                 activity_callback("revalidation", f"Revalidating with {settings.validator_model}", "running", "agno_validator", None)
             second = validate_copilot_decision(
@@ -1379,14 +1447,7 @@ def _interpret_prompt(
             if activity_callback:
                 activity_callback("revalidation", f"{settings.validator_model}: {second_label}", "completed", "agno_validator", second.summary if second else "Validator unavailable")
             if not second or second.outcome == "reject":
-                if decision.tool in SAFE_READ_CAPABILITIES:
-                    return CopilotDecision(
-                        tool=CapabilityId.UNKNOWN,
-                        reply="I couldn’t validate that read-only analysis yet. No financial record was created or changed.",
-                        confidence=1.0,
-                        reason="The analysis contract was rejected and cannot fall through to a write workflow.",
-                    )
-                return None
+                return _rejected_read_only_analysis(decision, second or validation)
             stronger = bind_active_scope(stronger)
             return stronger.model_copy(update={"validated_by": settings.validator_model, "validation_confidence": second.confidence})
     except Exception as error:
@@ -1731,10 +1792,14 @@ def _analysis_harness_response(
         return persist_agent_response(db, conversation, content)
     result = generated.result
     widgets = result.widgets
+    # An assumption the user cannot see is indistinguishable from a wrong
+    # answer, so whatever the compiler had to decide on their behalf is stated
+    # alongside the numbers it produced.
+    message = " ".join([result.message, *(item.detail for item in decision.assumptions)])
     return persist_agent_response(
         db,
         conversation,
-        result.message,
+        message,
         widgets=widgets,
         citations=result.citations,
     )
@@ -1863,8 +1928,6 @@ def _fast_path_decision(text: str, today: date, default_currency: str | None = N
             tool = CapabilityId.GET_RECURRING_EXPENSES
         elif "biggest" in lowered or "largest expense" in lowered:
             tool = CapabilityId.GET_BIGGEST_EXPENSES
-        elif "saved analys" in lowered:
-            tool = CapabilityId.SHOW_SAVED_ANALYSES
         elif "duplicate" in lowered or "reconciliation" in lowered or "need review" in lowered:
             tool = CapabilityId.SHOW_RECONCILIATION_REVIEW
         elif any(token in lowered for token in ("how much", "how many rupees", "summary", "breakdown", "total", "spent this", "spending this")):
@@ -2012,7 +2075,7 @@ def _removal_confirmation_widget(transaction: Transaction) -> Widget:
             "currency": transaction.currency,
             "merchant": transaction.merchant_name,
             "transactionType": transaction.transaction_type,
-            "date": transaction.transaction_date.isoformat(),
+            "transactionAt": as_utc(transaction.transaction_at),
             "status": "Confirm removal",
             "inferredFields": [],
         },
@@ -2109,7 +2172,7 @@ def _transaction_table_widget(
         "account": accounts.get(item.account_id),
         "location": item.location_label,
         "tags": tags_by_transaction.get(item.id, []),
-        "date": item.transaction_date.isoformat(),
+        "transactionAt": as_utc(item.transaction_at).isoformat(),
         "status": item.status,
         "amountMinor": item.amount_minor,
         "currency": item.currency,
@@ -2122,7 +2185,7 @@ def _transaction_table_widget(
             FieldPresentation("account", "Account", "text", "detail"),
             FieldPresentation("location", "Location", "text", "detail"),
             FieldPresentation("tags", "Tags", "tags", "detail"),
-            FieldPresentation("date", "Date", "date", "secondary"),
+            FieldPresentation("transactionAt", "Transaction time", "datetime", "secondary"),
             FieldPresentation("status", "Status", "status", "detail"),
             FieldPresentation("amountMinor", "Amount", "money", "primary", "right", "currency"),
         ),
@@ -2191,7 +2254,7 @@ def _transaction_removal_response(db: Session, user: User, conversation: Convers
         draft.state = DraftState.CANCELLED.value
     candidates = list(db.scalars(
         canonical_transactions(user.id)
-        .order_by(Transaction.transaction_date.desc(), Transaction.created_at.desc())
+        .order_by(Transaction.transaction_at.desc(), Transaction.created_at.desc())
         .limit(250)
     ))
     normalized_text = normalize_merchant(text) or text.casefold()
@@ -2215,7 +2278,7 @@ def _transaction_removal_response(db: Session, user: User, conversation: Convers
     if amount_minor is not None:
         matches = [item for item in matches if item.amount_minor == amount_minor]
     if period:
-        matches = [item for item in matches if period[0] <= item.transaction_date <= period[1]]
+        matches = [item for item in matches if period[0] <= local_date(item.transaction_at, user.timezone) <= period[1]]
     if category_slug and not mentioned_merchants:
         category = TaxonomyRepository(db, user.id).category_by_slug(
             category_slug,
@@ -2282,9 +2345,11 @@ def _transaction_search_parts(db: Session, user: User, query: QueryInterpretatio
     if query.max_amount_minor is not None:
         stmt = stmt.where(Transaction.amount_minor <= query.max_amount_minor)
     if query.start_date:
-        stmt = stmt.where(Transaction.transaction_date >= query.start_date)
+        stmt = stmt.where(Transaction.transaction_at >= from_local_parts(query.start_date, None, user.timezone))
     if query.end_date:
-        stmt = stmt.where(Transaction.transaction_date <= min(query.end_date, _local_today(user)))
+        resolved_end = min(query.end_date, _local_today(user))
+        _, end_at = utc_range_for_local_dates(resolved_end, resolved_end, user.timezone)
+        stmt = stmt.where(Transaction.transaction_at < end_at)
     filtered_ids = stmt.with_only_columns(Transaction.id).order_by(None).subquery()
     individual_rank = query.operation == "rank" and query.group_by == "none"
     if query.result_mode == "summary" and not individual_rank:
@@ -2323,7 +2388,12 @@ def _transaction_search_parts(db: Session, user: User, query: QueryInterpretatio
             group_label = func.coalesce(Account.name, "Unassigned account")
             group_join = (Account, Account.id == Transaction.account_id)
         elif query.group_by == "month":
-            group_label = func.substr(func.cast(Transaction.transaction_date, String), 1, 7)
+            dialect = db.get_bind().dialect.name
+            group_label = (
+                func.strftime("%Y-%m", Transaction.transaction_at)
+                if dialect == "sqlite"
+                else func.to_char(func.timezone(user.timezone, Transaction.transaction_at), "YYYY-MM")
+            )
             group_join = None
         grouped_stmt = (
             select(
@@ -2406,9 +2476,9 @@ def _transaction_search_parts(db: Session, user: User, query: QueryInterpretatio
         return content, widgets, citations
     if individual_rank:
         amount_order = Transaction.amount_minor.asc() if query.sort_direction == "asc" else Transaction.amount_minor.desc()
-        stmt = stmt.order_by(amount_order, Transaction.transaction_date.desc(), Transaction.created_at.desc())
+        stmt = stmt.order_by(amount_order, Transaction.transaction_at.desc(), Transaction.created_at.desc())
     else:
-        stmt = stmt.order_by(Transaction.transaction_date.desc(), Transaction.created_at.desc())
+        stmt = stmt.order_by(Transaction.transaction_at.desc(), Transaction.created_at.desc())
     effective_limit = 1 if individual_rank else query.limit
     fetched = list(db.scalars(stmt.limit(effective_limit + 1)))
     has_more = len(fetched) > effective_limit
@@ -2425,7 +2495,8 @@ def _transaction_search_parts(db: Session, user: User, query: QueryInterpretatio
     if individual_rank and transactions:
         rank_kind = "lowest" if query.sort_direction == "asc" else "highest"
         item = transactions[0]
-        content = f"The {rank_kind} matching transaction is {format_money_minor(item.amount_minor, item.currency)} at {item.merchant_name or item.transaction_type.replace('_', ' ')} on {item.transaction_date.strftime('%b %d')}."
+        occurred_day = local_date(item.transaction_at, user.timezone)
+        content = f"The {rank_kind} matching transaction is {format_money_minor(item.amount_minor, item.currency)} at {item.merchant_name or item.transaction_type.replace('_', ' ')} on {occurred_day.strftime('%b %d')}."
     elif transactions:
         count_label = f"at least {len(transactions)}" if has_more else str(len(transactions))
         content = f"I found {count_label} active {filter_label}."
@@ -2543,43 +2614,11 @@ def _query_response(db: Session, user: User, conversation: Conversation, text: s
         """A typed route is authoritative; text matching is outage fallback only."""
         return selected_tool == capability if selected_tool is not None else fallback_match
 
-    if "save this" in lowered:
-        previous = db.scalar(select(Message).where(Message.conversation_id == conversation.id, Message.role == "assistant", *_history_only()).order_by(Message.created_at.desc()))
-        if previous and previous.widgets:
-            widget = previous.widgets[-1]
-            analysis = SavedAnalysis(user_id=user.id, title=str(widget.get("data", {}).get("title", "Saved financial analysis")), analysis_type=str(widget.get("type", "analysis")), parameters={}, result=widget)
-            db.add(analysis)
-            db.flush()
-            content = f"Saved “{analysis.title}” to your analyses."
-            widgets = [Widget(id=f"saved-analysis-{analysis.id}", type=WidgetType.INSIGHT_CARD, data={"eyebrow": "Saved analysis", "title": analysis.title, "body": "You can ask me to show this analysis again at any time."})]
-        else:
-            content = "There isn’t an analysis to save yet."
-            widgets = []
-    elif selected(CapabilityId.SHOW_SAVED_ANALYSES, "saved analys" in lowered):
-        analyses = list(db.scalars(select(SavedAnalysis).where(SavedAnalysis.user_id == user.id).order_by(SavedAnalysis.updated_at.desc()).limit(10)))
-        content = (
-            f"You have {len(analyses)} saved {'analysis' if len(analyses) == 1 else 'analyses'}."
-            if analyses
-            else "You don’t have any saved analyses yet. Ask me to create a chart, comparison, or scenario, then say “Save this analysis.”"
-        )
-        widgets = [WidgetLibrary.data_table(
-            widget_id=f"saved-list-{datetime.now().timestamp()}",
-            title="Saved analyses",
-            rows=[{"id": str(item.id), "title": item.title, "analysisType": item.analysis_type, "updatedAt": item.updated_at.isoformat()} for item in analyses],
-            body="Saved charts, comparisons, and scenarios appear here and can be reopened in conversation.",
-            blueprint=TableBlueprint(
-                fields=(
-                    FieldPresentation("title", "Analysis", "entity", "primary", secondary_keys=("analysisType",)),
-                    FieldPresentation("updatedAt", "Updated", "datetime", "secondary"),
-                ),
-                empty_message="No saved analyses yet. Generate an analysis in the conversation, then say “Save this analysis.”",
-            ),
-        )]
-    elif selected(CapabilityId.SHOW_RECONCILIATION_REVIEW, any(token in lowered for token in ("duplicate", "reconciliation", "need review"))):
+    if selected(CapabilityId.SHOW_RECONCILIATION_REVIEW, any(token in lowered for token in ("duplicate", "reconciliation", "need review"))):
         candidate = db.scalar(select(ReconciliationCandidate).where(ReconciliationCandidate.user_id == user.id, ReconciliationCandidate.decision == ReconciliationOutcome.NEEDS_REVIEW).order_by(ReconciliationCandidate.score.desc()))
         if not candidate:
             content = "There are no ambiguous transactions waiting for review."
-            widgets = [Widget(id=f"review-clear-{datetime.now().timestamp()}", type=WidgetType.INSIGHT_CARD, data={"eyebrow": "Reconciliation", "title": "All clear", "body": "Every imported observation is either matched or recorded separately."})]
+            widgets = [Widget(id=f"review-clear-{now_utc().timestamp()}", type=WidgetType.INSIGHT_CARD, data={"eyebrow": "Reconciliation", "title": "All clear", "body": "Every imported observation is either matched or recorded separately."})]
         else:
             owned = UserScopedRepository(db, user.id)
             observation = owned.get(FinancialObservation, candidate.observation_id)
@@ -2590,14 +2629,14 @@ def _query_response(db: Session, user: User, conversation: Conversation, text: s
             widgets = [Widget(
                 id=f"reconcile-{candidate.id}",
                 type=WidgetType.RECONCILIATION_REVIEW,
-                data={"candidateId": str(candidate.id), "title": "Possible duplicate", "score": float(candidate.score), "incoming": {"amountMinor": observation.amount_minor, "currency": observation.currency, "merchant": observation.merchant_raw, "date": observation.transaction_date.isoformat(), "source": observation.source_type}, "existing": {"transactionId": str(transaction.id), "amountMinor": transaction.amount_minor, "currency": transaction.currency, "merchant": transaction.merchant_name, "date": transaction.transaction_date.isoformat(), "sourceCount": len(transaction.sources)}, "signals": candidate.matching_signals},
+                data={"candidateId": str(candidate.id), "title": "Possible duplicate", "score": float(candidate.score), "incoming": {"amountMinor": observation.amount_minor, "currency": observation.currency, "merchant": observation.merchant_raw, "transactionAt": as_utc(observation.transaction_at), "source": observation.source_type}, "existing": {"transactionId": str(transaction.id), "amountMinor": transaction.amount_minor, "currency": transaction.currency, "merchant": transaction.merchant_name, "transactionAt": as_utc(transaction.transaction_at), "sourceCount": len(transaction.sources)}, "signals": candidate.matching_signals},
                 actions=[WidgetAction(id="merge", label="Same transaction", action=WidgetActionId.MERGE_RECONCILIATION, style="primary", payload={"candidateId": str(candidate.id)}), WidgetAction(id="separate", label="Keep separate", action=WidgetActionId.SEPARATE_RECONCILIATION, payload={"candidateId": str(candidate.id)})],
             )]
     elif selected(CapabilityId.GET_RECURRING_EXPENSES, "recurring" in lowered or "subscription" in lowered):
         recurring = recurring_expenses(db, user.id)
         content = f"I found {len(recurring)} recurring expense pattern{'s' if len(recurring) != 1 else ''}." if recurring else "I don’t have enough repeated transactions to identify a recurring expense yet."
         widgets = [WidgetLibrary.data_table(
-            widget_id=f"recurring-{datetime.now().timestamp()}",
+            widget_id=f"recurring-{now_utc().timestamp()}",
             title="Recurring expenses",
             rows=[{
                 "id": item["id"],
@@ -2621,10 +2660,10 @@ def _query_response(db: Session, user: User, conversation: Conversation, text: s
         citations = [DataReference(label="Repeated merchant transactions", entity_type="transaction", query={"patterns": len(recurring)})]
     elif selected(CapabilityId.CALCULATE_LOAN, any(token in lowered for token in ("prepay", "interest save", "emi"))):
         content = "I can calculate this exactly, but I still need the outstanding principal, annual interest rate, and remaining tenure."
-        widgets = [Widget(id=f"loan-{datetime.now().timestamp()}", type=WidgetType.LOAN_CALCULATOR, data={"title": "Home-loan prepayment", "body": "Add the loan principal, rate, and remaining months to compare the baseline with a prepayment.", "prepaymentMinor": extract_transaction(text, default_currency=user.currency).amount_minor, "currency": user.currency}, actions=[WidgetAction(id="calculate", label="Calculate", action=WidgetActionId.CALCULATE_LOAN_SCENARIO, style="primary")])]
+        widgets = [Widget(id=f"loan-{now_utc().timestamp()}", type=WidgetType.LOAN_CALCULATOR, data={"title": "Home-loan prepayment", "body": "Add the loan principal, rate, and remaining months to compare the baseline with a prepayment.", "prepaymentMinor": extract_transaction(text, default_currency=user.currency).amount_minor, "currency": user.currency}, actions=[WidgetAction(id="calculate", label="Calculate", action=WidgetActionId.CALCULATE_LOAN_SCENARIO, style="primary")])]
     elif selected(CapabilityId.CALCULATE_INVESTMENT_PROJECTION, "sip" in lowered or "investment projection" in lowered):
         content = "I can project the change deterministically once you choose a time horizon and expected annual return."
-        widgets = [Widget(id=f"investment-{datetime.now().timestamp()}", type=WidgetType.INVESTMENT_PROJECTION, data={"title": "Investment projection", "body": "The result will separate your contributions from estimated returns and state the return assumption.", "monthlyContributionMinor": extract_transaction(text, default_currency=user.currency).amount_minor, "currency": user.currency}, actions=[WidgetAction(id="calculate", label="Project", action=WidgetActionId.CALCULATE_INVESTMENT_SCENARIO, style="primary")])]
+        widgets = [Widget(id=f"investment-{now_utc().timestamp()}", type=WidgetType.INVESTMENT_PROJECTION, data={"title": "Investment projection", "body": "The result will separate your contributions from estimated returns and state the return assumption.", "monthlyContributionMinor": extract_transaction(text, default_currency=user.currency).amount_minor, "currency": user.currency}, actions=[WidgetAction(id="calculate", label="Project", action=WidgetActionId.CALCULATE_INVESTMENT_SCENARIO, style="primary")])]
     elif selected(CapabilityId.GET_CHANGE_DRIVERS, "why" in lowered and ("spend" in lowered or "expensive" in lowered)):
         result = change_drivers(db, user.id, today)
         difference = result["difference_minor"]
@@ -2658,7 +2697,7 @@ def _query_response(db: Session, user: User, conversation: Conversation, text: s
             content = f"Not safely yet based on the records I have. You’re {format_money_minor(result['gap_minor'], user.currency)} short after keeping a six-month expense reserve."
             if months:
                 content += f" At your recorded surplus, that’s about {months} month{'s' if months != 1 else ''}."
-        widgets = [Widget(id=f"scenario-{datetime.now().timestamp()}", type=WidgetType.SCENARIO_ANALYSIS, data={"title": f"Can I afford {format_money_minor(purchase_minor, user.currency)}?", "currency": user.currency, **result, "dataQuality": "Based only on recorded transactions"})]
+        widgets = [Widget(id=f"scenario-{now_utc().timestamp()}", type=WidgetType.SCENARIO_ANALYSIS, data={"title": f"Can I afford {format_money_minor(purchase_minor, user.currency)}?", "currency": user.currency, **result, "dataQuality": "Based only on recorded transactions"})]
         citations = [DataReference(label="Recorded income and expenses", entity_type="transaction", query={"position": position, "month": current_month})]
     elif selected(CapabilityId.GET_BIGGEST_EXPENSES, "biggest" in lowered):
         transactions = list(db.scalars(
@@ -2667,7 +2706,7 @@ def _query_response(db: Session, user: User, conversation: Conversation, text: s
             .limit(10)
         ))
         content = "Here are your biggest recorded expenses." if transactions else "You don’t have any recorded expenses yet."
-        widgets = [_transaction_table_widget(db, user.id, transactions, title="Biggest expenses", widget_id=f"list-{datetime.now().timestamp()}")]
+        widgets = [_transaction_table_widget(db, user.id, transactions, title="Biggest expenses", widget_id=f"list-{now_utc().timestamp()}")]
         citations = [DataReference(label="Largest expense transactions", entity_type="transaction", entity_ids=[str(t.id) for t in transactions])]
     else:
         category_slug = decision.query.category_slug if decision and decision.query else None
@@ -2692,7 +2731,7 @@ def _query_response(db: Session, user: User, conversation: Conversation, text: s
         label = f" on {category_label.lower()}" if category_label else ""
         period_phrase = period_title.lower()
         content = f"You’ve spent {format_money_minor(result['total_minor'], result['currency'])}{label} {period_phrase} across {result['count']} transaction{'s' if result['count'] != 1 else ''}."
-        widgets = [Widget(id=f"summary-{datetime.now().timestamp()}", type=WidgetType.FINANCIAL_SUMMARY, data={"title": f"{(category_label or 'Spending')} · {period_title}", "amountMinor": result["total_minor"], "currency": result["currency"], "count": result["count"], "period": f"{query_start.strftime('%b %d')} – {query_end.strftime('%b %d')}", "breakdown": breakdown})]
+        widgets = [Widget(id=f"summary-{now_utc().timestamp()}", type=WidgetType.FINANCIAL_SUMMARY, data={"title": f"{(category_label or 'Spending')} · {period_title}", "amountMinor": result["total_minor"], "currency": result["currency"], "count": result["count"], "period": f"{query_start.strftime('%b %d')} – {query_end.strftime('%b %d')}", "breakdown": breakdown})]
         citations = [DataReference(label="Expense transactions included", entity_type="transaction", query=result)]
 
     return persist_agent_response(
@@ -2954,7 +2993,21 @@ def _run_turn(
         "running",
         "agno_reasoning" if deep_reasoning else "agno_router",
     )
+    superseded_scope = conversation.active_data_scope if releases_prior_scope(text) else None
     decision = _interpret_prompt(db, user, conversation, user_message, text, deep_reasoning, emit)
+    if decision and superseded_scope:
+        # Widening away from the records on screen is a change the user should
+        # read in the answer, not infer from a different-looking chart.
+        decision = decision.model_copy(update={"assumptions": [
+            *decision.assumptions,
+            CompilationAssumption(
+                code="scope_released",
+                detail=(
+                    f"This reads your full history, not just the {superseded_scope.get('entityCount', 0)} "
+                    "records shown earlier."
+                ),
+            ),
+        ]})
     model_tool = decision.tool if decision else None
     override_detail = None
     if _is_bare_amount(text) and (not decision or decision.tool in {CapabilityId.CONVERSATION, CapabilityId.UNKNOWN}):
@@ -3113,9 +3166,7 @@ def _commit_draft(db: Session, user: User, draft: TransactionDraft) -> Transacti
         merchant_name=merchant.canonical_name if merchant else draft.merchant_name,
         category_id=draft.category_id,
         subcategory_id=draft.subcategory_id,
-        transaction_date=draft.transaction_date,
-        transaction_time=draft.transaction_time,
-        timezone=draft.timezone,
+        transaction_at=draft.transaction_at,
         latitude=draft.latitude,
         longitude=draft.longitude,
         location_accuracy=draft.location_accuracy,
@@ -3138,9 +3189,9 @@ def _commit_draft(db: Session, user: User, draft: TransactionDraft) -> Transacti
         currency=draft.currency,
         merchant_raw=draft.merchant_name,
         merchant_normalized=normalized,
-        transaction_date=draft.transaction_date,
+        transaction_at=draft.transaction_at,
         description=draft.description,
-        observed_at=datetime.now(timezone.utc),
+        observed_at=now_utc(),
         confidence=draft.confidence,
     )
     db.add(observation)
@@ -3165,9 +3216,7 @@ def _commit_draft(db: Session, user: User, draft: TransactionDraft) -> Transacti
         "merchant": transaction.merchant_name,
         "category_id": str(transaction.category_id) if transaction.category_id else None,
         "subcategory_id": str(transaction.subcategory_id) if transaction.subcategory_id else None,
-        "transaction_date": transaction.transaction_date.isoformat(),
-        "transaction_time": transaction.transaction_time,
-        "timezone": transaction.timezone,
+        "transaction_at": as_utc(transaction.transaction_at).isoformat(),
         "location": transaction.location_label,
         "spend_nature": transaction.spend_nature,
     }
@@ -3383,6 +3432,13 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
         if not goal:
             raise ValueError("Unknown goal")
         goal.current_minor += amount_minor
+        db.add(GoalContribution(
+            user_id=user.id,
+            goal_id=goal.id,
+            amount_minor=amount_minor,
+            currency=goal.currency,
+            contribution_at=now_utc(),
+        ))
         content = f"Added {format_money_minor(amount_minor, goal.currency)} to your {goal.name} goal."
         widget = _goal_widget(str(goal.id), goal.name, goal.target_minor, goal.current_minor, goal.currency)
         return persist_agent_response(db, conversation, content, widgets=[widget])
@@ -3428,7 +3484,7 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
         prepayment_minor = payload.get("prepaymentMinor", 0)
         result = loan_with_prepayment(principal_minor, rate, months, prepayment_minor)
         content = f"A {format_money_minor(prepayment_minor, user.currency)} prepayment saves {format_money_minor(result['interest_saved_minor'], user.currency)} in interest and reduces the EMI by {format_money_minor(result['emi_reduction_minor'], user.currency)}, assuming the remaining tenure stays unchanged."
-        widget = Widget(id=f"loan-result-{datetime.now().timestamp()}", type=WidgetType.LOAN_CALCULATOR, data={"title": "Home-loan prepayment result", "principalMinor": principal_minor, "annualRatePercent": rate, "tenureMonths": months, "prepaymentMinor": prepayment_minor, "currency": user.currency, "result": result})
+        widget = Widget(id=f"loan-result-{now_utc().timestamp()}", type=WidgetType.LOAN_CALCULATOR, data={"title": "Home-loan prepayment result", "principalMinor": principal_minor, "annualRatePercent": rate, "tenureMonths": months, "prepaymentMinor": prepayment_minor, "currency": user.currency, "result": result})
         citations = [DataReference(label="Deterministic amortization calculation", entity_type="calculator", query={"principalMinor": principal_minor, "annualRatePercent": rate, "tenureMonths": months, "prepaymentMinor": prepayment_minor})]
         return persist_agent_response(
             db,
@@ -3444,7 +3500,7 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
         years = payload["years"]
         result = investment_projection(monthly_minor, current_minor, rate, years)
         content = f"At an assumed {rate:g}% annual return, the projected value after {years} years is {format_money_minor(result['projected_value_minor'], user.currency)}; {format_money_minor(result['estimated_returns_minor'], user.currency)} is estimated growth, not guaranteed return."
-        widget = Widget(id=f"investment-result-{datetime.now().timestamp()}", type=WidgetType.INVESTMENT_PROJECTION, data={"title": "Investment projection result", "monthlyContributionMinor": monthly_minor, "currentValueMinor": current_minor, "annualReturnPercent": rate, "years": years, "currency": user.currency, "result": result})
+        widget = Widget(id=f"investment-result-{now_utc().timestamp()}", type=WidgetType.INVESTMENT_PROJECTION, data={"title": "Investment projection result", "monthlyContributionMinor": monthly_minor, "currentValueMinor": current_minor, "annualReturnPercent": rate, "years": years, "currency": user.currency, "result": result})
         citations = [DataReference(label="Deterministic compound-growth calculation", entity_type="calculator", query={"monthlyContributionMinor": monthly_minor, "currentValueMinor": current_minor, "annualReturnPercent": rate, "years": years})]
         return persist_agent_response(
             db,
@@ -3459,7 +3515,7 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
         widget = Widget(
             id=f"edit-{draft.id}-{uuid4()}",
             type=WidgetType.TRANSACTION_EDIT,
-            data={"draftId": str(draft.id), "title": "Edit transaction", "amountMinor": draft.amount_minor, "currency": draft.currency, "merchant": draft.merchant_name, "date": draft.transaction_date.isoformat() if draft.transaction_date else None, "fields": ["amount", "merchant", "date"]},
+            data={"draftId": str(draft.id), "title": "Edit transaction", "amountMinor": draft.amount_minor, "currency": draft.currency, "merchant": draft.merchant_name, "transactionAt": as_utc(draft.transaction_at), "fields": ["amount", "merchant", "transaction_at"]},
             actions=[WidgetAction(id="update", label="Apply changes", action=WidgetActionId.UPDATE_TRANSACTION_DRAFT, style="primary", payload={"draftId": str(draft.id)})],
         )
         content = "What would you like to change?"
@@ -3479,11 +3535,8 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
             draft.amount_minor = amount_minor
         if "merchant" in payload:
             draft.merchant_name = str(payload.get("merchant") or "").strip() or None
-        if payload.get("date"):
-            try:
-                draft.transaction_date = date.fromisoformat(str(payload["date"]))
-            except ValueError as error:
-                raise ValueError("Date must be valid") from error
+        if payload.get("transactionAt"):
+            draft.transaction_at = as_utc(datetime.fromisoformat(str(payload["transactionAt"]).replace("Z", "+00:00")))
         _set_ready_if_complete(draft)
         return _draft_response(db, conversation, draft)
     if action is WidgetActionId.EDIT_SAVED_TRANSACTION:
@@ -3501,7 +3554,7 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
         widget = Widget(
             id=f"edit-saved-{transaction.id}-{uuid4()}",
             type=WidgetType.TRANSACTION_EDIT,
-            data={"transactionId": str(transaction.id), "title": "Edit saved transaction", "amountMinor": transaction.amount_minor, "currency": transaction.currency, "merchant": transaction.merchant_name, "date": transaction.transaction_date.isoformat(), "transactionType": transaction.transaction_type, "location": transaction.location_label, "spendNature": transaction.spend_nature, "tags": tags, "categoryId": str(transaction.category_id) if transaction.category_id else None, "subcategoryId": str(transaction.subcategory_id) if transaction.subcategory_id else None, "categories": [{"id": str(category.id), "label": category.name} for category in categories], "subcategories": [{"id": str(item.id), "categoryId": str(item.category_id), "label": item.name} for item in subcategories], "fields": ["amount", "merchant", "date", "transaction_type", "location", "spend_nature", "tags", "category", "subcategory"]},
+            data={"transactionId": str(transaction.id), "title": "Edit saved transaction", "amountMinor": transaction.amount_minor, "currency": transaction.currency, "merchant": transaction.merchant_name, "transactionAt": as_utc(transaction.transaction_at), "transactionType": transaction.transaction_type, "location": transaction.location_label, "spendNature": transaction.spend_nature, "tags": tags, "categoryId": str(transaction.category_id) if transaction.category_id else None, "subcategoryId": str(transaction.subcategory_id) if transaction.subcategory_id else None, "categories": [{"id": str(category.id), "label": category.name} for category in categories], "subcategories": [{"id": str(item.id), "categoryId": str(item.category_id), "label": item.name} for item in subcategories], "fields": ["amount", "merchant", "transaction_at", "transaction_type", "location", "spend_nature", "tags", "category", "subcategory"]},
             actions=[
                 WidgetAction(id="update", label="Apply changes", action=WidgetActionId.UPDATE_SAVED_TRANSACTION, style="primary", payload={"transactionId": str(transaction.id)}),
                 WidgetAction(id="cancel", label="Cancel", action=WidgetActionId.CANCEL_SAVED_TRANSACTION_EDIT, style="secondary", payload={"transactionId": str(transaction.id)}),
@@ -3537,12 +3590,9 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
         if "merchant" in payload:
             transaction.merchant_name = str(payload.get("merchant") or "").strip() or None
             changed_fields["merchant"] = transaction.merchant_name
-        if payload.get("date"):
-            try:
-                transaction.transaction_date = date.fromisoformat(str(payload["date"]))
-                changed_fields["transaction_date"] = transaction.transaction_date.isoformat()
-            except ValueError as error:
-                raise ValueError("Date must be valid") from error
+        if payload.get("transactionAt"):
+            transaction.transaction_at = as_utc(datetime.fromisoformat(str(payload["transactionAt"]).replace("Z", "+00:00")))
+            changed_fields["transaction_at"] = transaction.transaction_at.isoformat()
         if "transactionType" in payload:
             transaction_type = str(payload.get("transactionType") or "")
             transaction.transaction_type = transaction_type
@@ -3618,7 +3668,7 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
         if not transaction:
             raise ValueError("Unknown transaction")
         if action is WidgetActionId.CONFIRM_REMOVE_TRANSACTION:
-            transaction.deleted_at = datetime.now(timezone.utc)
+            transaction.deleted_at = now_utc()
             content = f"Removed the {format_money_minor(transaction.amount_minor, transaction.currency)} transaction."
             widget = _transaction_preview(db, transaction, status="Removed")
         else:
@@ -3632,7 +3682,7 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
         decision = ReconciliationResolution.SAME_TRANSACTION if action is WidgetActionId.MERGE_RECONCILIATION else ReconciliationResolution.SEPARATE_TRANSACTION
         transaction = resolve_reconciliation(db, user.id, UUID(str(candidate_id)), decision)
         content = "Merged the observations into one transaction." if decision is ReconciliationResolution.SAME_TRANSACTION else "Kept this as a separate transaction."
-        widget = Widget(id=f"resolved-{candidate_id}", type=WidgetType.TRANSACTION_PREVIEW, data={"transactionId": str(transaction.id), "title": transaction.merchant_name or "Transaction", "amountMinor": transaction.amount_minor, "currency": transaction.currency, "date": transaction.transaction_date.isoformat(), "status": "Reconciliation complete", "sourceCount": len(transaction.sources)})
+        widget = Widget(id=f"resolved-{candidate_id}", type=WidgetType.TRANSACTION_PREVIEW, data={"transactionId": str(transaction.id), "title": transaction.merchant_name or "Transaction", "amountMinor": transaction.amount_minor, "currency": transaction.currency, "transactionAt": as_utc(transaction.transaction_at), "status": "Reconciliation complete", "sourceCount": len(transaction.sources)})
         return persist_agent_response(db, conversation, content, widgets=[widget])
     raise ValueError("This action is no longer available")
 

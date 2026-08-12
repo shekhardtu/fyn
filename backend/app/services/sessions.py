@@ -10,14 +10,15 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..models import User, UserSession, as_utc
+from ..event_time import as_utc, now_utc
+from ..models import User, UserSession
 
 
 # Below this much remaining life a session in active use is extended, so a daily
@@ -32,7 +33,7 @@ def _digest(token: str) -> str:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return now_utc()
 
 
 def session_lifetime() -> timedelta:

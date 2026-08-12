@@ -10,6 +10,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Iterable, Protocol
 
 from ..config import DEFAULT_CURRENCY
+from ..event_time import from_local_parts, local_now, now_utc, resolve_event_time
 from ..domain import FinancialSourceType, MESSAGE_SOURCE_TYPES, TransactionType
 from ..models import Import as ImportJob
 from ..schemas import ImportSummaryData, ObservationIn
@@ -71,11 +72,13 @@ class MessageAdapter:
             raise ValueError("Message adapter supports SMS or email")
         self.source_type = source_type
 
-    def adapt_message(self, text: str, message_id: str, observed_at: datetime | None = None) -> AdaptedMessage:
+    def adapt_message(self, text: str, message_id: str, observed_at: datetime | None = None, timezone_name: str | None = None) -> AdaptedMessage:
         classification, relevant, reason = classify_financial_message(text)
         if not relevant:
             return AdaptedMessage(classification=classification, relevant=False, reason=reason)
-        extracted = extract_transaction(text)
+        current = observed_at or now_utc()
+        local_current = local_now(timezone_name, current=current)
+        extracted = extract_transaction(text, today=local_current.date())
         transaction_type = TransactionType.REFUND if classification == "refund" else TransactionType.EXPENSE if classification == "debit" else TransactionType.INCOME
         if extracted.amount_minor is None:
             return AdaptedMessage(classification=classification, relevant=False, reason="No unambiguous amount found")
@@ -86,7 +89,12 @@ class MessageAdapter:
             amount_minor=extracted.amount_minor,
             currency=extracted.currency,
             merchant=extracted.merchant,
-            transaction_date=extracted.transaction_date or date.today(),
+            transaction_at=resolve_event_time(
+                day=extracted.transaction_date,
+                timezone_name=timezone_name,
+                current=current,
+                use_current_time="transaction_date" in extracted.inferred_fields or extracted.transaction_date == local_current.date(),
+            ),
             description=text,
             observed_at=observed_at,
         )
@@ -128,7 +136,7 @@ class CSVAdapter:
         normalized = {header.strip().lower(): header for header in headers}
         return next((normalized[name] for name in self.aliases[logical] if name in normalized), None)
 
-    def adapt(self, content: bytes) -> list[tuple[int, ObservationIn | None, list[str]]]:
+    def adapt(self, content: bytes, timezone_name: str | None = None) -> list[tuple[int, ObservationIn | None, list[str]]]:
         decoded = content.decode("utf-8-sig")
         reader = csv.DictReader(io.StringIO(decoded))
         headers = reader.fieldnames or []
@@ -162,7 +170,7 @@ class CSVAdapter:
                     amount_minor=amount,
                     currency=(row.get(currency_col) or DEFAULT_CURRENCY).strip().upper() if currency_col else DEFAULT_CURRENCY,
                     merchant=merchant,
-                    transaction_date=self._date(row[date_col]),
+                    transaction_at=from_local_parts(self._date(row[date_col]), None, timezone_name),
                     description=description,
                 ), []))
             except (ValueError, TypeError) as error:

@@ -8,6 +8,7 @@ from alembic import op
 from app.migration_guards import (
     create_index_if_absent,
     create_table_if_absent,
+    has_column,
 )
 import sqlalchemy as sa
 
@@ -111,8 +112,9 @@ def upgrade() -> None:
     create_index_if_absent("ix_goal_contributions_user_id", "goal_contributions", ["user_id"])
     create_index_if_absent("ix_goal_contributions_goal_id", "goal_contributions", ["goal_id"])
     create_index_if_absent("ix_goal_contributions_transaction_id", "goal_contributions", ["transaction_id"])
-    create_index_if_absent("ix_goal_contributions_contribution_date", "goal_contributions", ["contribution_date"])
-    create_index_if_absent("ix_goal_contribution_history", "goal_contributions", ["user_id", "goal_id", "contribution_date"])
+    if has_column("goal_contributions", "contribution_date"):
+        create_index_if_absent("ix_goal_contributions_contribution_date", "goal_contributions", ["contribution_date"])
+        create_index_if_absent("ix_goal_contribution_history", "goal_contributions", ["user_id", "goal_id", "contribution_date"])
 
 
 def downgrade() -> None:

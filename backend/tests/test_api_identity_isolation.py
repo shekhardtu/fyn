@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -32,7 +32,7 @@ def test_api_enforces_one_identity_boundary_across_user_data(db, monkeypatch):
             amount_minor=11_100,
             currency="INR",
             merchant_name="Default Merchant",
-            transaction_date=date(2026, 8, 10),
+            transaction_at=datetime(2026, 8, 10, tzinfo=timezone.utc),
             status="confirmed",
         ),
         Transaction(
@@ -41,7 +41,7 @@ def test_api_enforces_one_identity_boundary_across_user_data(db, monkeypatch):
             amount_minor=22_200,
             currency="USD",
             merchant_name="Other Merchant",
-            transaction_date=date(2026, 8, 11),
+            transaction_at=datetime(2026, 8, 11, tzinfo=timezone.utc),
             status="confirmed",
         ),
     ])

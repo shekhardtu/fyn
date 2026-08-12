@@ -3,6 +3,7 @@ from datetime import date
 from sqlalchemy import func, select
 
 from app.models import ReconciliationCandidate, Transaction, TransactionSource, User
+from app.event_time import from_local_parts
 from app.schemas import ObservationIn
 from app.seed import default_user
 from app.services import reconciliation as reconciliation_service
@@ -17,7 +18,7 @@ def _manual_toit(db, user, day: date):
     draft_id = response.widgets[0].data["draftId"]
     handle_action(db, user, conversation, "commit_transaction", {"draftId": draft_id})
     transaction = db.scalar(select(Transaction).order_by(Transaction.created_at.desc()))
-    transaction.transaction_date = day
+    transaction.transaction_at = from_local_parts(day, None, user.timezone)
     db.commit()
     return transaction
 

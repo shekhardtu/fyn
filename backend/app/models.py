@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
@@ -18,31 +18,18 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .config import DEFAULT_CURRENCY, DEFAULT_TIMEZONE
 from .database import Base
 from .domain import ACTIVE_STATUS, AnalysisToolStatus, DraftState, FinancialSourceType, IdentitySource, ImportStatus, ObservationProcessingState, SpendNature, TaxonomyScope, TransactionStatus, TransactionType
+from .event_time import as_utc, now_utc
 
 
 def uuid4() -> uuid.UUID:
     return uuid.uuid4()
-
-
-def now_utc() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def as_utc(value: datetime) -> datetime:
-    """Read a stored instant as UTC.
-
-    PostgreSQL returns these already aware. SQLite, which unit tests run on, has
-    no time zone type and returns them naive; comparing one of those against
-    `now_utc()` raises rather than answering, so every read of a stored deadline
-    goes through here.
-    """
-    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
 class UUIDPrimaryKeyMixin:
@@ -100,8 +87,8 @@ class ScopedOwnershipMixin:
 
 
 class TimestampMixin:
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now(), onupdate=now_utc)
 
 
 class User(UUIDPrimaryKeyMixin, CurrencyMixin, TimestampMixin, Base):
@@ -132,7 +119,7 @@ class UserIdentity(UUIDPrimaryKeyMixin, UserOwnedMixin, TimestampMixin, Base):
     # what actually reserves the address.
     email: Mapped[Optional[str]] = mapped_column(String(255))
     source: Mapped[str] = mapped_column(String(20), default=IdentitySource.OTP.value)
-    verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now())
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     __table_args__ = (
         UniqueConstraint("provider", "identifier", name="uq_identity_provider_identifier"),
@@ -147,7 +134,7 @@ class UserSession(UUIDPrimaryKeyMixin, UserOwnedMixin, TimestampMixin, Base):
     __tablename__ = "user_sessions"
     token_hash: Mapped[str] = mapped_column(String(64), unique=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now())
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
@@ -189,7 +176,7 @@ class AccountBalanceSnapshot(UUIDPrimaryKeyMixin, CurrencyMixin, UserOwnedMixin,
     __tablename__ = "account_balance_snapshots"
     account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
     balance_minor: Mapped[int] = mapped_column(Integer)
-    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now(), index=True)
     source_type: Mapped[str] = mapped_column(String(30), default=FinancialSourceType.MANUAL.value)
     __table_args__ = (
         UniqueConstraint("account_id", "observed_at", "source_type", name="uq_account_balance_observation"),
@@ -206,7 +193,7 @@ class InvestmentHolding(UUIDPrimaryKeyMixin, CurrencyMixin, UserOwnedMixin, Time
     quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8), default=Decimal("0"))
     cost_basis_minor: Mapped[int] = mapped_column(Integer, default=0)
     current_value_minor: Mapped[int] = mapped_column(Integer, default=0)
-    valued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    valued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now())
     status: Mapped[str] = mapped_column(String(20), default=ACTIVE_STATUS, index=True)
 
 
@@ -215,7 +202,7 @@ class InvestmentValuationSnapshot(UUIDPrimaryKeyMixin, CurrencyMixin, UserOwnedM
     holding_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("investment_holdings.id", ondelete="CASCADE"), index=True)
     market_value_minor: Mapped[int] = mapped_column(Integer)
     cost_basis_minor: Mapped[int] = mapped_column(Integer)
-    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now(), index=True)
     source_type: Mapped[str] = mapped_column(String(30), default=FinancialSourceType.MANUAL.value)
     __table_args__ = (
         UniqueConstraint("holding_id", "observed_at", "source_type", name="uq_investment_valuation_observation"),
@@ -304,9 +291,7 @@ class TransactionDraft(UUIDPrimaryKeyMixin, CurrencyMixin, UserOwnedMixin, Conve
     destination_account_name: Mapped[Optional[str]] = mapped_column(String(120))
     category_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("categories.id"))
     subcategory_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("subcategories.id"))
-    transaction_date: Mapped[Optional[date]] = mapped_column(Date)
-    transaction_time: Mapped[Optional[str]] = mapped_column(String(8))
-    timezone: Mapped[Optional[str]] = mapped_column(String(80))
+    transaction_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now(), index=True)
     description: Mapped[Optional[str]] = mapped_column(Text)
     latitude: Mapped[Optional[Decimal]] = mapped_column(Numeric(9, 6))
     longitude: Mapped[Optional[Decimal]] = mapped_column(Numeric(9, 6))
@@ -332,10 +317,8 @@ class Transaction(UUIDPrimaryKeyMixin, CurrencyMixin, UserOwnedMixin, Confidence
     merchant_name: Mapped[Optional[str]] = mapped_column(String(160), index=True)
     category_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("categories.id"), index=True)
     subcategory_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("subcategories.id"))
-    transaction_date: Mapped[date] = mapped_column(Date, index=True)
-    transaction_time: Mapped[Optional[str]] = mapped_column(String(8))
-    posted_date: Mapped[Optional[date]] = mapped_column(Date, index=True)
-    timezone: Mapped[Optional[str]] = mapped_column(String(80))
+    transaction_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now(), index=True)
+    posted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), index=True)
     latitude: Mapped[Optional[Decimal]] = mapped_column(Numeric(9, 6))
     longitude: Mapped[Optional[Decimal]] = mapped_column(Numeric(9, 6))
     location_accuracy: Mapped[Optional[int]] = mapped_column(Integer)
@@ -348,10 +331,10 @@ class Transaction(UUIDPrimaryKeyMixin, CurrencyMixin, UserOwnedMixin, Confidence
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     sources: Mapped[list["TransactionSource"]] = relationship(back_populates="transaction", cascade="all, delete-orphan")
     __table_args__ = (
-        Index("ix_reconciliation_window", "user_id", "account_id", "amount_minor", "currency", "transaction_type", "transaction_date"),
-        Index("ix_transaction_user_date_type", "user_id", "transaction_date", "transaction_type"),
+        Index("ix_reconciliation_window", "user_id", "account_id", "amount_minor", "currency", "transaction_type", "transaction_at"),
+        Index("ix_transaction_user_at_type", "user_id", "transaction_at", "transaction_type"),
         # Covers the evidence window the category recommender reads per draft.
-        Index("ix_transactions_user_date_category", "user_id", "transaction_date", "category_id"),
+        Index("ix_transactions_user_at_category", "user_id", "transaction_at", "category_id"),
     )
 
 
@@ -456,11 +439,11 @@ class FinancialObservation(UUIDPrimaryKeyMixin, UserOwnedMixin, TimestampMixin, 
     currency: Mapped[str] = mapped_column(String(3))
     merchant_raw: Mapped[Optional[str]] = mapped_column(String(255))
     merchant_normalized: Mapped[Optional[str]] = mapped_column(String(160), index=True)
-    transaction_date: Mapped[date] = mapped_column(Date, index=True)
-    posted_date: Mapped[Optional[date]] = mapped_column(Date)
+    transaction_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now(), index=True)
+    posted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     reference_number: Mapped[Optional[str]] = mapped_column(String(120))
     description: Mapped[Optional[str]] = mapped_column(Text)
-    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now())
     raw_reference: Mapped[Optional[str]] = mapped_column(String(255))
     confidence: Mapped[Decimal] = mapped_column(Numeric(4, 3), default=Decimal("0.8"))
     processing_state: Mapped[str] = mapped_column(String(30), default=ObservationProcessingState.RECEIVED.value)
@@ -468,7 +451,7 @@ class FinancialObservation(UUIDPrimaryKeyMixin, UserOwnedMixin, TimestampMixin, 
         UniqueConstraint("user_id", "source_type", "source_hash", name="uq_observation_source_hash"),
         UniqueConstraint("user_id", "source_type", "source_message_id", name="uq_observation_message_id"),
         UniqueConstraint("user_id", "source_type", "external_transaction_id", name="uq_observation_external_transaction_id"),
-        Index("ix_observation_candidates", "user_id", "amount_minor", "currency", "transaction_type", "transaction_date"),
+        Index("ix_observation_candidates", "user_id", "amount_minor", "currency", "transaction_type", "transaction_at"),
     )
 
 
@@ -480,7 +463,7 @@ class TransactionSource(UUIDPrimaryKeyMixin, TransactionChildMixin, ConfidenceMi
     source_account: Mapped[Optional[str]] = mapped_column(String(120))
     source_message_id: Mapped[Optional[str]] = mapped_column(String(255))
     source_hash: Mapped[str] = mapped_column(String(64))
-    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now())
     raw_reference: Mapped[Optional[str]] = mapped_column(String(255))
     field_values: Mapped[dict] = mapped_column(JSON, default=dict)
     transaction: Mapped[Transaction] = relationship(back_populates="sources")
@@ -525,9 +508,9 @@ class GoalContribution(UUIDPrimaryKeyMixin, CurrencyMixin, UserOwnedMixin, Times
     goal_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("goals.id", ondelete="CASCADE"), index=True)
     transaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("transactions.id", ondelete="SET NULL"), index=True)
     amount_minor: Mapped[int] = mapped_column(Integer)
-    contribution_date: Mapped[date] = mapped_column(Date, index=True)
+    contribution_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now(), index=True)
     note: Mapped[Optional[str]] = mapped_column(String(240))
-    __table_args__ = (Index("ix_goal_contribution_history", "user_id", "goal_id", "contribution_date"),)
+    __table_args__ = (Index("ix_goal_contribution_history", "user_id", "goal_id", "contribution_at"),)
 
 
 class SavedAnalysis(UUIDPrimaryKeyMixin, UserOwnedMixin, TimestampMixin, Base):
@@ -608,4 +591,4 @@ class AuditLog(UUIDPrimaryKeyMixin, Base):
     entity_type: Mapped[str] = mapped_column(String(80))
     entity_id: Mapped[Optional[uuid.UUID]] = mapped_column(index=True)
     metadata_redacted: Mapped[dict] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now(), index=True)
