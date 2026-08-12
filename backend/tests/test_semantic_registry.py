@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 import pytest
 from sqlalchemy import select
@@ -174,9 +174,13 @@ def test_historical_balance_portfolio_and_goal_facts_are_queryable(db):
     holding = InvestmentHolding(user_id=user.id, account_id=account.id, name="Index fund", symbol="INDEX", asset_type="mutual_fund", quantity=10, cost_basis_minor=100_000, current_value_minor=120_000, currency="INR")
     db.add(holding)
     db.flush()
+    # Snapshots are observed at a point in time, so they must be pinned inside
+    # the queried window like every other row here. Left to default to now,
+    # they drift out of the window the moment the wall clock passes end_date.
+    observed_at = datetime(2026, 8, 11, 12, 0, tzinfo=timezone.utc)
     db.add_all([
-        AccountBalanceSnapshot(user_id=user.id, account_id=account.id, balance_minor=10_000, currency="INR"),
-        InvestmentValuationSnapshot(user_id=user.id, holding_id=holding.id, market_value_minor=120_000, cost_basis_minor=100_000, currency="INR"),
+        AccountBalanceSnapshot(user_id=user.id, account_id=account.id, balance_minor=10_000, currency="INR", observed_at=observed_at),
+        InvestmentValuationSnapshot(user_id=user.id, holding_id=holding.id, market_value_minor=120_000, cost_basis_minor=100_000, currency="INR", observed_at=observed_at),
         GoalContribution(user_id=user.id, goal_id=goal.id, amount_minor=50_000, currency="INR", contribution_date=date(2026, 8, 11)),
     ])
     db.flush()
