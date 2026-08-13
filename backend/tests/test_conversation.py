@@ -196,7 +196,8 @@ def test_category_count_uses_authenticated_runtime_taxonomy_tool(db, monkeypatch
     response = handle_chat(db, user, conversation, "How many categories are there?")
 
     assert response.message == (
-        "You have 7 expense categories: Bills, Entertainment, Food, Health, Other, Shopping, Transport."
+        "You have 11 expense categories: Bills, Education, Entertainment, Food, Health, Housing, Other, "
+        "Personal care, Shopping, Transport, Travel."
     )
     assert response.citations[0].entity_type == "runtime_tool"
     assert response.citations[0].label == "Read User Expense Taxonomy result"

@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..domain import TaxonomyScope
-from ..models import Category, Subcategory, User
+from ..models import Budget, Category, Subcategory, Transaction, TransactionCategoryHint, TransactionDraft, User
 from ..taxonomy_catalog import DefaultCategorySlug
 from .agent_tools import tool_contract
+from .extraction import normalize_merchant
 from .repositories import UserScopedRepository
 from .tool_models import EmptyInput, TaxonomyResult
 
@@ -164,6 +165,130 @@ class TaxonomyRepository(UserScopedRepository):
         self.db.add(subcategory)
         self.db.flush()
         return subcategory
+
+    def can_edit(self, item: Category | Subcategory) -> bool:
+        return item.scope == TaxonomyScope.USER.value and item.owner_user_id == self.user_id
+
+    def rename_category(self, category_id: UUID, name: str) -> Category:
+        category = self.category(category_id, expense_only=True)
+        if not category:
+            raise ValueError("Unknown category")
+        if not self.can_edit(category):
+            raise ValueError("Built-in categories cannot be renamed")
+        normalized = name.strip()
+        if not normalized:
+            raise ValueError("Category name is required")
+        if any(item.id != category.id and item.name.casefold() == normalized.casefold() for item in self.expense_categories()):
+            raise ValueError("A category with this name already exists")
+        category.name = normalized[:80]
+        self.db.flush()
+        return category
+
+    def rename_subcategory(self, category_id: UUID, subcategory_id: UUID, name: str) -> Subcategory:
+        category = self.category(category_id, expense_only=True)
+        subcategory = self.subcategory(subcategory_id, category_id=category_id)
+        if not category or not subcategory:
+            raise ValueError("Unknown subcategory")
+        if not self.can_edit(subcategory):
+            raise ValueError("Built-in subcategories cannot be renamed")
+        normalized = name.strip()
+        if not normalized:
+            raise ValueError("Subcategory name is required")
+        if any(item.id != subcategory.id and item.name.casefold() == normalized.casefold() for item in self.subcategories(category.id)):
+            raise ValueError("A subcategory with this name already exists")
+        subcategory.name = normalized[:80]
+        self.db.flush()
+        return subcategory
+
+    def delete_category(self, category_id: UUID) -> None:
+        category = self.category(category_id, expense_only=True)
+        if not category:
+            raise ValueError("Unknown category")
+        if not self.can_edit(category):
+            raise ValueError("Built-in categories cannot be deleted")
+        references = sum((
+            self.db.scalar(select(func.count()).select_from(Transaction).where(Transaction.user_id == self.user_id, Transaction.category_id == category.id)) or 0,
+            self.db.scalar(select(func.count()).select_from(TransactionDraft).where(TransactionDraft.user_id == self.user_id, TransactionDraft.category_id == category.id)) or 0,
+            self.db.scalar(select(func.count()).select_from(Budget).where(Budget.user_id == self.user_id, Budget.category_id == category.id)) or 0,
+        ))
+        if references:
+            raise ValueError(f"This category is used by {references} financial record{'s' if references != 1 else ''}; reassign them before deleting it")
+        self.db.delete(category)
+        self.db.flush()
+
+    def delete_subcategory(self, category_id: UUID, subcategory_id: UUID) -> None:
+        subcategory = self.subcategory(subcategory_id, category_id=category_id)
+        if not subcategory:
+            raise ValueError("Unknown subcategory")
+        if not self.can_edit(subcategory):
+            raise ValueError("Built-in subcategories cannot be deleted")
+        references = sum((
+            self.db.scalar(select(func.count()).select_from(Transaction).where(Transaction.user_id == self.user_id, Transaction.subcategory_id == subcategory.id)) or 0,
+            self.db.scalar(select(func.count()).select_from(TransactionDraft).where(TransactionDraft.user_id == self.user_id, TransactionDraft.subcategory_id == subcategory.id)) or 0,
+        ))
+        if references:
+            raise ValueError(f"This subcategory is used by {references} transaction{'s' if references != 1 else ''}; reassign them before deleting it")
+        self.db.delete(subcategory)
+        self.db.flush()
+
+    def hints(self, category_id: UUID | None = None) -> list[TransactionCategoryHint]:
+        statement = select(TransactionCategoryHint).where(TransactionCategoryHint.user_id == self.user_id)
+        if category_id:
+            statement = statement.where(TransactionCategoryHint.category_id == category_id)
+        return list(self.db.scalars(statement.order_by(TransactionCategoryHint.merchant_pattern, TransactionCategoryHint.id)))
+
+    def hint(self, hint_id: UUID) -> TransactionCategoryHint | None:
+        return self.db.scalar(select(TransactionCategoryHint).where(
+            TransactionCategoryHint.id == hint_id,
+            TransactionCategoryHint.user_id == self.user_id,
+        ))
+
+    def save_hint(
+        self,
+        category_id: UUID,
+        merchant_pattern: str,
+        subcategory_id: UUID | None = None,
+        *,
+        hint_id: UUID | None = None,
+    ) -> TransactionCategoryHint:
+        category = self.category(category_id, expense_only=True)
+        subcategory = self.subcategory(subcategory_id, category_id=category_id) if subcategory_id else None
+        if not category:
+            raise ValueError("Unknown category")
+        if subcategory_id and not subcategory:
+            raise ValueError("Unknown subcategory")
+        display = merchant_pattern.strip()[:160]
+        normalized = normalize_merchant(display)
+        if not normalized:
+            raise ValueError("Merchant hint is required")
+        duplicate_statement = select(TransactionCategoryHint).where(
+            TransactionCategoryHint.user_id == self.user_id,
+            TransactionCategoryHint.normalized_pattern == normalized,
+        )
+        if hint_id:
+            duplicate_statement = duplicate_statement.where(TransactionCategoryHint.id != hint_id)
+        duplicate = self.db.scalar(duplicate_statement)
+        if duplicate:
+            raise ValueError("A hint for this merchant already exists")
+        hint = self.hint(hint_id) if hint_id else None
+        if hint_id and not hint:
+            raise ValueError("Unknown transaction hint")
+        if not hint:
+            hint = TransactionCategoryHint(user_id=self.user_id)
+            self.db.add(hint)
+        hint.merchant_pattern = display
+        hint.normalized_pattern = normalized
+        hint.category_id = category.id
+        hint.subcategory_id = subcategory.id if subcategory else None
+        self.db.flush()
+        return hint
+
+    def delete_hint(self, hint_id: UUID) -> None:
+        hint = self.hint(hint_id)
+        if not hint:
+            raise ValueError("Unknown transaction hint")
+        self.db.delete(hint)
+        self.db.flush()
 
 
 @tool_contract(

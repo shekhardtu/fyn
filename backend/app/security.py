@@ -17,7 +17,34 @@ from .models import User
 from .services.sessions import resolve_session, session_lifetime
 
 
+#: Clients that hold their session somewhere the platform cannot hand back
+#: automatically — the iOS/Android app keeps it in the Keychain/Keystore — say so
+#: with this header, and are answered with the token itself at sign-in.
+NATIVE_CLIENT_HEADER = "x-client"
+NATIVE_CLIENT_VALUE = "native"
+
+
+def is_native_client(request: Request) -> bool:
+    return request.headers.get(NATIVE_CLIENT_HEADER, "").strip().lower() == NATIVE_CLIENT_VALUE
+
+
 def session_token(request: Request) -> str | None:
+    """This request's session, however the caller was able to carry it.
+
+    A browser is handed an `httponly` cookie it cannot read, which is what keeps
+    script on the page from lifting the session and what lets the mutating
+    routes skip a separate CSRF token. A native app has no such cookie to be
+    given: its store is the Keychain or the Keystore, so it presents the token
+    as a bearer credential instead.
+
+    The bearer header is read first. A native client that has just signed in has
+    no cookie at all, and a stale cookie left over from a WebView sign-in must
+    not win against the credential the caller explicitly attached.
+    """
+    header = request.headers.get("authorization", "")
+    scheme, _, value = header.partition(" ")
+    if scheme.lower() == "bearer" and value.strip():
+        return value.strip()
     return request.cookies.get(SESSION_COOKIE_NAME)
 
 

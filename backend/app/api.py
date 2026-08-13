@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime
-from uuid import UUID
+from datetime import date, datetime
+from uuid import UUID, uuid4
 
 import hashlib
 import json
@@ -15,19 +15,21 @@ from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from .database import SessionLocal, get_db
-from .event_time import as_utc, local_date_string, now_utc
+from .event_time import as_utc, local_date_string, local_now, now_utc
 from .config import CSV_UPLOAD_MAX_BYTES, get_settings
 from .contracts import STREAM_EVENT_MODELS
-from .domain import ExecutionStatus, FinancialSourceType, ImportRecordStatus, ImportStatus, REVOCABLE_SOURCE_TYPES, ReconciliationOutcome, WidgetActionId
+from .domain import ExecutionStatus, FinancialSourceType, ImportRecordStatus, ImportStatus, REVOCABLE_SOURCE_TYPES, ReconciliationOutcome, TransactionType, WidgetActionId
 from .models import (
     AIAction,
     AnalysisToolRun,
     AuditLog,
+    Category,
     Conversation,
     Import as ImportJob,
     ImportRecord,
     Message,
     ReconciliationCandidate,
+    Subcategory,
     Transaction,
     TransactionDraft,
     User,
@@ -40,6 +42,8 @@ from .schemas import (
     AgentDiagnosticsOut,
     AgentResponse,
     BootstrapResponse,
+    CategoryDirectoryOut,
+    CategoryDirectorySubcategoryOut,
     ChatRequest,
     ConversationOut,
     ConversationCreatedOut,
@@ -56,12 +60,17 @@ from .schemas import (
     LocationPreferenceIn,
     LocationPreferenceOut,
     ObservationIn,
+    OverviewOut,
     PendingAction,
     ReconciliationResultOut,
     ReconciliationReviewOut,
     PrivacyStatusOut,
     SourceRevocationOut,
-    TransactionOut,
+    TaxonomyCreateIn,
+    TransactionCategoryHintIn,
+    TransactionCategoryHintOut,
+    TransactionListItemOut,
+    TransactionUpdateIn,
     Widget,
     WidgetAction,
     WidgetLifecycle,
@@ -75,7 +84,13 @@ from .services.adapters import CSVAdapter, MessageAdapter, import_summary
 from .services.conversation import get_or_create_conversation, handle_action, handle_chat, persist_agent_response, prepare_widget_action, resolve_widget_action, user_conversation
 from .services.reconciliation import ingest_observation
 from .services.preferences import set_user_preference, user_preference
-from .services.transactions import canonical_transactions
+from .services.overview import overview_snapshot
+from .services.taxonomy import TaxonomyRepository
+from .services.transactions import (
+    canonical_transactions,
+    create_manual_transaction as record_manual_transaction,
+    update_saved_transaction as apply_transaction_update,
+)
 from .services.user_data import delete_user_data, export_user_data
 from .services.tool_models import AffordabilityResult, InvestmentProjectionResult, LoanPrepaymentResult
 
@@ -174,6 +189,20 @@ def bootstrap(db: Session = Depends(get_db), user: User = Depends(current_user))
         user={"id": str(user.id), "name": user.display_name, "currency": user.currency, "timezone": user.timezone},
         active_conversation=ConversationOut.model_validate(loaded),
     )
+
+
+@router.get("/overview", response_model=OverviewOut)
+def overview(
+    month: date | None = Query(default=None, description="Any date in the calendar month to summarize"),
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> OverviewOut:
+    today = local_now(user.timezone).date()
+    selected_month = (month or today).replace(day=1)
+    try:
+        return OverviewOut.model_validate(overview_snapshot(db, user.id, selected_month, today))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 @router.get("/conversations", response_model=ConversationPage)
@@ -557,24 +586,336 @@ def _record_import_preview(db: Session, conversation: Conversation, filename: st
     return response
 
 
-@router.get("/transactions", response_model=list[TransactionOut])
-def transactions(db: Session = Depends(get_db), user: User = Depends(current_user)) -> list[TransactionOut]:
-    statement = (
-        canonical_transactions(user.id)
-        .options(selectinload(Transaction.sources))
-        .order_by(Transaction.transaction_at.desc(), Transaction.created_at.desc())
-    )
-    rows = list(db.scalars(statement))
-    return [TransactionOut(
+def _transaction_list_item(item: Transaction, category: str | None, subcategory: str | None) -> TransactionListItemOut:
+    return TransactionListItemOut(
         id=item.id,
         transaction_type=item.transaction_type,
         amount_minor=item.amount_minor,
         currency=item.currency,
-        merchant_name=item.merchant_name,
+        merchant=item.merchant_name,
         transaction_at=as_utc(item.transaction_at),
         status=item.status,
+        category_id=item.category_id,
+        category=category,
+        subcategory_id=item.subcategory_id,
+        subcategory=subcategory,
+        spend_nature=item.spend_nature,
+        location=item.location_label,
         source_count=len(item.sources),
-    ) for item in rows]
+    )
+
+
+@router.get("/transactions", response_model=list[TransactionListItemOut])
+def transactions(
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    q: str | None = Query(default=None, max_length=160),
+    transaction_type: TransactionType | None = Query(default=None),
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> list[TransactionListItemOut]:
+    statement = (
+        canonical_transactions(user.id)
+        .add_columns(Category.name, Subcategory.name)
+        .outerjoin(Category, Category.id == Transaction.category_id)
+        .outerjoin(Subcategory, Subcategory.id == Transaction.subcategory_id)
+        .options(selectinload(Transaction.sources))
+        .order_by(Transaction.transaction_at.desc(), Transaction.created_at.desc(), Transaction.id.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    if transaction_type is not None:
+        statement = statement.where(Transaction.transaction_type == transaction_type.value)
+    search = q.strip() if q else ""
+    if search:
+        pattern = f"%{search}%"
+        statement = statement.where(or_(
+            Transaction.merchant_name.ilike(pattern),
+            Transaction.transaction_type.ilike(pattern),
+            Category.name.ilike(pattern),
+            Subcategory.name.ilike(pattern),
+        ))
+    return [_transaction_list_item(item, category, subcategory) for item, category, subcategory in db.execute(statement)]
+
+
+def _saved_transaction_item(db: Session, user_id: UUID, transaction: Transaction) -> TransactionListItemOut:
+    taxonomy = TaxonomyRepository(db, user_id)
+    category = taxonomy.category(transaction.category_id) if transaction.category_id else None
+    subcategory = taxonomy.subcategory(
+        transaction.subcategory_id,
+        category_id=transaction.category_id,
+    ) if transaction.subcategory_id else None
+    return _transaction_list_item(
+        transaction,
+        category.name if category else None,
+        subcategory.name if subcategory else None,
+    )
+
+
+def _subcategory_directory_entry(taxonomy: TaxonomyRepository, subcategory: Subcategory) -> CategoryDirectorySubcategoryOut:
+    return CategoryDirectorySubcategoryOut(
+        id=subcategory.id,
+        slug=subcategory.slug,
+        label=subcategory.name,
+        editable=taxonomy.can_edit(subcategory),
+    )
+
+
+def _category_directory_entry(taxonomy: TaxonomyRepository, category: Category) -> CategoryDirectoryOut:
+    subcategories = taxonomy.subcategories(category.id)
+    subcategories_by_id = {item.id: item for item in subcategories}
+    return CategoryDirectoryOut(
+        id=category.id,
+        slug=category.slug,
+        label=category.name,
+        icon=category.icon,
+        subcategories=[_subcategory_directory_entry(taxonomy, item) for item in subcategories],
+        editable=taxonomy.can_edit(category),
+        hints=[
+            TransactionCategoryHintOut(
+                id=hint.id,
+                merchant=hint.merchant_pattern,
+                category_id=hint.category_id,
+                subcategory_id=hint.subcategory_id,
+                subcategory=subcategories_by_id[hint.subcategory_id].name if hint.subcategory_id in subcategories_by_id else None,
+            )
+            for hint in taxonomy.hints(category.id)
+        ],
+    )
+
+
+def _raise_taxonomy_error(error: ValueError) -> None:
+    detail = str(error)
+    if detail.startswith("Unknown"):
+        status_code = 404
+    elif "used by" in detail or "already exists" in detail:
+        status_code = 409
+    elif detail.startswith("Built-in"):
+        status_code = 403
+    else:
+        status_code = 422
+    raise HTTPException(status_code=status_code, detail=detail) from error
+
+
+@router.get("/categories", response_model=list[CategoryDirectoryOut])
+def category_directory(db: Session = Depends(get_db), user: User = Depends(current_user)) -> list[CategoryDirectoryOut]:
+    taxonomy = TaxonomyRepository(db, user.id)
+    return [_category_directory_entry(taxonomy, category) for category in taxonomy.expense_categories()]
+
+
+@router.post("/categories", response_model=CategoryDirectoryOut)
+def create_category(
+    request: TaxonomyCreateIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> CategoryDirectoryOut:
+    """Create a user-scoped expense category.
+
+    Naming one that already exists returns the existing entry rather than
+    failing: the caller asked for that category to be selectable, and it is.
+    Mirrors the conversation flow's CREATE_CATEGORY semantics.
+    """
+    taxonomy = TaxonomyRepository(db, user.id)
+    name = request.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Category name must be between 1 and 80 characters")
+    existing = next((item for item in taxonomy.expense_categories() if item.name.casefold() == name.casefold()), None)
+    if existing:
+        return _category_directory_entry(taxonomy, existing)
+    category = taxonomy.create_category(name, "circle-ellipsis", f"custom-{uuid4().hex}")
+    taxonomy.create_subcategory(category, "Other", "other")
+    db.commit()
+    return _category_directory_entry(taxonomy, category)
+
+
+@router.patch("/categories/{category_id}", response_model=CategoryDirectoryOut)
+def rename_category(
+    category_id: UUID,
+    request: TaxonomyCreateIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> CategoryDirectoryOut:
+    taxonomy = TaxonomyRepository(db, user.id)
+    try:
+        category = taxonomy.rename_category(category_id, request.name)
+    except ValueError as error:
+        _raise_taxonomy_error(error)
+    db.commit()
+    return _category_directory_entry(taxonomy, category)
+
+
+@router.delete("/categories/{category_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_category(
+    category_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> Response:
+    taxonomy = TaxonomyRepository(db, user.id)
+    try:
+        taxonomy.delete_category(category_id)
+    except ValueError as error:
+        _raise_taxonomy_error(error)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/categories/{category_id}/subcategories", response_model=CategoryDirectorySubcategoryOut)
+def create_subcategory(
+    category_id: UUID,
+    request: TaxonomyCreateIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> CategoryDirectorySubcategoryOut:
+    taxonomy = TaxonomyRepository(db, user.id)
+    name = request.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Subcategory name must be between 1 and 80 characters")
+    category = taxonomy.category(category_id, expense_only=True)
+    if not category:
+        raise HTTPException(status_code=404, detail="Unknown category")
+    existing = next((item for item in taxonomy.subcategories(category.id) if item.name.casefold() == name.casefold()), None)
+    if not existing:
+        existing = taxonomy.create_subcategory(category, name, f"custom-{uuid4().hex}")
+        db.commit()
+    return _subcategory_directory_entry(taxonomy, existing)
+
+
+@router.patch("/categories/{category_id}/subcategories/{subcategory_id}", response_model=CategoryDirectorySubcategoryOut)
+def rename_subcategory(
+    category_id: UUID,
+    subcategory_id: UUID,
+    request: TaxonomyCreateIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> CategoryDirectorySubcategoryOut:
+    taxonomy = TaxonomyRepository(db, user.id)
+    try:
+        subcategory = taxonomy.rename_subcategory(category_id, subcategory_id, request.name)
+    except ValueError as error:
+        _raise_taxonomy_error(error)
+    db.commit()
+    return _subcategory_directory_entry(taxonomy, subcategory)
+
+
+@router.delete("/categories/{category_id}/subcategories/{subcategory_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_subcategory(
+    category_id: UUID,
+    subcategory_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> Response:
+    taxonomy = TaxonomyRepository(db, user.id)
+    try:
+        taxonomy.delete_subcategory(category_id, subcategory_id)
+    except ValueError as error:
+        _raise_taxonomy_error(error)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/categories/{category_id}/hints", response_model=TransactionCategoryHintOut, status_code=status.HTTP_201_CREATED)
+def create_transaction_category_hint(
+    category_id: UUID,
+    request: TransactionCategoryHintIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> TransactionCategoryHintOut:
+    taxonomy = TaxonomyRepository(db, user.id)
+    try:
+        hint = taxonomy.save_hint(category_id, request.merchant, request.subcategory_id)
+    except ValueError as error:
+        _raise_taxonomy_error(error)
+    db.commit()
+    subcategory = taxonomy.subcategory(hint.subcategory_id, category_id=category_id)
+    return TransactionCategoryHintOut(id=hint.id, merchant=hint.merchant_pattern, category_id=hint.category_id, subcategory_id=hint.subcategory_id, subcategory=subcategory.name if subcategory else None)
+
+
+@router.patch("/categories/{category_id}/hints/{hint_id}", response_model=TransactionCategoryHintOut)
+def update_transaction_category_hint(
+    category_id: UUID,
+    hint_id: UUID,
+    request: TransactionCategoryHintIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> TransactionCategoryHintOut:
+    taxonomy = TaxonomyRepository(db, user.id)
+    try:
+        hint = taxonomy.save_hint(category_id, request.merchant, request.subcategory_id, hint_id=hint_id)
+    except ValueError as error:
+        _raise_taxonomy_error(error)
+    db.commit()
+    subcategory = taxonomy.subcategory(hint.subcategory_id, category_id=category_id)
+    return TransactionCategoryHintOut(id=hint.id, merchant=hint.merchant_pattern, category_id=hint.category_id, subcategory_id=hint.subcategory_id, subcategory=subcategory.name if subcategory else None)
+
+
+@router.delete("/categories/{category_id}/hints/{hint_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_transaction_category_hint(
+    category_id: UUID,
+    hint_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> Response:
+    taxonomy = TaxonomyRepository(db, user.id)
+    hint = taxonomy.hint(hint_id)
+    if not hint or hint.category_id != category_id:
+        raise HTTPException(status_code=404, detail="Unknown transaction hint")
+    taxonomy.delete_hint(hint_id)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/transactions", response_model=TransactionListItemOut, status_code=status.HTTP_201_CREATED)
+def create_manual_transaction(
+    request: TransactionUpdateIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> TransactionListItemOut:
+    try:
+        transaction = record_manual_transaction(
+            db,
+            user.id,
+            currency=user.currency,
+            amount_minor=request.amount_minor,
+            merchant=request.merchant,
+            transaction_at=request.transaction_at,
+            transaction_type=request.transaction_type,
+            category_id=request.category_id,
+            subcategory_id=request.subcategory_id,
+            spend_nature=request.spend_nature,
+            location=request.location,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    db.commit()
+    db.refresh(transaction)
+    return _saved_transaction_item(db, user.id, transaction)
+
+
+@router.patch("/transactions/{transaction_id}", response_model=TransactionListItemOut)
+def update_transaction(
+    transaction_id: UUID,
+    request: TransactionUpdateIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> TransactionListItemOut:
+    try:
+        changes = {
+            "amount_minor": request.amount_minor,
+            "merchant": request.merchant,
+            "transaction_at": request.transaction_at,
+            "transaction_type": request.transaction_type,
+            "spend_nature": request.spend_nature,
+            "location": request.location,
+        }
+        if request.transaction_type == TransactionType.EXPENSE:
+            changes.update(category_id=request.category_id, subcategory_id=request.subcategory_id)
+        transaction = apply_transaction_update(db, user.id, transaction_id, **changes)
+    except ValueError as error:
+        status_code = 404 if str(error) == "Unknown transaction" else 422
+        raise HTTPException(status_code=status_code, detail=str(error)) from error
+    db.commit()
+    db.refresh(transaction)
+    return _saved_transaction_item(db, user.id, transaction)
 
 
 @router.get("/reconciliation/reviews", response_model=list[ReconciliationReviewOut])

@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base
-from app.seed import seed_defaults
+from app.seed import seed_demo_user, seed_system_taxonomy
 
 
 @pytest.fixture()
@@ -19,6 +19,7 @@ def db():
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine, expire_on_commit=False)
     with Session() as session:
-        seed_defaults(session)
+        seed_demo_user(session)
+        seed_system_taxonomy(session)
         yield session
     Base.metadata.drop_all(engine)

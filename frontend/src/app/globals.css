@@ -189,12 +189,29 @@
   color: var(--secondary-hover);
 }
 
+/* Text controls are deliberately stricter than the browser's :focus-visible
+   heuristic, which may show a ring after a click or programmatic focus. The
+   root modality is set once for the whole app by FocusModality. */
+html[data-focus-modality="keyboard"] .manual-field:focus,
+html[data-focus-modality="keyboard"] .manual-field-group:focus-within {
+  border-color: var(--secondary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--secondary) 15%, transparent);
+}
+
+html[data-focus-modality="keyboard"] .manual-field-danger:focus,
+html[data-focus-modality="keyboard"] .manual-field[aria-invalid="true"]:focus {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 15%, transparent);
+}
+
 /* Every tabbable interactive surface gets the same ring, including the raw
-   buttons that do not go through the Button primitive. `tabindex="-1"`
-   boundaries receive programmatic focus for screen-reader announcements, not
-   keyboard navigation, so drawing a ring around them makes an entire card
-   look selected when a response arrives. */
-:where(a, button, input, select, textarea, [role="switch"], [tabindex]):not([tabindex="-1"]):focus-visible {
+   buttons that do not go through the Button primitive. Manual text fields use
+   the stricter Tab-only treatment above because browsers can match
+   :focus-visible for them after a click. `tabindex="-1"` boundaries receive
+   programmatic focus for screen-reader announcements, not keyboard navigation,
+   so drawing a ring around them makes an entire card look selected when a
+   response arrives. */
+:where(a, button, input, select, textarea, [role="switch"], [tabindex]):not([tabindex="-1"]):not(.manual-field):focus-visible {
   outline: 2px solid var(--secondary);
   outline-offset: 2px;
   border-radius: inherit;
@@ -302,6 +319,23 @@
   background-color: var(--ink-muted);
 }
 
+/* The dropdown popup grows out of the control that opened it — origin comes
+   from the positioner, so a popup flipped above the trigger grows upward.
+   Enter and exit are the same small move; `data-starting-style` and
+   `data-ending-style` are Base UI's transition hooks. */
+.combobox-popup {
+  transform-origin: var(--transform-origin);
+  transition:
+    opacity var(--m-enter) var(--ease),
+    transform var(--m-enter) var(--ease);
+}
+
+.combobox-popup[data-starting-style],
+.combobox-popup[data-ending-style] {
+  opacity: 0;
+  transform: scale(0.97) translateY(-3px);
+}
+
 /* Drawers enter from their own edge so the motion explains where they live. */
 .drawer-right {
   animation: drawer-right var(--m-overlay) var(--ease);
@@ -395,28 +429,23 @@
 }
 
 
-.ledger-band {
-  position: sticky;
-  top: 0;
-  z-index: 1;
+.chat-index-label {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 0.625rem;
   padding: 1rem var(--gutter) 0.5rem;
-  background: var(--ground);
+  color: var(--ink-body);
   font-size: var(--text-meta);
-  font-weight: 500;
+  font-weight: 700;
   letter-spacing: 0.07em;
   text-transform: uppercase;
-  font-variant-numeric: tabular-nums lining-nums;
-  color: var(--ink-muted);
 }
 
-.ledger-band::after {
+.chat-index-label::after {
   content: "";
   flex: 1;
   height: 1px;
-  background: var(--rule);
+  background: var(--rule-strong);
 }
 
 /* An entry and the control that strikes it out share one row, so the two are
@@ -441,6 +470,23 @@
   transition: background-color var(--m-state) linear, color var(--m-state) linear;
 }
 
+/* Fixed money destinations are compact icon-and-label rows. This explicit
+   variant follows the base entry in the cascade, so its horizontal layout is
+   not lost to `.ledger-entry`'s block layout (which chat titles still need). */
+.money-entry {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.625rem;
+  min-height: 2rem;
+  padding: 0.25rem var(--gutter);
+  line-height: 1.25;
+}
+
+.money-entry svg {
+  flex: none;
+}
+
 .ledger-row + .ledger-row .ledger-entry::before {
   content: "";
   position: absolute;
@@ -449,6 +495,11 @@
   right: var(--gutter);
   height: 1px;
   background: var(--rule);
+}
+
+/* Fixed destinations read as one compact navigation group, not ledger rows. */
+.ledger-row + .ledger-row .money-entry::before {
+  content: none;
 }
 
 .ledger-row:hover .ledger-entry {

@@ -1,4 +1,4 @@
-import { agentActivityEventSchema, agentResponseSchema, authStatusSchema, bootstrapSchema, conversationCreatedSchema, conversationPageSchema, conversationSchema, importResultSchema, otpSentSchema, parseActionPayload, privacyStatusSchema, profileSchema, streamErrorEventSchema, type AgentActivityEvent, type AgentResponse, type AuthStatusOut, type Bootstrap, type ConversationCreatedOut, type ConversationOut, type ConversationPage, type ImportResult, type OtpSentOut, type PrivacyStatusOut, type ProfileOut, type WidgetActionId } from "@/lib/protocol";
+import { agentActivityEventSchema, agentResponseSchema, authStatusSchema, bootstrapSchema, categoryDirectoryEntrySchema, categoryDirectorySchema, categorySubcategorySchema, conversationCreatedSchema, conversationPageSchema, conversationSchema, importResultSchema, otpSentSchema, overviewSchema, parseActionPayload, privacyStatusSchema, profileSchema, streamErrorEventSchema, transactionCategoryHintSchema, transactionListItemSchema, transactionListSchema, type AgentActivityEvent, type AgentResponse, type AuthStatusOut, type Bootstrap, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type ConversationCreatedOut, type ConversationOut, type ConversationPage, type ImportResult, type OtpSentOut, type OverviewOut, type PrivacyStatusOut, type ProfileOut, type TransactionCategoryHintOut, type TransactionListItemOut, type TransactionUpdateIn, type WidgetActionId } from "@/lib/protocol";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -107,6 +107,94 @@ function conform<T>(schema: { parse: (value: unknown) => T }, payload: unknown, 
 
 export async function bootstrap(): Promise<Bootstrap> {
   return conform(bootstrapSchema, await request("/api/bootstrap"), "workspace");
+}
+
+export async function loadOverview(month?: string): Promise<OverviewOut> {
+  const query = month ? `?month=${encodeURIComponent(`${month}-01`)}` : "";
+  return conform(overviewSchema, await request(`/api/overview${query}`), "overview");
+}
+
+export async function loadCategories(): Promise<CategoryDirectoryOut[]> {
+  return conform(categoryDirectorySchema, await request("/api/categories"), "category directory");
+}
+
+/** Naming an existing category returns that entry — the server owns dedup. */
+export async function createCategory(name: string): Promise<CategoryDirectoryOut> {
+  return conform(categoryDirectoryEntrySchema, await request("/api/categories", {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  }), "created category");
+}
+
+export async function createSubcategory(categoryId: string, name: string): Promise<CategoryDirectorySubcategoryOut> {
+  return conform(categorySubcategorySchema, await request(`/api/categories/${encodeURIComponent(categoryId)}/subcategories`, {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  }), "created subcategory");
+}
+
+export async function renameCategory(categoryId: string, name: string): Promise<CategoryDirectoryOut> {
+  return conform(categoryDirectoryEntrySchema, await request(`/api/categories/${encodeURIComponent(categoryId)}`, {
+    method: "PATCH", body: JSON.stringify({ name }),
+  }), "updated category");
+}
+
+export async function deleteCategory(categoryId: string): Promise<void> {
+  await request(`/api/categories/${encodeURIComponent(categoryId)}`, { method: "DELETE" });
+}
+
+export async function renameSubcategory(categoryId: string, subcategoryId: string, name: string): Promise<CategoryDirectorySubcategoryOut> {
+  return conform(categorySubcategorySchema, await request(`/api/categories/${encodeURIComponent(categoryId)}/subcategories/${encodeURIComponent(subcategoryId)}`, {
+    method: "PATCH", body: JSON.stringify({ name }),
+  }), "updated subcategory");
+}
+
+export async function deleteSubcategory(categoryId: string, subcategoryId: string): Promise<void> {
+  await request(`/api/categories/${encodeURIComponent(categoryId)}/subcategories/${encodeURIComponent(subcategoryId)}`, { method: "DELETE" });
+}
+
+export async function createTransactionHint(categoryId: string, merchant: string, subcategoryId: string | null): Promise<TransactionCategoryHintOut> {
+  return conform(transactionCategoryHintSchema, await request(`/api/categories/${encodeURIComponent(categoryId)}/hints`, {
+    method: "POST", body: JSON.stringify({ merchant, subcategoryId }),
+  }), "created transaction hint");
+}
+
+export async function updateTransactionHint(categoryId: string, hintId: string, merchant: string, subcategoryId: string | null): Promise<TransactionCategoryHintOut> {
+  return conform(transactionCategoryHintSchema, await request(`/api/categories/${encodeURIComponent(categoryId)}/hints/${encodeURIComponent(hintId)}`, {
+    method: "PATCH", body: JSON.stringify({ merchant, subcategoryId }),
+  }), "updated transaction hint");
+}
+
+export async function deleteTransactionHint(categoryId: string, hintId: string): Promise<void> {
+  await request(`/api/categories/${encodeURIComponent(categoryId)}/hints/${encodeURIComponent(hintId)}`, { method: "DELETE" });
+}
+
+export type TransactionPageInput = {
+  limit?: number;
+  offset?: number;
+  search?: string;
+  transactionType?: TransactionListItemOut["transactionType"] | null;
+};
+
+export async function loadTransactions({ limit = 50, offset = 0, search = "", transactionType = null }: TransactionPageInput = {}): Promise<TransactionListItemOut[]> {
+  const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (search.trim()) query.set("q", search.trim());
+  if (transactionType) query.set("transaction_type", transactionType);
+  return conform(transactionListSchema, await request(`/api/transactions?${query}`), "transaction list");
+}
+
+export async function createTransactionRecord(payload: TransactionUpdateIn): Promise<TransactionListItemOut> {
+  return conform(transactionListItemSchema, await request("/api/transactions", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }), "created transaction");
+}
+
+export async function updateTransaction(id: string, payload: TransactionUpdateIn): Promise<TransactionListItemOut> {
+  return conform(transactionListItemSchema, await request(`/api/transactions/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  }), "updated transaction");
 }
 
 export async function loadConversation(id: string): Promise<ConversationOut> {

@@ -237,6 +237,24 @@ class Subcategory(UUIDPrimaryKeyMixin, ScopedOwnershipMixin, TimestampMixin, Bas
     )
 
 
+class TransactionCategoryHint(UUIDPrimaryKeyMixin, UserOwnedMixin, TimestampMixin, Base):
+    """An explicit merchant-to-taxonomy instruction from one user.
+
+    Learned transaction history remains evidence; a hint is stronger because
+    the user deliberately stated the mapping. The normalized value is the
+    lookup key and the original pattern is retained for display and editing.
+    """
+
+    __tablename__ = "transaction_category_hints"
+    merchant_pattern: Mapped[str] = mapped_column(String(160))
+    normalized_pattern: Mapped[str] = mapped_column(String(160))
+    category_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("categories.id", ondelete="CASCADE"), index=True)
+    subcategory_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("subcategories.id", ondelete="SET NULL"), index=True)
+    __table_args__ = (
+        UniqueConstraint("user_id", "normalized_pattern", name="uq_user_transaction_category_hint"),
+    )
+
+
 class Merchant(UUIDPrimaryKeyMixin, ScopedOwnershipMixin, TimestampMixin, Base):
     __tablename__ = "merchants"
     canonical_name: Mapped[str] = mapped_column(String(160), index=True)

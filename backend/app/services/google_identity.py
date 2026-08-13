@@ -35,13 +35,13 @@ class GoogleAccount:
 
 
 def google_sign_in_enabled() -> bool:
-    return bool(get_settings().google_client_id)
+    return bool(get_settings().google_audiences)
 
 
 def verify_google_credential(credential: str) -> GoogleAccount:
     """Return the verified Google account behind an ID token."""
-    client_id = get_settings().google_client_id
-    if not client_id:
+    audiences = get_settings().google_audiences
+    if not audiences:
         raise GoogleUnavailable("Google sign-in is not configured on this server.")
     if not credential:
         raise GoogleAuthError("Google did not return a credential.")
@@ -54,13 +54,29 @@ def verify_google_credential(credential: str) -> GoogleAccount:
             "Google sign-in needs the google-auth package on the server."
         ) from error
 
-    try:
-        claims = id_token.verify_oauth2_token(credential, google_requests.Request(), client_id)
-    except Exception as error:
-        # google-auth raises ValueError for every rejection reason — bad
-        # signature, wrong audience, expired. None of them are distinguishable
-        # to the caller, and saying which one failed only helps an attacker.
-        raise GoogleAuthError("That Google sign-in could not be verified. Try again.") from error
+    # One person signing in from the browser, the iPhone and the Android app
+    # presents three tokens with three different audiences. `verify_oauth2_token`
+    # checks exactly one, so each configured client is tried in turn and the
+    # token is rejected only when none of them match.
+    #
+    # This is not a weakening of the check: every attempt still verifies the
+    # signature against Google's keys and the expiry, and an audience that is
+    # not one of ours is still refused.
+    claims = None
+    request = google_requests.Request()
+    for audience in audiences:
+        try:
+            claims = id_token.verify_oauth2_token(credential, request, audience)
+            break
+        except Exception:
+            # google-auth raises ValueError for every rejection reason — bad
+            # signature, wrong audience, expired. None of them are
+            # distinguishable to the caller, and saying which one failed only
+            # helps an attacker, so the loop simply moves on.
+            continue
+
+    if claims is None:
+        raise GoogleAuthError("That Google sign-in could not be verified. Try again.")
 
     if claims.get("iss") not in GOOGLE_ISSUERS:
         raise GoogleAuthError("That Google sign-in could not be verified. Try again.")

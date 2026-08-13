@@ -88,7 +88,8 @@ def test_taxonomy_tool_reads_only_the_authenticated_users_visible_categories(db)
     )
     result = taxonomy_tool.entrypoint()
 
-    assert len(result) == 8
+    # Eleven system expense categories plus the signed-in user's own row.
+    assert len(result) == 12
     assert "Own category" in {item["name"] for item in result}
     assert "Other category" not in {item["name"] for item in result}
     assert result == _agent_taxonomy(db, user)
@@ -97,9 +98,9 @@ def test_taxonomy_tool_reads_only_the_authenticated_users_visible_categories(db)
 def test_router_preserves_only_successful_installed_tool_execution_as_grounding(monkeypatch):
     route = CopilotRouteDecision(
         route="conversation",
-        reply="You have 7 expense categories.",
+        reply="You have 11 expense categories.",
         confidence=0.99,
-        reason="The authenticated taxonomy tool returned seven categories.",
+        reason="The authenticated taxonomy tool returned eleven categories.",
     )
 
     class StubAgent:

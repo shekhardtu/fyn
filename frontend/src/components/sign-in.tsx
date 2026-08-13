@@ -16,14 +16,14 @@ const GOOGLE_SCRIPT = "https://accounts.google.com/gsi/client";
  * identifier, then prove you receive at it — so both pages drive the same
  * component and differ only in which pair of calls it is handed. */
 
-export const CHANNEL_COPY: Record<OtpChannel, { label: string; noun: string; placeholder: string; hint: string; inputMode: "tel" | "email"; autoComplete: string; icon: ReactNode }> = {
+export const CHANNEL_COPY: Record<OtpChannel, { label: string; noun: string; placeholder: string; hint: string; inputMode: "numeric" | "email"; autoComplete: string; icon: ReactNode }> = {
   phone: {
     label: "Phone number",
     noun: "phone number",
-    placeholder: "+91 98765 43210",
-    hint: "A number without a country code is read as +91.",
-    inputMode: "tel",
-    autoComplete: "tel",
+    placeholder: "9876543210",
+    hint: "Enter the 10-digit mobile number after +91.",
+    inputMode: "numeric",
+    autoComplete: "tel-national",
     icon: <Smartphone />,
   },
   email: {
@@ -51,6 +51,15 @@ function useCooldown(): [number, (seconds: number) => void] {
     return () => window.clearTimeout(timer);
   }, [remaining]);
   return [remaining, setRemaining];
+}
+
+/** The country prefix is fixed in the control. Still accept a pasted +91
+ *  number and remove that prefix instead of silently chopping off its tail. */
+function localPhoneDigits(input: string): string {
+  let digits = input.replace(/\D/g, "");
+  if (digits.length > 10 && digits.startsWith("91")) digits = digits.slice(2);
+  digits = digits.replace(/^0+/, "");
+  return digits.slice(0, 10);
 }
 
 function Notice({ tone, children }: { tone: "error" | "success"; children: ReactNode }) {
@@ -116,11 +125,13 @@ export function CodeExchange({ channel, onStart, onVerify, submitLabel, onCancel
   });
 
   const busy = start.isPending || verify.isPending;
+  const identifier = channel === "phone" ? `+91${value}` : value.trim();
+  const identifierReady = channel === "phone" ? value.length === 10 : Boolean(value.trim());
 
   function submit(event: FormEvent) {
     event.preventDefault();
     if (busy) return;
-    if (!sent) { start.mutate(value.trim()); return; }
+    if (!sent) { start.mutate(identifier); return; }
     verify.mutate({ challengeId: sent.challengeId, submitted: code.trim() });
   }
 
@@ -130,23 +141,29 @@ export function CodeExchange({ channel, onStart, onVerify, submitLabel, onCancel
     {!sent ? <>
       <label className="block">
         <span className="text-control font-medium text-ink-body">{copy.label}</span>
-        <div data-field className="mt-2 flex h-[var(--h-field)] items-center gap-2 rounded-lg border border-line-strong bg-surface px-3 transition-colors duration-[110ms] ease-linear focus-within:border-secondary">
-          <span aria-hidden className="shrink-0 text-ink-muted">{copy.icon}</span>
+        <div data-field className="manual-field-group mt-2 flex h-[var(--h-field)] items-center overflow-hidden rounded-lg border border-line-strong bg-surface transition-colors duration-[110ms] ease-linear">
+          {channel === "phone"
+            ? <span aria-hidden className="flex h-full shrink-0 items-center gap-2 border-r border-line bg-surface-sunken px-3 text-ink-muted">{copy.icon}<span className="font-medium text-ink-body">+91</span></span>
+            : <span aria-hidden className="shrink-0 pl-3 text-ink-muted">{copy.icon}</span>}
           <input
             value={value}
-            onChange={(event) => setValue(event.target.value)}
+            onChange={(event) => setValue(channel === "phone" ? localPhoneDigits(event.target.value) : event.target.value)}
             placeholder={copy.placeholder}
             inputMode={copy.inputMode}
             autoComplete={copy.autoComplete}
+            type={channel === "phone" ? "tel" : "email"}
+            maxLength={channel === "phone" ? 10 : undefined}
+            pattern={channel === "phone" ? "[1-9][0-9]{9}" : undefined}
+            aria-label={channel === "phone" ? "10-digit mobile number with country code +91" : undefined}
             autoFocus={autoFocus}
             required
-            className="h-full w-full bg-transparent text-body text-ink outline-none placeholder:text-ink-muted"
+            className="h-full min-w-0 w-full bg-transparent px-3 text-body text-ink outline-none placeholder:text-ink-muted"
           />
         </div>
         <span className="mt-2 block text-note leading-5 text-ink-muted">{copy.hint}</span>
       </label>
       <div className="flex gap-2">
-        <Button type="submit" disabled={busy || !value.trim() || cooldown > 0} size="lg" className="flex-1">
+        <Button type="submit" disabled={busy || !identifierReady || cooldown > 0} size="lg" className="flex-1">
           {start.isPending ? <Loader2 className="animate-spin" /> : null}
           {cooldown > 0 ? `Wait ${cooldown}s` : start.isPending ? "Sending a code…" : "Send code"}
         </Button>
@@ -167,7 +184,7 @@ export function CodeExchange({ channel, onStart, onVerify, submitLabel, onCancel
           autoComplete="one-time-code"
           placeholder="••••••"
           required
-          className="mt-2 h-12 w-full rounded-lg border border-line-strong bg-surface px-3 text-center font-mono text-title text-ink tracking-[0.4em] outline-none transition-colors duration-[110ms] ease-linear focus:border-secondary"
+          className="manual-field mt-2 h-12 w-full rounded-lg border border-line-strong bg-surface px-3 text-center font-mono text-title text-ink tracking-[0.4em] outline-none transition-colors duration-[110ms] ease-linear"
         />
       </label>
       <Button type="submit" disabled={busy || code.length < 4} size="lg" className="w-full">
@@ -185,7 +202,7 @@ export function CodeExchange({ channel, onStart, onVerify, submitLabel, onCancel
         <button
           type="button"
           disabled={busy || cooldown > 0}
-          onClick={() => start.mutate(value.trim())}
+          onClick={() => start.mutate(identifier)}
           className="font-semibold text-secondary disabled:text-ink-muted"
         >
           {cooldown > 0 ? `Resend in ${cooldown}s` : "Resend code"}

@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
 from .database import get_db
@@ -21,7 +21,7 @@ from .schemas import (
     ProfileOut,
     SignOutOut,
 )
-from .security import clear_session_cookie, current_user, optional_user, session_token, set_session_cookie
+from .security import clear_session_cookie, current_user, is_native_client, optional_user, session_token, set_session_cookie
 from .services.auth import SentCode, complete_link, complete_login, send_link_code, send_login_code, sign_in_with_google
 from .services.google_identity import GoogleAuthError, GoogleUnavailable, google_sign_in_enabled
 from .services.identity import IdentityConflict, IdentityError, detach_identity, identities_of, owned_identity
@@ -113,12 +113,16 @@ def _sent(code: SentCode) -> OtpSentOut:
     })
 
 
-def _signed_in(db: Session, response: Response, user: User) -> AuthStatusOut:
-    set_session_cookie(response, issue_session(db, user))
+def _signed_in(db: Session, response: Response, user: User, request: Request) -> AuthStatusOut:
+    token = issue_session(db, user)
+    # The cookie is set either way. It is what a browser will use, and it costs
+    # a native caller nothing to be handed one it will never read back.
+    set_session_cookie(response, token)
     return AuthStatusOut.model_validate({
         "authenticated": True,
         "profile": _profile(db, user),
         "google_sign_in_available": google_sign_in_enabled(),
+        "session_token": token if is_native_client(request) else None,
     })
 
 
@@ -150,22 +154,24 @@ def start_sign_in_code(request: OtpStartIn, db: Session = Depends(get_db)) -> Ot
 def verify_sign_in_code(
     request: OtpVerifyIn,
     response: Response,
+    http_request: Request,
     db: Session = Depends(get_db),
 ) -> AuthStatusOut:
     with _translated_errors():
         user = complete_login(db, request.challenge_id, request.code)
-    return _signed_in(db, response, user)
+    return _signed_in(db, response, user, http_request)
 
 
 @router.post("/auth/google", response_model=AuthStatusOut)
 def sign_in_google(
     request: GoogleSignInIn,
     response: Response,
+    http_request: Request,
     db: Session = Depends(get_db),
 ) -> AuthStatusOut:
     with _translated_errors():
         user = sign_in_with_google(db, request.credential)
-    return _signed_in(db, response, user)
+    return _signed_in(db, response, user, http_request)
 
 
 @router.post("/auth/signout", response_model=SignOutOut)

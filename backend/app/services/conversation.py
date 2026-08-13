@@ -87,7 +87,7 @@ from .runtime_tools import build_runtime_tools
 from .semantic import AnalysisPlan, AnalysisToolProposal, AnalysisTransform, FinanceFilter, FinanceQueryPlan, VisualEncoding, VisualEncodingSet, VisualizationSpec
 from .tags import TagRepository
 from .taxonomy import TaxonomyRepository, agent_taxonomy as _agent_taxonomy
-from .transactions import active_transaction, canonical_transactions, create_transaction, expense_transactions, owned_transaction_source
+from .transactions import active_transaction, canonical_transactions, create_transaction, expense_transactions, owned_transaction_source, update_saved_transaction
 from .user_memory import remember_taxonomy_mapping
 from .widget_library import FieldPresentation, RowCapability, TableBlueprint, WidgetLibrary
 
@@ -3581,67 +3581,23 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
         return persist_agent_response(db, conversation, content, widgets=[widget])
     if action is WidgetActionId.UPDATE_SAVED_TRANSACTION:
         transaction_id = payload.get("transactionId")
-        transaction = active_transaction(db, user.id, UUID(str(transaction_id))) if transaction_id else None
-        if not transaction:
+        if not transaction_id:
             raise ValueError("Unknown transaction")
-        amount_minor = payload.get("amountMinor")
-        transaction.amount_minor = amount_minor
-        changed_fields: dict[str, object] = {"amount_minor": amount_minor}
-        if "merchant" in payload:
-            transaction.merchant_name = str(payload.get("merchant") or "").strip() or None
-            changed_fields["merchant"] = transaction.merchant_name
+        changes: dict[str, object] = {"amount_minor": int(payload.get("amountMinor") or 0)}
+        for payload_name, service_name in (
+            ("merchant", "merchant"),
+            ("transactionType", "transaction_type"),
+            ("location", "location"),
+            ("spendNature", "spend_nature"),
+            ("categoryId", "category_id"),
+            ("subcategoryId", "subcategory_id"),
+            ("tags", "tags"),
+        ):
+            if payload_name in payload:
+                changes[service_name] = payload[payload_name]
         if payload.get("transactionAt"):
-            transaction.transaction_at = as_utc(datetime.fromisoformat(str(payload["transactionAt"]).replace("Z", "+00:00")))
-            changed_fields["transaction_at"] = transaction.transaction_at.isoformat()
-        if "transactionType" in payload:
-            transaction_type = str(payload.get("transactionType") or "")
-            transaction.transaction_type = transaction_type
-            changed_fields["transaction_type"] = transaction_type
-        if "location" in payload:
-            location = str(payload.get("location") or "").strip()[:160] or None
-            transaction.location_label = location
-            transaction.location_source = "user" if location else None
-            changed_fields["location"] = location
-        if "spendNature" in payload:
-            spend_nature = str(payload.get("spendNature") or SpendNature.UNKNOWN)
-            transaction.spend_nature = spend_nature
-            changed_fields["spend_nature"] = spend_nature
-        if payload.get("categoryId"):
-            category = taxonomy.category(UUID(str(payload["categoryId"])), expense_only=True)
-            if not category:
-                raise ValueError("Unknown category")
-            transaction.category_id = category.id
-            transaction.subcategory_id = None
-            changed_fields["category_id"] = str(category.id)
-            if payload.get("subcategoryId"):
-                subcategory = taxonomy.subcategory(UUID(str(payload["subcategoryId"])), category_id=category.id)
-                if not subcategory:
-                    raise ValueError("Unknown subcategory")
-                transaction.subcategory_id = subcategory.id
-                changed_fields["subcategory_id"] = str(subcategory.id)
-        if "tags" in payload:
-            raw_tags = payload.get("tags")
-            tag_names = raw_tags if isinstance(raw_tags, list) else str(raw_tags or "").split(",")
-            changed_fields["tags"] = TagRepository(db, user.id).replace_transaction_tags(
-                transaction.id,
-                tag_names,
-                source="user",
-                confidence=Decimal("1"),
-            )
-        normalized = normalize_merchant(transaction.merchant_name)
-        if normalized:
-            merchant = MerchantRepository(db, user.id).get_or_create(transaction.merchant_name, normalized)
-            transaction.merchant_id = merchant.id
-            transaction.merchant_name = merchant.canonical_name
-        for field_name, value in changed_fields.items():
-            db.add(TransactionFieldValue(
-                transaction_id=transaction.id,
-                field_name=field_name,
-                value={"value": value},
-                origin="user_correction",
-                confidence=Decimal("1"),
-                user_confirmed=True,
-            ))
+            changes["transaction_at"] = datetime.fromisoformat(str(payload["transactionAt"]).replace("Z", "+00:00"))
+        transaction = update_saved_transaction(db, user.id, UUID(str(transaction_id)), **changes)
         content = f"Updated the {format_money_minor(transaction.amount_minor, transaction.currency)} transaction."
         widget = _transaction_preview(db, transaction, status="Updated")
         return persist_agent_response(db, conversation, content, widgets=[widget])

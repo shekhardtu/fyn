@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     claim_seeded_user_on_first_login: bool = True
 
     otp_code_length: int = 6
-    otp_ttl_seconds: int = 600
+    otp_ttl_seconds: int = 300
     otp_max_attempts: int = 5
     otp_resend_interval_seconds: int = 45
     otp_max_sends_per_hour: int = 5
@@ -61,12 +61,20 @@ class Settings(BaseSettings):
     msg91_auth_key: str | None = None
     msg91_template_id: str | None = None
     msg91_sender_id: str | None = None
-    msg91_otp_variable: str = "otp"
+    # Flow variable names are case-sensitive. MSG91's OTP placeholder is
+    # conventionally registered as ##OTP##, whose payload key is `OTP`.
+    msg91_otp_variable: str = "OTP"
     postmark_server_token: str | None = None
     postmark_from_email: str | None = None
     postmark_message_stream: str = "outbound"
     otp_email_subject: str = "Your fyn AI sign-in code"
     google_client_id: str | None = None
+    # The native apps sign in against their own OAuth clients, so the ID token
+    # they present carries a different audience from the browser's. Listing the
+    # extra client IDs here is what lets one account be reached from all three
+    # surfaces; without it every native Google sign-in fails the audience check.
+    google_ios_client_id: str | None = None
+    google_android_client_id: str | None = None
     router_model: str = "gpt-5.6-luna"
     transaction_model: str = "gpt-5.6-luna"
     analysis_model: str = "gpt-5.6-terra"
@@ -82,6 +90,18 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def google_audiences(self) -> list[str]:
+        """Every OAuth client whose ID tokens this installation will accept.
+
+        Google issues a token whose `aud` is the client that asked for it, so
+        the browser, the iOS app and the Android app each present a different
+        one for the same person. Order matters only for cost: the web client is
+        checked first because it is the one most sign-ins come from.
+        """
+        candidates = (self.google_client_id, self.google_ios_client_id, self.google_android_client_id)
+        return list(dict.fromkeys(value.strip() for value in candidates if value and value.strip()))
 
     @property
     def sms_sender_name(self) -> str:

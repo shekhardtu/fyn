@@ -846,6 +846,115 @@ class BootstrapResponse(BaseModel):
     active_conversation: ConversationOut
 
 
+class OverviewPeriodOut(BaseModel):
+    start: DateValue
+    end: DateValue
+    previous_start: DateValue = Field(serialization_alias="previousStart")
+    previous_end: DateValue = Field(serialization_alias="previousEnd")
+    label: str
+    is_current: bool = Field(serialization_alias="isCurrent")
+
+
+class OverviewSummaryOut(BaseModel):
+    currency: str = Field(min_length=3, max_length=3)
+    income_minor: int = Field(serialization_alias="incomeMinor")
+    spent_minor: int = Field(serialization_alias="spentMinor")
+    net_minor: int = Field(serialization_alias="netMinor")
+    expense_count: int = Field(serialization_alias="expenseCount")
+    previous_spent_minor: int = Field(serialization_alias="previousSpentMinor")
+    change_minor: int = Field(serialization_alias="changeMinor")
+    change_percent: float | None = Field(serialization_alias="changePercent")
+
+
+class OverviewSubcategoryOut(BaseModel):
+    id: str
+    label: str
+    amount_minor: int = Field(serialization_alias="amountMinor")
+    count: int
+    share_percent: float = Field(serialization_alias="sharePercent")
+
+
+class OverviewCategoryOut(OverviewSubcategoryOut):
+    subcategories: list[OverviewSubcategoryOut]
+
+
+class OverviewOut(BaseModel):
+    period: OverviewPeriodOut
+    summary: OverviewSummaryOut
+    categories: list[OverviewCategoryOut]
+
+
+class CategoryDirectorySubcategoryOut(BaseModel):
+    id: UUID
+    slug: str
+    label: str
+    editable: bool = False
+
+
+class TransactionCategoryHintOut(BaseModel):
+    id: UUID
+    merchant: str
+    category_id: UUID = Field(serialization_alias="categoryId")
+    subcategory_id: UUID | None = Field(default=None, serialization_alias="subcategoryId")
+    subcategory: str | None = None
+
+
+class CategoryDirectoryOut(BaseModel):
+    id: UUID
+    slug: str
+    label: str
+    icon: str | None = None
+    subcategories: list[CategoryDirectorySubcategoryOut]
+    editable: bool = False
+    hints: list[TransactionCategoryHintOut] = Field(default_factory=list)
+
+
+class TaxonomyCreateIn(BaseModel):
+    """One field for both taxonomy levels: the caller names the thing, the
+    server owns slugs, icons and ownership scope."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    name: str = Field(min_length=1, max_length=80)
+
+
+class TransactionCategoryHintIn(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    merchant: str = Field(min_length=1, max_length=160)
+    subcategory_id: UUID | None = Field(default=None, alias="subcategoryId")
+
+
+class TransactionListItemOut(BaseModel):
+    id: UUID
+    transaction_type: TransactionType = Field(serialization_alias="transactionType")
+    amount_minor: int = Field(serialization_alias="amountMinor")
+    currency: str = Field(min_length=3, max_length=3)
+    merchant: str | None = None
+    transaction_at: datetime = Field(serialization_alias="transactionAt")
+    status: TransactionStatus
+    category_id: UUID | None = Field(default=None, serialization_alias="categoryId")
+    category: str | None = None
+    subcategory_id: UUID | None = Field(default=None, serialization_alias="subcategoryId")
+    subcategory: str | None = None
+    spend_nature: SpendNature = Field(serialization_alias="spendNature")
+    location: str | None = None
+    source_count: int = Field(serialization_alias="sourceCount")
+
+
+class TransactionUpdateIn(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    amount_minor: int = Field(alias="amountMinor", gt=0)
+    merchant: str | None = Field(default=None, max_length=160)
+    transaction_at: datetime = Field(alias="transactionAt")
+    transaction_type: TransactionType = Field(alias="transactionType")
+    category_id: UUID | None = Field(default=None, alias="categoryId")
+    subcategory_id: UUID | None = Field(default=None, alias="subcategoryId")
+    spend_nature: SpendNature = Field(alias="spendNature")
+    location: str | None = Field(default=None, max_length=160)
+
+
 class ObservationIn(BaseModel):
     source_type: FinancialSourceType
     source_message_id: str | None = None
@@ -895,17 +1004,6 @@ class ReconciliationResultOut(BaseModel):
     score: float | None = None
     signals: dict[str, Any] = Field(default_factory=dict)
     idempotent_replay: bool = False
-
-
-class TransactionOut(BaseModel):
-    id: UUID
-    transaction_type: TransactionType
-    amount_minor: int
-    currency: str
-    merchant_name: str | None
-    transaction_at: datetime
-    status: TransactionStatus
-    source_count: int
 
 
 class AffordabilityIn(AffordabilityInput):
@@ -1048,6 +1146,11 @@ class AuthStatusOut(BaseModel):
     authenticated: bool
     profile: ProfileOut | None = None
     google_sign_in_available: bool = Field(serialization_alias="googleSignInAvailable")
+    # Only ever populated for a client that declared it cannot hold a cookie.
+    # A browser must not receive this: the session is deliberately `httponly`
+    # there, and handing the same value back in a readable body would put it
+    # right back within reach of script on the page.
+    session_token: str | None = Field(default=None, serialization_alias="sessionToken")
 
 
 class SignOutOut(BaseModel):

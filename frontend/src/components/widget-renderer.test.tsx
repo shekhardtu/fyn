@@ -76,6 +76,25 @@ describe("saved transaction editor", () => {
   });
 });
 
+describe("subcategory selector", () => {
+  it("uses one choice mark instead of adding a duplicate generic circle icon", () => {
+    const widget: Widget = {
+      id: "subcategory-transport",
+      type: "subcategory_selector",
+      version: 1,
+      data: {
+        title: "What type of transport expense?",
+        category: "Transport",
+        options: [{ id: "cab", slug: "cab", label: "Cab" }],
+      },
+      actions: [{ id: "select", label: "Select", action: "select_subcategory", style: "secondary", payload: { draftId: "draft" } }],
+    };
+    render(<WidgetRenderer widget={widget} onAction={() => undefined} />);
+    const cab = screen.getByRole("button", { name: "Cab" });
+    expect(cab.querySelectorAll("svg")).toHaveLength(0);
+  });
+});
+
 describe("persisted widget action receipts", () => {
   it("shows a completed subcategory name as a disabled, unfocused value", () => {
     const widget: Widget = {

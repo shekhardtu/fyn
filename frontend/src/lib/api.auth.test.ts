@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, getAuthStatus, getProfile, isUnauthorized, startLinkCode, startSignInCode, verifySignInCode } from "@/lib/api";
+import { ApiError, getAuthStatus, getProfile, isUnauthorized, loadOverview, startLinkCode, startSignInCode, verifySignInCode } from "@/lib/api";
 
 /** The session lives in an httpOnly cookie, so these calls carry it only by
  *  asking fetch to include credentials. Nothing in the module can read the
@@ -68,6 +68,19 @@ describe("session-carrying requests", () => {
     fetchMock.mockResolvedValue(respond(SENT));
     await startSignInCode("phone", "9876543210");
     expect(fetchMock.mock.calls[2][1]).toMatchObject({ credentials: "include", method: "POST" });
+  });
+
+  it("loads the selected overview month with the signed-in session", async () => {
+    fetchMock.mockResolvedValue(respond({
+      period: { start: "2026-08-01", end: "2026-08-13", previousStart: "2026-07-01", previousEnd: "2026-07-13", label: "August 2026", isCurrent: true },
+      summary: { currency: "INR", incomeMinor: 0, spentMinor: 0, netMinor: 0, expenseCount: 0, previousSpentMinor: 0, changeMinor: 0, changePercent: null },
+      categories: [],
+    }));
+
+    await loadOverview("2026-08");
+
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/overview?month=2026-08-01");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ credentials: "include" });
   });
 
   it("sends the identifier as typed, leaving normalisation to the server", async () => {

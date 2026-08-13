@@ -2,11 +2,12 @@
 
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowDown, Check, CheckCircle2, Copy, Download, FileText, Loader2, MapPin, Menu, MessageSquareText, Paperclip, RotateCcw, SendHorizontal, Settings, ShieldCheck, Sparkles, SquarePen, Trash2, TriangleAlert, X } from "lucide-react";
-import { useParams, useRouter } from "next/navigation";
+import { ArrowDown, Check, CheckCircle2, Copy, Download, FileText, LayoutDashboard, Loader2, MapPin, MessageSquareText, Paperclip, ReceiptText, RotateCcw, SendHorizontal, Settings, ShieldCheck, Sparkles, SquarePen, Tags, Trash2, TriangleAlert, X } from "lucide-react";
+import { useParams, usePathname, useRouter } from "next/navigation";
 import { createContext, FormEvent, memo, RefObject, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { ConversationTitle } from "@/components/conversation-title";
+import { SiteHeader, useAutoHideSiteHeader } from "@/components/ui/site-header";
 import { Textarea } from "@/components/ui/textarea";
 import { Toast, ToastAction, ToastContent, ToastDescription, ToastPortal, ToastProvider, ToastTitle, ToastViewport, toast, useToastManager } from "@/components/ui/toast";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -137,25 +138,6 @@ function useEndOfList(root: RefObject<HTMLElement | null>, armed: boolean, onRea
   return sentinel;
 }
 
-function conversationTime(value: string) {
-  const parsed = new Date(value).getTime();
-  return Number.isNaN(parsed) ? 0 : parsed;
-}
-
-/** Buckets the history by calendar day so a long rail reads as a timeline
- *  rather than one undifferentiated stack of titles. */
-function groupConversations(conversations: ConversationSummary[]) {
-  const today = new Date().setHours(0, 0, 0, 0);
-  const groups = new Map<string, ConversationSummary[]>();
-  for (const conversation of [...conversations].sort((a, b) => conversationTime(b.updatedAt) - conversationTime(a.updatedAt))) {
-    const updated = conversationTime(conversation.updatedAt);
-    const days = updated === 0 ? Infinity : Math.round((today - new Date(updated).setHours(0, 0, 0, 0)) / 86_400_000);
-    const label = days <= 0 ? "Today" : days === 1 ? "Yesterday" : days <= 7 ? "Previous 7 days" : days <= 30 ? "Previous 30 days" : "Earlier";
-    groups.set(label, [...(groups.get(label) ?? []), conversation]);
-  }
-  return [...groups];
-}
-
 /** The wordmark and the one action that belongs to the workspace rather than
  *  to a thread.
  *
@@ -255,9 +237,16 @@ const RailEntry = memo(function RailEntry({ conversation, active, entryRef, onSe
   </div>;
 });
 
-const ConversationRail = memo(function ConversationRail({ conversations, activeId, user, open, docked, switching, loading, loadingMore, hasMore, onClose, onSelect, onPrefetch, onDelete, onLoadMore, onNew, onOpenSettings, onOpenProfile }: {
+const MONEY_PAGES = [
+  { label: "Overview", icon: LayoutDashboard, path: "/overview" },
+  { label: "Transactions", icon: ReceiptText, path: "/transactions" },
+  { label: "Categories", icon: Tags, path: "/categories" },
+] as const;
+
+const ConversationRail = memo(function ConversationRail({ conversations, activeId, activePage, user, open, docked, switching, loading, loadingMore, hasMore, onClose, onOpenPage, onSelect, onPrefetch, onDelete, onLoadMore, onNew, onOpenSettings, onOpenProfile }: {
   conversations: ConversationSummary[];
   activeId: string;
+  activePage: string | null;
   /** Null until bootstrap answers; the rail draws its own placeholder. */
   user: Bootstrap["user"] | null;
   open: boolean;
@@ -267,6 +256,7 @@ const ConversationRail = memo(function ConversationRail({ conversations, activeI
   loadingMore: boolean;
   hasMore: boolean;
   onClose: () => void;
+  onOpenPage: (path: string) => void;
   onSelect: (id: string) => void;
   /** Warms a thread the pointer is heading for, so opening it is a paint. */
   onPrefetch: (id: string) => void;
@@ -276,7 +266,6 @@ const ConversationRail = memo(function ConversationRail({ conversations, activeI
   onOpenSettings: () => void;
   onOpenProfile: () => void;
 }) {
-  const groups = useMemo(() => groupConversations(conversations), [conversations]);
   const listRef = useScrollEdges<HTMLDivElement>(conversations.length);
   const endRef = useEndOfList(listRef, hasMore && !loadingMore, onLoadMore);
   const activeRef = useRef<HTMLButtonElement>(null);
@@ -284,31 +273,49 @@ const ConversationRail = memo(function ConversationRail({ conversations, activeI
 
   return <aside
     id="conversation-rail"
-    aria-label="Conversations"
+    aria-label="Workspace navigation"
     inert={!docked && !open}
     className={cn("ledger fixed inset-y-0 left-0 z-40 flex min-h-0 w-[min(var(--rail-w),85vw)] flex-col border-r border-line bg-ground transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] md:static md:h-full md:w-auto md:translate-x-0 md:transition-none", open ? "translate-x-0 shadow-[var(--shadow-overlay)]" : "-translate-x-full")}
   >
     <RailHeader creating={switching} onNew={onNew} onClose={onClose} />
 
-    <div className="rail-body">
-      <div ref={listRef} className="panel-scroll h-full overflow-y-auto">
+    <nav aria-label="Money pages" className="py-2">
+      <p className="ledger-meta px-3 pt-1 pb-2">Money</p>
+      {MONEY_PAGES.map((item) => {
+        const Icon = item.icon;
+        return <div key={item.label} className="ledger-row">
+          <button
+            type="button"
+            aria-label={item.label}
+            aria-current={activePage === item.path ? "page" : undefined}
+            onClick={() => onOpenPage(item.path)}
+            className="ledger-entry money-entry"
+          >
+            <span aria-hidden className="ledger-mark" />
+            <Icon size={16} className="shrink-0" />
+            <span>{item.label}</span>
+          </button>
+        </div>;
+      })}
+    </nav>
+
+    <div className="rail-body flex min-h-0 flex-col">
+      <p className="chat-index-label shrink-0">Recent chats</p>
+      <div ref={listRef} className="panel-scroll min-h-0 flex-1 overflow-y-auto">
         {loading
           ? <div role="status" aria-label="Loading your conversations" className="space-y-3 px-4 pt-6">{[0, 1, 2, 3].map((row) => <div key={row} className="h-3 animate-pulse rounded-full bg-line" style={{ width: `${88 - row * 13}%` }} />)}</div>
           : conversations.length === 0
             ? <div className="pt-8 px-3"><p className="text-control font-medium text-ink-body">No conversations yet</p><p className="mt-1 text-note leading-5 text-ink-muted">Start one and it appears here.</p></div>
             : <nav aria-label="Conversation history" className="relative pb-3">
-              {groups.map(([label, items]) => <div key={label}>
-                <p className="ledger-band">{label}</p>
-                {items.map((conversation) => <RailEntry
-                  key={conversation.id}
-                  conversation={conversation}
-                  active={conversation.id === activeId}
-                  entryRef={conversation.id === activeId ? activeRef : undefined}
-                  onSelect={onSelect}
-                  onPrefetch={onPrefetch}
-                  onDelete={onDelete}
-                />)}
-              </div>)}
+              {conversations.map((conversation) => <RailEntry
+                key={conversation.id}
+                conversation={conversation}
+                active={conversation.id === activeId}
+                entryRef={conversation.id === activeId ? activeRef : undefined}
+                onSelect={onSelect}
+                onPrefetch={onPrefetch}
+                onDelete={onDelete}
+              />)}
               <div ref={endRef} aria-hidden className="h-px" />
               {loadingMore ? <p role="status" className="ledger-meta py-4 px-3">Loading earlier</p> : null}
             </nav>}
@@ -395,7 +402,7 @@ function ThreadSkeleton() {
 
 /** Keeps Tab inside an open overlay, closes it on Escape, and hands focus back
  *  to whatever opened it. */
-function useOverlay(open: boolean, onClose: () => void) {
+export function useWorkspaceOverlay(open: boolean, onClose: () => void) {
   const ref = useRef<HTMLElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -468,7 +475,7 @@ function PrivacyDrawer({ onClose, onDeleted }: { onClose: () => void; onDeleted:
   const [notice, setNotice] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [busyControl, setBusyControl] = useState<string | null>(null);
-  const panelRef = useOverlay(true, onClose);
+  const panelRef = useWorkspaceOverlay(true, onClose);
   const privacy = useQuery({ queryKey: ["privacy"], queryFn: getPrivacyStatus });
 
   const run = useMutation({
@@ -542,7 +549,7 @@ function PrivacyDrawer({ onClose, onDeleted }: { onClose: () => void; onDeleted:
 
           <div className="rounded-lg border border-danger-line bg-danger-tint p-4">
             <div className="flex gap-3"><Trash2 className="mt-0.5 shrink-0 text-danger" /><div><p className="text-control font-semibold text-danger-ink">Delete all data</p><p className="mt-1 text-note leading-5 text-danger-ink/85">Permanently removes conversations, transactions, observations, goals, budgets, and preferences. This cannot be undone.</p></div></div>
-            <input value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} placeholder="Type DELETE MY DATA" aria-label="Deletion confirmation" className="mt-4 h-[var(--h-field)] w-full rounded-lg border border-danger-line bg-surface px-3 text-body text-ink outline-none transition-colors duration-[110ms] ease-linear focus:border-danger" />
+            <input value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} placeholder="Type DELETE MY DATA" aria-label="Deletion confirmation" className="manual-field manual-field-danger mt-4 h-[var(--h-field)] w-full rounded-lg border border-danger-line bg-surface px-3 text-body text-ink outline-none transition-colors duration-[110ms] ease-linear" />
             <Button type="button" disabled={deleteConfirmation !== "DELETE MY DATA" || run.isPending} onClick={() => run.mutate({ kind: "delete" })} variant="danger" size="lg" className="mt-2 w-full">{busyControl === "delete" ? <Loader2 className="animate-spin" /> : null}{busyControl === "delete" ? "Deleting everything…" : "Delete permanently"}</Button>
           </div>
         </> : null}
@@ -583,7 +590,7 @@ function Composer({ variant, value, onValueChange, onSubmit, textRef, fileRef, o
       {/* 14px of text inset is not arbitrary: it is where a 16px glyph lands
           inside a 44px control, so the first character of what you write sits
           on the same vertical as the paperclip below it. */}
-      <Textarea id="composer" ref={textRef} value={value} disabled={disabled} onChange={(event) => onValueChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); onSubmit(); } }} placeholder={disabled ? "Opening conversation…" : focused ? "Spent ₹500 on lunch" : "Ask anything about your finances…"} aria-label="Message fyn AI" aria-describedby="composer-hint" rows={1} className="max-h-36 min-h-10 resize-none border-0 bg-transparent px-3 py-2 text-control leading-6 shadow-none placeholder:text-ink-muted focus-visible:border-transparent" />
+      <Textarea id="composer" ref={textRef} value={value} disabled={disabled} onChange={(event) => onValueChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); onSubmit(); } }} placeholder={disabled ? "Opening conversation…" : focused ? "Spent ₹500 on lunch" : "Ask anything about your finances…"} aria-label="Message fyn AI" aria-describedby="composer-hint" rows={1} className="max-h-36 min-h-10 resize-none border-0 bg-transparent px-3 py-2 text-control leading-6 shadow-none placeholder:text-ink-muted" />
       <div className="flex items-center gap-2">
         <input ref={fileRef} type="file" accept=".csv,text/csv" className="sr-only" tabIndex={-1} aria-hidden aria-label="Choose a CSV statement" onChange={(event) => { onAttach(event.target.files?.[0]); event.currentTarget.value = ""; }} />
         <Tooltip><TooltipTrigger render={<Button type="button" variant="ghost" size="icon" disabled={busy} onClick={() => fileRef.current?.click()} className="shrink-0" aria-label="Attach a CSV statement" />}><Paperclip /></TooltipTrigger><TooltipContent>Attach a CSV statement, or drop one anywhere</TooltipContent></Tooltip>
@@ -892,6 +899,7 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
   }
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const { headerVisible, updateHeaderForScroll, showHeader } = useAutoHideSiteHeader();
   const textRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -915,6 +923,7 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
   // afterwards starts life already cancelled.
   const inFlight = useRef<AbortController | null>(null);
   useEffect(() => {
+    showHeader();
     const controller = new AbortController();
     inFlight.current = controller;
     return () => {
@@ -926,7 +935,7 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
       // than smooth-scrolled there as if a reply had just landed.
       arrivals.current = null;
     };
-  }, [conversationId]);
+  }, [conversationId, showHeader]);
 
   const succeeded = useCallback((response: AgentResponse) => {
     setMessages((current) => [...applyWidgetUpdates(current, response.widgetUpdates), responseToMessage(response)]);
@@ -1089,6 +1098,7 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
 
   function trackScroll(event: React.UIEvent<HTMLDivElement>) {
     const node = event.currentTarget;
+    updateHeaderForScroll(node.scrollTop, readerScrolled.current);
     const nearBottom = node.scrollHeight - node.scrollTop - node.clientHeight < 120;
     if (nearBottom) {
       readerScrolled.current = false;
@@ -1227,16 +1237,7 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
 
   return <>
       <ConversationTitle title={title} />
-      <main className="thread-enter relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-surface">
-        <header className="z-20 flex h-14 shrink-0 items-center gap-2 border-b border-line bg-surface px-3 sm:px-6">
-          <Button variant="ghost" size="icon-lg" aria-label="Open navigation" aria-expanded={navOpen} aria-controls="conversation-rail" className="rounded-xl md:hidden" onClick={onOpenNav}><Menu size={20} /></Button>
-          <div className="min-w-0">
-            <h1 className="truncate font-heading text-body font-semibold tracking-[-0.015em] text-ink">{title}</h1>
-            <p className={cn("mt-0.5 flex items-center gap-2 text-meta", connectionLost ? "font-medium text-danger-ink" : "text-ink-muted")}><span className={cn("size-1 rounded-full", connectionLost ? "bg-danger" : "bg-ink-muted")} />{connectionLost ? "Can’t reach your financial data" : "Financial data connected"}</p>
-          </div>
-          <Tooltip><TooltipTrigger render={<Button type="button" variant="ghost" size="icon-lg" onClick={copyConversationLink} aria-label={linkCopied ? "Conversation link copied" : "Copy conversation link"} className="ml-auto rounded-xl text-ink-muted" />}>{linkCopied ? <Check /> : <Copy />}</TooltipTrigger><TooltipContent>{linkCopied ? "Link copied" : "Copy conversation link"}</TooltipContent></Tooltip>
-        </header>
-
+      <main id="main-content" className="thread-enter relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-surface">
         <div
           ref={scrollRef}
           onScroll={trackScroll}
@@ -1245,13 +1246,22 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
           onKeyDown={noteReaderScroll}
           className="conversation-scroll min-h-0 flex-1 overflow-y-auto"
         >
-          {loadingThread ? <div className="mx-auto flex min-h-full w-full max-w-[var(--column-w)] flex-col px-4 pt-8 pb-10 sm:px-6 sm:pt-12"><ThreadSkeleton /></div> : focusedMode ? <div className="leaf mx-auto flex min-h-full w-full max-w-[34rem] flex-col justify-center px-4 py-12 sm:px-6">
+          <SiteHeader
+            title={title}
+            subtitle={<><span className={cn("size-1 rounded-full", connectionLost ? "bg-danger" : "bg-ink-muted")} />{connectionLost ? "Can’t reach your financial data" : "Financial data connected"}</>}
+            subtitleClassName={cn("mt-0.5 flex items-center gap-2", connectionLost && "font-medium text-danger-ink")}
+            hidden={!headerVisible}
+            navOpen={navOpen}
+            onOpenNav={onOpenNav}
+            end={<Tooltip><TooltipTrigger render={<Button type="button" variant="ghost" size="icon-lg" onClick={copyConversationLink} aria-label={linkCopied ? "Conversation link copied" : "Copy conversation link"} className="rounded-xl text-ink-muted" />}>{linkCopied ? <Check /> : <Copy />}</TooltipTrigger><TooltipContent>{linkCopied ? "Link copied" : "Copy conversation link"}</TooltipContent></Tooltip>}
+          />
+          {loadingThread ? <div className="mx-auto flex min-h-[calc(100%-3.5rem)] w-full max-w-[var(--column-w)] flex-col px-4 pt-8 pb-10 sm:px-6 sm:pt-12"><ThreadSkeleton /></div> : focusedMode ? <div className="leaf mx-auto flex min-h-[calc(100%-3.5rem)] w-full max-w-[34rem] flex-col justify-center px-4 py-12 sm:px-6">
             <h2 className="leaf-title">What happened?</h2>
             <div className="mt-6"><Composer variant="focused" value={input} onValueChange={setInput} onSubmit={submit} textRef={textRef} fileRef={fileRef} onAttach={attach} busy={busy} sending={chatPending} disabled={switchingConversation} dragging={dragging} upload={upload} /></div>
             {error ? <div role="alert" className="mt-3 flex flex-wrap items-center gap-3 gap-2 rounded-lg border border-danger-line bg-danger-tint px-4 py-3 text-note leading-5 text-danger-ink"><TriangleAlert className="shrink-0" /><span className="min-w-0 flex-1">{error}</span>{retry ? <Button type="button" variant="outline" size="lg" onClick={retryLast} className="rounded-xl border-danger-line text-danger-ink hover:bg-danger-tint"><RotateCcw size={14} /> Try again</Button> : null}</div> : null}
             <p className="leaf-band mt-9">Try</p>
             <div className="mt-1">{STARTERS.map((starter) => <button key={starter} type="button" onClick={() => applyStarter(starter)} className="leaf-example"><span aria-hidden className="ledger-mark" />{starter}</button>)}</div>
-          </div> : <div ref={contentRef} className="mx-auto flex min-h-full w-full max-w-[var(--column-w)] flex-col px-4 pt-8 pb-10 sm:px-6 sm:pt-12">
+          </div> : <div ref={contentRef} className="mx-auto flex min-h-[calc(100%-3.5rem)] w-full max-w-[var(--column-w)] flex-col px-4 pt-8 pb-10 sm:px-6 sm:pt-12">
             <Transcript
               messages={messages}
               agentActivities={agentActivities}
@@ -1291,9 +1301,9 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
 type ShellValue = { navOpen: boolean; openNav: () => void; switching: boolean; dragging: boolean; handleRef: RefObject<ThreadHandle | null>; conversations: ConversationSummary[] };
 const ShellContext = createContext<ShellValue | null>(null);
 
-function useShell() {
+export function useWorkspaceShell() {
   const value = useContext(ShellContext);
-  if (!value) throw new Error("The conversation thread must be rendered inside WorkspaceShell.");
+  if (!value) throw new Error("This view must be rendered inside WorkspaceShell.");
   return value;
 }
 
@@ -1308,6 +1318,7 @@ function useShell() {
  *  transitions and its DOM node while the thread underneath is replaced. */
 export function WorkspaceShell({ children }: { children: ReactNode }) {
   const router = useRouter();
+  const pathname = usePathname();
   const queryClient = useQueryClient();
   const params = useParams<{ conversationId?: string }>();
   const conversationId = params?.conversationId ?? "";
@@ -1407,6 +1418,11 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
   // buys nothing while its props are fresh closures on each shell render.
   // Declared in dependency order: `const` bindings do not hoist.
   const closeNav = useCallback(() => setSidebarOpen(false), []);
+  const openPage = useCallback((path: string) => {
+    setSidebarOpen(false);
+    setNavError(null);
+    router.push(path, { scroll: false });
+  }, [router]);
   const openSettings = useCallback(() => { setSettingsOpen(true); setSidebarOpen(false); }, []);
   const openProfile = useCallback(() => { setSidebarOpen(false); router.push("/profile"); }, [router]);
 
@@ -1492,6 +1508,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
         <ConversationRail
           conversations={conversations}
           activeId={conversationId}
+          activePage={MONEY_PAGES.some((item) => item.path === pathname) ? pathname : null}
           user={initial.data?.user ?? null}
           open={sidebarOpen}
           docked={isDesktop}
@@ -1500,6 +1517,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
           loadingMore={history.isFetchingNextPage}
           hasMore={Boolean(history.hasNextPage)}
           onClose={closeNav}
+          onOpenPage={openPage}
           onSelect={selectThread}
           onPrefetch={prefetchConversation}
           onDelete={deleteThread}
@@ -1543,7 +1561,7 @@ function WorkspaceUnreachable({ onRetry, retrying }: { onRetry: () => void; retr
 /** The thread for one conversation. */
 export function ConversationThread({ conversationId }: { conversationId: string }) {
   const router = useRouter();
-  const shell = useShell();
+  const shell = useWorkspaceShell();
   const initial = useQuery({ queryKey: ["bootstrap"], queryFn: bootstrap });
   const conversation = useQuery({
     queryKey: ["conversation", conversationId],
@@ -1578,10 +1596,10 @@ export function FynWorkspace() {
   const initial = useQuery({ queryKey: ["bootstrap"], queryFn: bootstrap });
   const signedOut = useSignInGuard(initial.error);
   useEffect(() => {
-    if (initial.data) router.replace(`/c/${encodeURIComponent(initial.data.active_conversation.id)}`, { scroll: false });
+    if (initial.data) router.replace("/overview", { scroll: false });
   }, [initial.data, router]);
 
   if (signedOut) return <AppSkeleton label="Taking you to sign in…" />;
   if (initial.isError) return <WorkspaceUnreachable onRetry={() => initial.refetch()} retrying={initial.isFetching} />;
-  return <AppSkeleton label="Opening your latest conversation…" />;
+  return <AppSkeleton label="Opening your overview…" />;
 }

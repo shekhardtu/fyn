@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 import pytest
 from sqlalchemy import select
 
-from app.models import Category, Subcategory, Transaction, TransactionDraft, TransactionFieldValue, User
+from app.models import Category, Subcategory, Transaction, TransactionCategoryHint, TransactionDraft, TransactionFieldValue, User
 from app.event_time import from_local_parts
 from app.services.recommendation import (
     HALF_LIFE_DAYS,
@@ -110,6 +110,28 @@ def make_draft(
 
 def ledger_for(db, user: User):
     return load_ledger(db, user.id, reference=TODAY)
+
+
+def test_explicit_transaction_hint_feeds_category_and_subcategory_recommendations(db, user):
+    transport = category(db, "transport")
+    cab = subcategory(db, "transport", "cab")
+    db.add(TransactionCategoryHint(
+        user_id=user.id,
+        merchant_pattern="Blue Cab",
+        normalized_pattern="blue cab",
+        category_id=transport.id,
+        subcategory_id=cab.id,
+    ))
+    db.flush()
+    draft = make_draft(db, user, raw_text="paid Blue Cab", merchant="Blue Cab")
+    ledger = ledger_for(db, user)
+
+    category_result = recommend_categories(db, user, draft, expense_categories(db), ledger=ledger, now=NOON)
+    assert category_result.top.id == str(transport.id)
+    assert category_result.top.reasons[0] == "You set Blue Cab → Transport"
+
+    subcategory_result = recommend_subcategories(db, user, draft, transport, [cab], ledger=ledger, now=NOON)
+    assert subcategory_result.top.id == str(cab.id)
 
 
 # --- primitives -------------------------------------------------------------

@@ -146,7 +146,7 @@ The account that predates authentication is adopted by the first sign-in, so loc
 
 ### Providers
 
-Phone codes go through the MSG91 Flow API and email codes through Postmark; `MSG91_OTP_VARIABLE` must match the variable in your DLT-registered template. Google sign-in needs an OAuth 2.0 **Web application** client id from Google Cloud Console → APIs & Services → Credentials, with your origins listed as authorised JavaScript origins. The same value goes to the server as `GOOGLE_CLIENT_ID` and to the browser as `NEXT_PUBLIC_GOOGLE_CLIENT_ID`; leaving it empty hides Google sign-in and leaves the code flows working.
+Phone codes go through the MSG91 Flow API and email codes through Postmark; `MSG91_OTP_VARIABLE` must exactly match the case-sensitive variable in your DLT-registered template (`OTP` for `##OTP##`). Google sign-in needs an OAuth 2.0 **Web application** client id from Google Cloud Console → APIs & Services → Credentials, with your origins listed as authorised JavaScript origins. The same value goes to the server as `GOOGLE_CLIENT_ID` and to the browser as `NEXT_PUBLIC_GOOGLE_CLIENT_ID`; leaving it empty hides Google sign-in and leaves the code flows working.
 
 With no provider credentials the codes are printed to the API log and, with `OTP_DEBUG_ECHO=true`, returned in the response — which is how a fresh checkout and the browser suite sign in. Startup prints exactly which shortcuts are active. Set `ENVIRONMENT=production` and each one becomes a startup failure instead.
 

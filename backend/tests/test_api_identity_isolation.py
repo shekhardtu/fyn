@@ -87,7 +87,10 @@ def test_api_enforces_one_identity_boundary_across_user_data(db, monkeypatch):
         rail = client.get("/api/conversations").json()
         assert [item["id"] for item in rail["items"]] == [str(default_thread.id)]
         transactions = client.get("/api/transactions").json()
-        assert [item["merchant_name"] for item in transactions] == ["Default Merchant"]
+        assert [item["merchant"] for item in transactions] == ["Default Merchant"]
+        overview = client.get("/api/overview", params={"month": "2026-08-01"}).json()
+        assert overview["summary"]["spentMinor"] == 11_100
+        assert overview["categories"][0]["label"] == "Uncategorized"
         exported = client.get("/api/privacy/export").json()
         assert exported["user"]["email"] == DEFAULT_USER_EMAIL
         assert [item["merchant_name"] for item in exported["transactions"]] == ["Default Merchant"]
@@ -96,7 +99,8 @@ def test_api_enforces_one_identity_boundary_across_user_data(db, monkeypatch):
         identity["user_id"] = other_user.id
         assert client.get(f"/api/conversations/{default_thread.id}").status_code == 404
         assert client.get(f"/api/conversations/{other_thread.id}").status_code == 200
-        assert [item["merchant_name"] for item in client.get("/api/transactions").json()] == ["Other Merchant"]
+        assert [item["merchant"] for item in client.get("/api/transactions").json()] == ["Other Merchant"]
+        assert client.get("/api/overview", params={"month": "2026-08-01"}).json()["summary"]["spentMinor"] == 22_200
 
         # Deleting the default user's complete data leaves the other identity intact.
         identity["user_id"] = default_user.id
@@ -107,5 +111,5 @@ def test_api_enforces_one_identity_boundary_across_user_data(db, monkeypatch):
         ).json() == {"deleted": True}
         identity["user_id"] = other_user.id
         assert client.get(f"/api/conversations/{other_thread.id}").status_code == 200
-        assert [item["merchant_name"] for item in client.get("/api/transactions").json()] == ["Other Merchant"]
+        assert [item["merchant"] for item in client.get("/api/transactions").json()] == ["Other Merchant"]
         assert db.get(User, other_user.id) is not None

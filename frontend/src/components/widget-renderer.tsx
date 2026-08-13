@@ -5,6 +5,7 @@ import { FormEvent, memo, useEffect, useMemo, useRef, useState, type ComponentTy
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from "recharts";
 import type { TopLevelSpec } from "vega-lite";
 import { Button } from "@/components/ui/button";
+import { Combobox } from "@/components/ui/combobox";
 import { Progress } from "@/components/ui/progress";
 import { DataTableView } from "@/components/widget-library/data-table";
 import { formatCount, formatDay, formatDimension, formatDuration, formatInstant, formatMoney, parseAmountToMinor, parseNumber, timestampInputToUtc, timestampInputValue } from "@/lib/format";
@@ -65,8 +66,8 @@ function FieldLabel({ children, hint }: { children: React.ReactNode; hint?: stri
   return <span className="mb-2 block text-note font-medium text-ink-muted">{children}{hint ? <span className="ml-1 font-normal text-ink-muted/80">{hint}</span> : null}</span>;
 }
 
-const inputClass = "block h-[var(--h-field)] w-full rounded-lg border border-line-strong bg-surface px-3 text-body text-ink outline-none transition-colors duration-[110ms] ease-linear focus:border-secondary disabled:opacity-50";
-const invalidClass = "border-danger-line focus:border-danger";
+const inputClass = "manual-field block h-[var(--h-field)] w-full rounded-lg border border-line-strong bg-surface px-3 text-body text-ink outline-none transition-colors duration-[110ms] ease-linear disabled:opacity-50";
+const invalidClass = "manual-field-danger border-danger-line";
 
 function FieldError({ children }: { children: React.ReactNode }) {
   return <span className="mt-1 flex items-center gap-1 text-meta font-medium text-danger-ink"><TriangleAlert size={14} />{children}</span>;
@@ -189,7 +190,9 @@ function Selector({ widget, onAction, disabled, pending }: WidgetProps) {
         return <OptionTile
           key={id}
           label={str(option.label)}
-          icon={icons[slug] ?? <CircleEllipsis size={14} />}
+          // Subcategories already carry the radio-style choice mark. A second
+          // generic circle read as another control rather than an icon.
+          icon={widget.type === widgetTypeIds.category_selector ? icons[slug] ?? <CircleEllipsis size={14} /> : undefined}
           selected={selected}
           pending={pending && selected}
           dimmed={pending && !selected}
@@ -404,13 +407,13 @@ function TransactionEdit({ widget, onAction, disabled, pending }: WidgetProps) {
       <label className="block"><FieldLabel>Amount</FieldLabel><input disabled={disabled || pending} aria-label="Transaction amount" aria-invalid={Boolean(amountError)} aria-describedby={amountError ? `${widget.id}-amount-error` : undefined} inputMode="decimal" autoFocus={completing && !disabled} value={amount} onChange={(event) => { setAmount(event.target.value); if (amountError) setAmountError(null); }} placeholder="1,500" className={cn(inputClass, amountError && invalidClass)} />{amountError ? <span id={`${widget.id}-amount-error`}><FieldError>{amountError}</FieldError></span> : null}</label>
       {shows("merchant") ? <label className="block"><FieldLabel hint="optional">Merchant</FieldLabel><input disabled={disabled || pending} aria-label="Merchant" value={merchant} onChange={(event) => setMerchant(event.target.value)} placeholder="Where you paid" className={inputClass} /></label> : null}
       {shows("transaction_at") ? <label className="block"><FieldLabel>Date and time</FieldLabel><input disabled={disabled || pending} aria-label="Transaction date and time" aria-invalid={Boolean(transactionAtError)} type="datetime-local" value={transactionAt} onChange={(event) => { setTransactionAt(event.target.value); if (transactionAtError) setTransactionAtError(null); }} className={cn(inputClass, transactionAtError && invalidClass)} />{transactionAtError ? <FieldError>{transactionAtError}</FieldError> : null}</label> : null}
-      {editable.type ? <label className="block"><FieldLabel>Type</FieldLabel><select disabled={disabled || pending} aria-label="Transaction type" value={transactionType} onChange={(event) => setTransactionType(event.target.value)} className={inputClass}>{editableTransactionTypes.map((type) => <option key={type} value={type}>{type.replaceAll("_", " ")}</option>)}</select></label> : null}
+      {editable.type ? <div><FieldLabel>Type</FieldLabel><Combobox aria-label="Transaction type" disabled={disabled || pending} value={transactionType} onValueChange={setTransactionType} options={editableTransactionTypes.map((type) => ({ value: type, label: type.replaceAll("_", " ") }))} searchable={false} triggerClassName="text-body" /></div> : null}
       {editable.location ? <label className="block"><FieldLabel hint="optional">Location</FieldLabel><input disabled={disabled || pending} aria-label="Transaction location" value={location} onChange={(event) => setLocation(event.target.value)} placeholder="City or place" className={inputClass} /></label> : null}
-      {editable.nature ? <label className="block"><FieldLabel>Spend nature</FieldLabel><select disabled={disabled || pending} aria-label="Spend nature" value={spendNature} onChange={(event) => setSpendNature(event.target.value)} className={inputClass}><option value="unknown">Not set</option><option value="essential">Essential</option><option value="discretionary">Discretionary</option><option value="potentially_avoidable">Potentially avoidable</option></select></label> : null}
+      {editable.nature ? <div><FieldLabel>Spend nature</FieldLabel><Combobox aria-label="Spend nature" disabled={disabled || pending} value={spendNature} onValueChange={setSpendNature} options={[{ value: "unknown", label: "Not set" }, { value: "essential", label: "Essential" }, { value: "discretionary", label: "Discretionary" }, { value: "potentially_avoidable", label: "Potentially avoidable" }]} triggerClassName="text-body" /></div> : null}
       {editable.tags ? <label className="block sm:col-span-2"><FieldLabel hint="comma separated">Tags</FieldLabel><input disabled={disabled || pending} aria-label="Transaction tags" value={tags} onChange={(event) => setTags(event.target.value)} placeholder="vacation, family, reimbursable" className={inputClass} /></label> : null}
       {needsCategory ? <>
-        <label className="block"><FieldLabel>Category</FieldLabel><select disabled={disabled || pending} aria-label="Transaction category" value={categoryId} onChange={(event) => { setCategoryId(event.target.value); setSubcategoryId(""); }} className={inputClass}><option value="">Choose category</option>{categories.map((item) => <option key={str(item.id)} value={str(item.id)}>{str(item.label)}</option>)}</select></label>
-        <label className="block"><FieldLabel>Subcategory</FieldLabel><select aria-label="Transaction subcategory" value={subcategoryId} onChange={(event) => setSubcategoryId(event.target.value)} disabled={disabled || pending || !categoryId} className={inputClass}><option value="">{categoryId ? "Choose subcategory" : "Choose a category first"}</option>{subcategories.map((item) => <option key={str(item.id)} value={str(item.id)}>{str(item.label)}</option>)}</select></label>
+        <div><FieldLabel>Category</FieldLabel><Combobox aria-label="Transaction category" disabled={disabled || pending} value={categoryId} onValueChange={(next) => { setCategoryId(next); setSubcategoryId(""); }} placeholder="Choose category" options={categories.map((item) => ({ value: str(item.id), label: str(item.label) }))} triggerClassName="text-body" /></div>
+        <div><FieldLabel>Subcategory</FieldLabel><Combobox aria-label="Transaction subcategory" disabled={disabled || pending || !categoryId} value={subcategoryId} onValueChange={setSubcategoryId} placeholder={categoryId ? "Choose subcategory" : "Choose a category first"} options={subcategories.map((item) => ({ value: str(item.id), label: str(item.label) }))} triggerClassName="text-body" /></div>
       </> : null}
     </div>
     <div className="flex flex-wrap gap-2">

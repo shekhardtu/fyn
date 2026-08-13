@@ -21,9 +21,9 @@ Design notes and the sources behind each choice:
   once or twice. A linear blend also yields a per-channel contribution, which
   is exactly what each user-facing reason string is rendered from.
 
-Everything here is a pure function of rows already stored on ``transactions``.
-There is no model file, no training step and no derived state to fall out of
-sync when a user edits or deletes a transaction.
+Everything here is a pure function of canonical ``transactions`` plus explicit
+``transaction_category_hints``. There is no model file, training step or
+derived cache to fall out of sync when a user edits either source of evidence.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import DEFAULT_TIMEZONE
-from ..models import Category, Subcategory, Transaction, TransactionDraft, TransactionFieldValue, User
+from ..models import Category, Subcategory, Transaction, TransactionCategoryHint, TransactionDraft, TransactionFieldValue, User
 from ..event_time import local_date, local_now, local_time, utc_range_for_local_dates
 from .currency import user_timezone
 from .category_prediction import static_prior_distribution
@@ -339,6 +339,22 @@ class EvidenceLedger:
             if subcategory:
                 self.subcategory_channels[channel][(category, key)].add(subcategory, weight, confirmed=confirmed)
 
+    def record_hint(self, hint: TransactionCategoryHint) -> None:
+        """Add a deliberate merchant rule to the same evidence ledger.
+
+        Hints influence the merchant channel but not overall category usage, so
+        one rule cannot pretend the category has more transactions than it does.
+        """
+        merchant = hint.normalized_pattern
+        category = str(hint.category_id)
+        self.category_channels[MERCHANT][merchant].add(category, CONFIRMED_WEIGHT * 2, confirmed=True)
+        if hint.subcategory_id:
+            self.subcategory_channels[MERCHANT][(category, merchant)].add(
+                str(hint.subcategory_id),
+                CONFIRMED_WEIGHT * 2,
+                confirmed=True,
+            )
+
     def _context_keys(self, transaction: Transaction) -> list[tuple[str, str]]:
         keys: list[tuple[str, str]] = []
         merchant = normalize_merchant(transaction.merchant_name)
@@ -409,6 +425,8 @@ def load_ledger(db: Session, user_id: UUID, *, reference: date) -> EvidenceLedge
     )) if rows else set()
     for row in rows:
         ledger.record(row, confirmed=row.id in confirmed)
+    for hint in db.scalars(select(TransactionCategoryHint).where(TransactionCategoryHint.user_id == user_id)):
+        ledger.record_hint(hint)
     return ledger
 
 

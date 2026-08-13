@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Check, CheckCircle2, Loader2, LogOut, Mail, Plus, Smartphone, Trash2, TriangleAlert } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useCallback, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { CHANNEL_COPY, CodeExchange } from "@/components/sign-in";
 import { Button } from "@/components/ui/button";
 import { getProfile, isUnauthorized, removeIdentity, signOut, startLinkCode, verifyLinkCode, type OtpChannel, type Profile } from "@/lib/api";
@@ -63,6 +63,10 @@ export function ProfilePanel() {
   const profile = useQuery({ queryKey: ["profile"], queryFn: getProfile, retry: false });
 
   const leave = useCallback(() => { queryClient.clear(); router.replace("/login"); }, [queryClient, router]);
+  const signedOut = isUnauthorized(profile.error);
+  useEffect(() => {
+    if (signedOut) leave();
+  }, [signedOut, leave]);
 
   const leaveSession = useMutation({
     mutationFn: signOut,
@@ -81,7 +85,7 @@ export function ProfilePanel() {
   });
 
   if (profile.isError) {
-    if (isUnauthorized(profile.error)) { leave(); return null; }
+    if (signedOut) return null;
     return <main className="grid min-h-dvh place-items-center bg-ground p-6">
       <div role="alert" className="max-w-sm rounded-xl border border-danger-line bg-surface p-6 text-center">
         <span className="mx-auto grid size-11 place-items-center rounded-lg bg-danger-tint text-danger"><TriangleAlert size={20} /></span>
