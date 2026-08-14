@@ -1,5 +1,3 @@
-"use client";
-
 import { Menu } from "lucide-react";
 import { useCallback, useRef, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
@@ -42,7 +40,7 @@ export function SiteHeader({ title, subtitle, subtitleClassName, hidden = false,
   return <header
     inert={hidden ? true : undefined}
     className={cn(
-      "sticky top-0 z-20 flex h-14 shrink-0 items-center gap-3 border-b border-line bg-surface/95 px-3 backdrop-blur-sm transition-transform duration-200 sm:px-6",
+      "sticky top-0 z-20 flex h-14 shrink-0 items-center gap-3 border-b border-line bg-surface px-3 transition-transform duration-200 will-change-transform sm:px-6",
       hidden && "pointer-events-none -translate-y-full",
     )}
   >

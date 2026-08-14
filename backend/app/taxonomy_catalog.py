@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .domain import ValueEnum
+from .domain import TransactionType, ValueEnum
 
 
 class DefaultCategorySlug(ValueEnum):
@@ -20,6 +20,32 @@ class DefaultCategorySlug(ValueEnum):
 
 
 OTHER_SUBCATEGORY = ("other", "Other")
+
+
+# Category roots are part of transaction meaning, not decoration. Expenses may
+# use any spending category, income and investments have dedicated roots, and
+# the remaining directions do not use the category taxonomy at all. Keeping
+# this compatibility rule beside the catalog gives extraction, persistence and
+# repair code one definition to share.
+TRANSACTION_CATEGORY_ROOTS = {
+    TransactionType.INCOME: DefaultCategorySlug.INCOME,
+    TransactionType.INVESTMENT: DefaultCategorySlug.INVESTMENT,
+}
+NON_EXPENSE_CATEGORY_SLUGS = frozenset(TRANSACTION_CATEGORY_ROOTS.values())
+
+
+def category_slug_matches_transaction_type(
+    transaction_type: TransactionType | str,
+    category_slug: DefaultCategorySlug | str | None,
+) -> bool:
+    kind = TransactionType(str(transaction_type))
+    normalized = str(category_slug) if category_slug is not None else None
+    required = TRANSACTION_CATEGORY_ROOTS.get(kind)
+    if required is not None:
+        return normalized == required.value
+    if kind is TransactionType.EXPENSE:
+        return normalized is None or normalized not in {item.value for item in NON_EXPENSE_CATEGORY_SLUGS}
+    return normalized is None
 
 
 DEFAULT_TAXONOMY = {

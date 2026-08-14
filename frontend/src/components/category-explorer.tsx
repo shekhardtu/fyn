@@ -1,5 +1,3 @@
-"use client";
-
 import { ScanSearch } from "lucide-react";
 import { useState } from "react";
 import { formatCount, formatMoney } from "@/lib/format";

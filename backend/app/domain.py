@@ -71,6 +71,9 @@ class WidgetActionId(ValueEnum):
     SELECT_SUBCATEGORY = "select_subcategory"
     CHANGE_CATEGORY = "change_category"
     SELECT_ACCOUNT = "select_account"
+    REVISIT_TRANSACTION_STEP = "revisit_transaction_step"
+    CANCEL_TRANSACTION_DRAFT = "cancel_transaction_draft"
+    CANCEL_PENDING_ACTION = "cancel_pending_action"
     SAVE_BUDGET = "save_budget"
     SAVE_GOAL = "save_goal"
     CONTRIBUTE_GOAL = "contribute_goal"
@@ -79,6 +82,7 @@ class WidgetActionId(ValueEnum):
     CALCULATE_INVESTMENT_SCENARIO = "calculate_investment_scenario"
     COMMIT_TRANSACTION = "commit_transaction"
     EDIT_TRANSACTION = "edit_transaction"
+    CANCEL_TRANSACTION_EDIT = "cancel_transaction_edit"
     UPDATE_TRANSACTION_DRAFT = "update_transaction_draft"
     EDIT_SAVED_TRANSACTION = "edit_saved_transaction"
     CANCEL_SAVED_TRANSACTION_EDIT = "cancel_saved_transaction_edit"
@@ -88,6 +92,7 @@ class WidgetActionId(ValueEnum):
     CANCEL_REMOVE_TRANSACTION = "cancel_remove_transaction"
     MERGE_RECONCILIATION = "merge_reconciliation"
     SEPARATE_RECONCILIATION = "separate_reconciliation"
+    RESOLVE_CLARIFICATION = "resolve_clarification"
 
 
 TaxonomyOperation = Literal[

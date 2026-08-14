@@ -1,9 +1,8 @@
-"use client";
-
 import { useQuery } from "@tanstack/react-query";
 import { ArrowDownRight, ArrowRight, ArrowUpRight, CalendarDays, RotateCcw, ScanSearch } from "lucide-react";
-import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
+import { useNavigate } from "react-router";
+import { appPaths } from "@/routing/paths";
 import { CategoryExplorer } from "@/components/category-explorer";
 import { useWorkspaceShell } from "@/components/workspace";
 import { Button } from "@/components/ui/button";
@@ -80,7 +79,7 @@ export function ExpenseBreakdown({ categories, currency }: { categories: Overvie
 }
 
 export function OverviewPage() {
-  const router = useRouter();
+  const navigate = useNavigate();
   const shell = useWorkspaceShell();
   const months = useMemo(() => recentMonths(), []);
   const [month, setMonth] = useState(months[0].value);
@@ -110,7 +109,7 @@ export function OverviewPage() {
         <span className="mx-auto grid size-11 place-items-center rounded-xl bg-secondary-tint text-secondary"><ScanSearch /></span>
         <h2 className="mt-4 font-heading text-title font-semibold text-ink">Your overview is ready for its first record</h2>
         <p className="mx-auto mt-2 max-w-md text-control leading-6 text-ink-muted">Record an expense or income in a conversation. Categories and subcategories will begin arranging themselves here automatically.</p>
-        <Button type="button" className="mt-5" disabled={!latestConversation} onClick={() => latestConversation && router.push(`/c/${encodeURIComponent(latestConversation.id)}`)}>Open a conversation <ArrowRight /></Button>
+        <Button type="button" className="mt-5" disabled={!latestConversation} onClick={() => latestConversation && navigate(appPaths.conversation(latestConversation.id))}>Open a conversation <ArrowRight /></Button>
       </div> : overview.data ? <div className="space-y-5">
         <MoneyStatement overview={overview.data} />
         <ExpenseBreakdown categories={overview.data.categories} currency={overview.data.summary.currency} />

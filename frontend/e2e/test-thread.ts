@@ -32,7 +32,7 @@ export function sharedThreadUrl(): string {
 export const TEST_PHONE = "+919000000099";
 import { readFileSync } from "node:fs";
 
-export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+export const API_URL = process.env.VITE_API_URL ?? "http://localhost:8000";
 /** Where the signed-in session is kept between the setup project and the tests. */
 export const STORAGE_STATE = "e2e/.auth/session.json";
 /** Where the resolved shared conversation is recorded, for the same reason. */

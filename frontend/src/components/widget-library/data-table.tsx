@@ -1,5 +1,3 @@
-"use client";
-
 import { ArrowLeftRight, ChevronDown, ChevronUp, Download, ExternalLink, Eye, Maximize2, Minimize2, PencilLine, ReceiptText, RotateCcw, Search, Trash2 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -7,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { formatCount, formatDay, formatDimension, formatMoney, formatTimestamp } from "@/lib/format";
 import type { DataTableColumn, DataTableData, DataTableRowAction, WidgetActionId } from "@/lib/protocol";
 import { cn } from "@/lib/utils";
+import { useTablesWide, WIDE_TABLE_BREAKOUT } from "@/lib/wide-tables";
 
 type Row = Record<string, unknown>;
 
@@ -15,7 +14,8 @@ export type DataTableViewProps = {
   disabled?: boolean;
   pending?: boolean;
   embedded?: boolean;
-  onInlineWidthChange?: (expanded: boolean) => void;
+  /** The enclosing card draws the wide breakout itself; the table only toggles. */
+  parentManagesWidth?: boolean;
   onAction?: (action: WidgetActionId, payload: Record<string, unknown>) => void;
 };
 
@@ -82,10 +82,10 @@ function permittedActions(data: DataTableData, row: Row) {
   return data.rowActions.filter((action) => !action.capability || capabilities.includes(action.capability));
 }
 
-export function DataTableView({ data, disabled, pending, embedded = false, onInlineWidthChange, onAction }: DataTableViewProps) {
+export function DataTableView({ data, disabled, pending, embedded = false, parentManagesWidth = false, onAction }: DataTableViewProps) {
   const INITIAL_ROWS = 10;
   const [showAll, setShowAll] = useState(false);
-  const [inlineWide, setInlineWide] = useState(false);
+  const [inlineWide, setInlineWide] = useTablesWide();
   const [maximized, setMaximized] = useState(false);
   const displayedRows = showAll ? data.rows : data.rows.slice(0, INITIAL_ROWS);
   const remaining = Math.max(0, data.rows.length - displayedRows.length);
@@ -102,22 +102,18 @@ export function DataTableView({ data, disabled, pending, embedded = false, onInl
     };
   }, [maximized]);
 
-  useEffect(() => () => onInlineWidthChange?.(false), [onInlineWidthChange]);
-
   function toggleInlineWidth() {
-    const next = !inlineWide;
-    setInlineWide(next);
-    onInlineWidthChange?.(next);
+    setInlineWide(!inlineWide);
   }
 
   function tableSurface(maximizedSurface = false) {
     const showHeader = !embedded || inlineWide || maximizedSurface;
     const controls = maximizedSurface
-      ? <Button type="button" variant="ghost" size="icon-sm" onClick={() => setMaximized(false)} aria-label="Restore table from maximized view" title="Restore" className="shrink-0 text-ink-muted hover:text-ink"><Minimize2 /></Button>
-      : <div className="flex shrink-0 items-center gap-0.5"><Button type="button" variant="ghost" size="icon-sm" onClick={toggleInlineWidth} aria-pressed={inlineWide} aria-label={inlineWide ? "Use normal table width" : "Use full conversation width"} title={inlineWide ? "Normal width" : "Full conversation width"} className={cn("text-ink-muted hover:text-ink", inlineWide && "bg-surface-sunken text-secondary")}><ArrowLeftRight /></Button><Button type="button" variant="ghost" size="icon-sm" onClick={() => setMaximized(true)} aria-label="Maximize table" title="Maximize" className="text-ink-muted hover:text-ink"><Maximize2 /></Button></div>;
+      ? <Button type="button" variant="ghost" size="icon-sm" data-readonly-keep onClick={() => setMaximized(false)} aria-label="Restore table from maximized view" title="Restore" className="shrink-0 text-ink-muted hover:text-ink"><Minimize2 /></Button>
+      : <div className="flex shrink-0 items-center gap-0.5"><Button type="button" variant="ghost" size="icon-sm" data-readonly-keep onClick={toggleInlineWidth} aria-pressed={inlineWide} aria-label={inlineWide ? "Use normal table width" : "Use full conversation width"} title={inlineWide ? "Normal width" : "Full conversation width"} className={cn("text-ink-muted hover:text-ink", inlineWide && "bg-surface-sunken text-secondary")}><ArrowLeftRight /></Button><Button type="button" variant="ghost" size="icon-sm" data-readonly-keep onClick={() => setMaximized(true)} aria-label="Maximize table" title="Maximize" className="text-ink-muted hover:text-ink"><Maximize2 /></Button></div>;
     return <section className={cn(
       maximizedSurface ? "flex h-full min-h-0 w-full flex-col overflow-hidden rounded-lg border border-line bg-surface shadow-[var(--shadow-overlay)]" : (!embedded || inlineWide) && "overflow-hidden rounded-lg border border-line bg-surface",
-      inlineWide && !maximizedSurface && !onInlineWidthChange && "relative left-1/2 z-20 w-[calc(100vw-2rem)] max-w-[var(--column-w)] -translate-x-1/2 sm:w-[calc(100vw-3rem)] md:w-[min(var(--column-w),calc(100vw-var(--rail-w)-3rem))]",
+      inlineWide && !maximizedSurface && !parentManagesWidth && WIDE_TABLE_BREAKOUT,
     )}>
     {showHeader ? <div className="flex items-start gap-3 border-b border-line px-4 py-4"><div className="min-w-0 flex-1"><h3 className="font-heading text-body font-semibold text-ink">{data.title}</h3>{data.body ? <p className="mt-1 text-note leading-5 text-ink-muted">{data.body}</p> : null}<p className="mt-1 text-meta text-ink-muted">{formatCount(data.rows.length)} record{data.rows.length === 1 ? "" : "s"}</p></div>{controls}</div> : <div className="flex items-center justify-end gap-2 border-b border-line px-3 py-2">{controls}</div>}
     {data.rows.length ? <div tabIndex={0} role="region" aria-label={`${data.title} table; scroll to see more`} className={cn("min-h-0 overflow-auto overscroll-auto focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-secondary", maximizedSurface ? "flex-1" : "max-h-[min(70vh,36rem)]")}><table className="w-full min-w-[520px] text-left text-note">

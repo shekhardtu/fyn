@@ -310,17 +310,35 @@ class AgentRun(UUIDPrimaryKeyMixin, UserOwnedMixin, ConversationChildMixin, Time
         index=True,
     )
     client_message_id: Mapped[Optional[str]] = mapped_column(String(120), index=True)
+    final_message_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("messages.id", ondelete="SET NULL"),
+        index=True,
+    )
     status: Mapped[str] = mapped_column(String(24), default=AgentRunStatus.QUEUED.value, index=True)
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
     input_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    delivery_mode: Mapped[str] = mapped_column(String(32), default="verified_final")
     last_sequence: Mapped[int] = mapped_column(Integer, default=0)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    first_response_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     error_code: Mapped[Optional[str]] = mapped_column(String(80))
     __table_args__ = (
         Index("ix_agent_run_thread_status_created", "conversation_id", "status", "created_at"),
         UniqueConstraint("user_id", "client_message_id", name="uq_agent_run_user_client_message"),
     )
+
+    @property
+    def duration_ms(self) -> Optional[float]:
+        if self.started_at is None or self.finished_at is None:
+            return None
+        return round((as_utc(self.finished_at) - as_utc(self.started_at)).total_seconds() * 1000, 1)
+
+    @property
+    def time_to_first_response_ms(self) -> Optional[float]:
+        if self.started_at is None or self.first_response_at is None:
+            return None
+        return round((as_utc(self.first_response_at) - as_utc(self.started_at)).total_seconds() * 1000, 1)
 
 
 class AgentEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):

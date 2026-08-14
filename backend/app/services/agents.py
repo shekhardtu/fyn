@@ -5,11 +5,22 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from enum import Enum
 import json
-from typing import Annotated, Any, Literal, Union
+from collections.abc import Callable
+from types import SimpleNamespace
+from typing import Annotated, Any, Literal, Optional, Union
 from uuid import UUID
 
 from agno.agent import Agent
 from agno.models.openai import OpenAIResponses
+from agno.run.agent import (
+    ReasoningContentDeltaEvent,
+    ReasoningStep,
+    ReasoningStepEvent,
+    RunContentEvent,
+    RunOutput,
+    ToolCallCompletedEvent,
+)
+from agno.tools.function import Function
 from pydantic import BaseModel, Field, WithJsonSchema, field_validator, model_validator
 
 from ..config import Settings, get_settings
@@ -17,6 +28,7 @@ from ..domain import SpendNature, TaxonomyOperation, TransactionType, ValueEnum
 from ..event_time import local_now as current_local_time
 from ..validation import SemanticIdentifier
 from ..visualization_contracts import RequestedVisualMark
+from .agent_tools import bind_existing_tool
 from .capabilities import CapabilityId, SAFE_READ_CAPABILITIES, capability_for_metric
 from .semantic import AnalysisPlan, AnalysisToolProposal, AnalysisTransform, FinanceFilter, FinanceQueryPlan, TimeGrouping, TimePivot, VisualEncoding, VisualEncodingSet, VisualizationSpec, semantic_catalog
 from .semantic_registry import SortDirection, TIME_GRAIN_SPECS, TimeGrain, semantic_schema_registry
@@ -24,7 +36,7 @@ from .runtime_tools import runtime_tool_contract
 from .user_memory import agent_memory_manager
 
 
-RECENT_CONTEXT_MESSAGE_LIMIT = 5
+RECENT_CONTEXT_TURN_LIMIT = 5
 QueryOperation = Literal["total", "breakdown", "rank", "list"]
 QueryGroupBy = Literal["none", "category", "subcategory", "merchant", "account", "month"]
 GROUPED_QUERY_OPERATIONS = frozenset({"rank", "breakdown"})
@@ -85,20 +97,49 @@ def _agent_context(categories: list[dict]) -> tuple[Settings | None, str]:
     return settings, _taxonomy_prompt(categories) if settings else ""
 
 
-def _memory_agent_options(user_id: UUID | str | None) -> dict:
-    manager = agent_memory_manager() if user_id else None
-    return {
-        "memory_manager": manager,
-        "add_memories_to_context": True,
-        "update_memory_on_run": False,
-        "user_id": str(user_id),
-    } if manager else {}
+def _with_user_memory(agent: Agent, user_id: UUID | str | None) -> Agent:
+    """Attach the dedicated memory store without enabling Agno session storage.
+
+    Agno warns whenever an Agent has a MemoryManager but no Agent-level db,
+    even when that manager already owns its Postgres db. Attaching after Agent
+    initialization keeps the app conversation tables as the only session
+    history while still enabling the real user memory manager.
+    """
+    if not user_id:
+        return agent
+    manager = agent_memory_manager()
+    agent.user_id = str(user_id)
+    if manager:
+        if manager.model is None:
+            manager.model = agent.model
+        agent.memory_manager = manager
+        agent.add_memories_to_context = True
+        agent.update_memory_on_run = False
+    return agent
 
 
 def _format_recent_context(recent_context: list[dict]) -> str:
-    return "\n".join(
-        f"{item['role']}: {item['content'][:500]}"
-        for item in recent_context[-RECENT_CONTEXT_MESSAGE_LIMIT:]
+    """Serialize selected complete turns without clipping their replies.
+
+    Selection and bounding happen at the turn level in the conversation
+    service. JSON keeps role/content boundaries explicit and avoids turning a
+    long assistant reply into an ambiguous prompt fragment.
+    """
+    rendered = []
+    for item in recent_context:
+        entry = {"role": str(item["role"]), "content": str(item["content"])}
+        # The conversation service supplies only bounded lineage: query scope
+        # and response-surface shape, never ledger rows or entity IDs. Keeping
+        # it here lets a correction distinguish, for example, all-time from
+        # month-to-date results instead of merely repeating the newest prose.
+        if item.get("grounding"):
+            entry["grounding"] = item["grounding"]
+        if item.get("responseSurfaces"):
+            entry["responseSurfaces"] = item["responseSurfaces"]
+        rendered.append(entry)
+    return json.dumps(
+        rendered,
+        ensure_ascii=False,
     )
 
 
@@ -244,8 +285,43 @@ class PresentationIntent(BaseModel):
     color_field: SemanticIdentifier | None = None
 
 
+class ClarificationOption(BaseModel):
+    """One safe interpretation the customer can choose explicitly."""
+
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+    label: str = Field(min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=240)
+    # This is server-side continuation context, not executable arguments. The
+    # selected interpretation re-enters the governed router before any work.
+    resolution: str = Field(min_length=3, max_length=500)
+    # A cancellation is terminal: choosing it closes the HITL boundary without
+    # asking the model to reinterpret the original mutating request.
+    disposition: Literal["continue", "cancel"] = "continue"
+
+
+class ClarificationRequest(BaseModel):
+    """A material ambiguity that must be resolved before execution."""
+
+    question: str = Field(min_length=3, max_length=500)
+    reason: str = Field(min_length=3, max_length=500)
+    conflict_fields: list[str] = Field(default_factory=list, max_length=8)
+    options: list[ClarificationOption] = Field(min_length=2, max_length=6)
+    allow_custom: bool = False
+    custom_label: str | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def unique_options(self):
+        option_ids = [option.id for option in self.options]
+        if len(option_ids) != len(set(option_ids)):
+            raise ValueError("Clarification option ids must be unique")
+        if self.allow_custom and "custom" in option_ids:
+            raise ValueError("The custom clarification id is reserved")
+        return self
+
+
 class CopilotRoute(ValueEnum):
     CONVERSATION = "conversation"
+    CLARIFICATION = "clarification"
     TRANSACTION = "transaction"
     TRANSACTION_REMOVAL = "transaction_removal"
     TAXONOMY = "taxonomy"
@@ -264,6 +340,15 @@ class CopilotRouteDecision(BaseModel):
     query_bundle: QueryBundleInterpretation | None = None
     taxonomy: TaxonomyInterpretation | None = None
     presentation: PresentationIntent = Field(default_factory=PresentationIntent)
+    clarification: ClarificationRequest | None = None
+
+    @model_validator(mode="after")
+    def require_clarification_contract(self):
+        if self.route is CopilotRoute.CLARIFICATION and self.clarification is None:
+            raise ValueError("A clarification route requires a structured clarification")
+        if self.route is not CopilotRoute.CLARIFICATION and self.clarification is not None:
+            raise ValueError("Only a clarification route may carry a clarification")
+        return self
 
 
 class ToolResultEnvelope(BaseModel):
@@ -305,6 +390,48 @@ class ToolGrounding(BaseModel):
         return self
 
 
+GovernedWorkflow = Literal[
+    "clarification",
+    "transaction",
+    "transaction_removal",
+    "taxonomy",
+    "advanced_analysis",
+    "planning",
+]
+
+
+class GovernedWorkflowHandoff(BaseModel):
+    """A safe stop signal from the direct read agent to the governed pipeline."""
+
+    workflow: GovernedWorkflow
+    reason: str = Field(min_length=3, max_length=300)
+    resolved_request: str | None = Field(default=None, min_length=3, max_length=500)
+    query: QueryInterpretation | None = None
+    clarification: ClarificationRequest | None = None
+
+    @model_validator(mode="after")
+    def bound_query_to_advanced_analysis(self):
+        if self.query and self.workflow != "advanced_analysis":
+            raise ValueError("Only an advanced-analysis handoff may carry a read query")
+        if self.query and self.query.scope_transaction_ids:
+            raise ValueError("The model cannot bind authoritative transaction IDs")
+        if self.workflow == "clarification" and self.clarification is None:
+            raise ValueError("A clarification handoff requires a structured clarification")
+        if self.workflow != "clarification" and self.clarification is not None:
+            raise ValueError("Only a clarification handoff may carry a clarification")
+        return self
+
+
+class UnifiedReadResult(BaseModel):
+    """The one-run outcome for conversation and authenticated read tools."""
+
+    reply: str | None = None
+    tool_grounding: list[ToolGrounding] = Field(default_factory=list, max_length=4)
+    handoff: GovernedWorkflowHandoff | None = None
+    streamed_live: bool = False
+    reasoning_trace: str = ""
+
+
 class CompilationAssumption(BaseModel):
     """One narrowing or substitution the compiler applied to reach a plan.
 
@@ -323,6 +450,7 @@ class CompilationAssumption(BaseModel):
         "grain_substituted",
         "mark_substituted",
         "scope_released",
+        "correction_scope_reconciled",
     ]
     detail: str = Field(min_length=3, max_length=200)
 
@@ -344,6 +472,15 @@ class CopilotDecision(BaseModel):
     tool_grounding: list[ToolGrounding] = Field(default_factory=list, max_length=4)
     validated_by: str | None = None
     validation_confidence: float | None = Field(default=None, ge=0, le=1)
+    clarification: ClarificationRequest | None = None
+
+    @model_validator(mode="after")
+    def bind_clarification_to_capability(self):
+        if self.tool is CapabilityId.REQUEST_CLARIFICATION and self.clarification is None:
+            raise ValueError("request_clarification requires a structured clarification")
+        if self.tool is not CapabilityId.REQUEST_CLARIFICATION and self.clarification is not None:
+            raise ValueError("Only request_clarification may carry a clarification")
+        return self
 
 
 class CopilotDecisionValidation(BaseModel):
@@ -352,6 +489,15 @@ class CopilotDecisionValidation(BaseModel):
     issues: list[str] = Field(default_factory=list, max_length=5)
     repairs: list[Literal["bind_active_scope"]] = Field(default_factory=list, max_length=3)
     summary: str = Field(max_length=300)
+    clarification: ClarificationRequest | None = None
+
+    @model_validator(mode="after")
+    def require_human_input_contract(self):
+        if self.outcome == "request_human_input" and self.clarification is None:
+            raise ValueError("request_human_input requires a structured clarification")
+        if self.outcome != "request_human_input" and self.clarification is not None:
+            raise ValueError("Only request_human_input may carry a clarification")
+        return self
 
 
 ACCEPTED_COPILOT_VALIDATION_OUTCOMES = frozenset({"approve", "request_human_input"})
@@ -973,7 +1119,11 @@ def _compile_governed_chart(
     # direction was requested, so no direction may be imposed. Carrying that
     # signal into metric selection is what stops an all-transaction chart from
     # quietly becoming an expenses-only chart.
-    universal = query.transaction_type is None and query.metric in {"transaction_summary", "transaction_count"}
+    universal = query.transaction_type is None and query.metric in {
+        "transaction_summary",
+        "transaction_count",
+        "transaction_amount",
+    }
     composition = presentation.requested_mark == "arc" or presentation.visual_goal == "composition" or presentation.chart_type == "pie"
     named_unit = _explicit_presentation_unit(text) if text else None
     if universal and composition and presentation.value_semantics != "count":
@@ -1254,7 +1404,7 @@ def build_financial_copilot(
         return None
     retrieved = json.dumps(reusable_tools or [], default=str)
     routing_schema = json.dumps(semantic_schema_registry().routing_contract(), default=str)
-    return Agent(
+    return _with_user_memory(Agent(
         name="fyn AI Router",
         model=_responses_model(
             settings,
@@ -1267,11 +1417,11 @@ def build_financial_copilot(
         tools=runtime_tools or None,
         tool_call_limit=4 if runtime_tools else None,
         reasoning=False,
-        **_memory_agent_options(user_id),
         instructions=[
             "Route the current prompt. Use only the supplied runtime tools for exact read-only database facts or deterministic calculations; do not perform extraction, analysis, calculation, or database work without them.",
             "Runtime tools are authenticated, read-only bindings to existing domain functions. Call the smallest sufficient tool for a simple factual inventory, lookup, count, or deterministic calculation. Never infer a database fact from memories or taxonomy prompt context when a runtime tool can read it.",
             "After a runtime tool fully answers the request, return route=conversation and write a concise reply supported only by the returned result. Do not call another tool when the first result is sufficient.",
+            "Use route=clarification when supplied inputs are missing, ambiguous, mutually inconsistent, or map to different plausible calculations and choosing one could materially change the answer. Populate the structured clarification with two to six useful choices and allow a custom answer when appropriate. Set disposition=cancel on any option that abandons the request or makes no change; cancellation must terminate the workflow instead of re-routing the original request. Never silently omit a supplied value.",
             "A chart, graph, table, or export derived from a deterministic calculation must call a runtime tool that returns kind=computed_dataset. Keep route=analysis and presentation.mode=chart, then bind x_field and y_fields only to names in that returned field catalog. Do not send calculator output through the database semantic-query factory.",
             "For a computed dataset, x_field is the requested analysis step (for example installment) and y_fields are the requested measures. Multiple y_fields are valid and are converted to a governed long-form series by the domain layer. Never invent a field that the tool did not return.",
             "conversation is for ordinary conversation, capability discussion that needs no financial facts, or an answer grounded by a successful runtime tool call.",
@@ -1285,6 +1435,8 @@ def build_financial_copilot(
             "A single user turn may request several coordinated result shapes. When it asks for transaction rows plus a summary, breakdown, or ranking over the same records, populate query_bundle instead of query. Put every shared filter and date in base_query and put only presentation/aggregation choices in two to four views. Never force a composite request into one result_mode.",
             "For 'show again', 'refresh that table', or an equivalent request after a grounded query, copy the prior query definition into query_bundle.base_query and set refresh_from_active_analysis=true. This reruns current canonical records and must not bind stale entity IDs. By contrast, 'only those shown records' is an exact result-set refinement and uses use_active_scope=true.",
             "The active domain workflow may contain activeAnalysisState from the last grounded analysis. For a contextual analytical follow-up, first resolve the current message as a delta over that state: inherit its metric, period, dimensions, ordering and filters unless the user changes them. For example, after a highest-category query, 'and other than Food?' means the same ranking and period with category != Food.",
+            "Inherit activeAnalysisState only when the current message explicitly refers back with language such as those, same, again, previous, and, or what about. A self-contained request is independent: derive every filter, financial direction, period, ordering, and limit from that request alone.",
+            "The active domain workflow may contain upstreamHandoff from the unified agent. It is a terminal high-level decision already made from the same recent context. Honor its workflow and resolved_request; do not downgrade advanced_analysis to conversation, planning, or a scalar runtime-tool answer. Runtime read tools are intentionally absent after a handoff because they were already judged insufficient.",
             "QueryInterpretation is the low-latency contract for queries it can express exactly. If the request needs an exclusion/negative filter, multiple filter values with nontrivial logic, a derived metric, set operation, nested condition, percentile, or any other operation QueryInterpretation cannot represent, use result_mode=complex_analysis so the governed analysis factory can emit generic typed FinanceFilter operators and transforms. Never silently drop an unsupported condition.",
             "A taxonomy word is not a merchant. If coffee, dining, travel, food, fuel, groceries, etc. resolves to a category/subcategory, do not also set merchant unless the user explicitly names a business or uses a merchant cue such as at/from/merchant/store. Avoid redundant filters that make the query narrower than the request.",
             "The active domain workflow may contain activeDataScope from the last grounded result. Treat it as optional context, never as a required filter. For contextual follow-ups such as these/those/the shown transactions/just those/the second one, set query.use_active_scope=true and preserve its period and filters unless the user explicitly changes them. Independent requests such as 'show last 5 transactions' must set use_active_scope=false even when activeDataScope exists. Return a complete refined query. Never populate scope_transaction_ids yourself; the domain layer binds the authoritative IDs.",
@@ -1295,7 +1447,7 @@ def build_financial_copilot(
             "Questions about account balances, budgets, goals, loan portfolios, recurring patterns, subscriptions, or cross-entity finance data require analysis with result_mode=complex_analysis unless a dedicated scenario tool exactly matches.",
             "For spending questions with no explicit period, default start_date to the first day of the current month and end_date to the current date. Use complex_analysis only for diagnostics, recommendations, comparisons, and scenarios that require the analysis tool factory.",
             "planning is only for creating or contributing to a budget or goal.",
-            "unknown is only for requests that cannot enter any safe typed workflow. Never use unknown merely because a transaction field is missing; use transaction and let HITL resolve it. reply is allowed only for conversation or unknown. A conversation reply may claim financial facts only when grounded by a successful runtime tool call; an unknown reply must not claim them.",
+            "unknown is only for requests that cannot enter any safe typed workflow. Never use unknown when customer clarification can safely unblock the workflow; use clarification instead. Never use unknown merely because a transaction field is missing; use transaction and let HITL resolve it. reply is allowed only for conversation or unknown. A conversation reply may claim financial facts only when grounded by a successful runtime tool call; an unknown reply must not claim them.",
             "When reply is allowed, it may use concise GitHub-flavored Markdown for headings, lists, and emphasis. Do not put authoritative financial tables, record identifiers, forms, or actions in Markdown; those are emitted by validated domain widgets.",
             "safe_reasoning_summary must contain one to five short, user-safe plan steps. Describe what will be checked and which capability will run; never expose hidden chain-of-thought, internal tokens, or private deliberation.",
             f"Current date: {current_date.isoformat()}. User timezone: {user_timezone}.",
@@ -1310,19 +1462,362 @@ def build_financial_copilot(
             ),
             f"Semantically retrieved validated capabilities (context only; do not copy answers): {retrieved}",
         ],
+    ), user_id)
+
+
+UNIFIED_HANDOFF_TOOL = "handoff_to_governed_workflow"
+
+
+def _handoff_to_governed_workflow(
+    workflow: GovernedWorkflow,
+    reason: str,
+    resolved_request: Optional[str] = None,
+    query: Optional[QueryInterpretation] = None,
+    clarification: Optional[ClarificationRequest] = None,
+) -> dict[str, Any]:
+    """Stop direct answering and hand the current request to a governed workflow.
+
+    Args:
+        workflow: The only governed workflow that should handle the request.
+        reason: A concise user-safe explanation of why the handoff is needed.
+        resolved_request: The self-contained request after resolving follow-up context.
+        query: A complete typed read query when the advanced request fits this schema.
+        clarification: The question and choices when customer input is required.
+    """
+    return GovernedWorkflowHandoff(
+        workflow=workflow,
+        reason=reason,
+        resolved_request=resolved_request,
+        query=query,
+        clarification=clarification,
+    ).model_dump(mode="json")
+
+
+def _governed_handoff_tool() -> Function:
+    handoff = bind_existing_tool(
+        _handoff_to_governed_workflow,
+        name=UNIFIED_HANDOFF_TOOL,
+        description=(
+            "Stop direct answering and pass the resolved request to its governed workflow. "
+            "For a simple advanced read, include the complete typed query. "
+            "For a material ambiguity, use workflow=clarification and include the complete clarification contract."
+        ),
+        # QueryInterpretation deliberately has defaults so a handoff can stay
+        # compact. OpenAI strict tools require every property of every nested
+        # object to be listed as required, which made this otherwise-valid
+        # schema fail before the model could run. The returned payload is still
+        # validated below by GovernedWorkflowHandoff before the domain accepts
+        # it, so this control-only tool does not need provider-side strict mode.
+        strict=False,
     )
+    # The direct agent must never continue with prose after selecting a write,
+    # workflow, or advanced-analysis path. The existing domain pipeline owns
+    # everything after this stop signal.
+    handoff.stop_after_tool_call = True
+    return handoff
+
+
+def build_unified_read_agent(
+    categories: list[dict],
+    current_date: date,
+    user_timezone: str,
+    *,
+    model_id: str | None = None,
+    user_id: UUID | str | None = None,
+    runtime_tools: list[Any] | None = None,
+):
+    """Build the one end-to-end agent for conversation and safe reads.
+
+    Its authority is intentionally asymmetric: authenticated read/calculation
+    tools may execute, while every mutation or richer governed workflow can
+    only emit a stop-after-call handoff. This lets one model see the question,
+    tool result, and final wording without giving prose generation write access.
+    """
+    settings, taxonomy = _agent_context(categories)
+    if settings is None:
+        return None
+    tools = [*(runtime_tools or []), _governed_handoff_tool()]
+    return _with_user_memory(Agent(
+        name="fyn unified read agent",
+        model=_responses_model(
+            settings,
+            model_id or settings.router_model,
+            reasoning_effort="low",
+            reasoning_summary=(
+                "detailed" if settings.environment != "production" else "concise"
+            ),
+            timeout=35,
+        ),
+        tools=tools,
+        tool_call_limit=4,
+        reasoning=False,
+        instructions=[
+            "Own the current turn from understanding through the final answer when it is ordinary conversation or can be answered completely by the supplied authenticated read-only tools.",
+            "Read the recent complete turns and active domain context first. Resolve references to prior turns, but never copy a prior answer as the answer to a different current question.",
+            "For a claim about the user's records, taxonomy, spending, income, balances, recurring expenses, or a numeric scenario, call the smallest sufficient authenticated tool before answering. Tool results are the only source of financial facts.",
+            "When several supplied tools are independently required for the requested comparison, call only those tools. Do not repeat a tool call with identical arguments.",
+            "Answer directly from successful tool results. Start with the result, then explain the relevant scope, comparison, implication, or assumption. Preserve dates, currency, uncertainty, and record limits exactly.",
+            "Never calculate financial figures yourself, infer missing database facts, or present taxonomy prompt context as if it were a database result.",
+            "Never silently discard, override, or guess a supplied input when two plausible interpretations would materially change the result. Call the governed clarification handoff with two to six concise choices; include a custom-answer path when the listed choices may not cover the customer’s intent. Set disposition=cancel on an option that abandons the request or makes no change so it terminates instead of re-entering the governed router.",
+            "Call handoff_to_governed_workflow exactly once for any transaction create/update/delete/removal, category or subcategory change, budget or goal workflow, individual transaction listing, chart/dashboard/export, prior-result-set refinement, or advanced analysis that the supplied read tools cannot answer exactly.",
+            "Use workflow=clarification when missing, ambiguous, or conflicting supplied inputs can change the answer; transaction for recording or editing a financial event; transaction_removal for removing one; taxonomy for category changes; planning for budgets or goals; and advanced_analysis for record lists, charts, coordinated views, or unsupported finance analysis.",
+            "For an advanced_analysis handoff, always write resolved_request as a self-contained interpretation of the current follow-up. When it fits QueryInterpretation exactly—especially an individual transaction list or a simple filtered summary—also populate query completely so the governed domain executor can run it without asking another routing model. Otherwise leave query null for the richer analysis planner.",
+            "When query inherits a prior analytical request, copy its exact dates, filters, direction, grouping, ordering, and limit from the recent grounding lineage unless the user changes them. Never replace an all-time period with this month merely because the current message omits dates.",
+            "Inherit that prior query only for an explicit continuation such as those, same, again, previous, and, or what about. A self-contained request starts a new query and must not copy an unstated transaction type, merchant, category, account, tag, amount bound, or date from recent grounding.",
+            "Treat correction language such as 'no', 'but', 'I mean', 'that is not what I asked', or a challenged count as a reconciliation request. Compare the relevant recent answers and their grounding scopes, identify which filter or period differs, acknowledge the mismatch, and issue the corrected tool call or handoff. Do not repeat only the latest answer.",
+            "The handoff tool is a terminal control decision. Call it before writing any answer and do not add prose after it.",
+            "For ordinary conversation, respond naturally to the current message. Do not use a canned greeting, repeat the user's wording, append a generic question, or describe internal routing.",
+            "Use concise GitHub-flavored Markdown only when it materially improves a substantive answer. Explain the evidence and decision when that helps the user understand the result.",
+            f"Current date: {current_date.isoformat()}. User timezone: {user_timezone}.",
+            f"Available expense taxonomy names for tool arguments only: {taxonomy}",
+        ],
+    ), user_id)
+
+
+def run_unified_read_agent(
+    text: str,
+    categories: list[dict],
+    current_date: date,
+    user_timezone: str,
+    recent_context: list[dict],
+    *,
+    workflow_context: dict | None = None,
+    model_id: str | None = None,
+    user_id: UUID | str | None = None,
+    runtime_tools: list[Any] | None = None,
+    on_delta: Callable[[str], None] | None = None,
+    on_reasoning_delta: Callable[[str], None] | None = None,
+    allow_live_deltas: bool = False,
+) -> UnifiedReadResult | None:
+    """Run one direct conversational/read turn and retain its tool evidence.
+
+    Personal-finance prompts are normally buffered by the caller until numeric
+    evidence checks pass. Clearly non-financial conversation may forward the
+    provider's exact deltas while this same run is still producing them.
+    """
+    reader = build_unified_read_agent(
+        categories,
+        current_date,
+        user_timezone,
+        model_id=model_id,
+        user_id=user_id,
+        runtime_tools=runtime_tools,
+    )
+    if reader is None:
+        return None
+    prompt = (
+        f"Active domain context (authoritative; hand off if it requires a governed workflow):\n"
+        f"{json.dumps(workflow_context or {}, ensure_ascii=False, default=str)}\n\n"
+        f"Recent complete conversation turns:\n{_format_recent_context(recent_context) or '(none)'}\n\n"
+        f"Current user message:\n{text}"
+    )
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    completed_tools = []
+    final_output: RunOutput | None = None
+    streamed_live = False
+    stream = reader.run(
+        prompt,
+        user_id=str(user_id) if user_id else None,
+        stream=True,
+        stream_events=True,
+        yield_run_output=True,
+    )
+    for event in stream:
+        reasoning_delta = ""
+        if isinstance(event, ReasoningContentDeltaEvent):
+            reasoning_delta = event.reasoning_content
+        elif isinstance(event, ReasoningStepEvent):
+            content = event.content
+            if isinstance(content, ReasoningStep):
+                reasoning_delta = content.reasoning or event.reasoning_content
+            elif isinstance(content, dict):
+                reasoning_delta = str(content.get("reasoning") or event.reasoning_content or "")
+            else:
+                reasoning_delta = event.reasoning_content
+        elif isinstance(event, RunContentEvent):
+            reasoning_delta = event.reasoning_content or ""
+
+        if reasoning_delta:
+            reasoning_parts.append(reasoning_delta)
+            if on_reasoning_delta:
+                on_reasoning_delta(reasoning_delta)
+
+        if isinstance(event, RunContentEvent) and isinstance(event.content, str) and event.content:
+            content_parts.append(event.content)
+            if allow_live_deltas and on_delta:
+                on_delta(event.content)
+                streamed_live = True
+        elif isinstance(event, ToolCallCompletedEvent) and event.tool is not None:
+            completed_tools.append(event.tool)
+        elif isinstance(event, RunOutput):
+            final_output = event
+
+    final_reasoning = (
+        final_output.reasoning_content
+        if final_output and isinstance(final_output.reasoning_content, str)
+        else ""
+    )
+    streamed_reasoning = "".join(reasoning_parts)
+    if final_reasoning and not streamed_reasoning:
+        reasoning_parts.append(final_reasoning)
+        if on_reasoning_delta:
+            on_reasoning_delta(final_reasoning)
+    elif final_reasoning and final_reasoning.startswith(streamed_reasoning):
+        remainder = final_reasoning[len(streamed_reasoning):]
+        if remainder:
+            reasoning_parts.append(remainder)
+            if on_reasoning_delta:
+                on_reasoning_delta(remainder)
+    reasoning_trace = "".join(reasoning_parts)
+
+    executions = list(final_output.tools or []) if final_output else completed_tools
+    if not executions:
+        executions = completed_tools
+    handoff_execution = next(
+        (
+            execution
+            for execution in executions
+            if getattr(execution, "tool_name", None) == UNIFIED_HANDOFF_TOOL
+            and not getattr(execution, "tool_call_error", False)
+        ),
+        None,
+    )
+    if handoff_execution is not None:
+        handoff = GovernedWorkflowHandoff.model_validate(
+            dict(getattr(handoff_execution, "tool_args", None) or {})
+        )
+        return UnifiedReadResult(
+            handoff=handoff,
+            streamed_live=streamed_live,
+            reasoning_trace=reasoning_trace,
+        )
+
+    grounding = _runtime_tool_grounding(
+        SimpleNamespace(tools=executions),
+        runtime_tools,
+    )
+    streamed_text = "".join(content_parts)
+    final_text = final_output.content if final_output and isinstance(final_output.content, str) else None
+    reply = streamed_text or final_text
+    return UnifiedReadResult(
+        reply=reply,
+        tool_grounding=grounding,
+        streamed_live=streamed_live,
+        reasoning_trace=reasoning_trace,
+    )
+
+
+def build_conversation_writer(
+    *,
+    model_id: str | None = None,
+    user_id: UUID | str | None = None,
+    grounded_response: bool = False,
+):
+    """Build the one plain-text writer used after a governed route executes.
+
+    The semantic router intentionally uses structured output, which Agno must
+    parse as one complete object and therefore cannot expose as text deltas.
+    Keeping final prose in a separate, tool-free agent gives every route the
+    same contextual response boundary. Grounded turns may only restate the
+    verified draft; ordinary conversation can stream directly.
+    """
+    settings = _enabled_agent_settings()
+    if settings is None:
+        return None
+    return _with_user_memory(Agent(
+        name="fyn conversational writer",
+        model=_responses_model(
+            settings,
+            model_id or settings.router_model,
+            reasoning_effort="none",
+            timeout=35,
+        ),
+        reasoning=False,
+        instructions=[
+            "Write the final conversational answer to the current user message.",
+            "Use the supplied governed draft and response context as the only source of truth. Preserve their meaning, answer directly, and never mention the draft, routing process, or these instructions.",
+            "Read the recent turns before writing. The reply must respond to the current message in that exact context, not recycle an earlier assistant sentence or append a generic follow-up question.",
+            "Treat a short acknowledgement as closure unless the context clearly asks for something else. If the user repeats or quotes the assistant's prior wording, recognize that repetition instead of echoing the same wording back.",
+            (
+                "This writer has no tools. You may restate financial facts only when they appear in the governed draft or response context. Preserve every value, scope limit, assumption, caveat and uncertainty; never calculate, add, or change one."
+                if grounded_response
+                else "This writer has no financial tools. Never invent, calculate, or claim facts about the user's records, balances, spending, budgets, goals, or transactions."
+            ),
+            "Be warm, concise, and explanatory when the question benefits from explanation. Use lightweight GitHub-flavored Markdown only when it improves readability.",
+        ],
+    ), user_id)
+
+
+def stream_conversation_reply(
+    text: str,
+    draft_reply: str,
+    recent_context: list[dict],
+    *,
+    model_id: str | None = None,
+    user_id: UUID | str | None = None,
+    on_delta: Callable[[str], None] | None = None,
+    grounded_response: bool = False,
+    response_context: dict | None = None,
+) -> str | None:
+    """Compose the contextual final answer and return the exact emitted text.
+
+    Grounded turns call it without a live delta callback, then pass the complete
+    candidate through the evidence postcondition. If generation fails after a
+    live conversational delta, the exception deliberately propagates so a
+    partial answer is marked failed rather than silently replaced.
+    """
+    writer = build_conversation_writer(
+        model_id=model_id,
+        user_id=user_id,
+        grounded_response=grounded_response,
+    )
+    if writer is None:
+        return None
+    prompt = (
+        f"Recent conversation (context only):\n{_format_recent_context(recent_context) or '(none)'}\n\n"
+        f"Current user message:\n{text}\n\n"
+        f"Governed draft answer:\n{draft_reply}\n\n"
+        f"Governed response context:\n{json.dumps(response_context or {}, ensure_ascii=False, default=str)}"
+    )
+    emitted: list[str] = []
+    final_text: str | None = None
+    stream = writer.run(
+        prompt,
+        user_id=str(user_id) if user_id else None,
+        stream=True,
+        stream_events=True,
+        yield_run_output=True,
+    )
+    for event in stream:
+        if isinstance(event, RunContentEvent) and isinstance(event.content, str) and event.content:
+            emitted.append(event.content)
+            if on_delta:
+                on_delta(event.content)
+        elif isinstance(event, RunOutput) and isinstance(event.content, str):
+            final_text = event.content
+    streamed_text = "".join(emitted)
+    if streamed_text:
+        # RunContent events are the exact provider deltas. Treat them as the
+        # canonical answer so persistence and replay cannot disagree with what
+        # the live reader saw.
+        return streamed_text
+    if final_text:
+        if on_delta:
+            on_delta(final_text)
+        return final_text
+    return None
 
 
 def build_transaction_intelligence(categories: list[dict], current_date: date, user_timezone: str, user_id: UUID | str | None = None):
     settings, taxonomy = _agent_context(categories)
     if settings is None:
         return None
-    return Agent(
+    return _with_user_memory(Agent(
         name="Transaction Intelligence",
         model=_responses_model(settings, settings.transaction_model, timeout=25),
         output_schema=TransactionInterpretation,
         reasoning=False,
-        **_memory_agent_options(user_id),
         instructions=[
             "Extract only the financial event in the current user message. Do not create or save it.",
             "Recent conversation is context only. Use it to resolve explicit references such as 'same again' or 'make that 500', but never copy an older event into an unrelated current message.",
@@ -1333,14 +1828,14 @@ def build_transaction_intelligence(categories: list[dict], current_date: date, u
             f"Allowed taxonomy, including user-created names and their stable slugs: {taxonomy}",
             "Return the exact supplied category and subcategory slugs. When the current message explicitly names a taxonomy label, that hierarchy overrides a generic Other inference.",
         ],
-    )
+    ), user_id)
 
 
 def build_analysis_tool_factory(categories: list[dict], current_date: date, user_timezone: str, enable_reasoning: bool = True, reusable_tools: list[dict] | None = None, user_id: UUID | str | None = None):
     settings, taxonomy = _agent_context(categories)
     if settings is None:
         return None
-    return Agent(
+    return _with_user_memory(Agent(
         name="Finance Analysis Tool Factory",
         model=_responses_model(
             settings,
@@ -1353,7 +1848,6 @@ def build_analysis_tool_factory(categories: list[dict], current_date: date, user
         reasoning=enable_reasoning,
         reasoning_min_steps=1,
         reasoning_max_steps=2,
-        **_memory_agent_options(user_id),
         instructions=[
             "Create a declarative, reusable, read-only finance analysis capability for exactly the user's request.",
             "Never emit SQL, Python, financial answers, or write commands. The deterministic harness validates, compiles, executes, and saves this specification.",
@@ -1376,7 +1870,7 @@ def build_analysis_tool_factory(categories: list[dict], current_date: date, user
             f"Governed semantic catalog: {json.dumps(semantic_catalog(), default=str)}",
             f"Semantically retrieved validated plans: {json.dumps(reusable_tools or [], default=str)}. Reuse their governed structure when it fits, but resolve the current filters and dates independently.",
         ],
-    )
+    ), user_id)
 
 
 def _runtime_tool_grounding(run_output: Any, runtime_tools: list[Any] | None) -> list[ToolGrounding]:
@@ -1459,6 +1953,14 @@ def interpret_with_financial_copilot(
     route_result = router.run(prompt, user_id=str(user_id)) if user_id else router.run(prompt)
     route = route_result.content if isinstance(route_result.content, CopilotRouteDecision) else CopilotRouteDecision.model_validate(route_result.content)
     tool_grounding = _runtime_tool_grounding(route_result, runtime_tools)
+    if route.route is CopilotRoute.CLARIFICATION:
+        return CopilotDecision(
+            tool=CapabilityId.REQUEST_CLARIFICATION,
+            clarification=route.clarification,
+            safe_reasoning_summary=route.safe_reasoning_summary,
+            confidence=route.confidence,
+            reason=route.reason,
+        )
     route.presentation = _bind_explicit_presentation_unit(text, route.presentation)
     route.query = _bind_explicit_universal_scope(text, route.query)
     route.query = _bind_multi_direction_scope(text, route.query)
@@ -1625,7 +2127,7 @@ def validate_copilot_decision(
             "When presentation.layout=dashboard, require at least two governed visualizations and verify that none of the measures or panels explicitly requested in the current prompt was omitted. Reject a single-chart substitute even when that chart is individually valid.",
             "For run_query_bundle, validate the bundle as one request: every requested result shape must have a view, all views must share base_query filters and dates by construction, and rows plus aggregates must preserve the same financial direction. Approve a refreshed prior query only when refresh_from_active_analysis=true and base_query reproduces its filters and period without stale scope_transaction_ids.",
             "For category or subcategory creation, require tool=manage_taxonomy and verify operation, requested name when present, and parent category when present. A missing name is valid and should lead to clarification.",
-            "Use outcome=request_human_input when the chosen workflow is correct but a user-resolvable field is missing or ambiguous. In particular, create_transaction_draft with an amount but unknown transaction type is a safe HITL draft, not a rejection.",
+            "Use outcome=request_human_input when the chosen workflow is correct but a user-resolvable field is missing, ambiguous, or conflicts with another supplied input. Populate clarification with the exact question, conflict fields, and two to six safe choices; allow a custom answer when those choices may be incomplete. In particular, create_transaction_draft with an amount but unknown transaction type is a safe HITL draft, not a rejection.",
             "Use outcome=reject only when the selected action/tool conflicts with the user's intent or would create a semantic or safety error. Do not reject merely because a safe typed workflow must ask a clarification question.",
             "Reject tool=unknown when the user is clearly initiating a financial record and a create_transaction_draft workflow can safely collect the missing type or details through HITL.",
             "When activeDataScope is supplied, treat it as optional conversation context. Verify that contextual refinements preserve it: a follow-up referring to these/those/the shown transactions must set use_active_scope=true; reject accidental expansion to unrelated records.",

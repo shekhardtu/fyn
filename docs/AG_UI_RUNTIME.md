@@ -1,6 +1,6 @@
 # Fyn AG-UI runtime contract
 
-Fyn uses AG-UI as its only interactive-agent transport. The migration is a hard cutover, not a feature-flagged compatibility layer.
+Fyn uses AG-UI as its only interactive-agent transport across web and mobile.
 
 ## Client adapters
 
@@ -11,6 +11,14 @@ Fyn uses AG-UI as its only interactive-agent transport. The migration is a hard 
 ## Run lifecycle
 
 Every accepted command creates a persisted `agent_runs` row. Its ordered AG-UI events are appended to `agent_events`, and any human decision is represented by `agent_interrupts`.
+
+The run keeps the complete reduced input command, links to the canonical final
+assistant message, and records `started_at`, `first_response_at`, and
+`finished_at`. `AgentRunOut` exposes total duration and time-to-first-response;
+each persisted event retains its protocol timestamp, while activity snapshots
+also carry stage duration and cumulative duration. This makes the prompt,
+complete reply, tool/stage sequence, and timing reconstructable without using
+the client clock.
 
 ```text
 POST /api/agent
@@ -46,6 +54,58 @@ The server accepts only one of three reduced commands from a run input:
 1. the newest user text message;
 2. a validated namespaced Fyn widget action; or
 3. a validated AG-UI interrupt resume.
+
+## Conversation context and validation
+
+The conversation table remains the authoritative thread history. A new model
+turn receives the five most recent complete user/assistant turns with their
+full message text, plus bounded grounding lineage for assistant answers: query
+dates, filters, direction, grouping and result shape. Ledger rows and entity
+IDs are not copied into general model context. The last complete structured
+analysis/data scope remains available separately for authoritative result-set
+refinement. The model does not receive an arbitrary character slice,
+client-supplied history, or the current turn's reserved blank response.
+
+Correction language marks the turn as reconciliation. The model must compare
+the relevant recent answer scopes, state the mismatch, and preserve the
+intended prior filters rather than simply continuing from the newest answer.
+For a typed read correction, domain policy independently selects the most
+relevant prior query by matching its specific filters and restores its period
+when the user did not provide a new one.
+
+Chat uses two authority lanes. The unified read agent owns ordinary
+conversation and finance requests that its authenticated read/calculation
+tools can answer completely: the same model sees the recent turns, selects the
+tool, observes its result, and writes the final answer. Ordinary conversation
+streams its exact provider deltas. Personal-finance answers are buffered until
+their numeric claims pass the tool-evidence postcondition, then that exact text
+is stored and delivered without a second prose model.
+
+The unified agent has no mutation tools. A terminal
+`handoff_to_governed_workflow` tool stops the run before prose whenever the
+request creates, updates, or removes financial state, manages taxonomy,
+budgets, or goals, requests individual records or a visual, or needs advanced
+analysis. For a record list or simple filtered aggregate, that terminal handoff
+can include a complete `QueryInterpretation`; deterministic policy validates
+and executes it without invoking another routing model. Explicit rich-analysis
+requests enter the semantic planner directly because a compact read agent could
+only hand them off. Novel or complex work still keeps the typed
+router/compiler/validator/domain-handler pipeline.
+
+Governed read and analysis handlers derive their answer text from the exact
+verified result and persist it beside the same widgets and citations. That text
+is final: it does not pass through a second contextual writer. Mutation and
+clarification workflows may still use contextual final wording.
+`UNIFIED_READ_AGENT_ENABLED=false` is an operational rollback for the unified
+model lane; it does not change AG-UI or the underlying finance authority
+boundary.
+
+Typed read and calculator routes use deterministic contract, scope, and final
+evidence checks. An independent model validator is reserved for mutation
+intent, taxonomy/planning workflows, coordinated query bundles, and generated
+analysis. Runtime-grounded numeric prose is checked against authenticated tool
+arguments/results; if a number is not supported, the persisted reply is
+replaced with a deterministic grounded summary.
 
 ## Cancellation and ordering
 

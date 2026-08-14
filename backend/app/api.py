@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session, selectinload, sessionmaker
 from .database import get_db
 from .event_time import as_utc, local_date_string, local_now, now_utc
 from .config import CSV_UPLOAD_MAX_BYTES, get_settings
-from .domain import AgentInterruptStatus, AgentRunStatus, FinancialSourceType, ImportRecordStatus, ImportStatus, REVOCABLE_SOURCE_TYPES, ReconciliationOutcome, TransactionType, WidgetActionId
+from .domain import AgentInterruptStatus, AgentRunStatus, ExecutionStatus, FinancialSourceType, ImportRecordStatus, ImportStatus, REVOCABLE_SOURCE_TYPES, ReconciliationOutcome, TransactionType, WidgetActionId
 from .models import (
     AIAction,
     AgentEvent,
@@ -40,6 +40,8 @@ from .models import (
 from .schemas import (
     AgentInterruptOut,
     AgentRunOut,
+    AgentRunMetricOut,
+    AgentThreadMetricsOut,
     AgentThreadStateOut,
     AffordabilityIn,
     AgentDiagnosticsOut,
@@ -77,6 +79,7 @@ from .schemas import (
     WidgetAction,
     WidgetType,
 )
+from .services.agent_observability import evaluate_agent_reply
 # Every route below is user-scoped through this one dependency, so protecting
 # it protected all of them at once.
 from .security import clear_session_cookie, current_user
@@ -88,8 +91,8 @@ from .services.preferences import set_user_preference, user_preference
 from .services.overview import overview_snapshot
 from .services.taxonomy import TaxonomyRepository
 from .services.transactions import (
-    canonical_transactions,
     create_manual_transaction as record_manual_transaction,
+    transaction_log,
     update_saved_transaction as apply_transaction_update,
 )
 from .services.user_data import delete_user_data, export_user_data
@@ -411,6 +414,127 @@ def agent_thread_state(
     )
 
 
+def _percentile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * percentile
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    fraction = position - lower
+    return round(ordered[lower] + (ordered[upper] - ordered[lower]) * fraction, 1)
+
+
+@router.get("/agent/threads/{thread_id}/metrics", response_model=AgentThreadMetricsOut)
+def agent_thread_metrics(
+    thread_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> AgentThreadMetricsOut:
+    """Return measured latency plus transparent deterministic quality signals."""
+    _owned_conversation(db, user, thread_id)
+    runs = list(
+        db.scalars(
+            select(AgentRun)
+            .where(AgentRun.user_id == user.id, AgentRun.conversation_id == thread_id)
+            .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+            .limit(100)
+        )
+    )
+    thread_messages = list(
+        db.scalars(
+            select(Message)
+            .where(Message.conversation_id == thread_id)
+            .order_by(Message.created_at, Message.id)
+        )
+    )
+    messages = {message.id: message for message in thread_messages}
+    previous_assistant: dict[UUID, str | None] = {}
+    latest_assistant_text: str | None = None
+    for message in thread_messages:
+        if message.role != "assistant" or not message.content.strip():
+            continue
+        previous_assistant[message.id] = latest_assistant_text
+        latest_assistant_text = message.content
+    run_ids = [run.id for run in runs]
+    completed_activities: dict[UUID, int] = {}
+    if run_ids:
+        activity_events = db.scalars(
+            select(AgentEvent).where(
+                AgentEvent.run_id.in_(run_ids),
+                AgentEvent.event_type == "ACTIVITY_SNAPSHOT",
+            )
+        )
+        for event in activity_events:
+            content = (event.payload or {}).get("content") or {}
+            if content.get("status") == ExecutionStatus.COMPLETED.value:
+                completed_activities[event.run_id] = completed_activities.get(event.run_id, 0) + 1
+
+    run_metrics: list[AgentRunMetricOut] = []
+    evaluations = []
+    for run in runs:
+        evaluation = evaluate_agent_reply(
+            run,
+            messages.get(run.final_message_id),
+            completed_activity_count=completed_activities.get(run.id, 0),
+            previous_assistant_text=previous_assistant.get(run.final_message_id),
+        )
+        if evaluation is not None:
+            evaluations.append(evaluation)
+        run_metrics.append(
+            AgentRunMetricOut(
+                run=AgentRunOut.model_validate(run),
+                evaluation=evaluation,
+            )
+        )
+
+    terminal = [run for run in runs if run.status in TERMINAL_RUN_STATUSES]
+    delivered = [
+        run
+        for run in terminal
+        if run.status in {AgentRunStatus.SUCCEEDED.value, AgentRunStatus.INTERRUPTED.value}
+    ]
+    durations = [run.duration_ms for run in terminal if run.duration_ms is not None]
+    first_responses = [
+        run.time_to_first_response_ms
+        for run in terminal
+        if run.time_to_first_response_ms is not None
+    ]
+    grounding_evaluations = [item for item in evaluations if item.grounding_required]
+
+    def average(values: list[float]) -> float | None:
+        return round(sum(values) / len(values), 1) if values else None
+
+    return AgentThreadMetricsOut(
+        thread_id=thread_id,
+        sample_size=len(runs),
+        completion_rate=round(len(delivered) / len(terminal), 4) if terminal else 0,
+        evidence_pass_rate=(
+            round(sum(item.evidence_passed for item in evaluations) / len(evaluations), 4)
+            if evaluations
+            else None
+        ),
+        contextuality_rate=(
+            round(sum(item.contextual for item in evaluations) / len(evaluations), 4)
+            if evaluations
+            else None
+        ),
+        grounding_rate=(
+            round(sum(item.grounded for item in grounding_evaluations) / len(grounding_evaluations), 4)
+            if grounding_evaluations
+            else None
+        ),
+        average_quality_score=average([item.quality_score for item in evaluations]),
+        average_depth_score=average([item.depth_score for item in evaluations]),
+        average_duration_ms=average(durations),
+        p50_duration_ms=_percentile(durations, 0.5),
+        p95_duration_ms=_percentile(durations, 0.95),
+        average_time_to_first_response_ms=average(first_responses),
+        p50_time_to_first_response_ms=_percentile(first_responses, 0.5),
+        recent_runs=run_metrics[:12],
+    )
+
+
 @router.post("/agent", response_class=StreamingResponse)
 async def run_agent(
     request: RunAgentInput,
@@ -635,7 +759,10 @@ def _record_import_preview(db: Session, conversation: Conversation, filename: st
         id=f"import-{result['importId']}",
         type=WidgetType.IMPORT_REVIEW,
         data={"title": filename, **result},
-        actions=[] if result["status"] == ImportStatus.COMPLETED else [WidgetAction(id="import", label=f"Import {result['highConfidence']}", action=WidgetActionId.COMMIT_IMPORT, style="primary", payload={"importId": result["importId"]})],
+        actions=[] if result["status"] == ImportStatus.COMPLETED else [
+            WidgetAction(id="import", label=f"Import {result['highConfidence']}", action=WidgetActionId.COMMIT_IMPORT, style="primary", payload={"importId": result["importId"]}),
+            WidgetAction(id="cancel", label="Cancel", action=WidgetActionId.CANCEL_PENDING_ACTION, style="ghost", payload={"resourceId": result["importId"]}),
+        ],
     )
     content = f"I found {result['total']} row{'s' if result['total'] != 1 else ''}. Review the summary before importing."
     agent_response = persist_agent_response(
@@ -677,6 +804,7 @@ def _transaction_list_item(item: Transaction, category: str | None, subcategory:
         spend_nature=item.spend_nature,
         location=item.location_label,
         source_count=len(item.sources),
+        deleted_at=as_utc(item.deleted_at) if item.deleted_at else None,
     )
 
 
@@ -690,7 +818,7 @@ def transactions(
     user: User = Depends(current_user),
 ) -> list[TransactionListItemOut]:
     statement = (
-        canonical_transactions(user.id)
+        transaction_log(user.id)
         .add_columns(Category.name, Subcategory.name)
         .outerjoin(Category, Category.id == Transaction.category_id)
         .outerjoin(Subcategory, Subcategory.id == Transaction.subcategory_id)

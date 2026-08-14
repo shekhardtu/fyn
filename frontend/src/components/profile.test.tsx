@@ -1,18 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createMemoryRouter } from "react-router";
+import { RouterProvider } from "react-router/dom";
 import { ProfilePanel } from "@/components/profile";
-
-const { push, replace } = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn() }));
-
-vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push, replace }),
-}));
 
 afterEach(() => {
   vi.restoreAllMocks();
-  push.mockReset();
-  replace.mockReset();
 });
 
 describe("ProfilePanel authentication guard", () => {
@@ -23,10 +17,14 @@ describe("ProfilePanel authentication guard", () => {
     ));
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const router = createMemoryRouter([
+      { path: "/profile", element: <ProfilePanel /> },
+      { path: "/login", element: <p>Sign in</p> },
+    ], { initialEntries: ["/profile"] });
 
-    render(<QueryClientProvider client={queryClient}><ProfilePanel /></QueryClientProvider>);
+    render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
 
-    await waitFor(() => expect(replace).toHaveBeenCalledWith("/login"));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/login"));
     expect(consoleError.mock.calls.flat().join(" ")).not.toContain("Cannot update a component");
   });
 });

@@ -192,6 +192,57 @@ def loan_amortization_schedule(
 
 
 @tool_contract(description=(
+    "Return a deterministic loan amortization dataset for a customer-specified fixed monthly "
+    "payment. Use when the payment, rather than a target tenure, controls the schedule."
+), input_model=FixedPaymentInput, output_model=ComputedDatasetResult)
+def fixed_payment_amortization_schedule(
+    principal_minor: int,
+    annual_rate_percent: float,
+    payment_minor: int,
+    max_months: int = 1200,
+) -> dict:
+    """Render the actual tenure produced by one fixed monthly payment."""
+    steps, total_interest = _amortization_steps(
+        principal_minor,
+        annual_rate_percent,
+        payment_minor,
+        max_months,
+    )
+    rows = [
+        {
+            "installment": installment,
+            "payment_minor": _minor(actual_payment),
+            "principal_payment_minor": _minor(principal_payment),
+            "interest_payment_minor": _minor(interest),
+            "remaining_principal_minor": _minor(balance),
+        }
+        for installment, actual_payment, principal_payment, interest, balance in steps
+    ]
+    total_payment = sum(row["payment_minor"] for row in rows)
+    return {
+        "kind": "computed_dataset",
+        "name": "fixed_payment_amortization_schedule",
+        "title": "Fixed-payment loan schedule",
+        "description": (
+            f"{len(rows)} installments at {annual_rate_percent:g}% annual interest "
+            "using the supplied monthly payment."
+        ),
+        "fields": [field.model_dump(mode="json") for field in LOAN_AMORTIZATION_FIELDS],
+        "default_dimension": "installment",
+        "default_measures": ["payment_minor", "remaining_principal_minor"],
+        "rows": rows,
+        "summary": {
+            "payment_minor": payment_minor,
+            "total_payment_minor": total_payment,
+            "total_interest_minor": _minor(total_interest),
+            "tenure_months": len(rows),
+            "principal_minor": principal_minor,
+            "annual_rate_percent": annual_rate_percent,
+        },
+    }
+
+
+@tool_contract(description=(
     "Compare a deterministic loan baseline with an immediate principal prepayment. Principal and "
     "prepayment are integer minor units."
 ), input_model=LoanWithPrepaymentInput, output_model=LoanPrepaymentResult)

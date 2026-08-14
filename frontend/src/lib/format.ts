@@ -45,6 +45,25 @@ export function formatInstant(value: unknown, timeZone?: string) {
   return Number.isNaN(parsed.valueOf()) ? "" : formatTimestamp(parsed, timeZone);
 }
 
+/** Present financial direction and taxonomy as one coherent classification.
+ *  Income/Investments are taxonomy roots as well as transaction types, so the
+ *  repeated root is collapsed while the direction always remains visible. */
+export function formatTransactionClassification(
+  transactionType: unknown,
+  category: unknown,
+  subcategory: unknown,
+  hierarchySeparator = " → ",
+) {
+  const rawType = typeof transactionType === "string" ? transactionType : "transaction";
+  const typeLabel = rawType.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  const categoryLabel = typeof category === "string" && category ? category : null;
+  const subcategoryLabel = typeof subcategory === "string" && subcategory ? subcategory : null;
+  const expectedRoot = rawType === "income" ? "income" : rawType === "investment" ? "investments" : null;
+  const repeatsType = expectedRoot !== null && categoryLabel?.toLocaleLowerCase() === expectedRoot;
+  const hierarchy = [repeatsType ? null : categoryLabel, subcategoryLabel].filter(Boolean).join(hierarchySeparator);
+  return [typeLabel, hierarchy].filter(Boolean).join(" · ");
+}
+
 /** Convert a UTC ISO instant to the browser's wall clock for datetime-local. */
 export function timestampInputValue(value: unknown) {
   if (typeof value !== "string" || !value) return "";

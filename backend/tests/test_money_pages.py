@@ -66,6 +66,7 @@ def test_money_page_endpoints_share_taxonomy_and_transaction_truth(db):
             "spendNature": "discretionary",
             "location": None,
             "sourceCount": 0,
+            "deletedAt": None,
         }
 
         updated = client.patch(f"/api/transactions/{transaction.id}", json={
@@ -116,6 +117,61 @@ def test_money_page_endpoints_share_taxonomy_and_transaction_truth(db):
     assert set(db.scalars(select(TransactionFieldValue.origin).where(TransactionFieldValue.transaction_id == created_id))) == {"manual_entry"}
 
 
+def test_removed_transactions_stay_in_the_log_but_out_of_the_totals(db):
+    user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
+    food = db.scalar(select(Category).where(Category.slug == "food"))
+    kept = Transaction(
+        user_id=user.id,
+        transaction_type="expense",
+        amount_minor=30_000,
+        currency="INR",
+        merchant_name="BigBasket",
+        category_id=food.id,
+        transaction_at=datetime(2026, 7, 10, 9, 0, tzinfo=timezone.utc),
+        spend_nature="essential",
+        status="confirmed",
+    )
+    removed = Transaction(
+        user_id=user.id,
+        transaction_type="expense",
+        amount_minor=50_000,
+        currency="INR",
+        merchant_name="Groceries",
+        category_id=food.id,
+        transaction_at=datetime(2026, 7, 12, 9, 0, tzinfo=timezone.utc),
+        spend_nature="essential",
+        status="confirmed",
+        deleted_at=datetime(2026, 7, 13, 9, 0, tzinfo=timezone.utc),
+    )
+    db.add_all([kept, removed])
+    db.commit()
+
+    with TestClient(_application(db, user)) as client:
+        # The log keeps the removed record visible, flagged rather than hidden.
+        listed = client.get("/api/transactions")
+        assert listed.status_code == 200
+        by_id = {item["id"]: item for item in listed.json()}
+        assert by_id[str(removed.id)]["deletedAt"] == "2026-07-13T09:00:00Z"
+        assert by_id[str(kept.id)]["deletedAt"] is None
+
+        overview = client.get("/api/overview", params={"month": "2026-07-01"})
+        assert overview.status_code == 200
+        assert overview.json()["summary"]["spentMinor"] == 30_000
+        assert overview.json()["summary"]["expenseCount"] == 1
+
+        edit = client.patch(f"/api/transactions/{removed.id}", json={
+            "amountMinor": 60_000,
+            "merchant": "Groceries",
+            "transactionAt": "2026-07-12T09:00:00Z",
+            "transactionType": "expense",
+            "spendNature": "essential",
+        })
+        assert edit.status_code == 404
+
+        searched = client.get("/api/transactions", params={"q": "groceries"})
+        assert [item["id"] for item in searched.json()] == [str(removed.id)]
+
+
 def test_transaction_page_edit_cannot_cross_the_user_boundary(db):
     user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
     other = User(email="money-page-other@example.com", display_name="Other")
@@ -148,6 +204,45 @@ def test_transaction_page_edit_cannot_cross_the_user_boundary(db):
 
     db.refresh(transaction)
     assert transaction.amount_minor == 10_000
+
+
+def test_money_page_normalizes_non_expense_taxonomy_and_spend_nature(db):
+    user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
+    food = db.scalar(select(Category).where(Category.slug == "food"))
+    dining = db.scalar(select(Subcategory).where(Subcategory.category_id == food.id, Subcategory.slug == "dining"))
+    transaction = Transaction(
+        user_id=user.id,
+        transaction_type="expense",
+        amount_minor=50_000,
+        currency="INR",
+        merchant_name="Correction",
+        category_id=food.id,
+        subcategory_id=dining.id,
+        transaction_at=datetime(2026, 8, 13, tzinfo=timezone.utc),
+        spend_nature="discretionary",
+        status="confirmed",
+    )
+    db.add(transaction)
+    db.commit()
+
+    with TestClient(_application(db, user)) as client:
+        response = client.patch(f"/api/transactions/{transaction.id}", json={
+            "amountMinor": 50_000,
+            "merchant": "Correction",
+            "transactionAt": "2026-08-13T00:00:00Z",
+            "transactionType": "income",
+            # The API adapter omits category writes for non-expenses; the
+            # canonical service must still replace the old expense path.
+            "categoryId": str(food.id),
+            "subcategoryId": str(dining.id),
+            "spendNature": "discretionary",
+            "location": None,
+        })
+
+    assert response.status_code == 200
+    assert response.json()["category"] == "Income"
+    assert response.json()["subcategory"] == "Other"
+    assert response.json()["spendNature"] == "unknown"
 
 
 def test_creating_taxonomy_from_the_editor_is_user_scoped_and_idempotent_by_name(db):

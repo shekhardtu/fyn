@@ -1,16 +1,16 @@
-"use client";
-
-import { Activity, CalendarDays, Check, ChevronDown, ChevronUp, CircleEllipsis, Info, Landmark, Loader2, LoaderCircle, PencilLine, Plus, ReceiptText, RotateCcw, Search, ShieldCheck, Target, Timer, Trash2, TrendingUp, TriangleAlert, Utensils, WalletCards, Wrench } from "lucide-react";
-import { FormEvent, memo, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import { CalendarDays, Check, ChevronDown, CircleEllipsis, Info, Landmark, Loader2, LoaderCircle, PencilLine, Plus, ReceiptText, RotateCcw, Search, Target, Trash2, TrendingUp, TriangleAlert, Utensils, WalletCards, X } from "lucide-react";
+import { FormEvent, memo, useEffect, useId, useMemo, useRef, useState, type ComponentType } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from "recharts";
 import type { TopLevelSpec } from "vega-lite";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { Progress } from "@/components/ui/progress";
 import { DataTableView } from "@/components/widget-library/data-table";
-import { formatCount, formatDay, formatDimension, formatDuration, formatInstant, formatMoney, parseAmountToMinor, parseNumber, timestampInputToUtc, timestampInputValue } from "@/lib/format";
+import { formatCount, formatDay, formatDimension, formatDuration, formatInstant, formatMoney, formatTransactionClassification, parseAmountToMinor, parseNumber, timestampInputToUtc, timestampInputValue } from "@/lib/format";
 import { dataChartDataSchema, dataTableDataSchema, dataVisualizationDataSchema, editableTransactionTypes, widgetActionIds, widgetActions, widgetTypeIds, type DataChartData, type DataTableData, type DataVisualizationData, type Widget, type WidgetActionId } from "@/lib/protocol";
 import { cn } from "@/lib/utils";
+import { environment } from "@/config/environment";
+import { useTablesWide, WIDE_TABLE_BREAKOUT } from "@/lib/wide-tables";
 
 type Primitive = string | number | boolean | null | undefined;
 type Data = Record<string, unknown>;
@@ -26,6 +26,20 @@ export { formatMoney };
 
 function str(value: unknown, fallback = "") { return typeof value === "string" ? value : fallback; }
 function num(value: unknown) { const parsed = typeof value === "number" ? value : Number(value ?? 0); return Number.isFinite(parsed) ? parsed : 0; }
+function formatEnumLabel(value: string) {
+  const label = formatDimension(value);
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+function plainLine(value: unknown) { return str(value).replace(/[*_`#>]/g, "").replace(/\s+/g, " ").trim(); }
+function plainTranscript(value: unknown) {
+  return str(value)
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*]\s+/gm, "")
+    .replace(/`([^`]+)`/g, "$1")
+    .trim();
+}
 function options(data: Data) { return Array.isArray(data.options) ? data.options as Array<Record<string, Primitive>> : []; }
 function isWidgetActionId(value: unknown): value is WidgetActionId {
   return typeof value === "string" && (widgetActions as readonly string[]).includes(value);
@@ -48,11 +62,11 @@ function Card({ children, className }: { children: React.ReactNode; className?: 
 }
 
 function CardHeader({ eyebrow, title, body, tone = "neutral", trailing }: { eyebrow?: string; title: string; body?: string; tone?: "neutral" | "caution"; trailing?: React.ReactNode }) {
-  return <div className="flex items-start gap-3 border-b border-line px-4 py-4">
+  return <div className="flex items-start gap-2.5 border-b border-line px-3.5 py-3">
     <div className="min-w-0 flex-1">
       {eyebrow ? <p className={cn("text-meta font-semibold tracking-[0.08em] uppercase", tone === "caution" ? "text-danger-ink" : "text-ink-muted")}>{eyebrow}</p> : null}
-      <h3 className={cn("font-heading text-body font-semibold text-ink", eyebrow && "mt-1")}>{title}</h3>
-      {body ? <p className="mt-1 text-note leading-5 text-ink-muted">{body}</p> : null}
+      <h3 className={cn("font-heading text-body font-semibold leading-5 text-ink", eyebrow && "mt-0.5")}>{title}</h3>
+      {body ? <p className="mt-0.5 text-note leading-4 text-ink-muted">{body}</p> : null}
     </div>
     {trailing}
   </div>;
@@ -94,9 +108,22 @@ function useOptimisticChoice(confirmed: string, pending?: boolean): [string, (id
   return [chosen ?? confirmed, setChosen];
 }
 
+/** Competing actions disable together, but only the submitted one owns the
+ *  progress indicator. */
+function usePendingAction(pending?: boolean): [string | null, (id: string) => void] {
+  const [submitted, setSubmitted] = useState<string | null>(null);
+  const wasPending = useRef(false);
+  useEffect(() => {
+    if (wasPending.current && !pending) setSubmitted(null);
+    wasPending.current = Boolean(pending);
+  }, [pending]);
+  return [submitted, setSubmitted];
+}
+
 /** One option, and every state it can be in. */
-function OptionTile({ label, icon, selected, pending, dimmed, disabled, onSelect }: {
+function OptionTile({ label, detail, icon, selected, pending, dimmed, disabled, onSelect }: {
   label: string;
+  detail?: string;
   icon?: React.ReactNode;
   selected: boolean;
   pending?: boolean;
@@ -118,7 +145,10 @@ function OptionTile({ label, icon, selected, pending, dimmed, disabled, onSelect
       {pending ? <Loader2 size={12} className="animate-spin" /> : selected ? <Check size={11} strokeWidth={3} /> : null}
     </span>
     {icon && !selected ? <span aria-hidden className="shrink-0 text-ink-muted">{icon}</span> : null}
-    <span className="truncate">{label}</span>
+    <span className="min-w-0 flex-1">
+      <span className="block truncate">{label}</span>
+      {detail ? <span className="mt-0.5 block text-meta font-normal leading-4 text-ink-muted">{detail}</span> : null}
+    </span>
   </button>;
 }
 
@@ -127,22 +157,127 @@ export type WidgetProps = {
   disabled?: boolean;
   /** True while this widget's own action is in flight. */
   pending?: boolean;
+  /** Framework escape for a persisted interrupt whose older widget contract
+   *  did not yet declare its own cancellation action. */
+  onCancel?: () => void;
   onAction: (widgetId: string, action: WidgetActionId, payload: Record<string, unknown>, options?: { markUsed?: boolean }) => void;
 };
 
 /** Action buttons render their own progress so the click has an obvious effect. */
 function ActionButton({ action, pending, disabled, onClick, icon }: { action: Widget["actions"][number]; pending?: boolean; disabled?: boolean; onClick: () => void; icon?: React.ReactNode }) {
   const destructive = /remove|delete|separate/.test(action.action) || action.style === "danger";
-  return <Button type="button" size="lg" disabled={disabled || pending} variant={destructive ? "destructive" : action.style === "primary" ? "default" : "outline"} onClick={onClick}>
+  return <Button type="button" disabled={disabled || pending} variant={destructive ? "destructive" : action.style === "primary" ? "default" : action.style === "ghost" ? "ghost" : "outline"} onClick={onClick}>
     {pending ? <Loader2 size={14} className="animate-spin" /> : icon}{action.label}
   </Button>;
 }
 
-function ActionRow({ widget, disabled, pending, onAction, icons }: WidgetProps & { icons?: Record<string, React.ReactNode> }) {
-  if (!widget.actions.length) return null;
-  return <div className="flex flex-wrap gap-2 border-t border-line px-4 py-3">
-    {widget.actions.map((action) => <ActionButton key={action.id} action={action} pending={pending} disabled={disabled} icon={icons?.[action.action]} onClick={() => onAction(widget.id, action.action, action.payload)} />)}
-  </div>;
+function orderedActions(actions: Widget["actions"]) {
+  const priority = { ghost: 0, secondary: 1, primary: 2, danger: 3 } as const;
+  return actions.map((action, index) => ({ action, index })).sort((left, right) => priority[left.action.style] - priority[right.action.style] || left.index - right.index).map(({ action }) => action);
+}
+
+function isEscapeAction(action: Widget["actions"][number]) {
+  return action.id === "cancel" || action.action.startsWith("cancel_");
+}
+
+/** Keep older, already-persisted draft widgets escapable after the action
+ *  contract gains a server-declared cancel transition. New widgets receive
+ *  this action from the backend; this fallback only repairs active legacy
+ *  cards, and still calls the same governed backend transition. */
+function ensureDraftCancel(widget: Widget, actions: Widget["actions"], disabled?: boolean) {
+  const draftId = str(widget.data.draftId);
+  if (disabled || !draftId || actions.some((action) => action.action === widgetActionIds.cancel_transaction_draft)) return actions;
+  return [...actions, {
+    id: "cancel-draft",
+    label: "Cancel transaction",
+    action: widgetActionIds.cancel_transaction_draft,
+    style: "ghost" as const,
+    payload: { draftId },
+  }];
+}
+
+function HitlActions({ children, className }: { children: React.ReactNode; className?: string }) {
+  return <div className={cn("hitl-actions", className)}>{children}</div>;
+}
+
+function ActionRow({ widget, disabled, pending, onAction, onCancel, icons, actions = widget.actions }: WidgetProps & { icons?: Record<string, React.ReactNode>; actions?: Widget["actions"] }) {
+  const fallbackCancel = onCancel && !actions.some(isEscapeAction);
+  const [submitted, submit] = usePendingAction(pending);
+  if (!actions.length && !fallbackCancel) return null;
+  return <HitlActions className="border-t border-line">
+    {fallbackCancel ? <Button type="button" variant="ghost" disabled={disabled || pending} onClick={() => { submit("protocol-cancel"); onCancel(); }}>Cancel</Button> : null}
+    {orderedActions(actions).map((action) => <ActionButton key={action.id} action={action} pending={pending && submitted === action.id} disabled={disabled || pending} icon={icons?.[action.action]} onClick={() => { submit(action.id); onAction(widget.id, action.action, action.payload); }} />)}
+  </HitlActions>;
+}
+
+function Clarification({ widget, onAction, onCancel, disabled, pending }: WidgetProps) {
+  const listed = Array.isArray(widget.data.options) ? widget.data.options as Array<Record<string, unknown>> : [];
+  const completedValues = completionValues(widget);
+  const [selectedId, choose] = useOptimisticChoice(str(completedValues.optionId), pending);
+  const [customText, setCustomText] = useState(str(completedValues.customText));
+  const [customOpen, setCustomOpen] = useState(Boolean(completedValues.customText));
+  const customInput = useRef<HTMLInputElement>(null);
+  const byId = new Map(widget.actions.map((action) => [action.id, action]));
+  const chooseOption = (optionId: string) => {
+    const action = byId.get(optionId);
+    if (!action) return;
+    choose(optionId);
+    onAction(widget.id, action.action, action.payload);
+  };
+  const customAction = byId.get("custom");
+  const choiceIds = new Set(listed.map((option) => str(option.id)));
+  const navigationActions = widget.actions.filter((action) => !choiceIds.has(action.id) && action.id !== "custom");
+  useEffect(() => {
+    if (customOpen && !disabled) customInput.current?.focus();
+  }, [customOpen, disabled]);
+  function submitCustom(event: FormEvent) {
+    event.preventDefault();
+    const value = customText.trim();
+    if (!customAction || !value) return;
+    choose("custom");
+    onAction(widget.id, customAction.action, { ...customAction.payload, customText: value });
+  }
+  return <Card className="hitl-card">
+    {str(widget.data.reason) ? <div className="flex items-start gap-2 border-b border-line px-3 py-2.5 text-note leading-4 text-ink-muted">
+      <TriangleAlert size={15} className="mt-px shrink-0 text-attention" />
+      <p>{str(widget.data.reason)}</p>
+    </div> : null}
+    <div className="hitl-options">
+      {listed.map((option) => {
+        const id = str(option.id);
+        const selected = selectedId === id;
+        return <OptionTile
+          key={id}
+          label={str(option.label)}
+          detail={str(option.description) || undefined}
+          selected={selected}
+          pending={pending && selected}
+          dimmed={pending && !selected}
+          disabled={disabled || pending || !byId.has(id)}
+          onSelect={() => chooseOption(id)}
+        />;
+      })}
+    </div>
+    {widget.data.allowCustom && customAction ? <div className="border-t border-line">
+      <button type="button" aria-expanded={customOpen} disabled={disabled || pending} onClick={() => setCustomOpen((open) => !open)} className="hitl-disclosure">
+        <PencilLine size={14} />{str(widget.data.customLabel, "Something else")}<ChevronDown size={14} className={cn("ml-auto transition-transform duration-[var(--m-state)]", customOpen && "rotate-180")} />
+      </button>
+      {customOpen ? <form onSubmit={submitCustom} className="hitl-reveal flex flex-col gap-2 border-t border-line-soft p-3 sm:flex-row">
+        <input
+          ref={customInput}
+          value={customText}
+          disabled={disabled || pending}
+          maxLength={1000}
+          onChange={(event) => setCustomText(event.target.value)}
+          className={inputClass}
+          placeholder="Type your answer"
+          aria-label="Custom clarification"
+        />
+        <Button type="submit" disabled={disabled || pending || !customText.trim()}>{pending && selectedId === "custom" ? <Loader2 size={14} className="animate-spin" /> : null}Continue</Button>
+      </form> : null}
+    </div> : null}
+    {navigationActions.length || onCancel ? <ActionRow widget={widget} actions={navigationActions} disabled={disabled} pending={pending} onAction={onAction} onCancel={onCancel} /> : null}
+  </Card>;
 }
 
 function Selector({ widget, onAction, disabled, pending }: WidgetProps) {
@@ -150,13 +285,22 @@ function Selector({ widget, onAction, disabled, pending }: WidgetProps) {
   const list = options(widget.data);
   const completedValues = completionValues(widget);
   const declaredAction = widget.actions[0];
+  const startCreateAction = widget.actions.find((item) => item.action === widgetActionIds.start_add_subcategory);
   const basePayload = declaredAction?.payload ?? {};
   const suggestions = Array.isArray(widget.data.suggestions) ? widget.data.suggestions as Array<Record<string, unknown>> : [];
   const suggestedIds = new Set(suggestions.map((item) => str(item.id)));
   const remaining = list.filter((option) => !suggestedIds.has(str(option.id)));
+  const accountSelector = widget.type === widgetTypeIds.account_selector;
   const field = widget.type === widgetTypeIds.category_selector ? "categoryId" : widget.type === widgetTypeIds.subcategory_selector ? "subcategoryId" : "optionId";
   const [selectedId, choose] = useOptimisticChoice(str(completedValues[field]), pending);
+  const [accountName, setAccountName] = useState(str(completedValues.accountName));
+  const [accountOpen, setAccountOpen] = useState(accountSelector && list.length === 0);
   const action = declaredAction?.action;
+  const navigationActions = ensureDraftCancel(
+    widget,
+    widget.actions.filter((item) => item.id !== declaredAction?.id && item.id !== startCreateAction?.id),
+    disabled && !pending,
+  );
   // The card is locked while its action runs, but the tile you pressed is not
   // the thing being waited on — it is the answer. So `disabled` retires the
   // controls and `dimmed` recedes the ones you did not choose, and the chosen
@@ -166,24 +310,25 @@ function Selector({ widget, onAction, disabled, pending }: WidgetProps) {
     choose(id);
     onAction(widget.id, action, { ...basePayload, [field]: id });
   };
-  return <Card>
-    <CardHeader title={str(widget.data.title)} body={str(widget.data.body) || str(widget.data.category) || undefined} />
-    {suggestions.length ? <div className="border-b border-line p-3">
-      <p className="mb-2 px-1 text-meta font-semibold tracking-[0.08em] text-ink-muted uppercase">Best guesses</p>
-      <div className="grid gap-2 sm:grid-cols-3">{suggestions.map((suggestion) => {
+  function submitAccount(event: FormEvent) {
+    event.preventDefault();
+    const name = accountName.trim();
+    if (!accountSelector || action !== widgetActionIds.select_account || !name) return;
+    choose("custom-account");
+    onAction(widget.id, action, { ...basePayload, accountName: name });
+  }
+  return <Card className="hitl-card">
+    {widget.type === widgetTypeIds.subcategory_selector && str(widget.data.category) ? <p className="border-b border-line px-3 py-2 text-note text-ink-muted">Under <span className="font-medium text-ink-body">{str(widget.data.category)}</span></p> : null}
+    {suggestions.length ? <div className="border-b border-line p-2.5">
+      <p className="hitl-section-label">Suggested</p>
+      <div className="grid gap-1.5 sm:grid-cols-3">{suggestions.map((suggestion) => {
         const id = str(suggestion.id);
         const selected = selectedId === id;
         const reasons = Array.isArray(suggestion.reasons) ? suggestion.reasons.map((reason) => str(reason)).filter(Boolean) : [];
-        return <button key={id} type="button" aria-label={str(suggestion.label)} aria-pressed={selected} disabled={disabled || pending || !action} onClick={() => pick(id)} data-selected={selected || undefined} data-pending={(pending && selected) || undefined} data-dimmed={(pending && !selected) || undefined} className="option-tile flex-col items-start gap-2 py-3">
-          <span className="flex w-full items-center gap-2 font-semibold">
-            <span aria-hidden className="option-mark">{pending && selected ? <Loader2 size={12} className="animate-spin" /> : selected ? <Check size={11} strokeWidth={3} /> : null}</span>
-            <span className="truncate">{str(suggestion.label)}</span>
-          </span>
-          {reasons.length ? <span className="block text-meta leading-4 text-ink-muted">{reasons.join(" · ")}</span> : null}
-        </button>;
+        return <OptionTile key={id} label={str(suggestion.label)} detail={reasons.join(" · ") || undefined} selected={selected} pending={pending && selected} dimmed={pending && !selected} disabled={disabled || pending || !action} onSelect={() => pick(id)} />;
       })}</div>
     </div> : null}
-    {remaining.length ? <div className="grid grid-cols-1 gap-2 p-3 sm:grid-cols-2 lg:grid-cols-3">
+    {remaining.length ? <div className="grid grid-cols-1 gap-1.5 p-2.5 sm:grid-cols-2 lg:grid-cols-3">
       {remaining.map((option) => {
         const id = str(option.id); const slug = str(option.slug, id);
         const selected = selectedId === id;
@@ -200,8 +345,16 @@ function Selector({ widget, onAction, disabled, pending }: WidgetProps) {
           onSelect={() => pick(id)}
         />;
       })}
-    </div> : list.length ? null : <EmptyNote>Nothing to choose from yet. Add the first one below.</EmptyNote>}
-    {widget.type === widgetTypeIds.subcategory_selector && widget.data.allowCreate ? <button type="button" disabled={disabled || pending} onClick={() => onAction(widget.id, widgetActionIds.start_add_subcategory, basePayload)} className="flex min-h-11 w-full items-center gap-2 border-t border-line px-4 py-3 text-control font-semibold text-secondary transition-colors duration-[110ms] ease-linear hover:bg-secondary-tint active:scale-[.995] disabled:opacity-45"><Plus size={14} /> Add new subcategory</button> : null}
+    </div> : list.length || accountSelector ? null : <EmptyNote>Nothing to choose from yet.</EmptyNote>}
+    {accountSelector ? <div className={cn(list.length && "border-t border-line")}>
+      {list.length ? <button type="button" aria-expanded={accountOpen} disabled={disabled || pending} onClick={() => setAccountOpen((open) => !open)} className="hitl-disclosure"><PencilLine size={14} />Use another account<ChevronDown size={14} className={cn("ml-auto transition-transform duration-[var(--m-state)]", accountOpen && "rotate-180")} /></button> : null}
+      {accountOpen ? <form onSubmit={submitAccount} className="hitl-reveal flex flex-col items-stretch gap-2 p-3 sm:flex-row">
+        <input autoFocus={!disabled} value={accountName} disabled={disabled || pending} maxLength={120} onChange={(event) => setAccountName(event.target.value)} className={inputClass} placeholder="Account name" aria-label="Account name" />
+        <Button type="submit" size="lg" disabled={disabled || pending || !accountName.trim()} className="h-[var(--h-field)] px-4">{pending && selectedId === "custom-account" ? <Loader2 size={14} className="animate-spin" /> : null}Continue</Button>
+      </form> : null}
+    </div> : null}
+    {widget.type === widgetTypeIds.subcategory_selector && widget.data.allowCreate && startCreateAction ? <button type="button" disabled={disabled || pending} onClick={() => onAction(widget.id, startCreateAction.action, startCreateAction.payload)} className="hitl-disclosure"><Plus size={14} /> {startCreateAction.label}</button> : null}
+    {navigationActions.length ? <ActionRow widget={widget} actions={navigationActions} disabled={disabled} pending={pending} onAction={onAction} /> : null}
   </Card>;
 }
 
@@ -215,8 +368,16 @@ function CategorySelector({ widget, onAction, disabled, pending }: WidgetProps) 
   const normalizedQuery = query.trim().toLowerCase();
   const suggestedIds = new Set(suggestions.map((item) => str(item.id)));
   const filtered = allOptions.filter((option) => str(option.label).toLowerCase().includes(normalizedQuery) && (Boolean(normalizedQuery) || !suggestedIds.has(str(option.id))));
-  const basePayload = widget.actions[0]?.payload ?? {};
+  const declaredAction = widget.actions[0];
+  const startCreateAction = widget.actions.find((action) => action.action === widgetActionIds.start_add_category);
+  const basePayload = declaredAction?.payload ?? {};
+  const navigationActions = ensureDraftCancel(
+    widget,
+    widget.actions.filter((action) => action.id !== declaredAction?.id && action.id !== startCreateAction?.id),
+    disabled && !pending,
+  );
   const [chosenId, choose] = useOptimisticChoice(selectedCategoryId, pending);
+  const [submittedAction, markSubmitted] = usePendingAction(pending);
   const select = (categoryId: string) => {
     choose(categoryId);
     onAction(widget.id, widgetActionIds.select_category, { ...basePayload, categoryId });
@@ -226,59 +387,66 @@ function CategorySelector({ widget, onAction, disabled, pending }: WidgetProps) 
     function submit(event: FormEvent) {
       event.preventDefault();
       const name = newCategory.trim();
-      if (name) onAction(widget.id, widgetActionIds.create_category, { ...basePayload, name });
+      if (name) {
+        markSubmitted(declaredAction?.id ?? "create");
+        onAction(widget.id, widgetActionIds.create_category, { ...basePayload, name });
+      }
     }
-    return <Card><form onSubmit={submit} className="space-y-4 p-4">
-      <div><h3 className="font-heading text-body font-semibold text-ink">Add a new category</h3><p className="mt-1 text-note leading-5 text-ink-muted">It stays private to your workspace and is applied to this transaction.</p></div>
+    return <Card className="hitl-card"><form onSubmit={submit} className="space-y-3 p-3">
       <label className="block"><FieldLabel>Category name</FieldLabel><input autoFocus={!disabled} disabled={disabled || pending} aria-label="New category name" value={newCategory} onChange={(event) => setNewCategory(event.target.value)} placeholder="e.g. Pets" maxLength={80} className={inputClass} /></label>
-      <div className="flex flex-wrap gap-2">
-        <Button type="submit" size="lg" disabled={disabled || pending || !newCategory.trim()}>{pending ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Add category</Button>
-        <Button type="button" size="lg" variant="outline" disabled={disabled || pending} onClick={() => onAction(widget.id, widgetActionIds.cancel_add_category, basePayload)}>Cancel</Button>
-      </div>
+      <HitlActions className="-mx-3 -mb-3 border-t border-line">
+        {orderedActions(navigationActions).map((action) => <ActionButton key={action.id} action={action} pending={pending && submittedAction === action.id} disabled={disabled || pending} onClick={() => { markSubmitted(action.id); onAction(widget.id, action.action, action.payload); }} />)}
+        <Button type="submit" disabled={disabled || pending || !newCategory.trim()}>{pending && submittedAction === (declaredAction?.id ?? "create") ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Add category</Button>
+      </HitlActions>
     </form></Card>;
   }
 
-  return <Card>
-    <div className="border-b border-line px-4 py-4">
-      <h3 className="font-heading text-body font-semibold text-ink">{str(widget.data.title)}</h3>
-      <p className="mt-1 text-note leading-5 text-ink-muted">{str(widget.data.body)}</p>
-      <label className="relative mt-3 block"><Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted" /><input disabled={disabled || pending} aria-label="Search categories" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search categories" className={cn(inputClass, "pl-9")} /></label>
+  return <Card className="hitl-card">
+    <div className="border-b border-line p-2.5">
+      <label className="relative block"><Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted" /><input disabled={disabled || pending} aria-label="Search categories" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search categories" className={cn(inputClass, "pl-9")} /></label>
     </div>
-    {!normalizedQuery && suggestions.length ? <div className="border-b border-line p-3">
-      <p className="mb-2 px-1 text-meta font-semibold tracking-[0.08em] text-ink-muted uppercase">Best guesses</p>
-      <div className="grid gap-2 sm:grid-cols-3">{suggestions.map((suggestion) => { const selected = chosenId === str(suggestion.id); return <button key={str(suggestion.id)} type="button" aria-label={str(suggestion.label)} aria-pressed={selected} disabled={disabled || pending} onClick={() => select(str(suggestion.id))} data-selected={selected || undefined} data-pending={(pending && selected) || undefined} data-dimmed={(pending && !selected) || undefined} className="option-tile flex-col items-start gap-2 py-3">
-        <span className="flex w-full items-center gap-2 font-semibold"><span aria-hidden className="option-mark">{pending && selected ? <Loader2 size={12} className="animate-spin" /> : selected ? <Check size={11} strokeWidth={3} /> : null}</span><span className="truncate">{str(suggestion.label)}</span></span>
-        <span className="block text-meta leading-4 text-ink-muted">{Array.isArray(suggestion.reasons) && suggestion.reasons.length ? suggestion.reasons.join(" · ") : "Suggested for this entry"}</span>
-      </button>; })}</div>
+    {!normalizedQuery && suggestions.length ? <div className="border-b border-line p-2.5">
+      <p className="hitl-section-label">Suggested</p>
+      <div className="grid gap-1.5 sm:grid-cols-3">{suggestions.map((suggestion) => { const selected = chosenId === str(suggestion.id); return <OptionTile key={str(suggestion.id)} label={str(suggestion.label)} detail={Array.isArray(suggestion.reasons) && suggestion.reasons.length ? suggestion.reasons.join(" · ") : undefined} selected={selected} pending={pending && selected} dimmed={pending && !selected} disabled={disabled || pending} onSelect={() => select(str(suggestion.id))} />; })}</div>
     </div> : null}
-    <div className="p-3">
-      <p className="mb-2 px-1 text-meta font-semibold tracking-[0.08em] text-ink-muted uppercase">{normalizedQuery ? "Search results" : "All categories"}</p>
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">{filtered.map((option) => { const id = str(option.id); const selected = chosenId === id; return <OptionTile key={id} label={str(option.label)} selected={selected} pending={pending && selected} dimmed={pending && !selected} disabled={disabled || pending} onSelect={() => select(id)} />; })}</div>
-      {filtered.length === 0 ? <div className="px-1 py-4 text-center"><p className="text-note text-ink-muted">No category matches “{query.trim()}”.</p><Button type="button" variant="outline" disabled={disabled || pending} onClick={() => onAction(widget.id, widgetActionIds.start_add_category, basePayload)} className="mt-3"><Plus size={14} /> Create “{query.trim()}” instead</Button></div> : null}
+    <div className="p-2.5">
+      <p className="hitl-section-label">{normalizedQuery ? "Search results" : "All categories"}</p>
+      <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3">{filtered.map((option) => { const id = str(option.id); const selected = chosenId === id; return <OptionTile key={id} label={str(option.label)} selected={selected} pending={pending && selected} dimmed={pending && !selected} disabled={disabled || pending} onSelect={() => select(id)} />; })}</div>
+      {filtered.length === 0 && startCreateAction ? <div className="px-1 py-3 text-center"><p className="text-note text-ink-muted">No match for “{query.trim()}”.</p><Button type="button" variant="outline" disabled={disabled || pending} onClick={() => onAction(widget.id, startCreateAction.action, startCreateAction.payload)} className="mt-2.5"><Plus size={14} /> Create “{query.trim()}”</Button></div> : null}
     </div>
-    <button type="button" disabled={disabled || pending} onClick={() => onAction(widget.id, widgetActionIds.start_add_category, basePayload)} className="flex min-h-11 w-full items-center gap-2 border-t border-line px-4 py-3 text-control font-semibold text-secondary transition-colors duration-[110ms] ease-linear hover:bg-secondary-tint active:scale-[.995] disabled:opacity-45"><Plus size={14} /> Add new category</button>
+    {startCreateAction ? <button type="button" disabled={disabled || pending} onClick={() => onAction(widget.id, startCreateAction.action, startCreateAction.payload)} className="hitl-disclosure border-t border-line"><Plus size={14} /> {startCreateAction.label}</button> : null}
+    {navigationActions.length ? <ActionRow widget={widget} actions={navigationActions} disabled={disabled} pending={pending} onAction={onAction} /> : null}
   </Card>;
 }
 
 function TaxonomyEditor({ widget, onAction, disabled, pending }: WidgetProps) {
   const [name, setName] = useState(str(widget.data.name));
+  const [submittedAction, markSubmitted] = usePendingAction(pending);
   const operation = str(widget.data.operation);
   const isSubcategory = operation === widgetActionIds.create_subcategory;
   const lifecycle = str(widget.data.lifecycle, "pending");
   const resolved = lifecycle === "completed" || lifecycle === "cancelled";
   const submitAction = isSubcategory ? widgetActionIds.create_subcategory : widgetActionIds.create_category;
-  const basePayload = widget.actions[0]?.payload ?? {};
+  const declaredAction = widget.actions[0];
+  const basePayload = declaredAction?.payload ?? {};
+  const navigationActions = ensureDraftCancel(
+    widget,
+    widget.actions.filter((action) => action.id !== declaredAction?.id),
+    disabled && !pending,
+  );
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (name.trim()) onAction(widget.id, submitAction, { ...basePayload, name: name.trim() });
+    if (name.trim()) {
+      markSubmitted(declaredAction?.id ?? "create");
+      onAction(widget.id, submitAction, { ...basePayload, name: name.trim() });
+    }
   }
-  return <Card><form onSubmit={submit} className="space-y-4 p-4">
-    <div><h3 className="font-heading text-body font-semibold text-ink">{isSubcategory ? `Add a subcategory under ${str(widget.data.parentCategory)}` : "Add a new category"}</h3><p className="mt-1 text-note leading-5 text-ink-muted">{lifecycle === "completed" ? `${name} was added${isSubcategory ? ` under ${str(widget.data.parentCategory)}` : ""}.` : lifecycle === "cancelled" ? "No taxonomy changes were made." : <>Review the name before it is added to your finance taxonomy{widget.data.appliesToDraft ? " and applied to this transaction" : ""}.</>}</p></div>
-    <label className="block"><FieldLabel>{isSubcategory ? "Subcategory name" : "Category name"}</FieldLabel><input autoFocus={!disabled && !resolved} disabled={disabled || pending || resolved} aria-label={isSubcategory ? "New subcategory name" : "New category name"} value={name} onChange={(event) => setName(event.target.value)} placeholder={isSubcategory ? "e.g. Materials" : "e.g. Pets"} maxLength={80} className={inputClass} /></label>
-    {!resolved ? <div className="flex flex-wrap gap-2">
-      <Button type="submit" disabled={disabled || pending || !name.trim()} size="lg">{pending ? <Loader2 className="animate-spin" /> : <Plus />} {isSubcategory ? "Add subcategory" : "Add category"}</Button>
-      <Button type="button" variant="outline" disabled={disabled || pending} onClick={() => onAction(widget.id, widgetActionIds.cancel_taxonomy_change, basePayload)} size="lg">Cancel</Button>
-    </div> : <div className="flex items-center gap-2 text-note font-semibold text-secondary"><Check />{lifecycle === "completed" ? "Added" : "Cancelled"}</div>}
+  return <Card className="hitl-card"><form onSubmit={submit} className="space-y-3 p-3">
+    <label className="block"><FieldLabel hint={isSubcategory && widget.data.parentCategory ? `under ${str(widget.data.parentCategory)}` : undefined}>{isSubcategory ? "Subcategory name" : "Category name"}</FieldLabel><input autoFocus={!disabled && !resolved} disabled={disabled || pending || resolved} aria-label={isSubcategory ? "New subcategory name" : "New category name"} value={name} onChange={(event) => setName(event.target.value)} placeholder={isSubcategory ? "e.g. Materials" : "e.g. Pets"} maxLength={80} className={inputClass} /></label>
+    {!resolved ? <HitlActions className="-mx-3 -mb-3 border-t border-line">
+      {orderedActions(navigationActions).map((action) => <ActionButton key={action.id} action={action} pending={pending && submittedAction === action.id} disabled={disabled || pending} onClick={() => { markSubmitted(action.id); onAction(widget.id, action.action, action.payload); }} />)}
+      <Button type="submit" disabled={disabled || pending || !name.trim()}>{pending && submittedAction === (declaredAction?.id ?? "create") ? <Loader2 className="animate-spin" /> : <Plus />} {isSubcategory ? "Add subcategory" : "Add category"}</Button>
+    </HitlActions> : null}
   </form></Card>;
 }
 
@@ -293,49 +461,51 @@ function Confirmation({ widget, onAction, disabled, pending }: WidgetProps) {
   if (data.category) rows.push(["Category", `${String(data.category)}${data.subcategory ? ` → ${String(data.subcategory)}` : ""}`]);
   if (data.location) rows.push(["Location", str(data.location)]);
 
-  return <Card className={destructive ? "border-danger-line" : undefined}>
+  return <Card className={cn("hitl-card", destructive && "border-danger-line")}>
     {/* The amount is the fact being confirmed, so it is set in ink at display
         size and the chip beside it carries the state. Filling this panel with
         colour — as the two gradients here used to — made every save look like
         an alert and every removal look like the same alert in another hue. */}
-    <div className="border-b border-line px-4 py-4">
-      <div className="mb-4 flex items-center justify-between gap-3">
+    <div className="border-b border-line px-3.5 py-3">
+      <div className="flex items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="money text-title font-semibold text-ink">{formatMoney(data.amountMinor, str(data.currency, "INR"))}</p>
+          <p className="mt-0.5 truncate text-note text-ink-muted">{[data.merchant, data.subcategory, data.transactionType].filter(Boolean).map(String).join(" · ")}</p>
+        </div>
         <span className={cn(
           "inline-flex items-center rounded-xs px-2 py-1 text-meta font-semibold tracking-[0.06em] uppercase",
           destructive ? "bg-danger-tint text-danger-ink" : "bg-secondary-tint text-secondary-hover",
         )}>{str(data.status, destructive ? "Confirm removal" : "Ready to save")}</span>
-        {destructive ? <Trash2 size={20} className="shrink-0 text-danger" /> : <ShieldCheck size={20} className="shrink-0 text-secondary" />}
       </div>
-      <p className="money text-display font-semibold text-ink">{formatMoney(data.amountMinor, str(data.currency, "INR"))}</p>
-      <p className="mt-1 text-control text-ink-muted">{[data.merchant, data.subcategory, data.transactionType].filter(Boolean).map(String).join(" · ")}</p>
     </div>
-    <div className="space-y-3 px-4 py-4">
-      <div className="flex items-center gap-2 text-control"><CalendarDays className="text-ink-muted" /><span className="text-ink-muted">Transaction time</span><span className="ml-auto font-medium text-ink">{formatInstant(data.transactionAt) || "—"}</span></div>
-      {rows.map(([label, value]) => <div key={label} className="flex flex-wrap items-baseline gap-3 rounded-2xl bg-surface-sunken px-4 py-3 text-control"><span className="text-ink-muted">{label}</span><span className="ml-auto text-right font-medium text-ink">{value}</span></div>)}
+    <div className="space-y-2 px-3.5 py-3">
+      <div className="flex items-center gap-2 text-note"><CalendarDays size={14} className="text-ink-muted" /><span className="text-ink-muted">Time</span><span className="ml-auto font-medium text-ink">{formatInstant(data.transactionAt) || "—"}</span></div>
+      {rows.map(([label, value]) => <div key={label} className="flex flex-wrap items-baseline gap-3 border-t border-line-soft pt-2 text-note"><span className="text-ink-muted">{label}</span><span className="ml-auto text-right font-medium text-ink">{value}</span></div>)}
       {Array.isArray(data.tags) && data.tags.length ? <p className="text-note text-ink-muted">{data.tags.map(String).map((tag) => `#${tag}`).join(" · ")}</p> : null}
-      {inferred.length ? <p className="flex items-start gap-2 text-meta leading-5 text-ink-muted"><Info size={14} className="mt-0.5 shrink-0" />I filled in {inferred.map((field) => field.replaceAll("_", " ")).join(", ")} myself. Edit to change {inferred.length === 1 ? "it" : "them"} before saving.</p> : null}
-      <div className="flex flex-wrap gap-2 border-t border-line pt-4">{widget.actions.map((action) => <ActionButton key={action.id} action={action} pending={pending} disabled={disabled} icon={action.action === widgetActionIds.edit_transaction ? <PencilLine /> : action.action === widgetActionIds.commit_transaction ? <Check /> : /remove|delete/.test(action.action) ? <Trash2 /> : undefined} onClick={() => onAction(widget.id, action.action, action.payload)} />)}</div>
+      {inferred.length ? <p className="flex items-start gap-2 border-t border-line-soft pt-2 text-meta leading-4 text-ink-muted"><Info size={13} className="mt-px shrink-0" />Inferred: {inferred.map((field) => field.replaceAll("_", " ")).join(", ")}. Edit if needed.</p> : null}
     </div>
+    <ActionRow widget={widget} actions={ensureDraftCancel(widget, widget.actions, disabled && !pending)} disabled={disabled} pending={pending} onAction={onAction} icons={{ [widgetActionIds.edit_transaction]: <PencilLine />, [widgetActionIds.commit_transaction]: <Check />, [widgetActionIds.confirm_remove_transaction]: <Trash2 /> }} />
   </Card>;
 }
 
 function TransactionPreview({ widget, onAction, disabled, pending }: WidgetProps) {
   const removed = widget.data.status === "Removed";
-  const category = [widget.data.category, widget.data.subcategory].filter(Boolean).map(String).join(" → ");
+  const classification = formatTransactionClassification(widget.data.transactionType, widget.data.category, widget.data.subcategory);
   const tags = Array.isArray(widget.data.tags) ? widget.data.tags.map(String) : [];
   const sourceCount = Math.max(1, num(widget.data.sourceCount));
-  const metadata = [widget.data.location, str(widget.data.spendNature) !== "unknown" ? str(widget.data.spendNature).replaceAll("_", " ") : null].filter(Boolean).map(String);
+  const spendNature = str(widget.data.spendNature);
+  const metadata = [widget.data.location, spendNature && spendNature !== "unknown" ? formatEnumLabel(spendNature) : null].filter(Boolean).map(String);
   return <Card className={cn("border-secondary-line", removed && "border-danger-line")}>
     <div className="flex items-center gap-3 p-4">
       <span className={cn("grid size-10 shrink-0 place-items-center rounded-full bg-secondary-tint text-secondary", removed && "bg-danger-tint text-danger-ink")}>{removed ? <Trash2 /> : <Check size={20} strokeWidth={2.5} />}</span>
       <div className="min-w-0 flex-1">
         <p className="truncate text-control font-semibold text-ink">{str(widget.data.title, "Transaction saved")}</p>
-        <p className="mt-0.5 text-note text-ink-muted">{[category, formatInstant(widget.data.transactionAt), str(widget.data.status) && !removed ? str(widget.data.status) : null, `${sourceCount} source${sourceCount === 1 ? "" : "s"}`].filter(Boolean).join(" · ")}</p>
+        <p className="mt-0.5 text-note text-ink-muted">{[classification, formatInstant(widget.data.transactionAt), str(widget.data.status) && !removed ? str(widget.data.status) : null, `${sourceCount} source${sourceCount === 1 ? "" : "s"}`].filter(Boolean).join(" · ")}</p>
         {metadata.length || tags.length ? <p className="mt-1 truncate text-meta text-ink-muted">{[...metadata, ...tags.map((tag) => `#${tag}`)].join(" · ")}</p> : null}
       </div>
       <Money value={widget.data.amountMinor} currency={str(widget.data.currency, "INR")} className="shrink-0 font-semibold text-ink" />
     </div>
-    {widget.actions.length ? <div className="flex flex-wrap gap-2 border-t border-line px-4 py-3">{widget.actions.map((action) => <ActionButton key={action.id} action={action} pending={pending} disabled={disabled} icon={action.action === widgetActionIds.edit_saved_transaction ? <PencilLine size={14} /> : <Trash2 size={14} />} onClick={() => onAction(widget.id, action.action, action.payload)} />)}</div> : null}
+    {widget.actions.length ? <ActionRow widget={widget} disabled={disabled} pending={pending} onAction={onAction} icons={{ [widgetActionIds.edit_saved_transaction]: <PencilLine size={14} />, [widgetActionIds.request_remove_transaction]: <Trash2 size={14} /> }} /> : null}
   </Card>;
 }
 
@@ -362,19 +532,22 @@ function TransactionEdit({ widget, onAction, disabled, pending }: WidgetProps) {
   const [tags, setTags] = useState(Array.isArray(submittedTags) ? submittedTags.map(String).join(", ") : "");
   const [amountError, setAmountError] = useState<string | null>(null);
   const [transactionAtError, setTransactionAtError] = useState<string | null>(null);
+  const [submittedAction, markSubmitted] = usePendingAction(pending);
   const categories = Array.isArray(widget.data.categories) ? widget.data.categories as Data[] : [];
   const subcategories = (Array.isArray(widget.data.subcategories) ? widget.data.subcategories as Data[] : []).filter((item) => str(item.categoryId) === categoryId);
   const needsCategory = categories.length > 0 && transactionType === "expense" && shows("category");
-  const editable = { type: saved && shows("transaction_type"), location: saved && shows("location"), nature: saved && shows("spend_nature"), tags: saved && shows("tags") };
+  const editable = { type: saved && shows("transaction_type"), location: saved && shows("location"), nature: saved && transactionType === "expense" && shows("spend_nature"), tags: saved && shows("tags") };
   // Persisted edit widgets created before the cancel action was added still
   // receive the safe backend cancel path after a refresh.
-  const cancelAction: Widget["actions"][number] | undefined = widget.actions.find((action) => action.action === widgetActionIds.cancel_saved_transaction_edit) ?? (saved ? {
+  const submitAction = saved ? widgetActionIds.update_saved_transaction : widgetActionIds.update_transaction_draft;
+  const declaredNavigation = widget.actions.filter((action) => action.action !== submitAction);
+  const navigationActions: Widget["actions"] = ensureDraftCancel(widget, declaredNavigation.length || !saved ? declaredNavigation : [{
     id: "cancel",
     label: "Cancel",
     action: widgetActionIds.cancel_saved_transaction_edit,
     style: "secondary",
     payload: { transactionId: widget.data.transactionId },
-  } : undefined);
+  }], disabled && !pending);
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -391,23 +564,28 @@ function TransactionEdit({ widget, onAction, disabled, pending }: WidgetProps) {
     if (shows("transaction_at")) payload.transactionAt = utcTransactionAt;
     if (saved && shows("transaction_type")) payload.transactionType = transactionType;
     if (saved && shows("location")) payload.location = location;
-    if (saved && shows("spend_nature")) payload.spendNature = spendNature;
+    if (saved && transactionType === "expense" && shows("spend_nature")) payload.spendNature = spendNature;
     if (saved && shows("tags")) payload.tags = tags.split(",").map((tag) => tag.trim()).filter(Boolean);
-    if (saved && shows("category")) payload.categoryId = categoryId || null;
-    if (saved && shows("subcategory")) payload.subcategoryId = subcategoryId || null;
+    if (saved && transactionType === "expense" && shows("category")) payload.categoryId = categoryId || null;
+    if (saved && transactionType === "expense" && shows("subcategory")) payload.subcategoryId = subcategoryId || null;
+    markSubmitted("submit");
     onAction(widget.id, saved ? widgetActionIds.update_saved_transaction : widgetActionIds.update_transaction_draft, payload);
   }
 
-  return <Card><form onSubmit={submit} noValidate className="space-y-4 p-4">
-    <div>
-      <h3 className="font-heading text-body font-semibold text-ink">{str(widget.data.title, saved ? "Edit transaction" : "Edit this entry")}</h3>
-      <p className="mt-1 text-note leading-5 text-ink-muted">{completing ? "Add what’s missing and I’ll finish recording it." : saved ? "Changes are written to the saved record when you apply them." : "Changes apply to this entry before it is saved."}</p>
-    </div>
+  return <Card className="hitl-card"><form onSubmit={submit} noValidate className="space-y-3 p-3">
+    <h3 className="font-heading text-body font-semibold text-ink">{str(widget.data.title, saved ? "Edit transaction" : "Edit this entry")}</h3>
     <div className="grid gap-3 sm:grid-cols-2">
       <label className="block"><FieldLabel>Amount</FieldLabel><input disabled={disabled || pending} aria-label="Transaction amount" aria-invalid={Boolean(amountError)} aria-describedby={amountError ? `${widget.id}-amount-error` : undefined} inputMode="decimal" autoFocus={completing && !disabled} value={amount} onChange={(event) => { setAmount(event.target.value); if (amountError) setAmountError(null); }} placeholder="1,500" className={cn(inputClass, amountError && invalidClass)} />{amountError ? <span id={`${widget.id}-amount-error`}><FieldError>{amountError}</FieldError></span> : null}</label>
       {shows("merchant") ? <label className="block"><FieldLabel hint="optional">Merchant</FieldLabel><input disabled={disabled || pending} aria-label="Merchant" value={merchant} onChange={(event) => setMerchant(event.target.value)} placeholder="Where you paid" className={inputClass} /></label> : null}
       {shows("transaction_at") ? <label className="block"><FieldLabel>Date and time</FieldLabel><input disabled={disabled || pending} aria-label="Transaction date and time" aria-invalid={Boolean(transactionAtError)} type="datetime-local" value={transactionAt} onChange={(event) => { setTransactionAt(event.target.value); if (transactionAtError) setTransactionAtError(null); }} className={cn(inputClass, transactionAtError && invalidClass)} />{transactionAtError ? <FieldError>{transactionAtError}</FieldError> : null}</label> : null}
-      {editable.type ? <div><FieldLabel>Type</FieldLabel><Combobox aria-label="Transaction type" disabled={disabled || pending} value={transactionType} onValueChange={setTransactionType} options={editableTransactionTypes.map((type) => ({ value: type, label: type.replaceAll("_", " ") }))} searchable={false} triggerClassName="text-body" /></div> : null}
+      {editable.type ? <div><FieldLabel>Type</FieldLabel><Combobox aria-label="Transaction type" disabled={disabled || pending} value={transactionType} onValueChange={(next) => {
+        setTransactionType(next);
+        if (next !== "expense" || !categories.some((item) => str(item.id) === categoryId)) {
+          setCategoryId("");
+          setSubcategoryId("");
+        }
+        if (next !== "expense") setSpendNature("unknown");
+      }} options={editableTransactionTypes.map((type) => ({ value: type, label: type.replaceAll("_", " ") }))} searchable={false} triggerClassName="text-body" /></div> : null}
       {editable.location ? <label className="block"><FieldLabel hint="optional">Location</FieldLabel><input disabled={disabled || pending} aria-label="Transaction location" value={location} onChange={(event) => setLocation(event.target.value)} placeholder="City or place" className={inputClass} /></label> : null}
       {editable.nature ? <div><FieldLabel>Spend nature</FieldLabel><Combobox aria-label="Spend nature" disabled={disabled || pending} value={spendNature} onValueChange={setSpendNature} options={[{ value: "unknown", label: "Not set" }, { value: "essential", label: "Essential" }, { value: "discretionary", label: "Discretionary" }, { value: "potentially_avoidable", label: "Potentially avoidable" }]} triggerClassName="text-body" /></div> : null}
       {editable.tags ? <label className="block sm:col-span-2"><FieldLabel hint="comma separated">Tags</FieldLabel><input disabled={disabled || pending} aria-label="Transaction tags" value={tags} onChange={(event) => setTags(event.target.value)} placeholder="vacation, family, reimbursable" className={inputClass} /></label> : null}
@@ -416,10 +594,10 @@ function TransactionEdit({ widget, onAction, disabled, pending }: WidgetProps) {
         <div><FieldLabel>Subcategory</FieldLabel><Combobox aria-label="Transaction subcategory" disabled={disabled || pending || !categoryId} value={subcategoryId} onValueChange={setSubcategoryId} placeholder={categoryId ? "Choose subcategory" : "Choose a category first"} options={subcategories.map((item) => ({ value: str(item.id), label: str(item.label) }))} triggerClassName="text-body" /></div>
       </> : null}
     </div>
-    <div className="flex flex-wrap gap-2">
-      <Button type="submit" disabled={disabled || pending || !amount.trim() || (needsCategory && (!categoryId || !subcategoryId))} size="lg">{pending ? <Loader2 className="animate-spin" /> : null}{completing ? "Save this entry" : "Apply changes"}</Button>
-      {cancelAction ? <ActionButton action={cancelAction} pending={pending} disabled={disabled} onClick={() => onAction(widget.id, cancelAction.action, cancelAction.payload)} /> : null}
-    </div>
+    <HitlActions className="-mx-3 -mb-3 border-t border-line">
+      {orderedActions(navigationActions).map((action) => <ActionButton key={action.id} action={action} pending={pending && submittedAction === action.id} disabled={disabled || pending} onClick={() => { markSubmitted(action.id); onAction(widget.id, action.action, action.payload); }} />)}
+      <Button type="submit" disabled={disabled || pending || !amount.trim() || (needsCategory && (!categoryId || !subcategoryId))}>{pending && submittedAction === "submit" ? <Loader2 className="animate-spin" /> : null}{completing ? "Save entry" : "Apply changes"}</Button>
+    </HitlActions>
   </form></Card>;
 }
 
@@ -451,7 +629,12 @@ function FinancialSummary({ widget }: WidgetProps) {
         {rest.length ? <li className="flex items-center gap-2 text-note"><span className="size-2 shrink-0 rounded-full bg-line-strong" /><span className="text-ink-muted">{rest.length} more {rest.length === 1 ? "category" : "categories"}</span><Money value={restTotal} currency={currency} className="ml-auto shrink-0 font-medium text-ink" /></li> : null}
         {total ? <li className="flex items-center gap-2 border-t border-line pt-2 text-note"><span className="font-medium text-ink-body">Total</span><Money value={total} currency={currency} className="ml-auto font-semibold text-ink" /></li> : null}
       </ul>
-    </div> : <p className="mx-5 my-4 rounded-2xl border border-dashed border-line py-6 text-center text-control text-ink-muted">No spending recorded in this period yet.</p>}
+    </div> : count || num(widget.data.amountMinor)
+      // A backend that answers an unscoped total sends no breakdown at all;
+      // the header already tells the whole story, so only a real zero earns
+      // the empty-state copy.
+      ? <div aria-hidden className="pb-4" />
+      : <p className="mx-5 my-4 rounded-2xl border border-dashed border-line py-6 text-center text-control text-ink-muted">No spending recorded in this period yet.</p>}
   </Card>;
 }
 
@@ -764,7 +947,7 @@ function Scenario({ widget }: WidgetProps) {
   </Card>;
 }
 
-function ProgressCard({ widget, onAction, disabled, pending }: WidgetProps) {
+function ProgressCard({ widget, onAction, onCancel, disabled, pending }: WidgetProps) {
   const isGoal = widget.type === widgetTypeIds.goal_progress;
   const currency = str(widget.data.currency, "INR");
   const current = num(isGoal ? widget.data.currentMinor : widget.data.spentMinor);
@@ -774,63 +957,62 @@ function ProgressCard({ widget, onAction, disabled, pending }: WidgetProps) {
   // Spending past a budget is the one thing this card exists to warn about.
   const over = !isGoal && current > total && total > 0;
   const remainder = over ? current - total : num(widget.data.remainingMinor);
-  return <Card className={over ? "border-danger-line" : undefined}>
-    <div className="p-4">
+  return <Card className={cn("hitl-card", over && "border-danger-line")}>
+    <div className="p-3">
       <div className="flex items-center gap-3">
-        <span className={cn("grid size-11 shrink-0 place-items-center rounded-2xl", over ? "bg-danger-tint text-danger" : "bg-secondary-tint text-secondary")}>{isGoal ? <Target size={20} /> : over ? <TriangleAlert size={20} /> : <WalletCards size={20} />}</span>
+        <span className={cn("grid size-9 shrink-0 place-items-center rounded-lg", over ? "bg-danger-tint text-danger" : "bg-secondary-tint text-secondary")}>{isGoal ? <Target size={17} /> : over ? <TriangleAlert size={17} /> : <WalletCards size={17} />}</span>
         <div className="min-w-0"><p className="text-meta font-semibold tracking-[0.08em] text-ink-muted uppercase">{isGoal ? "Savings goal" : "Monthly budget"}</p><h3 className="mt-0.5 font-heading text-body font-semibold text-ink">{str(widget.data.title)}</h3></div>
         <span className={cn("money ml-auto shrink-0 text-control font-semibold", over ? "text-danger-ink" : "text-secondary")}>{Math.round(ratio)}%</span>
       </div>
-      <div className="mt-4">
-        <Progress value={progress} aria-label={isGoal ? "Progress towards this goal" : "Share of this budget spent"} className={cn("h-2.5 bg-line", over ? "[&_[data-slot=progress-indicator]]:bg-danger" : "[&_[data-slot=progress-indicator]]:bg-secondary")} />
+      <div className="mt-3">
+        <Progress value={progress} aria-label={isGoal ? "Progress towards this goal" : "Share of this budget spent"} className={cn("h-2 bg-line", over ? "[&_[data-slot=progress-indicator]]:bg-danger" : "[&_[data-slot=progress-indicator]]:bg-secondary")} />
         <div className="mt-2 flex flex-wrap justify-between gap-3 text-note text-ink-muted">
           <span><Money value={current} currency={currency} className="font-medium text-ink-body" /> {isGoal ? "saved" : "spent"}</span>
           <span className={over ? "font-medium text-danger-ink" : undefined}><Money value={remainder} currency={currency} className={cn("font-medium", over ? "text-danger-ink" : "text-ink-body")} /> {over ? "over budget" : "remaining"}</span>
         </div>
-        <p className="mt-3 text-right text-control text-ink-muted">Target <Money value={total} currency={currency} className="font-semibold text-ink" /></p>
+        <p className="mt-2 text-right text-note text-ink-muted">Target <Money value={total} currency={currency} className="font-semibold text-ink" /></p>
       </div>
     </div>
-    <ActionRow widget={widget} disabled={disabled} pending={pending} onAction={onAction} />
+    <ActionRow widget={widget} disabled={disabled} pending={pending} onAction={onAction} onCancel={onCancel} />
   </Card>;
 }
 
-function ImportReview({ widget, onAction, disabled, pending }: WidgetProps) {
+function ImportReview({ widget, onAction, onCancel, disabled, pending }: WidgetProps) {
   const complete = str(widget.data.status) === "completed";
   const total = num(widget.data.total);
   const ready = num(widget.data.highConfidence);
   const review = num(widget.data.needsReview);
   const duplicates = num(widget.data.duplicates);
   const replay = Boolean(widget.data.idempotentReplay);
-  const tiles: Array<[string, number, string]> = [
-    ["Rows", total, "Rows found in the file"],
-    ["Ready", ready, complete ? "Recorded automatically" : "Will be recorded automatically"],
-    ["Needs a look", review, "I’ll ask about these in the conversation"],
-    ["Duplicates", duplicates, complete ? "Matched to transactions you already have" : "Checked once the import runs"],
+  const tiles: Array<[string, number]> = [
+    ["Rows", total],
+    ["Ready", ready],
+    ["Needs a look", review],
+    ["Duplicates", duplicates],
   ];
-  return <Card>
-    <div className="border-b border-line px-4 py-4">
+  return <Card className="hitl-card">
+    <div className="border-b border-line px-3.5 py-3">
       <p className={cn("text-meta font-semibold tracking-[0.08em] uppercase", complete ? "text-secondary" : "text-ink-muted")}>{complete ? "Import complete" : "Statement review"}</p>
       <h3 className="mt-1 truncate font-heading text-body font-semibold text-ink" title={str(widget.data.title)}>{str(widget.data.title)}</h3>
-      <p className="mt-1 text-note leading-5 text-ink-muted">{replay ? "You’ve imported this file before, so nothing was added twice." : complete ? `${ready} recorded${review ? `, ${review} waiting on you` : ""}.` : `Nothing is recorded until you import. ${total} row${total === 1 ? "" : "s"} read from this file.`}</p>
+      <p className="mt-0.5 text-note leading-4 text-ink-muted">{replay ? "Already imported—nothing was duplicated." : complete ? `${ready} recorded${review ? ` · ${review} need review` : ""}.` : `${total} row${total === 1 ? "" : "s"} ready to review before import.`}</p>
     </div>
-    {total > 0 ? <dl className="grid grid-cols-2 gap-2 p-4 sm:grid-cols-4">{tiles.map(([label, value, hint]) => <div key={label} className={cn("rounded-2xl px-3 py-3", label === "Duplicates" && !complete ? "bg-surface-sunken/60" : "bg-surface-sunken")}>
+    {total > 0 ? <dl className="grid grid-cols-2 gap-1.5 p-2.5 sm:grid-cols-4">{tiles.map(([label, value]) => <div key={label} className={cn("rounded-lg px-2.5 py-2", label === "Duplicates" && !complete ? "bg-surface-sunken/60" : "bg-surface-sunken")}>
       <dt className="text-meta font-semibold tracking-wide text-ink-muted uppercase">{label}</dt>
-      <dd className="money mt-1 text-title font-semibold text-ink">{!complete && label === "Duplicates" ? "—" : value}</dd>
-      <dd className="mt-0.5 text-meta leading-4 text-ink-muted">{hint}</dd>
+      <dd className="money mt-0.5 text-title font-semibold text-ink">{!complete && label === "Duplicates" ? "—" : value}</dd>
     </div>)}</dl> : <EmptyNote>This file has no transaction rows I can read. Check that it’s the statement export and not a summary, then attach it again.</EmptyNote>}
-    {widget.actions.length && total > 0 ? <ActionRow widget={widget} disabled={disabled} pending={pending} onAction={onAction} /> : null}
+    {(widget.actions.length || onCancel) && total > 0 ? <ActionRow widget={widget} disabled={disabled} pending={pending} onAction={onAction} onCancel={onCancel} /> : null}
   </Card>;
 }
 
 /** Both calculators keep their inputs after producing a result: the whole point
  *  of a scenario is trying the next one. */
 function CalculatorShell({ eyebrow, title, body, result, onEdit, disabled, children }: { eyebrow: string; title: string; body?: string; result?: React.ReactNode; onEdit?: () => void; disabled?: boolean; children?: React.ReactNode }) {
-  return <Card><div className="p-4">
+  return <Card><div className="p-3">
     <p className="text-meta font-semibold tracking-[0.08em] text-ink-muted uppercase">{eyebrow}</p>
     <h3 className="mt-1 font-heading text-body font-semibold text-ink">{title}</h3>
     {body ? <p className="mt-1 text-note leading-5 text-ink-muted">{body}</p> : null}
     {result}
-    {onEdit ? <Button type="button" variant="outline" disabled={disabled} onClick={onEdit} size="lg" className="mt-4">Try different numbers</Button> : null}
+    {onEdit ? <Button type="button" variant="outline" disabled={disabled} onClick={onEdit} className="mt-3">Try different numbers</Button> : null}
     {children}
   </div></Card>;
 }
@@ -856,12 +1038,12 @@ function useCalculatorEditor(widget: Widget) {
 }
 
 function CalculatorForm({ widget, onSubmit, problem, disabled, pending, submitLabel, children }: { widget: Widget; onSubmit: (event: FormEvent) => void; problem: string | null; disabled?: boolean; pending?: boolean; submitLabel: string; children: React.ReactNode }) {
-  return <Card><form onSubmit={onSubmit} noValidate className="p-4">
+  return <Card className="hitl-card"><form onSubmit={onSubmit} noValidate className="p-3">
     <h3 className="font-heading text-body font-semibold text-ink">{str(widget.data.title)}</h3>
     <p className="mt-1 text-note leading-5 text-ink-muted">{str(widget.data.body)}</p>
-    <div className="mt-4 grid gap-3 sm:grid-cols-2">{children}</div>
+    <div className="mt-3 grid gap-3 sm:grid-cols-2">{children}</div>
     {problem ? <FieldError>{problem}</FieldError> : null}
-    <Button type="submit" disabled={disabled || pending} size="lg" className="mt-4">{pending ? <Loader2 className="animate-spin" /> : null}{submitLabel}</Button>
+    <HitlActions className="-mx-3 -mb-3 mt-3 border-t border-line"><Button type="submit" disabled={disabled || pending}>{pending ? <Loader2 className="animate-spin" /> : null}{submitLabel}</Button></HitlActions>
   </form></Card>;
 }
 
@@ -948,28 +1130,27 @@ function ReconciliationReview({ widget, onAction, disabled, pending }: WidgetPro
   const merge = widget.actions.find((action) => action.action === widgetActionIds.merge_reconciliation);
   const separate = widget.actions.find((action) => action.action !== widgetActionIds.merge_reconciliation);
 
-  return <Card>
-    <div className="border-b border-line px-4 py-4">
+  return <Card className="hitl-card">
+    <div className="border-b border-line px-3.5 py-3">
       <div className="flex flex-wrap items-center gap-3">
-        <div className="min-w-0 flex-1"><p className="text-meta font-semibold tracking-[0.08em] text-danger-ink uppercase">Needs your review</p><h3 className="mt-1 font-heading text-body font-semibold text-ink">{str(widget.data.title, "Possible duplicate")}</h3></div>
-        <span className="money shrink-0 rounded-full bg-danger-tint px-3 py-1 text-note font-semibold text-danger-ink">{Math.round(num(widget.data.score) * 100)}% match</span>
+        <div className="min-w-0 flex-1"><h3 className="font-heading text-body font-semibold text-ink">{str(widget.data.title, "Possible duplicate")}</h3>{signals.length ? <p className="mt-0.5 text-note leading-4 text-ink-muted">Matched on {signals.map((signal) => signal.replaceAll("_", " ")).join(", ")}</p> : null}</div>
+        <span className="money shrink-0 rounded-full bg-danger-tint px-2.5 py-1 text-meta font-semibold text-danger-ink">{Math.round(num(widget.data.score) * 100)}% match</span>
       </div>
-      {signals.length ? <p className="mt-2 text-note leading-5 text-ink-muted">Matched on {signals.map((signal) => signal.replaceAll("_", " ")).join(", ")}.</p> : null}
     </div>
-    <div className="grid gap-2 p-4 sm:grid-cols-2">
-      <div className="rounded-2xl bg-surface-sunken p-4"><p className="text-meta font-semibold tracking-[0.08em] text-ink-muted uppercase">Just arrived · from {str(incoming.source, "an unnamed source").toUpperCase()}</p><Money value={incoming.amountMinor} currency={str(incoming.currency, "INR")} className="mt-3 block text-title font-semibold text-ink" /><p className="mt-1 text-control text-ink-body">{str(incoming.merchant, "Unknown merchant")}</p><p className="mt-2 text-note text-ink-muted">{formatInstant(incoming.transactionAt)}</p></div>
-      <div className="rounded-2xl bg-secondary-tint p-4"><p className="text-meta font-semibold tracking-[0.08em] text-secondary uppercase">Already recorded · {existingSources} source{existingSources === 1 ? "" : "s"}</p><Money value={existing.amountMinor} currency={str(existing.currency, "INR")} className="mt-3 block text-title font-semibold text-ink" /><p className="mt-1 text-control text-ink-body">{str(existing.merchant, "Unknown merchant")}</p><p className="mt-2 text-note text-ink-muted">{formatInstant(existing.transactionAt)}</p></div>
+    <div className="grid gap-1.5 p-2.5 sm:grid-cols-2">
+      <div className="rounded-lg bg-surface-sunken p-2.5"><p className="text-meta font-semibold tracking-[0.06em] text-ink-muted uppercase">New · {str(incoming.source, "unknown source")}</p><div className="mt-1.5 flex items-baseline gap-2"><Money value={incoming.amountMinor} currency={str(incoming.currency, "INR")} className="text-control font-semibold text-ink" /><p className="min-w-0 truncate text-note text-ink-body">{str(incoming.merchant, "Unknown merchant")}</p></div><p className="mt-1 text-meta text-ink-muted">{formatInstant(incoming.transactionAt)}</p></div>
+      <div className="rounded-lg bg-secondary-tint p-2.5"><p className="text-meta font-semibold tracking-[0.06em] text-secondary uppercase">Saved · {existingSources} source{existingSources === 1 ? "" : "s"}</p><div className="mt-1.5 flex items-baseline gap-2"><Money value={existing.amountMinor} currency={str(existing.currency, "INR")} className="text-control font-semibold text-ink" /><p className="min-w-0 truncate text-note text-ink-body">{str(existing.merchant, "Unknown merchant")}</p></div><p className="mt-1 text-meta text-ink-muted">{formatInstant(existing.transactionAt)}</p></div>
     </div>
-    {confirmingMerge && merge ? <div className="border-t border-line px-4 py-3">
-      <p className="text-note leading-5 text-ink-body">Merging keeps one transaction and records both sources against it. It can’t be split again from here.</p>
-      <div className="mt-3 flex flex-wrap gap-2">
-        <Button type="button" disabled={disabled || pending} onClick={() => onAction(widget.id, merge.action, merge.payload)} size="lg">{pending ? <Loader2 className="animate-spin" /> : null}Yes, merge them</Button>
-        <Button type="button" variant="ghost" disabled={disabled || pending} onClick={() => setConfirmingMerge(false)} size="lg">Go back</Button>
-      </div>
-    </div> : <div className="flex flex-wrap gap-2 border-t border-line px-4 py-3">
-      {merge ? <Button type="button" disabled={disabled || pending} onClick={() => setConfirmingMerge(true)} size="lg">{merge.label}</Button> : null}
+    {confirmingMerge && merge ? <div className="hitl-reveal border-t border-line px-3 py-2.5">
+      <p className="text-note leading-4 text-ink-body">Merge into one transaction and keep both sources? This can’t be split here later.</p>
+      <HitlActions className="-mx-3 -mb-2.5 mt-2.5 border-t border-line-soft">
+        <Button type="button" variant="ghost" disabled={disabled || pending} onClick={() => setConfirmingMerge(false)}>Go back</Button>
+        <Button type="button" disabled={disabled || pending} onClick={() => onAction(widget.id, merge.action, merge.payload)}>{pending ? <Loader2 className="animate-spin" /> : null}Merge</Button>
+      </HitlActions>
+    </div> : <HitlActions className="border-t border-line">
       {separate ? <ActionButton action={separate} pending={pending} disabled={disabled} onClick={() => onAction(widget.id, separate.action, separate.payload)} /> : null}
-    </div>}
+      {merge ? <Button type="button" disabled={disabled || pending} onClick={() => setConfirmingMerge(true)}>{merge.label}</Button> : null}
+    </HitlActions>}
   </Card>;
 }
 
@@ -984,11 +1165,11 @@ function TransactionList({ widget, onAction, disabled, pending }: WidgetProps) {
       // a status; showing "₹0" there would be a lie about money.
       const showAmount = num(amount) !== 0;
       const status = str(transaction.status);
-      return <li key={str(transaction.id, String(index))} className="flex flex-wrap items-center gap-3 px-4 py-4">
+      return <li key={str(transaction.id, String(index))} className="flex flex-wrap items-center gap-3 px-3.5 py-3">
         <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-surface-sunken text-secondary"><ReceiptText /></span>
         <div className="min-w-0 flex-1"><p className="truncate text-control font-medium text-ink">{str(transaction.merchant, "Recorded item")}</p><p className="truncate text-note text-ink-muted">{[formatInstant(transaction.transactionAt), status].filter(Boolean).join(" · ")}</p></div>
         {showAmount ? <Money value={amount} currency={str(transaction.currency, "INR")} className="shrink-0 text-control font-semibold text-ink" /> : null}
-        {actions.map((action, actionIndex) => { const actionId = action.action; if (!isWidgetActionId(actionId)) return null; const removing = actionId.includes("remove"); return <Button key={str(action.id, String(actionIndex))} type="button" variant="outline" disabled={disabled || pending} onClick={() => onAction(widget.id, actionId, (action.payload ?? {}) as Record<string, unknown>)} className={cn("h-10 basis-full rounded-lg text-meta sm:basis-auto", removing && "border-danger-line text-danger-ink hover:bg-danger-tint")}>{removing ? <Trash2 size={14} /> : <PencilLine size={14} />}{str(action.label, "Review")}</Button>; })}
+        {actions.map((action, actionIndex) => { const actionId = action.action; if (!isWidgetActionId(actionId)) return null; const removing = actionId.includes("remove"); return <Button key={str(action.id, String(actionIndex))} type="button" size="sm" variant="outline" disabled={disabled || pending} onClick={() => onAction(widget.id, actionId, (action.payload ?? {}) as Record<string, unknown>)} className={cn("basis-full sm:basis-auto", removing && "border-danger-line text-danger-ink hover:bg-danger-tint")}>{removing ? <Trash2 size={14} /> : <PencilLine size={14} />}{str(action.label, "Review")}</Button>; })}
       </li>;
     })}</ul> : <EmptyNote>Nothing here yet. Record a few transactions and this list fills itself in.</EmptyNote>}
   </Card>;
@@ -1040,7 +1221,7 @@ function Insight({ widget }: WidgetProps) {
 }
 
 function AnalysisTable({ widget }: WidgetProps) {
-  const [fullWidth, setFullWidth] = useState(false);
+  const [fullWidth] = useTablesWide();
   const currency = str(widget.data.currency, "INR");
   const queryResults = Array.isArray(widget.data.queryResults) ? widget.data.queryResults as Data[] : [];
   const transforms = Array.isArray(widget.data.transforms) ? widget.data.transforms as Data[] : [];
@@ -1051,7 +1232,7 @@ function AnalysisTable({ widget }: WidgetProps) {
   const roomLabels = new Set(budgetRoom.map((item) => str(item.label)));
   const empty = !queryResults.length && !transforms.length && !allocationRows.length && !Object.keys(context).length;
 
-  return <Card className={cn(fullWidth && "relative left-1/2 z-20 w-[calc(100vw-2rem)] max-w-[742px] -translate-x-1/2 sm:w-[calc(100vw-3rem)] md:w-[min(742px,calc(100vw-328px))]")}>
+  return <Card className={cn(fullWidth && WIDE_TABLE_BREAKOUT)}>
     <CardHeader eyebrow="Governed analysis" title={str(widget.data.title)} body={str(widget.data.body) || undefined} />
     {budgetRoom.length ? <div className="border-b border-line p-4">
       <p className="mb-2 text-meta font-semibold tracking-[0.08em] text-secondary uppercase">Below the limits you set</p>
@@ -1089,7 +1270,7 @@ function AnalysisTable({ widget }: WidgetProps) {
       };
       return <div key={`${str(result.name)}-${resultIndex}`} className="border-b border-line p-4 last:border-b-0">
         <div className="mb-3 flex flex-wrap items-end gap-3 gap-1"><p className="text-control font-semibold text-ink-body">{str(result.name)}</p><p className="text-meta text-ink-muted">{formatDay(result.start)} → {formatDay(result.end)}</p></div>
-        <DataTableView data={table} embedded onInlineWidthChange={setFullWidth} />
+        <DataTableView data={table} embedded parentManagesWidth />
       </div>;
     })}
     {allocationRows.length ? <div className="overflow-x-auto p-4"><table className="w-full min-w-[520px] text-left text-note">
@@ -1112,28 +1293,29 @@ function AvoidableExpenses({ widget, onAction, disabled, pending }: WidgetProps)
   const potential = widget.data.potentialMinor;
 
   function decide(id: string, spendNature: string) {
+    const action = widget.actions.find((candidate) => candidate.payload.transactionId === id && candidate.payload.spendNature === spendNature);
+    if (!action) return;
     setDecided((current) => ({ ...current, [id]: spendNature }));
-    onAction(widget.id, widgetActionIds.set_spend_nature, { transactionId: id, spendNature }, { markUsed: false });
+    onAction(widget.id, action.action, action.payload, { markUsed: false });
   }
 
-  return <Card>
-    <div className="border-b border-line px-4 py-4">
-      <p className="text-meta font-semibold tracking-[0.08em] text-danger-ink uppercase">Review, not an automatic judgement</p>
-      <h3 className="mt-1 font-heading text-body font-semibold text-ink">{str(widget.data.title)}</h3>
-      <p className="mt-1 text-note leading-5 text-ink-muted">{str(widget.data.body)}</p>
-      {potential != null && transactions.length ? <p className="mt-2 text-note text-ink-muted"><Money value={potential} currency={currency} className="font-semibold text-ink-body" /> across {transactions.length} expense{transactions.length === 1 ? "" : "s"} worth a look.</p> : null}
+  return <Card className="hitl-card">
+    <div className="border-b border-line px-3.5 py-3">
+      <h3 className="font-heading text-body font-semibold text-ink">{str(widget.data.title)}</h3>
+      {str(widget.data.body) ? <p className="mt-0.5 text-note leading-4 text-ink-muted">{str(widget.data.body)}</p> : null}
+      {potential != null && transactions.length ? <p className="mt-1 text-meta text-ink-muted"><Money value={potential} currency={currency} className="font-semibold text-ink-body" /> · {transactions.length} expense{transactions.length === 1 ? "" : "s"}</p> : null}
     </div>
     <ul className="divide-y divide-line">{transactions.map((transaction, index) => {
       const id = str(transaction.id, String(index));
       const choice = decided[id];
-      return <li key={id} className="p-4">
+      return <li key={id} className="p-3">
         <div className="flex items-start gap-3">
-          <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-surface-sunken text-danger-ink"><ReceiptText /></span>
+          <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-surface-sunken text-danger-ink"><ReceiptText size={14} /></span>
           <div className="min-w-0 flex-1">
             <div className="flex gap-3"><p className="min-w-0 truncate text-control font-semibold text-ink">{str(transaction.merchant, "Recorded expense")}</p><Money value={transaction.amountMinor} currency={str(transaction.currency, currency)} className="ml-auto shrink-0 text-control font-semibold text-ink" /></div>
             <p className="mt-0.5 text-meta text-ink-muted">{[transaction.category, transaction.subcategory, formatInstant(transaction.transactionAt)].filter(Boolean).map(String).join(" · ")}</p>
-            <p className="mt-2 text-meta leading-5 text-ink-muted">{Array.isArray(transaction.reasons) && transaction.reasons.length ? transaction.reasons.join(" · ") : "Worth a second look"}</p>
-            {choice ? <p className="mt-2 flex items-center gap-2 text-meta font-medium text-secondary"><Check size={14} />Marked {choice === "essential" ? "essential" : "potentially avoidable"}</p> : <div className="mt-2 flex flex-wrap gap-2">
+            <p className="mt-1.5 text-meta leading-4 text-ink-muted">{Array.isArray(transaction.reasons) && transaction.reasons.length ? transaction.reasons.join(" · ") : "Worth a second look"}</p>
+            {choice ? <p className="hitl-reveal mt-2 flex items-center gap-2 text-meta font-medium text-secondary"><Check size={14} />{choice === "essential" ? "Kept as essential" : "Marked avoidable"}</p> : <div className="mt-2 flex flex-wrap gap-2">
               <Button type="button" disabled={disabled} variant="outline" size="sm" onClick={() => decide(id, "potentially_avoidable")}>Mark avoidable</Button>
               <Button type="button" disabled={disabled} variant="ghost" size="sm" onClick={() => decide(id, "essential")}>Keep — it’s essential</Button>
             </div>}
@@ -1168,51 +1350,110 @@ function LoanStrategy({ widget }: WidgetProps) {
   </Card>;
 }
 
-/** A run is worth watching while it happens and worth a footnote once it is over:
- *  the steps answer "what is it doing?", which stops being the question the
- *  moment the answer arrives. So it opens itself live and folds to a single line
- *  when it finishes — and a reader who opens a finished run keeps it open. */
+/** A reasoning trace stays quiet as one line in the transcript, but unlike the
+ *  old lifecycle block it expands into the actual provider-emitted thinking
+ *  text rather than request/tool telemetry. */
 function AgentActivity({ widget }: WidgetProps) {
   const steps = Array.isArray(widget.data.steps) ? widget.data.steps as Data[] : [];
   const total = num(widget.data.totalMs);
-  // The in-flight card sets `live` itself: until the first step streams in there
-  // is no running step to infer it from, and a bare run should still read as one.
-  // Only the transient stream card is live. Persisted traces are terminal by
-  // definition; legacy open steps are failed runs, not eternal spinners.
   const live = widget.data.live === true;
+  // The persisted flag is authoritative in deployed builds. Local development
+  // also upgrades older stored traces that predate the flag but already retain
+  // their tool metadata.
+  const debugTrace = widget.data.debugTrace === true || environment.isDevelopment;
   const broke = steps.some((step) => str(step.status) === "failed" || (!live && str(step.status) === "running"));
-  const [override, setOverride] = useState<boolean | null>(null);
-  const open = override ?? live;
+  const decision = [...steps].reverse().find((step) => (str(step.stageId) || str(step.id)) === "classification" && str(step.detail));
+  const latest = steps.at(-1);
+  const transcript = str(widget.data.reasoningTrace)
+    || str(widget.data.summary)
+    || str(decision?.detail)
+    || str(latest?.detail)
+    || str(latest?.label)
+    || "Preparing a contextual answer";
+  const summary = plainLine(widget.data.summary) || plainLine(transcript) || "Preparing a contextual answer";
+  const expandedTranscript = plainTranscript(transcript) || summary;
+  const modelPasses = steps.filter((step) => {
+    const id = str(step.stageId) || str(step.id);
+    const tool = str(step.tool);
+    if (id === "classification" && tool === "unified_read_agent") return true;
+    if (id === "response_synthesis" && /^gpt-/i.test(tool)) return true;
+    return ["router", "validator", "reroute", "revalidation", "reasoning"].includes(id)
+      && (tool.startsWith("agno_") || /^gpt-/i.test(tool));
+  });
+  const routeLabel = modelPasses.length === 0
+    ? "Deterministic route"
+    : modelPasses.length === 1
+      ? "Single-pass route"
+      : `${modelPasses.length}-pass route`;
+  const trace = steps.map((step) => {
+    const label = (plainLine(step.label) || plainLine(step.id)).replace(/[.!?]+$/, "");
+    const detail = plainLine(step.detail).replace(/[.!?]+$/, "");
+    const stage = str(step.stageId) || str(step.id);
+    const tool = str(step.tool).trim();
+    const resultTool = str(step.resultTool).trim();
+    const duration = formatDuration(step.durationMs);
+    const cumulative = formatDuration(step.cumulativeMs);
+    const status = str(step.status);
+    return { label, detail, stage, tool, resultTool, duration, cumulative, status };
+  });
+  const [open, setOpen] = useState(false);
+  const detailsId = useId();
+  const activityLabel = broke
+    ? `Agent run failed: ${routeLabel}`
+    : live
+      ? `Agent run in progress: ${routeLabel}`
+      : `Agent run complete: ${routeLabel}${total > 0 ? `, ${formatDuration(total)}` : ""}`;
 
-  if (!open) return <button type="button" onClick={() => setOverride(true)} aria-expanded={false} className={cn("-ml-1.5 flex min-h-8 items-center gap-2 rounded-lg px-2 text-meta font-medium transition-colors", broke ? "text-danger-ink hover:bg-danger-tint" : "text-ink-muted hover:bg-surface-sunken hover:text-secondary")}>
-    {broke ? <TriangleAlert size={14} /> : live ? <LoaderCircle size={14} className="animate-spin" /> : <Activity size={14} />}
-    {broke ? "This run hit a problem" : live ? "Working on it" : `Worked for ${formatDuration(total)}`}
-    {steps.length ? <span className="font-normal text-ink-muted/80">· {steps.length} step{steps.length === 1 ? "" : "s"}</span> : null}
-    <ChevronDown size={14} />
-  </button>;
-
-  return <Card className="bg-ground">
-    <button type="button" onClick={() => setOverride(false)} aria-expanded className="flex w-full items-center gap-3 border-b border-line px-4 py-3 text-left transition-colors hover:bg-white/60">
-      <span className="grid size-8 shrink-0 place-items-center rounded-xl bg-secondary-tint text-secondary">{live ? <LoaderCircle className="animate-spin" /> : <Activity />}</span>
-      <div className="min-w-0"><p className="truncate text-note font-semibold text-ink-body">{str(widget.data.title, "Agent run")}</p><p className="mt-0.5 truncate text-meta text-ink-muted">{str(widget.data.engine, "Agno")} · {str(widget.data.model, "agent")}</p></div>
-      <span className="money ml-auto flex shrink-0 items-center gap-1 rounded-full bg-white px-3 py-1 text-meta font-semibold text-ink-muted"><Timer size={14} /> {formatDuration(total)} total</span>
-      <ChevronUp size={14} className="shrink-0 text-ink-muted" />
+  return <div aria-live={live ? "polite" : undefined} className="-ml-1.5 min-w-0">
+    <button
+      type="button"
+      onClick={() => setOpen((current) => !current)}
+      aria-label={activityLabel}
+      aria-expanded={open}
+      aria-controls={detailsId}
+      className={cn("flex min-h-8 w-full min-w-0 items-center gap-2 rounded-lg px-2 text-left text-meta font-medium leading-5 transition-colors hover:bg-surface-sunken", broke ? "text-danger-ink" : "text-ink-muted")}
+    >
+      {broke ? <TriangleAlert size={14} className="shrink-0" /> : null}
+      <span className="min-w-0 flex-1 truncate">{broke ? "This run hit a problem" : summary}</span>
+      <span className="shrink-0 font-normal text-ink-muted/80">{routeLabel}</span>
+      {total > 0 ? <span className="money ml-auto shrink-0 font-normal text-ink-muted/80">{formatDuration(total)}</span> : null}
+      <ChevronDown size={14} className={cn("shrink-0 transition-transform duration-300 motion-reduce:transition-none", open && "rotate-180")} />
     </button>
-    <ol aria-label="Steps in this run, each with its own duration and the total elapsed time" className="divide-y divide-line px-4">
-      {steps.map((step, index) => {
-        const running = live && str(step.status) === "running";
-        const failed = str(step.status) === "failed" || (!live && str(step.status) === "running");
-        const tool = str(step.tool);
-        const badge = str(step.badge);
-        return <li key={str(step.id, String(index))} className="grid grid-cols-[20px_1fr_auto] gap-2 py-3">
-          <span className={cn("pt-0.5 text-secondary", failed && "text-danger")}>{running ? <LoaderCircle size={14} className="animate-spin" /> : failed ? <TriangleAlert size={14} /> : tool && tool !== "deterministic_fallback" ? <Wrench size={14} /> : <Check size={14} />}</span>
-          <div className="min-w-0"><div className="flex min-w-0 items-center gap-2"><p className="truncate text-meta font-medium text-ink-body">{str(step.label)}</p>{badge ? <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[9px] font-semibold tracking-wide", failed ? "bg-danger-tint text-danger-ink" : "bg-secondary-tint text-secondary")}>{badge}</span> : null}</div>{tool ? <p className="mt-0.5 truncate font-mono text-meta text-ink-muted">{tool}</p> : null}{step.detail ? <p className="mt-0.5 text-meta leading-4 text-ink-muted">{str(step.detail)}</p> : null}</div>
-          <div className="money text-right text-meta text-ink-muted"><p>{running ? "running" : formatDuration(step.durationMs)}</p><p className="mt-0.5">Σ {formatDuration(step.cumulativeMs)}</p></div>
-        </li>;
-      })}
-      {!steps.length ? <li className="flex items-center gap-2 py-3 text-meta text-ink-muted"><LoaderCircle size={14} className="animate-spin" /> Working out how to answer…</li> : null}
-    </ol>
-  </Card>;
+    <div
+      className={cn(
+        "grid transition-[grid-template-rows,opacity] duration-300 ease-out motion-reduce:transition-none",
+        open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
+      )}
+    >
+      <div id={detailsId} data-testid="agent-activity-details" aria-hidden={!open} className="overflow-hidden">
+        <div className="px-2 pb-2 pt-1 text-meta leading-5 text-ink-muted">
+          <p className="whitespace-pre-wrap">{expandedTranscript}</p>
+          <div className="mt-3 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <span className="font-semibold text-ink-body">Execution trace</span>
+            <span>{routeLabel}</span>
+          </div>
+          {trace.length ? <ol className="mt-2 space-y-2.5" aria-label="Complete execution trace">
+            {trace.map((step, index) => <li key={`${step.stage}-${index}`} className="grid grid-cols-[1.25rem_minmax(0,1fr)] gap-x-1.5">
+              <span className="money text-ink-muted/70">{index + 1}.</span>
+              <div className="min-w-0">
+                <p><span className="font-semibold text-ink-body">{step.label}</span></p>
+                {step.detail ? <p>{step.detail}</p> : null}
+                {debugTrace && (step.stage || step.tool || step.resultTool) ? <p className="break-words">
+                  {step.stage ? <><span className="text-ink-muted/80">Stage</span> <span className="font-mono text-secondary">{step.stage}</span></> : null}
+                  {step.tool ? <>{step.stage ? <span> · </span> : null}<span className="text-ink-muted/80">Tool</span> <span className="font-mono text-secondary">{step.tool}</span></> : null}
+                  {step.resultTool ? <>{step.stage || step.tool ? <span> · </span> : null}<span className="text-ink-muted/80">Output</span> <span className="font-mono text-secondary">{step.resultTool}</span></> : null}
+                </p> : null}
+                <p>
+                  {step.status === "running" ? <span className="font-medium text-ink-body">Running</span> : step.status === "failed" ? <><span className="font-medium text-danger-ink">Failed after <span className="money">{step.duration}</span></span></> : <><span className="money font-medium text-ink-body">{step.duration}</span> step</>}
+                  <span> · </span><span className="money font-medium text-ink-body">{step.cumulative}</span> total elapsed
+                </p>
+              </div>
+            </li>)}
+          </ol> : <p className="mt-2">No additional execution stages were recorded.</p>}
+        </div>
+      </div>
+    </div>
+  </div>;
 }
 
 function GenericWidget({ widget, onAction, disabled, pending }: WidgetProps) {
@@ -1229,6 +1470,7 @@ function GenericWidget({ widget, onAction, disabled, pending }: WidgetProps) {
  * business widget is an explicit registry operation, never model-written JSX. */
 export const widgetRegistry: Partial<Record<Widget["type"], ComponentType<WidgetProps>>> = Object.freeze({
   agent_activity: AgentActivity,
+  clarification: Clarification,
   category_selector: CategorySelector,
   taxonomy_editor: TaxonomyEditor,
   transaction_type_selector: Selector,
@@ -1255,6 +1497,73 @@ export const widgetRegistry: Partial<Record<Widget["type"], ComponentType<Widget
   insight_card: Insight,
 });
 
+/** Decisions collapse once they are recorded. Keeping a disabled form or a
+ *  grid of dead options in the transcript makes history read like an unfinished
+ *  task; the receipt preserves the outcome in a single, scannable line. */
+const compactResolvedWidgets = new Set<Widget["type"]>([
+  widgetTypeIds.clarification,
+  widgetTypeIds.category_selector,
+  widgetTypeIds.transaction_type_selector,
+  widgetTypeIds.subcategory_selector,
+  widgetTypeIds.taxonomy_editor,
+  widgetTypeIds.account_selector,
+  widgetTypeIds.confirmation_card,
+  widgetTypeIds.transaction_preview,
+  widgetTypeIds.transaction_edit,
+  widgetTypeIds.transaction_list,
+  widgetTypeIds.data_table,
+  widgetTypeIds.budget_progress,
+  widgetTypeIds.goal_progress,
+  widgetTypeIds.reconciliation_review,
+  widgetTypeIds.import_review,
+]);
+
+function completedChoice(widget: Widget) {
+  const values = completionValues(widget);
+  if (str(values.customText)) return str(values.customText);
+  if (str(values.accountName)) return str(values.accountName);
+  if (str(values.name)) return str(values.name);
+  const selected = [values.categoryId, values.subcategoryId, values.accountId, values.optionId, values.transactionType].map((value) => str(value)).find(Boolean);
+  if (!selected) return "";
+  const candidates = [
+    ...(Array.isArray(widget.data.suggestions) ? widget.data.suggestions as Data[] : []),
+    ...(Array.isArray(widget.data.options) ? widget.data.options as Data[] : []),
+  ];
+  const match = candidates.find((candidate) => [candidate.id, candidate.categoryId, candidate.subcategoryId, candidate.accountId, candidate.value, candidate.transactionType].map((value) => str(value)).includes(selected));
+  return match ? str(match.label ?? match.name, selected.replaceAll("_", " ")) : selected.replaceAll("_", " ");
+}
+
+function completionSummary(widget: Widget) {
+  const completion = widget.data.completion && typeof widget.data.completion === "object" ? widget.data.completion as Data : {};
+  const action = str(completion.action);
+  const choice = completedChoice(widget);
+  const selectionActions = new Set<string>([widgetActionIds.select_category, widgetActionIds.select_subcategory, widgetActionIds.select_account, widgetActionIds.select_transaction_type, widgetActionIds.resolve_clarification]);
+  const creationActions = new Set<string>([widgetActionIds.create_category, widgetActionIds.create_subcategory]);
+  if (selectionActions.has(action)) return { status: "Selected", detail: choice };
+  if (creationActions.has(action)) return { status: "Added", detail: choice };
+  if (action === widgetActionIds.commit_transaction) return { status: "Saved", detail: "" };
+  if (action === widgetActionIds.update_saved_transaction || action === widgetActionIds.update_transaction_draft) return { status: "Updated", detail: "" };
+  if (action === widgetActionIds.edit_transaction || action === widgetActionIds.edit_saved_transaction) return { status: "Editing", detail: "" };
+  if (action === widgetActionIds.confirm_remove_transaction) return { status: "Removed", detail: "" };
+  if (action === widgetActionIds.merge_reconciliation) return { status: "Merged", detail: "" };
+  if (action === widgetActionIds.separate_reconciliation) return { status: "Kept separate", detail: "" };
+  if (action === widgetActionIds.commit_import) return { status: "Imported", detail: "" };
+  if (action === widgetActionIds.save_budget) return { status: "Budget saved", detail: "" };
+  if (action === widgetActionIds.save_goal) return { status: "Goal saved", detail: "" };
+  if (action === widgetActionIds.contribute_goal) return { status: "Contribution saved", detail: "" };
+  return { status: "Done", detail: choice };
+}
+
+function HitlReceipt({ widget, lifecycle }: { widget: Widget; lifecycle: "completed" | "cancelled" }) {
+  const cancelled = lifecycle === "cancelled";
+  const summary = cancelled ? { status: "Cancelled", detail: "" } : completionSummary(widget);
+  return <div role="status" className={cn("hitl-receipt widget-enter", cancelled && "hitl-receipt-cancelled")}>
+    <span aria-hidden className="hitl-receipt-mark">{cancelled ? <X size={12} strokeWidth={2.5} /> : <Check size={12} strokeWidth={3} />}</span>
+    <span className="font-medium text-ink-body">{summary.status}</span>
+    {summary.detail ? <><span aria-hidden className="text-line-strong">·</span><span className="min-w-0 truncate text-ink-muted">{summary.detail}</span></> : null}
+  </div>;
+}
+
 /** Memoised because a widget is expensive to draw and almost never changes: its
  *  payload is frozen once the turn is recorded, so the only reasons to redraw
  *  are the lock flags and the handler beside it. The transcript keeps those
@@ -1263,6 +1572,7 @@ export const WidgetRenderer = memo(function WidgetRenderer(props: WidgetProps) {
   const Renderer = widgetRegistry[props.widget.type] ?? GenericWidget;
   const lifecycle = str(props.widget.data.lifecycle, "pending");
   const resolved = lifecycle === "completed" || lifecycle === "cancelled";
+  if (resolved && compactResolvedWidgets.has(props.widget.type)) return <HitlReceipt widget={props.widget} lifecycle={lifecycle} />;
   const rendererProps = resolved ? { ...props, disabled: true } : props;
   const readonly = Boolean(rendererProps.disabled && props.widget.type !== widgetTypeIds.agent_activity);
   // Keep read-only tables scrollable and selectable. Individual controls still
@@ -1270,6 +1580,5 @@ export const WidgetRenderer = memo(function WidgetRenderer(props: WidgetProps) {
   // actions even if a renderer accidentally omits a disabled attribute.
   return <div aria-disabled={readonly || undefined} className={cn(readonly && "widget-readonly")}>
     <Renderer {...rendererProps} />
-    {resolved && props.widget.type !== widgetTypeIds.taxonomy_editor ? <div className="mt-2 flex items-center gap-2 px-1 text-meta font-semibold text-secondary"><Check size={14} />{lifecycle === "completed" ? "Applied" : "Cancelled"}</div> : null}
   </div>;
 });

@@ -1,14 +1,14 @@
-"use client";
-
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, CheckCircle2, Loader2, Mail, Smartphone, TriangleAlert } from "lucide-react";
-import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useNavigate } from "react-router";
+import { appPaths } from "@/routing/paths";
 import { Button } from "@/components/ui/button";
+import { environment } from "@/config/environment";
 import { ApiError, getAuthStatus, signInWithGoogle, startSignInCode, verifySignInCode, type OtpChannel, type OtpSent } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
+const GOOGLE_CLIENT_ID = environment.googleClientId;
 const GOOGLE_SCRIPT = "https://accounts.google.com/gsi/client";
 
 /* ── Shared pieces ──────────────────────────────────────────────────────────
@@ -227,6 +227,33 @@ declare global {
   interface Window { google?: GoogleIdentityApi }
 }
 
+type GoogleIdentitySession = {
+  clientId: string;
+  onCredential: (credential: string) => void;
+};
+
+// React Strict Mode deliberately mounts effects twice in development. Google
+// Identity, however, expects one initialize call per client id and warns that a
+// later call replaces the earlier callback. Keep the SDK session outside the
+// component, update only its callback, and still render a fresh official button
+// into each mounted holder.
+let googleIdentitySession: GoogleIdentitySession | null = null;
+
+function initializeGoogleIdentity(onCredential: (credential: string) => void): void {
+  if (!window.google) throw new Error("Google Identity did not expose its browser API.");
+  if (googleIdentitySession?.clientId === GOOGLE_CLIENT_ID) {
+    googleIdentitySession.onCredential = onCredential;
+    return;
+  }
+
+  const session: GoogleIdentitySession = { clientId: GOOGLE_CLIENT_ID, onCredential };
+  window.google.accounts.id.initialize({
+    client_id: GOOGLE_CLIENT_ID,
+    callback: (response) => session.onCredential(response.credential),
+  });
+  googleIdentitySession = session;
+}
+
 function loadGoogleScript(): Promise<void> {
   if (typeof document === "undefined") return Promise.resolve();
   const existing = document.querySelector<HTMLScriptElement>(`script[src="${GOOGLE_SCRIPT}"]`);
@@ -261,10 +288,7 @@ export function GoogleSignInButton({ onCredential, onProblem }: { onCredential: 
     loadGoogleScript()
       .then(() => {
         if (cancelled || !holder.current || !window.google) return;
-        window.google.accounts.id.initialize({
-          client_id: GOOGLE_CLIENT_ID,
-          callback: (response) => onCredential(response.credential),
-        });
+        initializeGoogleIdentity(onCredential);
         window.google.accounts.id.renderButton(holder.current, {
           type: "standard", theme: "outline", size: "large", text: "continue_with", shape: "pill", width: 320,
         });
@@ -288,7 +312,7 @@ export function GoogleSignInButton({ onCredential, onProblem }: { onCredential: 
 /* ── The page ───────────────────────────────────────────────────────────── */
 
 export function SignInPanel() {
-  const router = useRouter();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [channel, setChannel] = useState<OtpChannel>("phone");
   const [problem, setProblem] = useState<string | null>(null);
@@ -300,8 +324,8 @@ export function SignInPanel() {
   const enter = useCallback(async () => {
     // Nothing cached under the previous visitor may survive into this session.
     queryClient.clear();
-    router.replace("/");
-  }, [queryClient, router]);
+    navigate(appPaths.home, { replace: true });
+  }, [navigate, queryClient]);
 
   useEffect(() => { if (authenticated) void enter(); }, [authenticated, enter]);
 

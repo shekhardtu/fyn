@@ -82,6 +82,7 @@ class Settings(BaseSettings):
     reconciliation_model: str = "gpt-5.6-luna"
     embedding_model: str = "text-embedding-3-small"
     primary_agent_enabled: bool = True
+    unified_read_agent_enabled: bool = True
     location_enrichment_enabled: bool = False
     default_currency: str = DEFAULT_CURRENCY
     default_timezone: str = DEFAULT_TIMEZONE

@@ -7,17 +7,11 @@ from sqlalchemy.orm import Session
 
 from ..domain import TaxonomyScope
 from ..models import Budget, Category, Subcategory, Transaction, TransactionCategoryHint, TransactionDraft, User
-from ..taxonomy_catalog import DefaultCategorySlug
+from ..taxonomy_catalog import NON_EXPENSE_CATEGORY_SLUGS
 from .agent_tools import tool_contract
 from .extraction import normalize_merchant
 from .repositories import UserScopedRepository
 from .tool_models import EmptyInput, TaxonomyResult
-
-
-NON_EXPENSE_CATEGORY_SLUGS = frozenset({
-    DefaultCategorySlug.INCOME,
-    DefaultCategorySlug.INVESTMENT,
-})
 
 
 def _owned_or_system(model, user_id: UUID):

@@ -31,6 +31,7 @@ from ..schemas import (
     VisualizationLayout,
     VisualizationView,
     Widget,
+    WidgetAction,
     WidgetActionIcon,
     WidgetActionId,
     WidgetActionStyle,
@@ -137,7 +138,32 @@ class WidgetLibrary:
             capabilitiesKey=blueprint.capabilities_key,
             emptyMessage=blueprint.empty_message,
         )
-        return Widget(id=widget_id, type=WidgetType.DATA_TABLE, data=data.model_dump(mode="json", by_alias=True))
+        # Row controls are rendered from the table blueprint, while the same
+        # authorized transitions are also declared on the widget so the action
+        # boundary can validate them. The renderer never prints this flattened
+        # list as a second footer.
+        widget_actions = [
+            WidgetAction(
+                id=f"{item.id}-{row[item.resource_key]}",
+                label=item.label,
+                action=item.action,
+                style=item.style,
+                payload={item.payload_key: row[item.resource_key]},
+            )
+            for row in normalized_rows
+            for item in blueprint.row_actions
+            if row.get(item.resource_key) is not None
+            and (
+                not item.capability
+                or item.capability in (row.get(blueprint.capabilities_key) or [])
+            )
+        ]
+        return Widget(
+            id=widget_id,
+            type=WidgetType.DATA_TABLE,
+            data=data.model_dump(mode="json", by_alias=True),
+            actions=widget_actions,
+        )
 
     @staticmethod
     def generated_id(prefix: str) -> str:

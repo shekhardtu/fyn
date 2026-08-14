@@ -18,6 +18,7 @@ from .visualization_contracts import VisualEncodingContract, VisualFieldEncoding
 
 class WidgetType(ValueEnum):
     AGENT_ACTIVITY = "agent_activity"
+    CLARIFICATION = "clarification"
     CATEGORY_SELECTOR = "category_selector"
     TRANSACTION_TYPE_SELECTOR = "transaction_type_selector"
     SUBCATEGORY_SELECTOR = "subcategory_selector"
@@ -169,12 +170,29 @@ class SelectAccountPayload(DraftActionPayload):
     role: Literal["source_account", "destination_account"]
     option_id: UUID | None = Field(default=None, alias="optionId")
     account_id: UUID | None = Field(default=None, alias="accountId")
+    account_name: str | None = Field(default=None, alias="accountName", min_length=1, max_length=120)
+
+    @field_validator("account_name", mode="before")
+    @classmethod
+    def normalize_account_name(cls, value):
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
 
     @model_validator(mode="after")
     def require_account(self):
-        if self.option_id is None and self.account_id is None:
+        if self.option_id is None and self.account_id is None and not self.account_name:
             raise ValueError("Choose an account")
         return self
+
+
+class RevisitTransactionStepPayload(DraftActionPayload):
+    step: Literal["transaction_type", "category", "source_account"]
+
+
+class CancelPendingActionPayload(ActionPayloadBase):
+    resource_id: str = Field(alias="resourceId", min_length=1, max_length=64)
 
 
 class TransactionSpendNaturePayload(ActionPayloadBase):
@@ -250,6 +268,12 @@ class ReconciliationActionPayload(ActionPayloadBase):
     candidate_id: UUID = Field(alias="candidateId")
 
 
+class ResolveClarificationPayload(ActionPayloadBase):
+    clarification_id: UUID = Field(alias="clarificationId")
+    option_id: str = Field(alias="optionId", min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+    custom_text: str | None = Field(default=None, alias="customText", min_length=1, max_length=1000)
+
+
 ACTION_PAYLOAD_MODELS: dict[WidgetActionId, type[BaseModel]] = {
     WidgetActionId.SET_SPEND_NATURE: TransactionSpendNaturePayload,
     WidgetActionId.START_ADD_CATEGORY: DraftActionPayload,
@@ -263,6 +287,9 @@ ACTION_PAYLOAD_MODELS: dict[WidgetActionId, type[BaseModel]] = {
     WidgetActionId.SELECT_SUBCATEGORY: SelectSubcategoryPayload,
     WidgetActionId.CHANGE_CATEGORY: DraftActionPayload,
     WidgetActionId.SELECT_ACCOUNT: SelectAccountPayload,
+    WidgetActionId.REVISIT_TRANSACTION_STEP: RevisitTransactionStepPayload,
+    WidgetActionId.CANCEL_TRANSACTION_DRAFT: DraftActionPayload,
+    WidgetActionId.CANCEL_PENDING_ACTION: CancelPendingActionPayload,
     WidgetActionId.SAVE_BUDGET: SaveBudgetPayload,
     WidgetActionId.SAVE_GOAL: SaveGoalPayload,
     WidgetActionId.CONTRIBUTE_GOAL: ContributeGoalPayload,
@@ -271,6 +298,7 @@ ACTION_PAYLOAD_MODELS: dict[WidgetActionId, type[BaseModel]] = {
     WidgetActionId.CALCULATE_INVESTMENT_SCENARIO: InvestmentScenarioActionPayload,
     WidgetActionId.COMMIT_TRANSACTION: DraftActionPayload,
     WidgetActionId.EDIT_TRANSACTION: DraftActionPayload,
+    WidgetActionId.CANCEL_TRANSACTION_EDIT: DraftActionPayload,
     WidgetActionId.UPDATE_TRANSACTION_DRAFT: UpdateDraftPayload,
     WidgetActionId.EDIT_SAVED_TRANSACTION: TransactionActionPayload,
     WidgetActionId.CANCEL_SAVED_TRANSACTION_EDIT: TransactionActionPayload,
@@ -280,6 +308,7 @@ ACTION_PAYLOAD_MODELS: dict[WidgetActionId, type[BaseModel]] = {
     WidgetActionId.CANCEL_REMOVE_TRANSACTION: TransactionActionPayload,
     WidgetActionId.MERGE_RECONCILIATION: ReconciliationActionPayload,
     WidgetActionId.SEPARATE_RECONCILIATION: ReconciliationActionPayload,
+    WidgetActionId.RESOLVE_CLARIFICATION: ResolveClarificationPayload,
 }
 
 if set(ACTION_PAYLOAD_MODELS) != set(WidgetActionId):
@@ -307,6 +336,23 @@ class WidgetDataBase(BaseModel):
     lifecycle: WidgetLifecycle | None = None
     completion: dict[str, Any] | None = None
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+
+class ClarificationOptionData(BaseModel):
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+    label: str = Field(min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=240)
+
+
+class ClarificationData(WidgetDataBase):
+    clarification_id: UUID = Field(alias="clarificationId")
+    title: str = Field(min_length=1, max_length=120)
+    question: str = Field(min_length=3, max_length=500)
+    reason: str = Field(min_length=3, max_length=500)
+    conflict_fields: list[str] = Field(default_factory=list, alias="conflictFields", max_length=8)
+    options: list[ClarificationOptionData] = Field(min_length=2, max_length=6)
+    allow_custom: bool = Field(default=False, alias="allowCustom")
+    custom_label: str | None = Field(default=None, alias="customLabel", max_length=100)
 
 
 class DataTableColumn(BaseModel):
@@ -450,6 +496,9 @@ class AgentActivityData(WidgetDataBase):
     title: str
     engine: str
     model: str
+    summary: str = ""
+    reasoning_trace: str | None = Field(default=None, alias="reasoningTrace")
+    debug_trace: bool = Field(default=False, alias="debugTrace")
     steps: list[dict[str, Any]] = Field(default_factory=list)
     total_ms: float = Field(default=0, alias="totalMs", ge=0)
     live: bool = False
@@ -578,7 +627,9 @@ class FinancialSummaryData(WidgetDataBase):
 class AnalysisTableData(WidgetDataBase):
     title: str
     body: str | None = None
-    columns: list[dict[str, Any]] = Field(default_factory=list)
+    # Allocation analysis columns are month labels. Semantic-query tables use
+    # queryResults and construct their typed columns in the client.
+    columns: list[str] = Field(default_factory=list)
     rows: list[dict[str, Any]] = Field(default_factory=list)
     budget_room: list[dict[str, Any]] = Field(default_factory=list, alias="budgetRoom")
     query_results: list[dict[str, Any]] = Field(default_factory=list, alias="queryResults")
@@ -695,6 +746,7 @@ class ImportReviewData(WidgetDataBase, ImportSummaryData):
 
 WIDGET_DATA_MODELS: dict[WidgetType, type[BaseModel]] = {
     WidgetType.AGENT_ACTIVITY: AgentActivityData,
+    WidgetType.CLARIFICATION: ClarificationData,
     WidgetType.CATEGORY_SELECTOR: CategorySelectorData,
     WidgetType.TRANSACTION_TYPE_SELECTOR: TransactionTypeSelectorData,
     WidgetType.SUBCATEGORY_SELECTOR: SubcategorySelectorData,
@@ -742,6 +794,9 @@ class PendingAction(BaseModel):
     action: WidgetActionId
     resource_id: str
     requires_confirmation: bool = True
+    # Server-authored continuation state is copied into the durable interrupt,
+    # never sent as part of the public AgentResponse contract.
+    continuation: dict[str, Any] = Field(default_factory=dict, exclude=True)
 
 
 class DataReference(BaseModel):
@@ -789,10 +844,56 @@ class AgentRunOut(BaseModel):
     status: str
     last_sequence: int = Field(serialization_alias="lastSequence")
     cancel_requested: bool = Field(serialization_alias="cancelRequested")
+    final_message_id: UUID | None = Field(default=None, serialization_alias="finalMessageId")
+    delivery_mode: str = Field(default="verified_final", serialization_alias="deliveryMode")
     created_at: datetime = Field(serialization_alias="createdAt")
     started_at: datetime | None = Field(default=None, serialization_alias="startedAt")
+    first_response_at: datetime | None = Field(default=None, serialization_alias="firstResponseAt")
     finished_at: datetime | None = Field(default=None, serialization_alias="finishedAt")
+    duration_ms: float | None = Field(default=None, serialization_alias="durationMs")
+    time_to_first_response_ms: float | None = Field(default=None, serialization_alias="timeToFirstResponseMs")
     model_config = ConfigDict(from_attributes=True)
+
+
+class AgentRunEvaluationOut(BaseModel):
+    complete: bool
+    evidence_passed: bool = Field(serialization_alias="evidencePassed")
+    contextual: bool
+    grounded: bool
+    grounding_required: bool = Field(serialization_alias="groundingRequired")
+    depth_score: int = Field(ge=0, le=100, serialization_alias="depthScore")
+    quality_score: int = Field(ge=0, le=100, serialization_alias="qualityScore")
+    response_words: int = Field(ge=0, serialization_alias="responseWords")
+    citation_count: int = Field(ge=0, serialization_alias="citationCount")
+    widget_count: int = Field(ge=0, serialization_alias="widgetCount")
+    correctness_basis: Literal[
+        "structured_evidence",
+        "claim_integrity",
+        "unsupported_financial_figure",
+    ] = Field(serialization_alias="correctnessBasis")
+    signals: list[str] = Field(default_factory=list)
+
+
+class AgentRunMetricOut(BaseModel):
+    run: AgentRunOut
+    evaluation: AgentRunEvaluationOut | None = None
+
+
+class AgentThreadMetricsOut(BaseModel):
+    thread_id: UUID = Field(serialization_alias="threadId")
+    sample_size: int = Field(ge=0, serialization_alias="sampleSize")
+    completion_rate: float = Field(ge=0, le=1, serialization_alias="completionRate")
+    evidence_pass_rate: float | None = Field(default=None, ge=0, le=1, serialization_alias="evidencePassRate")
+    contextuality_rate: float | None = Field(default=None, ge=0, le=1, serialization_alias="contextualityRate")
+    grounding_rate: float | None = Field(default=None, ge=0, le=1, serialization_alias="groundingRate")
+    average_quality_score: float | None = Field(default=None, ge=0, le=100, serialization_alias="averageQualityScore")
+    average_depth_score: float | None = Field(default=None, ge=0, le=100, serialization_alias="averageDepthScore")
+    average_duration_ms: float | None = Field(default=None, ge=0, serialization_alias="averageDurationMs")
+    p50_duration_ms: float | None = Field(default=None, ge=0, serialization_alias="p50DurationMs")
+    p95_duration_ms: float | None = Field(default=None, ge=0, serialization_alias="p95DurationMs")
+    average_time_to_first_response_ms: float | None = Field(default=None, ge=0, serialization_alias="averageTimeToFirstResponseMs")
+    p50_time_to_first_response_ms: float | None = Field(default=None, ge=0, serialization_alias="p50TimeToFirstResponseMs")
+    recent_runs: list[AgentRunMetricOut] = Field(default_factory=list, serialization_alias="recentRuns")
 
 
 class AgentThreadStateOut(BaseModel):
@@ -972,6 +1073,7 @@ class TransactionListItemOut(BaseModel):
     spend_nature: SpendNature = Field(serialization_alias="spendNature")
     location: str | None = None
     source_count: int = Field(serialization_alias="sourceCount")
+    deleted_at: datetime | None = Field(default=None, serialization_alias="deletedAt")
 
 
 class TransactionUpdateIn(BaseModel):
@@ -1210,9 +1312,11 @@ class DataDeletionOut(BaseModel):
 
 class AgentActivityEvent(BaseModel):
     id: str
+    stage_id: str | None = Field(default=None, alias="stageId")
     label: str
     status: ExecutionStatus
     tool: str | None = None
+    result_tool: str | None = Field(default=None, alias="resultTool")
     detail: str | None = None
     badge: str | None = None
     duration_ms: float = Field(alias="durationMs", ge=0)

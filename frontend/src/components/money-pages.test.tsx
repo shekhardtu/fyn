@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { TransactionEditor } from "@/components/money-pages";
+import { TransactionEditor, TransactionRow } from "@/components/money-pages";
 import type { CategoryDirectoryOut, TransactionListItemOut } from "@/lib/protocol";
 
 /** The dropdowns are Base UI comboboxes now: open the trigger, press the row. */
@@ -34,7 +34,28 @@ const transaction: TransactionListItemOut = {
   spendNature: "discretionary",
   location: null,
   sourceCount: 1,
+  deletedAt: null,
 };
+
+describe("TransactionRow", () => {
+  it("keeps the edit affordance on an active row", () => {
+    const onEdit = vi.fn();
+    render(<TransactionRow transaction={transaction} onEdit={onEdit} />);
+
+    expect(screen.queryByText("Removed")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Edit Swiggy transaction" }));
+    expect(onEdit).toHaveBeenCalledWith(transaction);
+  });
+
+  it("strikes a removed row through, stamps the removal time, and drops the edit affordance", () => {
+    render(<TransactionRow transaction={{ ...transaction, deletedAt: "2026-08-14T10:15:00Z" }} onEdit={vi.fn()} />);
+
+    expect(screen.getByText("Removed")).toBeInTheDocument();
+    expect(screen.getByText("Swiggy").className).toContain("line-through");
+    expect(screen.getByText(/Removed \d{1,2} Aug 2026/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit Swiggy transaction" })).not.toBeInTheDocument();
+  });
+});
 
 describe("TransactionEditor", () => {
   it("submits a page edit through the generated transaction contract", () => {

@@ -1,9 +1,10 @@
 import { HttpAgent, type AgentSubscriber, type Interrupt } from "@ag-ui/client";
 import { AgentCapabilitiesSchema, type AgentCapabilities, type Message as AgUiMessage } from "@ag-ui/core";
 
-import { agentActivityEventSchema, agentResponseSchema, agentThreadStateSchema, authStatusSchema, bootstrapSchema, categoryDirectoryEntrySchema, categoryDirectorySchema, categorySubcategorySchema, conversationCreatedSchema, conversationPageSchema, conversationSchema, importResultSchema, otpSentSchema, overviewSchema, parseActionPayload, privacyStatusSchema, profileSchema, transactionCategoryHintSchema, transactionListItemSchema, transactionListSchema, type AgentActivityEvent, type AgentInterruptOut, type AgentResponse, type AgentThreadStateOut, type AuthStatusOut, type Bootstrap, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type ConversationCreatedOut, type ConversationOut, type ConversationPage, type ImportResult, type OtpSentOut, type OverviewOut, type PrivacyStatusOut, type ProfileOut, type TransactionCategoryHintOut, type TransactionListItemOut, type TransactionUpdateIn, type WidgetActionId } from "@/lib/protocol";
+import { environment } from "@/config/environment";
+import { agentActivityEventSchema, agentResponseSchema, agentThreadMetricsSchema, agentThreadStateSchema, authStatusSchema, bootstrapSchema, categoryDirectoryEntrySchema, categoryDirectorySchema, categorySubcategorySchema, conversationCreatedSchema, conversationPageSchema, conversationSchema, importResultSchema, otpSentSchema, overviewSchema, parseActionPayload, privacyStatusSchema, profileSchema, transactionCategoryHintSchema, transactionListItemSchema, transactionListSchema, type AgentActivityEvent, type AgentInterruptOut, type AgentResponse, type AgentThreadMetricsOut, type AgentThreadStateOut, type AuthStatusOut, type Bootstrap, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type ConversationCreatedOut, type ConversationOut, type ConversationPage, type ImportResult, type OtpSentOut, type OverviewOut, type PrivacyStatusOut, type ProfileOut, type TransactionCategoryHintOut, type TransactionListItemOut, type TransactionUpdateIn, type WidgetActionId } from "@/lib/protocol";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API_URL = environment.apiUrl;
 
 const UNREACHABLE = "We can’t reach your financial data right now. Check your connection and try again.";
 
@@ -72,9 +73,9 @@ async function send(path: string, init?: RequestInit) {
     // An abort raised by our own deadline is unreachability, not a cancelled
     // request; a caller's own abort is passed through so the thread can tell
     // "nobody is listening" from "this failed".
-    if (cause instanceof DOMException && cause.name === "TimeoutError") throw new Error(UNREACHABLE);
+    if (cause instanceof DOMException && cause.name === "TimeoutError") throw new Error(UNREACHABLE, { cause });
     if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
-    throw new Error(UNREACHABLE);
+    throw new Error(UNREACHABLE, { cause });
   }
 }
 
@@ -104,7 +105,7 @@ function conform<T>(schema: { parse: (value: unknown) => T }, payload: unknown, 
     return schema.parse(payload);
   } catch (cause) {
     console.error(`fyn AI returned a ${what} that does not match this client's contract`, cause, payload);
-    throw new Error(`fyn AI sent back a ${what} this version of the app can’t read. Reload the page to pick up the latest version, then try again.`);
+    throw new Error(`fyn AI sent back a ${what} this version of the app can’t read. Reload the page to pick up the latest version, then try again.`, { cause });
   }
 }
 
@@ -203,7 +204,7 @@ export async function updateTransaction(id: string, payload: TransactionUpdateIn
 }
 
 export async function loadConversation(id: string): Promise<ConversationOut> {
-  const result = conform(conversationSchema, await request(`/api/conversations/${id}`), "conversation");
+  const result = conform(conversationSchema, await request(`/api/conversations/${encodeURIComponent(id)}`), "conversation");
   hydrateFynAgent(result.id, result.messages);
   return result;
 }
@@ -477,6 +478,15 @@ async function runFynAgent(
     }
   }
   if (controller.signal.aborted) throw new DOMException("The agent run was detached.", "AbortError");
+  // Provider text can cross the wire before the server validates and commits
+  // the canonical response. A RUN_ERROR always wins over that provisional
+  // text; otherwise a failed resume looks successful while its interrupt
+  // remains open and the next message is rejected.
+  if (runFailure.message || runFailure.code) {
+    discardRejectedInput();
+    if (runFailure.code === "cancelled") throw new DOMException("The agent run was stopped.", "AbortError");
+    throw new Error(runFailure.message ?? "The agent run failed before its response was verified.");
+  }
   if (!response && assistantText) {
     response = {
       message: assistantText,
@@ -490,8 +500,7 @@ async function runFynAgent(
   }
   if (!response) {
     discardRejectedInput();
-    if (runFailure.code === "cancelled") throw new DOMException("The agent run was stopped.", "AbortError");
-    throw new Error(runFailure.message ?? "The agent stream ended before returning a verified response.");
+    throw new Error("The agent stream ended before returning a verified response.");
   }
   return { response, runId, interrupts, reasoningSummary };
 }
@@ -561,6 +570,10 @@ export async function loadAgentThreadState(conversationId: string): Promise<Agen
   return conform(agentThreadStateSchema, await request(`/api/agent/threads/${encodeURIComponent(conversationId)}`), "agent state");
 }
 
+export async function loadAgentThreadMetrics(conversationId: string): Promise<AgentThreadMetricsOut> {
+  return conform(agentThreadMetricsSchema, await request(`/api/agent/threads/${encodeURIComponent(conversationId)}/metrics`), "agent metrics");
+}
+
 export async function cancelAgentRun(runId: string): Promise<void> {
   await request(`/api/agent/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST", body: "{}" });
 }
@@ -599,7 +612,7 @@ export function uploadCsv(conversationId: string, file: File, onProgress?: (perc
       if (event.lengthComputable) onProgress?.(Math.min(99, Math.round(event.loaded / event.total * 100)));
     });
     request.addEventListener("load", () => {
-      let payload: unknown = null;
+      let payload: unknown;
       try { payload = JSON.parse(request.responseText); } catch { payload = null; }
       if (request.status < 200 || request.status >= 300) { reject(new ApiError(describe(payload, request.status), request.status)); return; }
       onProgress?.(100);

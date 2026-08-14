@@ -10,9 +10,10 @@ import re
 from datetime import date, datetime
 from decimal import Decimal
 from time import perf_counter
+from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import String, func, select
+from sqlalchemy import String, func, select, tuple_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 
@@ -57,12 +58,12 @@ from ..models import (
     User,
 )
 from ..schemas import AgentActivityEvent, AgentResponse, DataReference, ObservationIn, PendingAction, Widget, WidgetAction, WidgetLifecycle, WidgetType, WidgetUpdate, validate_action_payload
-from ..taxonomy_catalog import DefaultCategorySlug
+from ..taxonomy_catalog import DefaultCategorySlug, TRANSACTION_CATEGORY_ROOTS, category_slug_matches_transaction_type
 from ..visualization_contracts import ORDERED_VISUAL_FIELD_TYPES
 from .analytics import cash_position, category_breakdown, change_drivers, month_bounds, monthly_comparison, recurring_expenses, shift_month, spending_summary, subcategory_breakdown
 from .accounts import AccountRepository
 from .adapters import import_summary
-from .agents import ACCEPTED_COPILOT_VALIDATION_OUTCOMES, GROUPED_QUERY_OPERATIONS, RECENT_CONTEXT_MESSAGE_LIMIT, CompilationAssumption, CopilotDecision, CopilotDecisionValidation, QueryInterpretation, interpret_with_financial_copilot, releases_prior_scope, validate_copilot_decision
+from .agents import ACCEPTED_COPILOT_VALIDATION_OUTCOMES, GROUPED_QUERY_OPERATIONS, RECENT_CONTEXT_TURN_LIMIT, ClarificationRequest, CompilationAssumption, CopilotDecision, CopilotDecisionValidation, GovernedWorkflowHandoff, QueryInterpretation, interpret_with_financial_copilot, releases_prior_scope, run_unified_read_agent, stream_conversation_reply, validate_copilot_decision
 from .analysis_harness import HarnessValidationError, discover_analysis_tools, execute_generated_tool
 from .calculators import affordability, investment_projection, loan_with_prepayment
 from .capabilities import CapabilityId, ExecutorKind, SAFE_READ_CAPABILITIES, capability_spec
@@ -93,6 +94,8 @@ from .widget_library import FieldPresentation, RowCapability, TableBlueprint, Wi
 
 
 ActivityCallback = Callable[[dict], None]
+TextDeltaCallback = Callable[[UUID, str], None]
+ReasoningDeltaCallback = Callable[[str], None]
 DRAFT_RESOURCE_ID = "draft"
 TAXONOMY_FIELDS = frozenset(TAXONOMY_FIELD_NAMES)
 TAXONOMY_INFERENCE_FIELDS = TAXONOMY_FIELDS | {"merchant preference"}
@@ -155,6 +158,28 @@ def prepare_widget_action(
     action: str,
 ) -> tuple[Message, int, Widget] | None:
     """Validate that an action originated from this conversation's widget."""
+    found = _find_persisted_widget(db, conversation, widget_id)
+    if not found:
+        raise ValueError("This widget action is no longer available")
+    _message, _index, widget = found
+    lifecycle = WidgetLifecycle(widget.data.get("lifecycle") or WidgetLifecycle.PENDING)
+    if lifecycle is not WidgetLifecycle.PENDING:
+        raise ValueError("This widget action has already been completed")
+    if not any(item.action == WidgetActionId(action) for item in widget.actions):
+        raise ValueError("This action is not available on the widget")
+    return found
+
+
+def prepare_widget_cancellation(
+    db: Session,
+    conversation: Conversation,
+    widget_id: str,
+) -> tuple[Message, int, Widget] | None:
+    """Validate a protocol-level cancellation of a pending widget.
+
+    Cancelling an interrupt is deliberately not one of the widget's domain
+    actions. It closes the HITL boundary without authorizing domain work.
+    """
     found = _find_persisted_widget(db, conversation, widget_id)
     if not found:
         raise ValueError("This widget action is no longer available")
@@ -269,6 +294,38 @@ def _grounded_states(message: Message) -> tuple[dict | None, dict | None]:
     return analysis_state, data_scope
 
 
+def _message_context_entry(message: Message) -> dict[str, Any]:
+    """Expose prior wording plus bounded structured lineage to later turns.
+
+    Prose alone cannot tell a follow-up that “15 expenses” was all-time while
+    “8 expenses” was month-to-date. Query lineage carries those dates, filters,
+    and result shapes without replaying rows, entity IDs, or financial payloads.
+    """
+    entry: dict[str, Any] = {"role": message.role, "content": message.content}
+    if message.role != "assistant" or not message.citations:
+        return entry
+    analysis_state, _data_scope = _grounded_states(message)
+    if analysis_state:
+        entry["grounding"] = {
+            "entityType": analysis_state.get("entityType"),
+            "queries": (analysis_state.get("queries") or [])[:4],
+            "resultShapes": analysis_state.get("resultShapes") or [],
+        }
+    response_surfaces = []
+    for widget in (message.widgets or [])[:4]:
+        if not isinstance(widget, dict) or widget.get("type") == WidgetType.AGENT_ACTIVITY:
+            continue
+        data = widget.get("data") if isinstance(widget.get("data"), dict) else {}
+        response_surfaces.append({
+            "type": widget.get("type"),
+            "title": data.get("title"),
+            "rowCount": len(data.get("rows") or []) if isinstance(data.get("rows"), list) else None,
+        })
+    if response_surfaces:
+        entry["responseSurfaces"] = response_surfaces
+    return entry
+
+
 def _complete_analysis_state(state: dict | None) -> bool:
     if not state or not (state.get("query") or state.get("queries")):
         return False
@@ -280,6 +337,94 @@ def _complete_analysis_state(state: dict | None) -> bool:
             "metric", "dimensions", "filters", "start_date", "end_date", "order", "limit",
         } <= set(query)
     return "operation" in query or "result_mode" in query
+
+
+def _active_loan_chart_clarification(
+    text: str,
+    active_analysis_state: dict | None,
+    currency: str,
+) -> CopilotDecision | None:
+    """Stop a chart from silently choosing between conflicting loan inputs."""
+    if (
+        not active_analysis_state
+        or "Customer clarification (authoritative)" in text
+        or not re.search(r"\b(?:chart|draw|graph|plot|visuali[sz]e)\b", text, re.I)
+    ):
+        return None
+    queries = [
+        item
+        for item in (active_analysis_state.get("queries") or [])
+        if isinstance(item, dict) and item.get("source_kind") == "calculator"
+    ]
+    tenure_query = next((item for item in queries if item.get("tool") == "loan_payment"), None)
+    fixed_query = next((item for item in queries if item.get("tool") == "amortize_with_fixed_payment"), None)
+    if not tenure_query or not fixed_query:
+        return None
+    tenure_args = tenure_query.get("arguments") or {}
+    fixed_args = fixed_query.get("arguments") or {}
+    tenure_result = tenure_query.get("result_summary") or {}
+    supplied_payment = fixed_args.get("payment_minor")
+    calculated_payment = tenure_result.get("emi_minor")
+    if (
+        not isinstance(supplied_payment, int)
+        or not isinstance(calculated_payment, int)
+        or supplied_payment == calculated_payment
+        or tenure_args.get("principal_minor") != fixed_args.get("principal_minor")
+        or tenure_args.get("annual_rate_percent") != fixed_args.get("annual_rate_percent")
+    ):
+        return None
+    tenure_months = tenure_args.get("tenure_months")
+    if not isinstance(tenure_months, int) or tenure_months <= 0:
+        return None
+    clarification = ClarificationRequest(
+        question="Which installment assumption should control the loan chart?",
+        reason=(
+            f"The supplied payment is {format_money_minor(supplied_payment, currency)}, while the "
+            f"{tenure_months}-month schedule requires about {format_money_minor(calculated_payment, currency)}. "
+            "Those choices produce different repayment schedules."
+        ),
+        conflict_fields=["tenure", "monthly installment"],
+        options=[
+            {
+                "id": "use_tenure",
+                "label": f"Keep the {tenure_months}-month tenure",
+                "description": f"Chart the required installment of about {format_money_minor(calculated_payment, currency)}.",
+                "resolution": (
+                    f"Use the supplied tenure of {tenure_months} months as authoritative, ignore the conflicting "
+                    "fixed-payment scenario, and chart the calculated amortization schedule."
+                ),
+            },
+            {
+                "id": "use_installment",
+                "label": f"Keep the {format_money_minor(supplied_payment, currency)} installment",
+                "description": "Calculate the resulting tenure and chart that fixed-payment schedule.",
+                "resolution": (
+                    f"Use the supplied fixed monthly payment of {format_money_minor(supplied_payment, currency)} as "
+                    "authoritative, calculate the resulting tenure, and chart the fixed-payment amortization schedule."
+                ),
+            },
+            {
+                "id": "compare_scenarios",
+                "label": "Compare both schedules",
+                "description": "Show how tenure, interest, and principal reduction differ.",
+                "resolution": "Calculate both the tenure-controlled and fixed-payment schedules and compare them explicitly.",
+            },
+        ],
+        allow_custom=True,
+        custom_label="Use another assumption",
+    )
+    return CopilotDecision(
+        tool=CapabilityId.REQUEST_CLARIFICATION,
+        clarification=clarification,
+        confidence=1.0,
+        reason="The active calculator lineage contains conflicting tenure and payment assumptions.",
+        safe_reasoning_summary=[
+            "Compared the supplied loan assumptions",
+            "Paused before selecting one silently",
+        ],
+        validated_by="calculator_conflict_policy",
+        validation_confidence=1.0,
+    )
 
 
 """One turn's reply row, reserved while the turn is being admitted.
@@ -295,6 +440,11 @@ Held in a ContextVar rather than a module global because every request runs
 those an isolated copy of the context.
 """
 _reserved_reply: ContextVar[Message | None] = ContextVar("reserved_reply", default=None)
+# True when a response is already the authoritative user-facing answer: either
+# the same model run that saw its read tools wrote it, or a governed read
+# executor produced a verified summary/widget. The outer handler must not send
+# either through a second prose model.
+_response_is_final: ContextVar[bool] = ContextVar("response_is_final", default=False)
 
 
 def _reserve_reply(db: Session, conversation: Conversation) -> None:
@@ -314,19 +464,159 @@ def _history_only() -> tuple:
     return (Message.id != reserved.id,) if reserved is not None else ()
 
 
+def _recent_complete_turn_context(
+    db: Session,
+    conversation: Conversation,
+    current_user_message: Message,
+    *,
+    limit: int = RECENT_CONTEXT_TURN_LIMIT,
+) -> list[dict[str, Any]]:
+    """Return recent complete user/assistant turns with full message text.
+
+    A message-count limit can bisect a turn and the former 500-character slice
+    could remove the conclusion from a persisted answer. We first identify a
+    bounded set of recent user turns, then keep the newest complete ones and
+    preserve every selected message verbatim. The current prompt and its
+    reserved blank reply are deliberately excluded.
+    """
+    if limit <= 0:
+        return []
+    candidate_users = list(
+        db.scalars(
+            select(Message)
+            .where(
+                Message.conversation_id == conversation.id,
+                Message.role == "user",
+                Message.id != current_user_message.id,
+                *_history_only(),
+            )
+            .order_by(Message.created_at.desc(), Message.id.desc())
+            .limit(limit * 3)
+        )
+    )
+    if not candidate_users:
+        return []
+    oldest = candidate_users[-1]
+    rows = list(
+        db.scalars(
+            select(Message)
+            .where(
+                Message.conversation_id == conversation.id,
+                Message.id != current_user_message.id,
+                tuple_(Message.created_at, Message.id) >= tuple_(oldest.created_at, oldest.id),
+                *_history_only(),
+            )
+            .order_by(Message.created_at, Message.id)
+        )
+    )
+    turns: list[list[Message]] = []
+    current: list[Message] | None = None
+    for message in rows:
+        if message.role == "user":
+            if current and any(item.role == "assistant" and item.content for item in current):
+                turns.append(current)
+            current = [message]
+        elif message.role == "assistant" and current is not None and message.content:
+            current.append(message)
+    if current and any(item.role == "assistant" and item.content for item in current):
+        turns.append(current)
+    return [
+        _message_context_entry(message)
+        for turn in turns[-limit:]
+        for message in turn
+    ]
+
+
+def _recent_complete_turn_snapshot(
+    db: Session,
+    conversation: Conversation,
+    *,
+    limit: int = RECENT_CONTEXT_TURN_LIMIT,
+) -> list[dict[str, Any]]:
+    """Capture complete history immediately before admitting a new turn."""
+    if limit <= 0:
+        return []
+    candidate_users = list(
+        db.scalars(
+            select(Message)
+            .where(Message.conversation_id == conversation.id, Message.role == "user")
+            .order_by(Message.created_at.desc(), Message.id.desc())
+            .limit(limit * 3)
+        )
+    )
+    if not candidate_users:
+        return []
+    oldest = candidate_users[-1]
+    rows = list(
+        db.scalars(
+            select(Message)
+            .where(
+                Message.conversation_id == conversation.id,
+                tuple_(Message.created_at, Message.id) >= tuple_(oldest.created_at, oldest.id),
+            )
+            .order_by(Message.created_at, Message.id)
+        )
+    )
+    turns: list[list[Message]] = []
+    current: list[Message] | None = None
+    for message in rows:
+        if message.role == "user":
+            if current and any(item.role == "assistant" and item.content for item in current):
+                turns.append(current)
+            current = [message]
+        elif message.role == "assistant" and current is not None and message.content:
+            current.append(message)
+    if current and any(item.role == "assistant" and item.content for item in current):
+        turns.append(current)
+    return [
+        _message_context_entry(message)
+        for turn in turns[-limit:]
+        for message in turn
+    ]
+
+
 def _clarification_draft(
     db: Session,
     conversation: Conversation,
 ) -> TransactionDraft | None:
-    """Return the one most recent draft awaiting user input in this chat."""
-    return db.scalar(
-        select(TransactionDraft)
+    """Return the draft the latest assistant turn is actively presenting.
+
+    An unresolved row is not automatically the current conversation state.
+    Older clarification drafts can remain in the audit history after the user
+    moves on; treating the newest such row as active made every later prompt
+    look like a transaction-field answer. The visible latest assistant turn is
+    the authority for whether a draft is still being handed to the user.
+    """
+    latest_assistant = db.scalar(
+        select(Message)
         .where(
-            TransactionDraft.conversation_id == conversation.id,
-            TransactionDraft.state == DraftState.NEEDS_CLARIFICATION.value,
+            Message.conversation_id == conversation.id,
+            Message.role == "assistant",
+            Message.content != "",
+            *_history_only(),
         )
-        .order_by(TransactionDraft.updated_at.desc())
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(1)
     )
+    if latest_assistant is None:
+        return None
+    for widget in reversed(latest_assistant.widgets or []):
+        data = widget.get("data") if isinstance(widget, dict) else None
+        raw_draft_id = data.get("draftId") if isinstance(data, dict) else None
+        if not raw_draft_id:
+            continue
+        try:
+            draft_id = UUID(str(raw_draft_id))
+        except ValueError:
+            continue
+        return db.scalar(
+            select(TransactionDraft).where(
+                TransactionDraft.id == draft_id,
+                TransactionDraft.conversation_id == conversation.id,
+                TransactionDraft.state == DraftState.NEEDS_CLARIFICATION.value,
+            )
+        )
+    return None
 
 
 def _claim_reserved_reply(conversation: Conversation) -> Message | None:
@@ -362,6 +652,39 @@ def record_assistant_message(db: Session, conversation: Conversation, content: s
     return message
 
 
+_HITL_ESCAPE_ACTIONS = {
+    WidgetActionId.CANCEL_ADD_CATEGORY,
+    WidgetActionId.CANCEL_TAXONOMY_CHANGE,
+    WidgetActionId.CANCEL_TRANSACTION_DRAFT,
+    WidgetActionId.CANCEL_PENDING_ACTION,
+    WidgetActionId.CANCEL_TRANSACTION_EDIT,
+    WidgetActionId.CANCEL_SAVED_TRANSACTION_EDIT,
+    WidgetActionId.CANCEL_REMOVE_TRANSACTION,
+}
+
+
+def _validate_blocking_widget_contract(widgets: list[Widget], pending_action: PendingAction | None) -> None:
+    """Fail closed when a new blocking card has no way forward or out.
+
+    This is the scalable HITL boundary: renderers may change spacing and
+    layout, but a persisted interrupt cannot be created unless its widget owns
+    both the declared continuation and an explicit escape transition.
+    """
+    if pending_action is None:
+        return
+    actions = [action for widget in widgets for action in widget.actions]
+    if not any(action.action is pending_action.action for action in actions):
+        raise ValueError(f"Blocking widget is missing its {pending_action.action.value} continuation")
+    has_escape = any(action.action in _HITL_ESCAPE_ACTIONS for action in actions)
+    has_clarification_cancel = any(
+        action.action is WidgetActionId.RESOLVE_CLARIFICATION
+        and action.payload.get("optionId") == "cancel"
+        for action in actions
+    )
+    if not has_escape and not has_clarification_cancel:
+        raise ValueError("Blocking widget must declare a cancellation transition")
+
+
 def persist_agent_response(
     db: Session,
     conversation: Conversation,
@@ -371,10 +694,12 @@ def persist_agent_response(
     citations: list[DataReference] | None = None,
     pending_action: PendingAction | None = None,
     widget_updates: list[WidgetUpdate] | None = None,
+    commit: bool = True,
 ) -> AgentResponse:
     """Persist and return one response through the canonical reply boundary."""
     response_widgets = widgets or []
     response_citations = citations or []
+    _validate_blocking_widget_contract(response_widgets, pending_action)
     message = record_assistant_message(
         db,
         conversation,
@@ -382,7 +707,8 @@ def persist_agent_response(
         response_widgets,
         response_citations,
     )
-    db.commit()
+    if commit:
+        db.commit()
     return AgentResponse(
         message=content,
         widgets=response_widgets,
@@ -391,6 +717,113 @@ def persist_agent_response(
         citations=response_citations,
         conversation_id=conversation.id,
         message_id=message.id,
+    )
+
+
+def _clarification_response(
+    db: Session,
+    conversation: Conversation,
+    original_request: str,
+    clarification: ClarificationRequest,
+) -> AgentResponse:
+    """Persist a generic, resumable ambiguity instead of guessing."""
+    clarification_id = uuid4()
+    source_message = db.scalar(
+        select(Message)
+        .where(Message.conversation_id == conversation.id, Message.role == "user")
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(1)
+    )
+    actions = [
+        WidgetAction(
+            id=option.id,
+            label=option.label,
+            action=WidgetActionId.RESOLVE_CLARIFICATION,
+            style="primary" if index == 0 else "secondary",
+            payload={
+                "clarificationId": str(clarification_id),
+                "optionId": option.id,
+            },
+        )
+        for index, option in enumerate(clarification.options)
+    ]
+    if clarification.allow_custom:
+        actions.append(WidgetAction(
+            id="custom",
+            label=clarification.custom_label or "Something else",
+            action=WidgetActionId.RESOLVE_CLARIFICATION,
+            payload={
+                "clarificationId": str(clarification_id),
+                "optionId": "custom",
+            },
+        ))
+    # Cancellation is a first-class transition, not a special option tile. It
+    # remains in the same durable continuation contract as the authored
+    # choices, so resuming the interrupt cannot accidentally re-route the
+    # original request.
+    actions.append(WidgetAction(
+        id="cancel",
+        label="Cancel",
+        action=WidgetActionId.RESOLVE_CLARIFICATION,
+        style="ghost",
+        payload={
+            "clarificationId": str(clarification_id),
+            "optionId": "cancel",
+        },
+    ))
+    widget = Widget(
+        id=f"clarification-{clarification_id}",
+        type=WidgetType.CLARIFICATION,
+        data={
+            "clarificationId": str(clarification_id),
+            "title": "One detail needs your confirmation",
+            "question": clarification.question,
+            "reason": clarification.reason,
+            "conflictFields": clarification.conflict_fields,
+            "options": [
+                {
+                    "id": option.id,
+                    "label": option.label,
+                    "description": option.description,
+                }
+                for option in clarification.options
+            ],
+            "allowCustom": clarification.allow_custom,
+            "customLabel": clarification.custom_label,
+        },
+        actions=actions,
+    )
+    continuation = {
+        "schemaVersion": 1,
+        "clarificationId": str(clarification_id),
+        "sourceMessageId": str(source_message.id) if source_message else None,
+        "originalRequest": original_request,
+        "options": {
+            option.id: {
+                "label": option.label,
+                "resolution": option.resolution,
+                "disposition": option.disposition,
+            }
+            for option in clarification.options
+        } | {
+            "cancel": {
+                "label": "Cancel",
+                "resolution": "Cancel the request without making a change.",
+                "disposition": "cancel",
+            },
+        },
+        "allowCustom": clarification.allow_custom,
+    }
+    return persist_agent_response(
+        db,
+        conversation,
+        clarification.question,
+        widgets=[widget],
+        pending_action=PendingAction(
+            action=WidgetActionId.RESOLVE_CLARIFICATION,
+            resource_id=str(clarification_id),
+            continuation=continuation,
+        ),
     )
 
 
@@ -532,6 +965,48 @@ def _suggestion_body(recommendation: Recommendation, noun: str) -> str:
     return f"Ranked from your own history by {listed}, weighted toward recent choices."
 
 
+def _draft_navigation_actions(
+    draft: TransactionDraft,
+    *,
+    revisit_step: str | None = None,
+    revisit_label: str | None = None,
+) -> list[WidgetAction]:
+    """Every blocking draft step has a way back and a way out.
+
+    These are server-declared transitions, not decorative client controls: the
+    revisit action restores the previous valid state and cancellation retires
+    the draft so the next message cannot accidentally resume it.
+    """
+    actions: list[WidgetAction] = []
+    if revisit_step and revisit_label:
+        actions.append(WidgetAction(
+            id=f"revisit-{revisit_step}",
+            label=revisit_label,
+            action=WidgetActionId.REVISIT_TRANSACTION_STEP,
+            style="secondary",
+            payload={"draftId": str(draft.id), "step": revisit_step},
+        ))
+    actions.append(WidgetAction(
+        id="cancel-draft",
+        label="Cancel transaction",
+        action=WidgetActionId.CANCEL_TRANSACTION_DRAFT,
+        style="ghost",
+        payload={"draftId": str(draft.id)},
+    ))
+    return actions
+
+
+def _cancel_pending_action(resource_id: str, label: str = "Cancel") -> WidgetAction:
+    """Standard escape for a blocking action that has no mutable draft."""
+    return WidgetAction(
+        id="cancel",
+        label=label,
+        action=WidgetActionId.CANCEL_PENDING_ACTION,
+        style="ghost",
+        payload={"resourceId": resource_id},
+    )
+
+
 def _category_selector(db: Session, draft: TransactionDraft) -> Widget:
     categories = _expense_categories_for_user(db, draft.user_id)
     user = db.get(User, draft.user_id)
@@ -540,7 +1015,11 @@ def _category_selector(db: Session, draft: TransactionDraft) -> Widget:
         id=f"category-{draft.id}-{uuid4()}",
         type=WidgetType.CATEGORY_SELECTOR,
         data={"title": "Where should I categorize this?", "body": _suggestion_body(recommendation, "categories"), "draftId": str(draft.id), "suggestions": recommendation.as_dicts(), "options": [{"id": str(c.id), "slug": c.slug, "label": c.name, "icon": c.icon} for c in categories], "allowCreate": True},
-        actions=[WidgetAction(id="select", label="Select category", action=WidgetActionId.SELECT_CATEGORY, payload={"draftId": str(draft.id)})],
+        actions=[
+            WidgetAction(id="select", label="Select category", action=WidgetActionId.SELECT_CATEGORY, payload={"draftId": str(draft.id)}),
+            WidgetAction(id="add", label="Add new category", action=WidgetActionId.START_ADD_CATEGORY, style="ghost", payload={"draftId": str(draft.id)}),
+            *_draft_navigation_actions(draft, revisit_step="transaction_type", revisit_label="Change type"),
+        ],
     )
 
 
@@ -549,7 +1028,11 @@ def _new_category_widget(draft: TransactionDraft) -> Widget:
         id=f"category-create-{draft.id}-{uuid4()}",
         type=WidgetType.CATEGORY_SELECTOR,
         data={"title": "Add a new category", "mode": "create", "draftId": str(draft.id), "options": []},
-        actions=[WidgetAction(id="create", label="Add category", action=WidgetActionId.CREATE_CATEGORY, style="primary", payload={"draftId": str(draft.id)})],
+        actions=[
+            WidgetAction(id="create", label="Add category", action=WidgetActionId.CREATE_CATEGORY, style="primary", payload={"draftId": str(draft.id)}),
+            WidgetAction(id="back", label="Back", action=WidgetActionId.CANCEL_ADD_CATEGORY, style="secondary", payload={"draftId": str(draft.id)}),
+            *_draft_navigation_actions(draft),
+        ],
     )
 
 
@@ -587,13 +1070,14 @@ def _taxonomy_editor_widget(
             ),
             WidgetAction(
                 id="cancel-taxonomy",
-                label="Cancel",
+                label="Back" if draft else "Cancel",
                 action=WidgetActionId.CANCEL_TAXONOMY_CHANGE,
                 payload={
                     "draftId": str(draft.id) if draft else None,
                     "categoryId": str(parent.id) if parent else None,
                 },
             ),
+            *(_draft_navigation_actions(draft) if draft else []),
         ],
     )
 
@@ -609,7 +1093,11 @@ def _subcategory_selector(db: Session, draft: TransactionDraft) -> Widget:
         id=f"subcategory-{draft.id}-{uuid4()}",
         type=WidgetType.SUBCATEGORY_SELECTOR,
         data={"title": f"What type of {category.name.lower()} expense?", "body": _suggestion_body(recommendation, "subcategories"), "category": category.name, "draftId": str(draft.id), "suggestions": recommendation.as_dicts(), "options": [{"id": str(s.id), "slug": s.slug, "label": s.name} for s in subcategories], "allowCreate": True},
-        actions=[WidgetAction(id="select", label="Select subcategory", action=WidgetActionId.SELECT_SUBCATEGORY, payload={"draftId": str(draft.id)})],
+        actions=[
+            WidgetAction(id="select", label="Select subcategory", action=WidgetActionId.SELECT_SUBCATEGORY, payload={"draftId": str(draft.id)}),
+            WidgetAction(id="add", label="Add new subcategory", action=WidgetActionId.START_ADD_SUBCATEGORY, style="ghost", payload={"draftId": str(draft.id)}),
+            *_draft_navigation_actions(draft, revisit_step="category", revisit_label="Change category"),
+        ],
     )
 
 
@@ -619,8 +1107,15 @@ def _account_selector(db: Session, draft: TransactionDraft, role: str) -> Widget
     return Widget(
         id=f"account-{role}-{draft.id}-{uuid4()}",
         type=WidgetType.ACCOUNT_SELECTOR,
-        data={"title": title, "body": "Choose an account or type its name in the conversation.", "draftId": str(draft.id), "role": role, "options": [{"id": str(account.id), "slug": account.name.lower(), "label": account.name} for account in accounts]},
-        actions=[WidgetAction(id="select", label="Select account", action=WidgetActionId.SELECT_ACCOUNT, payload={"draftId": str(draft.id), "role": role})],
+        data={"title": title, "body": "Choose a saved account or enter a name.", "draftId": str(draft.id), "role": role, "options": [{"id": str(account.id), "slug": account.name.lower(), "label": account.name} for account in accounts]},
+        actions=[
+            WidgetAction(id="select", label="Select account", action=WidgetActionId.SELECT_ACCOUNT, payload={"draftId": str(draft.id), "role": role}),
+            *_draft_navigation_actions(
+                draft,
+                revisit_step="transaction_type" if role == "source_account" else "source_account",
+                revisit_label="Change type" if role == "source_account" else "Change source account",
+            ),
+        ],
     )
 
 
@@ -635,7 +1130,10 @@ def _transaction_type_selector(draft: TransactionDraft) -> Widget:
             "draftId": str(draft.id),
             "options": [{"id": value, "slug": value, "label": label} for value, label in options],
         },
-        actions=[WidgetAction(id="select", label="Select transaction type", action=WidgetActionId.SELECT_TRANSACTION_TYPE, payload={"draftId": str(draft.id)})],
+        actions=[
+            WidgetAction(id="select", label="Select transaction type", action=WidgetActionId.SELECT_TRANSACTION_TYPE, payload={"draftId": str(draft.id)}),
+            *_draft_navigation_actions(draft),
+        ],
     )
 
 
@@ -676,6 +1174,7 @@ def _confirmation(db: Session, draft: TransactionDraft) -> Widget:
             WidgetAction(id="save", label="Save transaction", action=WidgetActionId.COMMIT_TRANSACTION, style="primary", payload={"draftId": str(draft.id)}),
             WidgetAction(id="edit", label="Edit", action=WidgetActionId.EDIT_TRANSACTION, style="secondary", payload={"draftId": str(draft.id)}),
             *([WidgetAction(id="category", label="Change category", action=WidgetActionId.CHANGE_CATEGORY, style="ghost", payload={"draftId": str(draft.id)})] if draft.transaction_type == TransactionType.EXPENSE and draft.merchant_name else []),
+            *_draft_navigation_actions(draft),
         ],
     )
 
@@ -824,7 +1323,15 @@ def _apply_confident_taxonomy(db: Session, user: User, draft: TransactionDraft) 
 def _draft_response(db: Session, conversation: Conversation, draft: TransactionDraft) -> AgentResponse:
     if "amount" in draft.missing_fields:
         content = "What amount should I use?"
-        widgets = [Widget(id=f"amount-{draft.id}-{uuid4()}", type=WidgetType.TRANSACTION_EDIT, data={"draftId": str(draft.id), "title": "Add the missing amount", "fields": ["amount"]})]
+        widgets = [Widget(
+            id=f"amount-{draft.id}-{uuid4()}",
+            type=WidgetType.TRANSACTION_EDIT,
+            data={"draftId": str(draft.id), "title": "Add the missing amount", "fields": ["amount"]},
+            actions=[
+                WidgetAction(id="update", label="Save entry", action=WidgetActionId.UPDATE_TRANSACTION_DRAFT, style="primary", payload={"draftId": str(draft.id)}),
+                *_draft_navigation_actions(draft),
+            ],
+        )]
         pending = PendingAction(action=WidgetActionId.UPDATE_TRANSACTION_DRAFT, resource_id=str(draft.id))
     elif "transaction_type" in draft.missing_fields:
         content = "Is this an expense, income, transfer, or something else?"
@@ -914,7 +1421,17 @@ def _draft_or_commit(db: Session, user: User, conversation: Conversation, draft:
 
 def _looks_like_planning_command(text: str) -> bool:
     lowered = text.lower()
-    return any(token in lowered for token in ("budget", "goal", "savings", "save for", "saving for"))
+    # A planning noun is not a planning action. "Analyse my expense pattern so
+    # I can save" is a read-only diagnostic; routing it to goal CRUD produced a
+    # completely unrelated "you have no goal" reply after an analysis failure.
+    return bool(
+        re.search(
+            r"\b(?:create|set|start|make|add|contribute|put|update|change|show|list|view|track)\b"
+            r".{0,40}\b(?:budget|goal|savings)\b",
+            lowered,
+        )
+        or re.search(r"\b(?:save|saving)\s+for\b", lowered)
+    )
 
 
 def _goal_name(text: str) -> str:
@@ -982,7 +1499,7 @@ def _planning_response(db: Session, user: User, conversation: Conversation, text
             else:
                 name = f"{category.name} budget" if category else "Monthly spending budget"
                 payload = {"name": name, "amountMinor": parsed_amount, "categoryId": str(category.id) if category else None}
-                widgets = [_budget_widget(DRAFT_RESOURCE_ID, name, parsed_amount, 0, category.slug if category else None, user.currency, [WidgetAction(id="save", label="Set budget", action=WidgetActionId.SAVE_BUDGET, style="primary", payload=payload)])]
+                widgets = [_budget_widget(DRAFT_RESOURCE_ID, name, parsed_amount, 0, category.slug if category else None, user.currency, [WidgetAction(id="save", label="Set budget", action=WidgetActionId.SAVE_BUDGET, style="primary", payload=payload), _cancel_pending_action(DRAFT_RESOURCE_ID)])]
                 content = f"Ready to set a {format_money_minor(parsed_amount, user.currency)} monthly {category.name.lower() + ' ' if category else ''}budget."
                 pending = PendingAction(action=WidgetActionId.SAVE_BUDGET, resource_id=DRAFT_RESOURCE_ID)
         else:
@@ -1002,7 +1519,7 @@ def _planning_response(db: Session, user: User, conversation: Conversation, text
         elif not parsed_amount:
             content = f"How much should I add to your {goal.name} goal?"
         else:
-            widgets = [_goal_widget(str(goal.id), goal.name, goal.target_minor, goal.current_minor, goal.currency, [WidgetAction(id="contribute", label=f"Add {format_money_minor(parsed_amount, goal.currency)}", action=WidgetActionId.CONTRIBUTE_GOAL, style="primary", payload={"goalId": str(goal.id), "amountMinor": parsed_amount})])]
+            widgets = [_goal_widget(str(goal.id), goal.name, goal.target_minor, goal.current_minor, goal.currency, [WidgetAction(id="contribute", label=f"Add {format_money_minor(parsed_amount, goal.currency)}", action=WidgetActionId.CONTRIBUTE_GOAL, style="primary", payload={"goalId": str(goal.id), "amountMinor": parsed_amount}), _cancel_pending_action(str(goal.id))])]
             content = f"Ready to add {format_money_minor(parsed_amount, goal.currency)} to your {goal.name} goal."
             pending = PendingAction(action=WidgetActionId.CONTRIBUTE_GOAL, resource_id=str(goal.id))
     elif any(token in lowered for token in ("create", "set", "start", "save for", "saving for")):
@@ -1011,7 +1528,7 @@ def _planning_response(db: Session, user: User, conversation: Conversation, text
             content = f"What target amount should I use for your {name} goal?"
         else:
             payload = {"name": name, "targetMinor": parsed_amount}
-            widgets = [_goal_widget(DRAFT_RESOURCE_ID, name, parsed_amount, 0, user.currency, [WidgetAction(id="save", label="Create goal", action=WidgetActionId.SAVE_GOAL, style="primary", payload=payload)])]
+            widgets = [_goal_widget(DRAFT_RESOURCE_ID, name, parsed_amount, 0, user.currency, [WidgetAction(id="save", label="Create goal", action=WidgetActionId.SAVE_GOAL, style="primary", payload=payload), _cancel_pending_action(DRAFT_RESOURCE_ID)])]
             content = f"Ready to create a {format_money_minor(parsed_amount, user.currency)} {name} goal."
             pending = PendingAction(action=WidgetActionId.SAVE_GOAL, resource_id=DRAFT_RESOURCE_ID)
     else:
@@ -1083,14 +1600,16 @@ def _interpret_prompt(
     text: str,
     enable_reasoning: bool = True,
     activity_callback: Callable[[str, str, str, str | None, str | None], None] | None = None,
+    upstream_handoff: GovernedWorkflowHandoff | None = None,
+    recent_context_override: list[dict[str, Any]] | None = None,
 ) -> CopilotDecision | None:
-    recent = list(db.scalars(
-        select(Message)
-        .where(Message.conversation_id == conversation.id, Message.id != user_message.id, *_history_only())
-        .order_by(Message.created_at.desc(), Message.id.desc())
-        .limit(RECENT_CONTEXT_MESSAGE_LIMIT)
-    ))
-    recent_context = [{"role": item.role, "content": item.content} for item in reversed(recent)]
+    decision: CopilotDecision | None = None
+    last_validation: CopilotDecisionValidation | None = None
+    recent_context = (
+        recent_context_override
+        if recent_context_override is not None
+        else _recent_complete_turn_context(db, conversation, user_message)
+    )
     active_data_scope = conversation.active_data_scope
     active_analysis_state = conversation.active_analysis_state
     if not _complete_analysis_state(active_analysis_state):
@@ -1113,9 +1632,9 @@ def _interpret_prompt(
                 conversation.active_data_scope = data_scope
                 break
     # Always expose the last complete structured state to the semantic router.
-    # The router decides whether the new message is a continuation, while the
-    # domain scope policy below prevents stale record ids from becoming an
-    # implicit filter. This removes phrase/regex gating from multi-turn context.
+    # The domain policy below decides whether any of its filters may survive in
+    # the current query. This also keeps calculator results available to a new
+    # visual request without treating its filters as implicitly inherited.
     prompt_analysis_state = active_analysis_state
     prompt_data_scope = active_data_scope
     # ...with one exception the domain layer owns outright. "All transactions"
@@ -1133,6 +1652,8 @@ def _interpret_prompt(
         "allowedActions": ["route_new_request"],
         "activeDataScope": prompt_data_scope,
         "activeAnalysisState": prompt_analysis_state,
+        "correctionRequested": _is_correction_followup(text),
+        "upstreamHandoff": upstream_handoff.model_dump(mode="json", exclude_none=True) if upstream_handoff else None,
     }
     if active_draft:
         category = TaxonomyRepository(db, user.id).category(active_draft.category_id)
@@ -1154,6 +1675,8 @@ def _interpret_prompt(
             ],
             "activeDataScope": prompt_data_scope,
             "activeAnalysisState": prompt_analysis_state,
+            "correctionRequested": _is_correction_followup(text),
+            "upstreamHandoff": upstream_handoff.model_dump(mode="json", exclude_none=True) if upstream_handoff else None,
         }
 
     def reject_ungrounded_financial_reply(
@@ -1173,6 +1696,24 @@ def _interpret_prompt(
                 summary="Rejected an ungrounded model-authored financial figure.",
             )
         return validation
+
+    def clarification_from_validation(
+        validation: CopilotDecisionValidation | None,
+    ) -> CopilotDecision | None:
+        if not validation or validation.outcome != "request_human_input" or not validation.clarification:
+            return None
+        return CopilotDecision(
+            tool=CapabilityId.REQUEST_CLARIFICATION,
+            clarification=validation.clarification,
+            confidence=validation.confidence,
+            reason=validation.summary,
+            safe_reasoning_summary=[
+                "Detected an input ambiguity",
+                "Wait for the customer’s selection before executing",
+            ],
+            validated_by=get_settings().validator_model,
+            validation_confidence=validation.confidence,
+        )
 
     def bind_active_scope(value: CopilotDecision) -> CopilotDecision:
         target_query = value.query or (value.query_bundle.base_query if value.query_bundle else None)
@@ -1210,22 +1751,90 @@ def _interpret_prompt(
             })
         return value.model_copy(update={"query": unscoped_query})
 
+    def apply_explicit_context_scope(value: CopilotDecision) -> CopilotDecision:
+        """Bind an explicit those/these refinement without asking a critic."""
+        target_query = value.query or (value.query_bundle.base_query if value.query_bundle else None)
+        if (
+            not target_query
+            or target_query.use_active_scope
+            or not active_data_scope
+            or not _references_active_data_scope(text)
+        ):
+            return value
+        scoped_query = target_query.model_copy(update={"use_active_scope": True})
+        if activity_callback:
+            activity_callback(
+                "state_transition_policy",
+                "Bound the explicitly referenced prior result set",
+                "completed",
+                "domain_policy",
+                f"{active_data_scope.get('entityCount', 0)} canonical transaction IDs",
+            )
+        if value.query_bundle:
+            return value.model_copy(update={
+                "query_bundle": value.query_bundle.model_copy(update={"base_query": scoped_query}),
+            })
+        return value.model_copy(update={"query": scoped_query})
+
+    def release_unreferenced_analysis_filters(value: CopilotDecision) -> CopilotDecision:
+        target_query = value.query or (value.query_bundle.base_query if value.query_bundle else None)
+        if not target_query:
+            return value
+        released = _release_unreferenced_prior_filters(text, target_query, active_analysis_state)
+        if released == target_query:
+            return value
+        if activity_callback:
+            activity_callback(
+                "scope_policy",
+                "Released filters from an unrelated prior analysis",
+                "completed",
+                "domain_policy",
+                "Only filters stated by this independent request were retained",
+            )
+        if value.query_bundle:
+            return value.model_copy(update={
+                "query_bundle": value.query_bundle.model_copy(update={"base_query": released}),
+            })
+        return value.model_copy(update={"query": released})
+
     def normalize_query_contract(value: CopilotDecision) -> CopilotDecision:
         """Repair contradictions visible from the typed schema, never prose."""
-        if not value.query or value.query.operation != "rank":
+        if not value.query:
             return value
-        if value.query.group_by == "none":
+        query = value.query
+        lowered = text.casefold()
+        descending_rank = bool(re.search(r"\b(?:highest|largest|biggest|most expensive)\b", lowered))
+        ascending_rank = bool(re.search(r"\b(?:lowest|smallest|least expensive)\b", lowered))
+        if query.operation != "rank" and (descending_rank or ascending_rank):
+            query = query.model_copy(update={
+                "operation": "rank",
+                "sort_direction": "asc" if ascending_rank else "desc",
+                "result_mode": "summary" if query.group_by != "none" else "transaction_list",
+                "limit": 1,
+            })
+            value = value.model_copy(update={"query": query})
+            if activity_callback:
+                activity_callback(
+                    "contract_normalization",
+                    "Preserved the explicit ranking request",
+                    "completed",
+                    "domain_policy",
+                    "The typed route had retained a list shape for an explicit highest/lowest request",
+                )
+        if query.operation != "rank":
+            return value
+        if query.group_by == "none":
             return value.model_copy(update={
-                "query": value.query.model_copy(update={
+                "query": query.model_copy(update={
                     "result_mode": "transaction_list",
-                    "limit": 1,
+                    "limit": 1 if descending_rank or ascending_rank else query.limit,
                 }),
             })
         redundant_group = any((
-            value.query.group_by == "category" and bool(value.query.category_slug),
-            value.query.group_by == "subcategory" and bool(value.query.subcategory_slug),
-            value.query.group_by == "merchant" and bool(value.query.merchant),
-            value.query.group_by == "account" and bool(value.query.account),
+            query.group_by == "category" and bool(query.category_slug),
+            query.group_by == "subcategory" and bool(query.subcategory_slug),
+            query.group_by == "merchant" and bool(query.merchant),
+            query.group_by == "account" and bool(query.account),
         ))
         if not redundant_group:
             return value
@@ -1235,13 +1844,13 @@ def _interpret_prompt(
                 "Resolved a filtered rank to individual records",
                 "completed",
                 "domain_policy",
-                f"A fixed {value.query.group_by} cannot also be the ranking dimension",
+                f"A fixed {query.group_by} cannot also be the ranking dimension",
             )
         return value.model_copy(update={
-            "query": value.query.model_copy(update={
+            "query": query.model_copy(update={
                 "result_mode": "transaction_list",
                 "group_by": "none",
-                "limit": 1,
+                "limit": 1 if descending_rank or ascending_rank else query.limit,
             }),
         })
 
@@ -1262,10 +1871,17 @@ def _interpret_prompt(
         return all(current.get(field) == prior.get(field) for field in scope_fields)
     try:
         taxonomy = _agent_taxonomy(db, user)
-        runtime_tools = _user_runtime_tools(db, user, _local_today(user))
+        # The unified agent has already determined that these tools cannot
+        # finish a terminal handoff. Reinstalling them lets any successful but
+        # irrelevant summary override the requested list/chart/workflow.
+        runtime_tools = [] if upstream_handoff else _user_runtime_tools(db, user, _local_today(user))
         if activity_callback:
             activity_callback("retrieval", "Retrieving relevant validated finance capabilities", "running", "semantic_rag", None)
-        reusable_tools = discover_analysis_tools(db, user.id, text)
+        reusable_tools = (
+            discover_analysis_tools(db, user.id, text)
+            if not upstream_handoff or upstream_handoff.workflow == "advanced_analysis"
+            else []
+        )
         if activity_callback:
             activity_callback("retrieval", "Retrieved semantic context", "completed", "semantic_rag", f"{len(reusable_tools)} relevant validated plan{'s' if len(reusable_tools) != 1 else ''}")
         settings = get_settings()
@@ -1289,7 +1905,9 @@ def _interpret_prompt(
             activity_callback("router", f"{settings.router_model} produced a typed decision", "completed", "agno_router", decision.tool if decision else "No valid decision")
         if not decision:
             return None
-        decision = normalize_query_contract(remove_unrequested_scope(decision))
+        decision = normalize_query_contract(apply_explicit_context_scope(
+            release_unreferenced_analysis_filters(remove_unrequested_scope(decision))
+        ))
         if decision.tool in {CapabilityId.CONVERSATION, CapabilityId.VISUALIZE_COMPUTATION} and decision.tool_grounding:
             # CopilotRouteDecision cannot manufacture this field. It is added
             # only after Agno reports a successful call to one of this run's
@@ -1307,6 +1925,41 @@ def _interpret_prompt(
                 "validated_by": "runtime_tool_policy",
                 "validation_confidence": 1.0,
             })
+        deterministic_rejection = reject_ungrounded_financial_reply(decision, None)
+        if deterministic_rejection:
+            if activity_callback:
+                activity_callback(
+                    "validator",
+                    "Rejected an ungrounded financial claim",
+                    "completed",
+                    "deterministic_evidence_policy",
+                    deterministic_rejection.summary,
+                )
+            return CopilotDecision(
+                tool=CapabilityId.UNKNOWN,
+                reply=(
+                    "I couldn’t validate that financial answer against an authenticated result, "
+                    "so I haven’t presented it as fact. Please ask me to run the calculation or read the records again."
+                ),
+                confidence=1.0,
+                reason="Deterministic evidence policy rejected an ungrounded financial claim.",
+                validated_by="deterministic_evidence_policy",
+                validation_confidence=1.0,
+            )
+        if not capability_spec(decision.tool).requires_model_validation:
+            decision = bind_active_scope(decision)
+            if activity_callback:
+                activity_callback(
+                    "validator",
+                    "Verified the typed low-risk contract",
+                    "completed",
+                    "deterministic_contract_policy",
+                    "No independent model review is required for this read-only or conversational route",
+                )
+            return decision.model_copy(update={
+                "validated_by": "deterministic_contract_policy",
+                "validation_confidence": 1.0,
+            })
         if activity_callback:
             activity_callback("validator", f"Validating with {settings.validator_model}", "running", "agno_validator", None)
         validation = validate_copilot_decision(
@@ -1318,9 +1971,13 @@ def _interpret_prompt(
             recent_context,
         )
         validation = reject_ungrounded_financial_reply(decision, validation)
+        last_validation = validation
         validation_label = validation.outcome.replace("_", " ") if validation else "unavailable"
         if activity_callback:
             activity_callback("validator", f"{settings.validator_model}: {validation_label}", "completed", "agno_validator", validation.summary if validation else "Validator unavailable")
+        requested_clarification = clarification_from_validation(validation)
+        if requested_clarification:
+            return requested_clarification
         if validation and validation.outcome in ACCEPTED_COPILOT_VALIDATION_OUTCOMES:
             decision = bind_active_scope(decision)
             return decision.model_copy(update={"validated_by": settings.validator_model, "validation_confidence": validation.confidence})
@@ -1384,6 +2041,9 @@ def _interpret_prompt(
             if activity_callback:
                 repair_label = repaired_validation.outcome.replace("_", " ") if repaired_validation else "unavailable"
                 activity_callback("repair_validation", f"{settings.validator_model}: {repair_label}", "completed", "agno_validator", repaired_validation.summary if repaired_validation else "Validator unavailable")
+            requested_clarification = clarification_from_validation(repaired_validation)
+            if requested_clarification:
+                return requested_clarification
             if repaired_validation and repaired_validation.outcome in ACCEPTED_COPILOT_VALIDATION_OUTCOMES:
                 decision = bind_active_scope(decision)
                 return decision.model_copy(update={"validated_by": settings.validator_model, "validation_confidence": repaired_validation.confidence})
@@ -1416,7 +2076,9 @@ def _interpret_prompt(
                 activity_callback("reroute", f"{settings.analysis_model} produced a revised decision", "completed", "agno_reroute", stronger.tool if stronger else "No valid decision")
             if not stronger:
                 return _rejected_read_only_analysis(decision, validation)
-            stronger = normalize_query_contract(remove_unrequested_scope(stronger))
+            stronger = normalize_query_contract(apply_explicit_context_scope(
+                release_unreferenced_analysis_filters(remove_unrequested_scope(stronger))
+            ))
             if _decision_fingerprint(stronger) == _decision_fingerprint(decision):
                 # A repair that reproduces the rejected contract is lateral
                 # movement, not progress: for a chart the plan is compiled from
@@ -1443,15 +2105,23 @@ def _interpret_prompt(
                 recent_context,
             )
             second = reject_ungrounded_financial_reply(stronger, second)
+            last_validation = second
             second_label = second.outcome.replace("_", " ") if second else "unavailable"
             if activity_callback:
                 activity_callback("revalidation", f"{settings.validator_model}: {second_label}", "completed", "agno_validator", second.summary if second else "Validator unavailable")
+            requested_clarification = clarification_from_validation(second)
+            if requested_clarification:
+                return requested_clarification
             if not second or second.outcome == "reject":
                 return _rejected_read_only_analysis(decision, second or validation)
             stronger = bind_active_scope(stronger)
             return stronger.model_copy(update={"validated_by": settings.validator_model, "validation_confidence": second.confidence})
     except Exception as error:
         db.add(AIAction(user_id=user.id, conversation_id=conversation.id, action_type="primary_router", payload_redacted={"errorType": type(error).__name__}, status=ExecutionStatus.FAILED))
+        if decision:
+            rejected_read = _rejected_read_only_analysis(decision, last_validation)
+            if rejected_read:
+                return rejected_read
         return None
     return bind_active_scope(decision) if decision else None
 
@@ -1461,7 +2131,10 @@ def _extracted_from_decision(text: str, decision: CopilotDecision, today: date, 
     interpreted = decision.transaction
     if not interpreted:
         return baseline
-    explicit = set(interpreted.explicit_fields)
+    interpreted_explicit = set(interpreted.explicit_fields)
+    # A model may add understanding, but it cannot demote a value the
+    # deterministic parser read directly from the user's text to "inferred".
+    explicit = interpreted_explicit | set(baseline.explicit_fields)
     transaction_type = interpreted.transaction_type
     if transaction_type == TransactionType.UNKNOWN and "transaction_type" in baseline.explicit_fields:
         transaction_type = baseline.transaction_type
@@ -1496,6 +2169,20 @@ def _extracted_from_decision(text: str, decision: CopilotDecision, today: date, 
     spend_nature = interpreted.spend_nature if interpreted.spend_nature != SpendNature.UNKNOWN else baseline.spend_nature
     if spend_nature != SpendNature.UNKNOWN and "spend_nature" not in explicit:
         inferred_fields.append("spend_nature")
+    category_slug = interpreted.category_slug if "category" in interpreted_explicit else baseline.category_slug or interpreted.category_slug
+    subcategory_slug = interpreted.subcategory_slug if "subcategory" in interpreted_explicit else baseline.subcategory_slug or interpreted.subcategory_slug
+    if not category_slug_matches_transaction_type(transaction_type, category_slug):
+        # The deterministic path is the fallback authority when the model mixes
+        # direction and taxonomy (for example income with Other/Other). If it
+        # has no compatible path, use the direction's canonical root or leave
+        # an expense unresolved so the persisted draft asks the user.
+        if category_slug_matches_transaction_type(transaction_type, baseline.category_slug):
+            category_slug, subcategory_slug = baseline.category_slug, baseline.subcategory_slug
+        elif transaction_type in TRANSACTION_CATEGORY_ROOTS:
+            category_slug = TRANSACTION_CATEGORY_ROOTS[transaction_type].value
+            subcategory_slug = "other"
+        else:
+            category_slug = subcategory_slug = None
     return ExtractedTransaction(
         transaction_type=transaction_type,
         amount_minor=amount_minor,
@@ -1504,8 +2191,8 @@ def _extracted_from_decision(text: str, decision: CopilotDecision, today: date, 
         source_account=interpreted.source_account or baseline.source_account,
         destination_account=interpreted.destination_account or baseline.destination_account,
         transaction_date=transaction_date,
-        category_slug=interpreted.category_slug or baseline.category_slug,
-        subcategory_slug=interpreted.subcategory_slug or baseline.subcategory_slug,
+        category_slug=category_slug,
+        subcategory_slug=subcategory_slug,
         transaction_time=interpreted.transaction_time or baseline.transaction_time,
         timezone=interpreted.timezone or baseline.timezone,
         location_label=location_label,
@@ -1534,6 +2221,99 @@ def _tool_result_data(item):
 def _parsed_tool_result(item) -> dict | None:
     value = _tool_result_data(item)
     return value if isinstance(value, dict) else None
+
+
+_NUMERIC_CLAIM = re.compile(r"(?<![\w])[-+]?\d[\d,]*(?:\.\d+)?(?![\w])")
+
+
+def _evidence_numbers(value, *, field: str | None = None) -> set[Decimal]:
+    """Collect numeric facts a grounded reply is allowed to state."""
+    if isinstance(value, bool) or value is None:
+        return set()
+    if isinstance(value, dict):
+        return {
+            number
+            for key, item in value.items()
+            for number in _evidence_numbers(item, field=str(key))
+        }
+    if isinstance(value, (list, tuple)):
+        return {
+            Decimal(len(value)),
+            *(number for item in value for number in _evidence_numbers(item, field=field)),
+        }
+    if isinstance(value, (int, float, Decimal)):
+        number = Decimal(str(value))
+        allowed = {number, abs(number)}
+        if field and field.casefold().endswith("minor"):
+            major = number / 100
+            allowed.update({major, abs(major)})
+        return allowed
+    if isinstance(value, str):
+        return {
+            Decimal(match.group(0).replace(",", ""))
+            for match in _NUMERIC_CLAIM.finditer(value)
+        }
+    return set()
+
+
+def _reply_matches_tool_evidence(content: str, grounding: list) -> bool:
+    """Reject numeric prose that cannot be traced to authenticated evidence."""
+    claims = {
+        Decimal(match.group(0).replace(",", ""))
+        for match in _NUMERIC_CLAIM.finditer(content)
+    }
+    if not claims:
+        return True
+    evidence = {
+        number
+        for item in grounding
+        for number in _evidence_numbers({
+            "arguments": item.arguments,
+            "result": _tool_result_data(item),
+        })
+    }
+    return all(claim in evidence or abs(claim) in evidence for claim in claims)
+
+
+def _deterministic_tool_summary(item, user: User) -> str:
+    """Provide a useful grounded fallback when model prose fails postconditions."""
+    result = _tool_result_data(item)
+    if item.name == "spending_summary" and isinstance(result, dict):
+        category = f" in {result['category']}" if result.get("category") else ""
+        return (
+            f"You spent {format_money_minor(int(result['total_minor']), result['currency'])}{category} "
+            f"from {result['start']} through {result['end']} across {int(result['count'])} "
+            f"transaction{'s' if int(result['count']) != 1 else ''}."
+        )
+    if item.name == "monthly_comparison" and isinstance(result, dict):
+        current = result["current"]
+        previous = result["previous"]
+        difference = int(result["difference_minor"])
+        direction = "more" if difference >= 0 else "less"
+        percent = result.get("percent_change")
+        percent_text = f" ({abs(float(percent)):g}% {direction})" if percent is not None else ""
+        return (
+            f"You spent {format_money_minor(int(current['total_minor']), current['currency'])} "
+            f"from {current['start']} through {current['end']}, compared with "
+            f"{format_money_minor(int(previous['total_minor']), previous['currency'])} over the comparable "
+            f"previous-month period—{format_money_minor(abs(difference), current['currency'])} {direction}{percent_text}."
+        )
+    if item.name == "cash_position" and isinstance(result, dict):
+        return (
+            f"Across your recorded history, income is {format_money_minor(int(result['income_minor']), result['currency'])}, "
+            f"expenses are {format_money_minor(int(result['expenses_minor']), result['currency'])}, and net cash position is "
+            f"{format_money_minor(int(result['net_minor']), result['currency'])}."
+        )
+    if item.name == "recurring_expenses" and isinstance(result, list):
+        if not result:
+            return "I found no recurring expense pattern in your canonical transactions."
+        top = result[:3]
+        details = "; ".join(
+            f"{entry['merchant']} at {format_money_minor(int(entry['amount_minor']), entry['currency'])} {entry['cadence']}"
+            for entry in top
+        )
+        return f"I found {len(result)} recurring expense pattern{'s' if len(result) != 1 else ''}. The largest are {details}."
+    return f"I completed the {item.name.replace('_', ' ')} using authenticated financial data."
 
 
 def _tool_reference(item, *, include_result_summary: bool = True) -> DataReference:
@@ -1587,7 +2367,9 @@ def _tool_grounded_response(db: Session, user: User, conversation: Conversation,
         elif not content and parsed.get("summary") and isinstance(parsed["summary"], dict):
             content = f"I completed the {item.name.replace('_', ' ')} calculation using the supplied inputs."
         elif not content:
-            content = "I found the requested information from the authenticated financial tool."
+            content = _deterministic_tool_summary(item, user)
+        if content and not _reply_matches_tool_evidence(content, decision.tool_grounding):
+            content = _deterministic_tool_summary(item, user)
     citations = [_tool_reference(item) for item in decision.tool_grounding]
     return persist_agent_response(db, conversation, content, citations=citations)
 
@@ -1847,6 +2629,39 @@ def _needs_deep_reasoning(text: str) -> bool:
     ))
 
 
+def _requires_rich_analysis_planner(text: str) -> bool:
+    """Whether the full semantic planner is the first useful model boundary.
+
+    These explicit requests cannot finish through the unified agent's compact
+    read-tool surface. Sending them there first only produces a terminal
+    handoff, after which the semantic planner must still do the real work.
+    This predicate changes the entry point, not the route or validation policy.
+    """
+    return _needs_deep_reasoning(text) or bool(re.search(
+        r"\b(?:analy[sz]e|analysis|insights?|trends?|patterns?|chart|graph|plot|"
+        r"dashboard|visuali[sz]e|draw|donut|heatmap|forecast|export)\b",
+        text,
+        re.I,
+    ))
+
+
+def _is_correction_followup(text: str) -> bool:
+    """Mark turns that must reconcile prior answers instead of merely continue.
+
+    This flag does not choose an intent or a query. It tells the contextual
+    model that disagreement is part of the request, so it must compare the
+    bounded grounding lineage supplied with recent turns before responding.
+    """
+    return bool(re.search(
+        r"^\s*(?:no\b|but\b|i\s+mean\b)"
+        r"|\b(?:not\s+what\s+i\s+(?:asked|meant)|you\s+(?:said|showed)|earlier\s+you|"
+        r"seem(?:s|ed)?\s+to\s+be|that(?:'s|\s+is)\s+(?:wrong|incorrect)|"
+        r"why\s+(?:is|are|did)|does(?:n['’]t|\s+not)\s+match)\b",
+        text,
+        re.I,
+    ))
+
+
 def _references_active_data_scope(text: str) -> bool:
     """Whether the prompt explicitly refines the previously displayed records.
 
@@ -1880,6 +2695,80 @@ def _references_prior_analysis(text: str) -> bool:
     ))
 
 
+def _release_unreferenced_prior_filters(
+    text: str,
+    query: QueryInterpretation,
+    active_analysis_state: dict | None,
+) -> QueryInterpretation:
+    """Remove filters copied into a self-contained, independent request.
+
+    The semantic agents may read recent grounding so they can resolve genuine
+    follow-ups. That same context must not silently narrow a fresh request.
+    Only values that exactly match the prior query are candidates here; new
+    filters parsed from the current message remain untouched.
+    """
+    if _references_prior_analysis(text) or not active_analysis_state:
+        return query
+    prior_queries = active_analysis_state.get("queries") or [active_analysis_state.get("query") or {}]
+    prior = next((item for item in reversed(prior_queries) if isinstance(item, dict) and item), None)
+    if not prior:
+        return query
+
+    normalized_text = " ".join(text.casefold().replace("_", " ").replace("-", " ").split())
+    direction_words = {
+        "income": ("income", "earning", "earnings", "earned", "salary", "credit", "credited", "inflow"),
+        "expense": ("expense", "expenses", "spending", "spend", "spent", "debit", "outflow"),
+        "transfer": ("transfer", "transfers", "transferred"),
+        "refund": ("refund", "refunds", "refunded"),
+        "cash_withdrawal": ("withdrawal", "withdrawals", "withdrawn", "atm"),
+    }
+    updates: dict[str, Any] = {"use_active_scope": False, "scope_transaction_ids": []}
+    current_type = query.transaction_type.value if isinstance(query.transaction_type, TransactionType) else query.transaction_type
+    if current_type and current_type == prior.get("transaction_type"):
+        aliases = direction_words.get(str(current_type), (str(current_type).replace("_", " "),))
+        if not any(re.search(rf"\b{re.escape(alias)}\b", normalized_text) for alias in aliases):
+            updates["transaction_type"] = None
+            if query.metric in {"spending_summary", "income_summary", "net_spend"}:
+                updates["metric"] = "transaction_summary"
+
+    for field in ("merchant", "category_slug", "subcategory_slug", "account", "tag"):
+        value = getattr(query, field)
+        if value is None or value != prior.get(field):
+            continue
+        normalized_value = " ".join(str(value).casefold().replace("_", " ").replace("-", " ").split())
+        if normalized_value not in normalized_text:
+            updates[field] = None
+
+    has_amount_constraint = bool(re.search(
+        r"\b(?:above|below|over|under|more than|less than|at least|at most|minimum|maximum)\b",
+        normalized_text,
+    ))
+    if not has_amount_constraint:
+        for field in ("min_amount_minor", "max_amount_minor"):
+            value = getattr(query, field)
+            if value is not None and value == prior.get(field):
+                updates[field] = None
+
+    explicit_period = bool(
+        parse_spending_period(text)
+        or re.search(
+            r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+            r"jul(?:y)?|aug(?:ust)?|agust|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|"
+            r"dec(?:ember)?|today|yesterday|ytd|mtd|\d{4})\b",
+            text,
+            re.I,
+        )
+    )
+    if not explicit_period:
+        for field in ("start_date", "end_date"):
+            value = getattr(query, field)
+            prior_value = prior.get(field)
+            serialized = value.isoformat() if isinstance(value, date) else value
+            if value is not None and serialized == prior_value:
+                updates[field] = None
+    return query.model_copy(update=updates)
+
+
 def _fast_path_decision(text: str, today: date, default_currency: str | None = None) -> tuple[CopilotDecision, ExtractedTransaction | None] | None:
     """Resolve only unambiguous intents; everything else remains agent-routed."""
     if re.fullmatch(r"\s*(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[!. ]*", text, re.I):
@@ -1898,17 +2787,40 @@ def _fast_path_decision(text: str, today: date, default_currency: str | None = N
             reason="Unambiguous acknowledgement handled locally.",
             safe_reasoning_summary=["Recognized an acknowledgement", "No financial state needs to change"],
         ), None
+    if re.fullmatch(
+        r"\s*(?:how\s+are\s+you|who\s+are\s+you|what\s+can\s+you\s+do|tell\s+me\s+about\s+yourself|help)[?!. ]*",
+        text,
+        re.I,
+    ):
+        return CopilotDecision(
+            tool=CapabilityId.CONVERSATION,
+            reply="I’m here and ready to help. I can discuss the current conversation and help with your recorded finances when you ask.",
+            confidence=1,
+            reason="Unambiguous non-financial conversation handled without semantic routing.",
+            safe_reasoning_summary=["Recognized ordinary conversation", "No financial tool needs to run"],
+        ), None
     extracted = extract_transaction(
         text,
         today=today,
         default_currency=default_currency or get_settings().default_currency,
     )
     if _is_bare_amount(text):
+        # A number carries an amount, not a direction. Expense used to be the
+        # extractor's convenience default here, which let a salary or transfer
+        # enter category selection without ever asking what the money was.
+        extracted.transaction_type = TransactionType.UNKNOWN
+        extracted.category_slug = None
+        extracted.subcategory_slug = None
+        extracted.inferred_fields = [
+            field for field in extracted.inferred_fields
+            if field not in {"transaction_type", *TAXONOMY_FIELD_NAMES}
+        ]
+        extracted.missing_fields = ["transaction_type"]
         return CopilotDecision(
             tool=CapabilityId.CREATE_TRANSACTION_DRAFT,
             confidence=0.75,
-            reason="Bare amount uses the minimal clarification workflow.",
-            safe_reasoning_summary=["Detected a standalone amount", "Start a transaction draft and ask only for missing classification"],
+            reason="Bare amount requires transaction-type clarification.",
+            safe_reasoning_summary=["Detected a standalone amount", "Ask whether it is an expense, income, transfer, or another type"],
         ), extracted
     if (
         extracted.amount_minor is not None
@@ -1958,7 +2870,20 @@ def _compile_known_analysis(db: Session, user: User, text: str) -> CopilotDecisi
     """Compile established analysis grammars; novel requests continue to Agno."""
     lowered = text.casefold()
     today = _local_today(user)
-    if "avoidable" in lowered or "unnecessary expense" in lowered:
+    if _is_known_expense_pattern_analysis(text):
+        plan = AnalysisPlan(
+            objective="recommendation",
+            analysis_type="three_month_allocation",
+            context_sources=["budgets", "goals"],
+            safe_reasoning_summary=[
+                "Review three months of category spending patterns",
+                "Check recorded budgets and goals",
+                "Separate evidence from savings suggestions",
+            ],
+        )
+        name = "Expense-pattern savings review"
+        intent = "three month expense pattern savings recommendation"
+    elif "avoidable" in lowered or "unnecessary expense" in lowered:
         plan = AnalysisPlan(
             objective="recommendation",
             analysis_type="avoidable_expenses",
@@ -2061,6 +2986,14 @@ def _compile_known_analysis(db: Session, user: User, text: str) -> CopilotDecisi
         safe_reasoning_summary=plan.safe_reasoning_summary,
         confidence=1,
         reason="A known analysis grammar compiled directly to the governed tool protocol.",
+    )
+
+
+def _is_known_expense_pattern_analysis(text: str) -> bool:
+    lowered = text.casefold()
+    return (
+        any(token in lowered for token in ("expense pattern", "spending pattern", "expense behaviour", "spending behaviour"))
+        and any(token in lowered for token in ("save", "saving", "savings", "reduce"))
     )
 
 
@@ -2479,7 +3412,7 @@ def _transaction_search_parts(db: Session, user: User, query: QueryInterpretatio
         stmt = stmt.order_by(amount_order, Transaction.transaction_at.desc(), Transaction.created_at.desc())
     else:
         stmt = stmt.order_by(Transaction.transaction_at.desc(), Transaction.created_at.desc())
-    effective_limit = 1 if individual_rank else query.limit
+    effective_limit = query.limit
     fetched = list(db.scalars(stmt.limit(effective_limit + 1)))
     has_more = len(fetched) > effective_limit
     transactions = fetched[:effective_limit]
@@ -2492,17 +3425,30 @@ def _transaction_search_parts(db: Session, user: User, query: QueryInterpretatio
     ]
     qualifier_label = " ".join(item for item in qualifiers if item)
     filter_label = f"{record_kind}transactions{(' ' + qualifier_label) if qualifier_label else ''}"
-    if individual_rank and transactions:
+    if individual_rank and transactions and query.limit == 1:
         rank_kind = "lowest" if query.sort_direction == "asc" else "highest"
         item = transactions[0]
         occurred_day = local_date(item.transaction_at, user.timezone)
         content = f"The {rank_kind} matching transaction is {format_money_minor(item.amount_minor, item.currency)} at {item.merchant_name or item.transaction_type.replace('_', ' ')} on {occurred_day.strftime('%b %d')}."
+    elif individual_rank and transactions:
+        rank_kind = "bottom" if query.sort_direction == "asc" else "top"
+        content = f"I found the {rank_kind} {len(transactions)} matching transactions, ranked by amount."
     elif transactions:
-        count_label = f"at least {len(transactions)}" if has_more else str(len(transactions))
-        content = f"I found {count_label} active {filter_label}."
+        content = (
+            f"I loaded the newest {len(transactions)} active {filter_label} below. More records match, "
+            f"so this capped view is not your full history."
+            if has_more
+            else f"I found {len(transactions)} active {filter_label}."
+        )
     else:
         content = f"I found no active {filter_label}."
-    list_title = (("Lowest" if query.sort_direction == "asc" else "Highest") + " matching transaction") if individual_rank else "Matching transactions"
+    list_title = (
+        (("Lowest" if query.sort_direction == "asc" else "Highest") + " matching transaction")
+        if individual_rank and query.limit == 1
+        else (("Bottom" if query.sort_direction == "asc" else "Top") + f" {len(transactions)} matching transactions")
+        if individual_rank
+        else "Matching transactions"
+    )
     widgets = [_transaction_table_widget(
         db,
         user.id,
@@ -2525,6 +3471,8 @@ def _transaction_search_response(db: Session, user: User, conversation: Conversa
     if not decision.query:
         return _conversation_response(db, conversation, "I couldn’t resolve the requested transaction filters safely. Please clarify what records you want to see.")
     content, widgets, citations = _transaction_search_parts(db, user, decision.query)
+    if decision.assumptions:
+        content = " ".join([*(item.detail for item in decision.assumptions), content])
     return persist_agent_response(
         db,
         conversation,
@@ -2599,6 +3547,178 @@ def _query_bundle_response(db: Session, user: User, conversation: Conversation, 
         content,
         widgets=widgets,
         citations=citations,
+    )
+
+
+_DIRECT_HANDOFF_QUERY_METRICS = frozenset({
+    "transaction_summary",
+    "transaction_count",
+    "transaction_amount",
+    "spending_summary",
+    "gross_spend",
+    "income_summary",
+})
+
+
+def _reconcile_correction_query(
+    text: str,
+    query: QueryInterpretation,
+    recent_context: list[dict[str, Any]],
+) -> tuple[QueryInterpretation, bool]:
+    """Repair a correction against the most relevant prior grounded scope.
+
+    The model still resolves intent. This domain postcondition only prevents an
+    omitted period in a correction from silently becoming a new period. It
+    chooses lineage by matching specific filters, not merely the latest turn,
+    which is important when the latest turn is the answer being challenged.
+    """
+    if not _is_correction_followup(text):
+        return query, False
+    lowered = text.casefold().replace("_", " ").replace("-", " ")
+    filter_fields = ("merchant", "category_slug", "subcategory_slug", "account", "tag")
+    candidates: list[tuple[int, int, dict[str, Any]]] = []
+    order = 0
+    for entry in recent_context:
+        grounding = entry.get("grounding") if isinstance(entry, dict) else None
+        for prior in (grounding or {}).get("queries", []):
+            if not isinstance(prior, dict):
+                continue
+            score = 0
+            for field in filter_fields:
+                prior_value = prior.get(field)
+                current_value = getattr(query, field)
+                if not prior_value:
+                    continue
+                prior_words = str(prior_value).casefold().replace("_", " ").replace("-", " ")
+                if current_value and str(current_value).casefold() == str(prior_value).casefold():
+                    score += 4
+                elif prior_words in lowered:
+                    score += 3
+            if prior.get("transaction_type") and prior.get("transaction_type") == query.transaction_type:
+                score += 1
+            candidates.append((score, order, prior))
+            order += 1
+    if not candidates:
+        return query, False
+    score, _order, prior = max(candidates, key=lambda item: (item[0], item[1]))
+    if score < 3:
+        return query, False
+
+    updates: dict[str, Any] = {}
+    for field in filter_fields:
+        prior_value = prior.get(field)
+        if getattr(query, field) is None and prior_value:
+            prior_words = str(prior_value).casefold().replace("_", " ").replace("-", " ")
+            if prior_words in lowered:
+                updates[field] = prior_value
+    if query.transaction_type is None and prior.get("transaction_type"):
+        updates["transaction_type"] = prior["transaction_type"]
+
+    explicit_period = bool(
+        parse_spending_period(text)
+        or releases_prior_scope(text)
+        or re.search(
+            r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+            r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|"
+            r"dec(?:ember)?|\d{4})\b|\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b",
+            text,
+            re.I,
+        )
+    )
+    if not explicit_period:
+        prior_start = prior.get("start_date")
+        prior_end = prior.get("end_date")
+        if (prior_start is None) == (prior_end is None):
+            try:
+                updates["start_date"] = date.fromisoformat(prior_start) if isinstance(prior_start, str) else prior_start
+                updates["end_date"] = date.fromisoformat(prior_end) if isinstance(prior_end, str) else prior_end
+            except ValueError:
+                pass
+    if not updates:
+        return query, False
+    reconciled = query.model_copy(update=updates)
+    return reconciled, reconciled != query
+
+
+def _decision_from_unified_handoff(
+    conversation: Conversation,
+    text: str,
+    handoff: GovernedWorkflowHandoff,
+    recent_context: list[dict[str, Any]],
+) -> CopilotDecision | None:
+    """Compile a terminal typed read handoff without asking another router.
+
+    This is deliberately narrower than the semantic analysis factory. It
+    covers record lists, totals, breakdowns, and rankings already expressible
+    by QueryInterpretation. Anything richer returns None and keeps the full
+    planner/validator path.
+    """
+    if handoff.workflow == "clarification" and handoff.clarification is not None:
+        return CopilotDecision(
+            tool=CapabilityId.REQUEST_CLARIFICATION,
+            clarification=handoff.clarification,
+            confidence=1.0,
+            reason=handoff.reason,
+            safe_reasoning_summary=[
+                "Detected a material ambiguity",
+                "Ask the customer before continuing",
+            ],
+        )
+    query = handoff.query
+    if (
+        handoff.workflow != "advanced_analysis"
+        or query is None
+        or query.result_mode == "complex_analysis"
+        or query.metric not in _DIRECT_HANDOFF_QUERY_METRICS
+        or (query.start_date is None) != (query.end_date is None)
+        or (query.start_date and query.end_date and query.start_date > query.end_date)
+        or (query.result_mode == "transaction_list" and query.operation not in {"list", "rank"})
+        or (query.result_mode == "summary" and query.operation == "list")
+    ):
+        return None
+    query, reconciled = _reconcile_correction_query(text, query, recent_context)
+    query = _release_unreferenced_prior_filters(text, query, conversation.active_analysis_state)
+    if query.use_active_scope:
+        scope = conversation.active_data_scope or {}
+        if not _references_active_data_scope(text) or not scope.get("entityIds"):
+            return None
+        ids = []
+        for raw_id in scope.get("entityIds", [])[:100]:
+            try:
+                ids.append(UUID(str(raw_id)))
+            except ValueError:
+                continue
+        if not ids:
+            return None
+        query = query.model_copy(update={"scope_transaction_ids": ids})
+    elif query.scope_transaction_ids:
+        # The Pydantic handoff rejects this too; keep the domain boundary
+        # explicit in case a legacy result is replayed.
+        return None
+    return CopilotDecision(
+        tool=CapabilityId.SEARCH_TRANSACTIONS,
+        query=query,
+        confidence=1.0,
+        reason=handoff.reason,
+        safe_reasoning_summary=[
+            handoff.resolved_request or "Run the resolved governed read query",
+            *(["Reconciled the correction with the matching prior grounded scope"] if reconciled else []),
+        ],
+        assumptions=([
+            CompilationAssumption(
+                code="correction_scope_reconciled",
+                detail=(
+                    "I reconciled this correction with the matching prior all-time filters."
+                    if query.start_date is None
+                    else (
+                        "I reconciled this correction with the matching prior period, "
+                        f"{query.start_date.isoformat()} through {query.end_date.isoformat()}."
+                    )
+                ),
+            ),
+        ] if reconciled else []),
+        validated_by="unified_typed_handoff_policy",
+        validation_confidence=1.0,
     )
 
 
@@ -2767,6 +3887,13 @@ def _dispatch_decision(
                 conversation,
                 decision.reply or "Hi! Tell me what happened financially, or ask me anything about your money.",
             )
+    elif spec.executor is ExecutorKind.CLARIFICATION:
+        operation = lambda: _clarification_response(
+            db,
+            conversation,
+            text,
+            decision.clarification,
+        )
     elif spec.executor is ExecutorKind.UNKNOWN:
         operation = lambda: _conversation_response(
             db,
@@ -2815,7 +3942,15 @@ def _dispatch_decision(
     else:  # Exhaustiveness is enforced by CapabilitySpec.ExecutorKind.
         raise RuntimeError(f"No executor is registered for {capability.value}")
 
-    return execute(capability.value, spec.execution_label, operation)
+    response = execute(capability.value, spec.execution_label, operation)
+    if capability in SAFE_READ_CAPABILITIES:
+        # Read/calculation executors write their copy from the exact governed
+        # result and persist the same citations/widgets. Running a second prose
+        # model cannot add evidence, costs several seconds, and has previously
+        # introduced unsupported numbers. Generated plans have already passed
+        # their independent validator before reaching this point.
+        _response_is_final.set(True)
+    return response
 
 
 @contextmanager
@@ -2842,16 +3977,271 @@ def _reply_reservation(db: Session) -> Iterator[None]:
                 db.rollback()
 
 
+def _bounded_response_value(value, *, depth: int = 0):
+    """Keep final-writer grounding useful without rebuilding the full ledger prompt."""
+    if depth >= 4:
+        return value if isinstance(value, (str, int, float, bool, type(None))) else "[additional data omitted]"
+    if isinstance(value, list):
+        return [_bounded_response_value(item, depth=depth + 1) for item in value[:8]]
+    if isinstance(value, dict):
+        return {
+            key: _bounded_response_value(item, depth=depth + 1)
+            for key, item in list(value.items())[:20]
+        }
+    if isinstance(value, str):
+        return value[:500]
+    return value
+
+
+def _contextual_response_evidence(response: AgentResponse) -> dict:
+    """Bound the verified response facts sent to the final prose writer."""
+    fact_fields = {
+        "title",
+        "body",
+        "description",
+        "amountMinor",
+        "totalMinor",
+        "count",
+        "currency",
+        "period",
+        "periodTitle",
+        "scopeLabel",
+        "breakdown",
+        "assumptions",
+        "columns",
+        "rows",
+        "budgetRoom",
+        "queryResults",
+        "transforms",
+        "context",
+    }
+    widgets = []
+    for widget in response.widgets:
+        if widget.type is WidgetType.AGENT_ACTIVITY:
+            continue
+        data = widget.data
+        widgets.append({
+            "type": widget.type,
+            "facts": {
+                key: _bounded_response_value(value)
+                for key, value in data.items()
+                if key in fact_fields
+            },
+        })
+    citations = [
+        {
+            "label": item.label,
+            "entityType": item.entity_type,
+            "query": _bounded_response_value(item.query),
+        }
+        for item in response.citations
+    ]
+    return {"widgets": widgets, "citations": citations}
+
+
+def _contextual_reply_matches_evidence(
+    candidate: str,
+    governed_draft: str,
+    evidence_context: dict,
+) -> bool:
+    claims = {
+        Decimal(match.group(0).replace(",", ""))
+        for match in _NUMERIC_CLAIM.finditer(candidate)
+    }
+    evidence = _evidence_numbers({
+        "governedDraft": governed_draft,
+        "responseContext": evidence_context,
+    })
+    return all(claim in evidence or abs(claim) in evidence for claim in claims)
+
+
+def _finalize_contextual_response(
+    db: Session,
+    user: User,
+    text: str,
+    recent_context: list[dict[str, str]],
+    response: AgentResponse,
+    activity_callback: ActivityCallback | None,
+    text_delta_callback: TextDeltaCallback | None,
+) -> AgentResponse:
+    """Send every user-facing reply through one context-aware prose boundary.
+
+    Domain handlers still own facts, widgets, actions and citations. This
+    writer owns only how the verified result is said. Plain conversation can
+    stream provider deltas immediately; finance/tool results are buffered and
+    checked against the governed evidence before any text crosses AG-UI.
+    """
+    settings = get_settings()
+    if not response.message or not settings.primary_agent_enabled or not settings.openai_api_key:
+        return response
+    evidence_context = _contextual_response_evidence(response)
+    grounded_response = bool(
+        evidence_context["widgets"]
+        or evidence_context["citations"]
+        or looks_like_financial_query(text)
+        or _NUMERIC_CLAIM.search(response.message)
+    )
+    started = perf_counter()
+
+    def emit_finalization(status: ExecutionStatus, label: str, detail: str | None = None) -> None:
+        if not activity_callback:
+            return
+        elapsed = round((perf_counter() - started) * 1000, 1)
+        activity_callback(AgentActivityEvent(
+            id="response_synthesis",
+            label=label,
+            status=status,
+            tool=settings.router_model,
+            detail=detail,
+            duration_ms=0.0 if status is ExecutionStatus.RUNNING else elapsed,
+            cumulative_ms=elapsed,
+        ).model_dump(mode="json", by_alias=True))
+
+    emitted: list[str] = []
+
+    def live_delta(delta: str) -> None:
+        emitted.append(delta)
+        if text_delta_callback:
+            text_delta_callback(response.message_id, delta)
+
+    emit_finalization(ExecutionStatus.RUNNING, "Writing the contextual final answer")
+    try:
+        candidate = stream_conversation_reply(
+            text,
+            response.message,
+            recent_context,
+            model_id=settings.router_model,
+            user_id=user.id,
+            on_delta=live_delta if not grounded_response and text_delta_callback else None,
+            grounded_response=grounded_response,
+            response_context=evidence_context,
+        )
+    except Exception:
+        if emitted:
+            emit_finalization(ExecutionStatus.FAILED, "Contextual final answer stream failed")
+            raise
+        emit_finalization(
+            ExecutionStatus.COMPLETED,
+            "Used the governed response",
+            "The contextual writer was unavailable before emitting text",
+        )
+        return response
+    if not candidate:
+        emit_finalization(ExecutionStatus.COMPLETED, "Used the governed response", "The writer returned no text")
+        return response
+    if grounded_response and not _contextual_reply_matches_evidence(candidate, response.message, evidence_context):
+        emit_finalization(
+            ExecutionStatus.COMPLETED,
+            "Used the governed response",
+            "The contextual candidate introduced an unsupported numeric claim",
+        )
+        return response
+    stored_message = db.get(Message, response.message_id)
+    if stored_message is None:
+        raise ValueError("Canonical assistant message disappeared before final response synthesis")
+    stored_message.content = candidate
+    emit_finalization(
+        ExecutionStatus.COMPLETED,
+        "Wrote the contextual final answer",
+        "Verified against governed response evidence" if grounded_response else "Used recent complete turns",
+    )
+    return response.model_copy(update={"message": candidate})
+
+
 def handle_chat(
     db: Session,
     user: User,
     conversation: Conversation,
     text: str,
     activity_callback: ActivityCallback | None = None,
+    text_delta_callback: TextDeltaCallback | None = None,
+    reasoning_delta_callback: ReasoningDeltaCallback | None = None,
 ) -> AgentResponse:
     """Runs one conversational turn, question and answer as a single unit."""
-    with _reply_reservation(db):
-        return _run_turn(db, user, conversation, text, activity_callback)
+    recent_context = _recent_complete_turn_snapshot(db, conversation)
+    final_token = _response_is_final.set(False)
+    try:
+        with _reply_reservation(db):
+            response = _run_turn(
+                db,
+                user,
+                conversation,
+                text,
+                activity_callback,
+                text_delta_callback,
+                reasoning_delta_callback,
+            )
+            if _response_is_final.get():
+                return response
+            return _finalize_contextual_response(
+                db,
+                user,
+                text,
+                recent_context,
+                response,
+                activity_callback,
+                text_delta_callback,
+            )
+    finally:
+        _response_is_final.reset(final_token)
+
+
+def handle_clarification_resolution(
+    db: Session,
+    user: User,
+    conversation: Conversation,
+    *,
+    original_request: str,
+    selected_label: str,
+    resolution: str,
+    source_message_id: UUID,
+    activity_callback: ActivityCallback | None = None,
+    text_delta_callback: TextDeltaCallback | None = None,
+    reasoning_delta_callback: ReasoningDeltaCallback | None = None,
+) -> AgentResponse:
+    """Resume the original turn with one server-validated customer choice."""
+    source_message = db.scalar(
+        select(Message).where(
+            Message.id == source_message_id,
+            Message.conversation_id == conversation.id,
+            Message.role == "user",
+        )
+    )
+    if source_message is None:
+        raise ValueError("The original clarification request is unavailable")
+    resolved_request = (
+        f"{original_request.strip()}\n\n"
+        f"Customer clarification (authoritative): {selected_label}. {resolution.strip()}\n"
+        "Continue the original request using this clarification. Do not ask the same question again."
+    )
+    recent_context = _recent_complete_turn_snapshot(db, conversation)
+    final_token = _response_is_final.set(False)
+    try:
+        with _reply_reservation(db):
+            response = _run_turn(
+                db,
+                user,
+                conversation,
+                resolved_request,
+                activity_callback,
+                text_delta_callback,
+                reasoning_delta_callback,
+                source_user_message=source_message,
+                recent_context_override=recent_context,
+            )
+            if _response_is_final.get():
+                return response
+            return _finalize_contextual_response(
+                db,
+                user,
+                resolved_request,
+                recent_context,
+                response,
+                activity_callback,
+                text_delta_callback,
+            )
+    finally:
+        _response_is_final.reset(final_token)
 
 
 def _run_turn(
@@ -2860,6 +4250,11 @@ def _run_turn(
     conversation: Conversation,
     text: str,
     activity_callback: ActivityCallback | None = None,
+    text_delta_callback: TextDeltaCallback | None = None,
+    reasoning_delta_callback: ReasoningDeltaCallback | None = None,
+    *,
+    source_user_message: Message | None = None,
+    recent_context_override: list[dict[str, Any]] | None = None,
 ) -> AgentResponse:
     run_started = perf_counter()
     stage_started: dict[str, float] = {}
@@ -2872,7 +4267,7 @@ def _run_turn(
         detail: str | None = None,
         badge: str | None = None,
     ) -> None:
-        if not activity_callback:
+        if not activity_callback and not reasoning_delta_callback:
             return
         status = ExecutionStatus(status)
         now = perf_counter()
@@ -2881,16 +4276,24 @@ def _run_turn(
             duration_ms = 0.0
         else:
             duration_ms = round((now - stage_started.get(stage, now)) * 1000, 1)
-        activity_callback(AgentActivityEvent(
-            id=stage,
-            label=label,
-            status=status,
-            tool=tool,
-            detail=detail,
-            badge=badge,
-            duration_ms=duration_ms,
-            cumulative_ms=round((now - run_started) * 1000, 1),
-        ).model_dump(mode="json", by_alias=True))
+        if activity_callback:
+            activity_callback(AgentActivityEvent(
+                id=stage,
+                label=label,
+                status=status,
+                tool=tool,
+                detail=detail,
+                badge=badge,
+                duration_ms=duration_ms,
+                cumulative_ms=round((now - run_started) * 1000, 1),
+            ).model_dump(mode="json", by_alias=True))
+        if (
+            reasoning_delta_callback
+            and stage == "classification"
+            and status is ExecutionStatus.COMPLETED
+            and detail
+        ):
+            reasoning_delta_callback(detail)
 
     def execute(tool: str, label: str, operation: Callable[[], AgentResponse]) -> AgentResponse:
         emit("execution", label, "running", tool)
@@ -2907,11 +4310,16 @@ def _run_turn(
         )
         return response
 
-    user_message = Message(conversation_id=conversation.id, role="user", content=text, widgets=[], citations=[])
-    db.add(user_message)
-    if conversation.title == "Financial check-in":
-        conversation.title = text[:54] + ("…" if len(text) > 54 else "")
-    db.flush()
+    if source_user_message is None:
+        user_message = Message(conversation_id=conversation.id, role="user", content=text, widgets=[], citations=[])
+        db.add(user_message)
+        if conversation.title == "Financial check-in":
+            conversation.title = text[:54] + ("…" if len(text) > 54 else "")
+        db.flush()
+    else:
+        if source_user_message.conversation_id != conversation.id or source_user_message.role != "user":
+            raise ValueError("Clarification source message belongs to a different workflow")
+        user_message = source_user_message
     # The answer's place in the transcript is decided here, with the question,
     # rather than whenever the model happens to finish. Two turns in flight at
     # once can then only finish out of order, not read out of order.
@@ -2953,18 +4361,126 @@ def _run_turn(
                 _set_ready_if_complete(active_draft)
                 return execute(WidgetActionId.UPDATE_TRANSACTION_DRAFT.value, "Updating transaction draft", lambda: _draft_or_commit(db, user, conversation, active_draft))
 
+    recent_context = (
+        recent_context_override
+        if recent_context_override is not None
+        else _recent_complete_turn_context(db, conversation, user_message)
+    )
     fast_path = _fast_path_decision(text, _local_today(user), user.currency)
+    normalized_current = " ".join(text.casefold().split())
+    repeated_assistant_text = next(
+        (
+            item["content"]
+            for item in reversed(recent_context)
+            if item["role"] == "assistant"
+            and (
+                " ".join(item["content"].casefold().split()) == normalized_current
+                or (
+                    len(item["content"].strip()) >= 20
+                    and " ".join(item["content"].casefold().split()) in normalized_current
+                )
+            )
+        ),
+        None,
+    )
+    if (
+        fast_path is None
+        and repeated_assistant_text
+    ):
+        fast_path = (
+            CopilotDecision(
+                tool=CapabilityId.CONVERSATION,
+                reply="It looks like the user repeated the assistant's previous message. Recognize that context and respond without echoing it again.",
+                confidence=1,
+                reason="The current message exactly repeats the prior assistant turn.",
+                safe_reasoning_summary=["Recognized a repeated prior reply", "Avoid echoing the same answer"],
+            ),
+            None,
+        )
+    guarded_fast_path = fast_path
+    guarded_extraction = extract_transaction(
+        text,
+        today=_local_today(user),
+        default_currency=user.currency,
+    )
+    guarded_mutation_intent = bool(
+        guarded_extraction.amount_minor is not None
+        and guarded_extraction.transaction_type != TransactionType.UNKNOWN
+        and re.search(
+            r"\b(?:add|bought|credited|earned|log|paid|received|record|save|spent|transfer|transferred)\b",
+            text,
+            re.I,
+        )
+    )
     settings = get_settings()
+
+    calculator_clarification = _active_loan_chart_clarification(
+        text,
+        conversation.active_analysis_state,
+        user.currency,
+    )
+    if calculator_clarification:
+        emit(
+            "classification",
+            "Detected conflicting calculator assumptions",
+            "completed",
+            CapabilityId.REQUEST_CLARIFICATION.value,
+            calculator_clarification.reason,
+        )
+        db.add(AIAction(
+            user_id=user.id,
+            conversation_id=conversation.id,
+            action_type="calculator_conflict_policy",
+            payload_redacted={
+                "tool": CapabilityId.REQUEST_CLARIFICATION.value,
+                "conflictFields": calculator_clarification.clarification.conflict_fields,
+            },
+            status=ExecutionStatus.COMPLETED,
+        ))
+        return _dispatch_decision(
+            db,
+            user,
+            conversation,
+            text,
+            calculator_clarification,
+            execute,
+            emit,
+        )
+
+    # This established advanced-analysis grammar compiles directly to the same
+    # governed harness it used before. Resolve it before the unified model so a
+    # known plan does not pay for an otherwise inevitable handoff.
+    if _is_known_expense_pattern_analysis(text):
+        compiled_pattern = _compile_known_analysis(db, user, text)
+        if compiled_pattern:
+            emit(
+                "classification",
+                "Selected the governed expense-pattern analysis",
+                "completed",
+                compiled_pattern.tool,
+                " → ".join(compiled_pattern.safe_reasoning_summary),
+            )
+            db.add(AIAction(
+                user_id=user.id,
+                conversation_id=conversation.id,
+                action_type="known_analysis_router",
+                payload_redacted={"tool": compiled_pattern.tool, "intent": "expense_pattern_savings"},
+                status=ExecutionStatus.COMPLETED,
+            ))
+            return _dispatch_decision(
+                db, user, conversation, text, compiled_pattern, execute, emit
+            )
+
     if (
         fast_path
         and settings.primary_agent_enabled
         and settings.openai_api_key
-        and fast_path[0].tool is not CapabilityId.CONVERSATION
+        and settings.unified_read_agent_enabled
         and not _is_bare_amount(text)
     ):
-        # In LLM mode only greetings/acknowledgements and the deliberately
-        # ambiguous bare-amount workflow bypass semantic validation. Financial
-        # questions and complete events are always agent-routed first.
+        # In unified mode one contextual agent owns greetings, acknowledgements,
+        # ordinary conversation and safe reads. Only the deliberately ambiguous
+        # bare-amount workflow keeps its deterministic clarification shortcut.
         fast_path = None
     if fast_path:
         decision, extracted = fast_path
@@ -2986,6 +4502,268 @@ def _run_turn(
             db, user, conversation, text, decision, execute, emit, extracted=extracted
         )
 
+    upstream_handoff: GovernedWorkflowHandoff | None = None
+    if (
+        settings.primary_agent_enabled
+        and settings.openai_api_key
+        and settings.unified_read_agent_enabled
+        and not _is_bare_amount(text)
+        and not _requires_rich_analysis_planner(text)
+    ):
+        taxonomy = _agent_taxonomy(db, user)
+        runtime_tools = _user_runtime_tools(db, user, _local_today(user))
+        prompt_analysis_state = None if releases_prior_scope(text) else conversation.active_analysis_state
+        prompt_data_scope = None if releases_prior_scope(text) else conversation.active_data_scope
+        workflow_context: dict = {
+            "kind": "none",
+            "activeDataScope": prompt_data_scope,
+            "activeAnalysisState": prompt_analysis_state,
+            "correctionRequested": _is_correction_followup(text),
+        }
+        if active_draft:
+            workflow_context.update({
+                "kind": "transaction_draft",
+                "draftId": str(active_draft.id),
+                "state": active_draft.state,
+                "missingFields": active_draft.missing_fields,
+            })
+
+        emitted_direct_deltas: list[str] = []
+
+        def direct_delta(delta: str) -> None:
+            reserved = _reserved_reply.get()
+            if not delta or reserved is None:
+                return
+            emitted_direct_deltas.append(delta)
+            if text_delta_callback:
+                text_delta_callback(reserved.id, delta)
+
+        emit(
+            "classification",
+            "The unified agent is reading the conversation and available tools",
+            "running",
+            "unified_read_agent",
+        )
+        try:
+            direct_result = run_unified_read_agent(
+                text,
+                taxonomy,
+                _local_today(user),
+                user.timezone,
+                recent_context,
+                workflow_context=workflow_context,
+                model_id=settings.router_model,
+                user_id=user.id,
+                runtime_tools=runtime_tools,
+                on_delta=direct_delta if text_delta_callback else None,
+                on_reasoning_delta=reasoning_delta_callback,
+                # Financial/tool answers remain buffered until their numeric
+                # evidence postcondition passes. Ordinary conversation can use
+                # the provider's exact deltas immediately.
+                allow_live_deltas=bool(text_delta_callback and not looks_like_financial_query(text)),
+            )
+        except Exception as error:
+            if emitted_direct_deltas:
+                emit(
+                    "classification",
+                    "The unified response stream failed",
+                    "failed",
+                    "unified_read_agent",
+                    type(error).__name__,
+                )
+                raise
+            db.add(AIAction(
+                user_id=user.id,
+                conversation_id=conversation.id,
+                action_type="unified_read_agent",
+                payload_redacted={"errorType": type(error).__name__},
+                status=ExecutionStatus.FAILED,
+            ))
+            direct_result = None
+
+        if direct_result and direct_result.handoff:
+            if emitted_direct_deltas:
+                # A terminal handoff must precede prose. Continuing would make
+                # one run visibly answer twice through two different paths.
+                raise RuntimeError("Unified agent emitted text before a governed handoff")
+            upstream_handoff = direct_result.handoff
+            emit(
+                "classification",
+                "The unified agent selected a governed workflow",
+                "completed",
+                direct_result.handoff.workflow,
+                direct_result.handoff.reason,
+            )
+            db.add(AIAction(
+                user_id=user.id,
+                conversation_id=conversation.id,
+                action_type="unified_read_handoff",
+                payload_redacted={
+                    "workflow": direct_result.handoff.workflow,
+                    "reason": direct_result.handoff.reason,
+                },
+                status=ExecutionStatus.COMPLETED,
+            ))
+            typed_handoff_decision = _decision_from_unified_handoff(
+                conversation,
+                text,
+                direct_result.handoff,
+                recent_context,
+            )
+            if typed_handoff_decision:
+                emit(
+                    "classification",
+                    "Compiled the unified typed handoff without another router",
+                    "completed",
+                    typed_handoff_decision.tool,
+                    direct_result.handoff.resolved_request,
+                )
+                handoff_payload: dict[str, Any] = {"tool": typed_handoff_decision.tool}
+                if typed_handoff_decision.query:
+                    handoff_payload["queryShape"] = {
+                        "metric": typed_handoff_decision.query.metric,
+                        "resultMode": typed_handoff_decision.query.result_mode,
+                        "operation": typed_handoff_decision.query.operation,
+                        "groupBy": typed_handoff_decision.query.group_by,
+                        "usesActiveScope": typed_handoff_decision.query.use_active_scope,
+                    }
+                elif typed_handoff_decision.clarification:
+                    handoff_payload["clarificationShape"] = {
+                        "optionCount": len(typed_handoff_decision.clarification.options),
+                        "conflictFields": typed_handoff_decision.clarification.conflict_fields,
+                        "allowsCustom": typed_handoff_decision.clarification.allow_custom,
+                    }
+                db.add(AIAction(
+                    user_id=user.id,
+                    conversation_id=conversation.id,
+                    action_type="unified_typed_handoff",
+                    payload_redacted=handoff_payload,
+                    status=ExecutionStatus.COMPLETED,
+                ))
+                response = _dispatch_decision(
+                    db,
+                    user,
+                    conversation,
+                    text,
+                    typed_handoff_decision,
+                    execute,
+                    emit,
+                )
+                # Governed query copy is already derived from the exact result
+                # and is verified alongside its widget/citation. A second prose
+                # model adds latency and can only introduce unsupported claims.
+                _response_is_final.set(True)
+                return response
+        elif direct_result and direct_result.reply:
+            direct_reply = direct_result.reply.strip()
+            if direct_result.tool_grounding and not _reply_matches_tool_evidence(
+                direct_reply,
+                direct_result.tool_grounding,
+            ):
+                direct_reply = _deterministic_tool_summary(
+                    direct_result.tool_grounding[0],
+                    user,
+                )
+            ungrounded_financial_number = bool(
+                not direct_result.tool_grounding
+                and re.search(
+                    r"(?:₹|\b(?:inr|rs\.?|rupees?)\b)\s*[\d,]+|\b\d+(?:\.\d+)?\s*%",
+                    direct_reply,
+                    re.I,
+                )
+            )
+            direct_mutation_claim = bool(
+                not direct_result.tool_grounding
+                and re.search(
+                    r"\b(?:added|created|deleted|removed|recorded|saved|updated|changed|set)\b",
+                    direct_reply,
+                    re.I,
+                )
+                and (
+                    active_draft is not None
+                    or _looks_like_planning_command(text)
+                    or (
+                        guarded_fast_path is not None
+                        and guarded_fast_path[0].tool
+                        not in SAFE_READ_CAPABILITIES | {CapabilityId.CONVERSATION}
+                    )
+                )
+            )
+            missed_required_handoff = bool(
+                _looks_like_planning_command(text)
+                or guarded_mutation_intent
+                or (
+                    guarded_fast_path is not None
+                    and guarded_fast_path[0].tool
+                    not in SAFE_READ_CAPABILITIES | {CapabilityId.CONVERSATION}
+                )
+            )
+            if (
+                not ungrounded_financial_number
+                and not direct_mutation_claim
+                and not missed_required_handoff
+            ):
+                emit(
+                    "classification",
+                    "The unified agent completed the answer",
+                    "completed",
+                    "unified_read_agent",
+                    (
+                        ", ".join(item.name for item in direct_result.tool_grounding)
+                        if direct_result.tool_grounding
+                        else "Used recent complete turns"
+                    ),
+                )
+                db.add(AIAction(
+                    user_id=user.id,
+                    conversation_id=conversation.id,
+                    action_type="unified_read_agent",
+                    payload_redacted={
+                        "groundedTools": [item.name for item in direct_result.tool_grounding],
+                        "streamedLive": direct_result.streamed_live,
+                    },
+                    status=ExecutionStatus.COMPLETED,
+                ))
+                direct_decision = CopilotDecision(
+                    tool=CapabilityId.CONVERSATION,
+                    reply=direct_reply,
+                    confidence=1.0,
+                    reason="One end-to-end conversational/read run completed safely.",
+                    tool_grounding=direct_result.tool_grounding,
+                    validated_by=(
+                        "runtime_tool_policy"
+                        if direct_result.tool_grounding
+                        else "unified_conversation_policy"
+                    ),
+                    validation_confidence=1.0,
+                )
+                response = _dispatch_decision(
+                    db,
+                    user,
+                    conversation,
+                    text,
+                    direct_decision,
+                    execute,
+                    emit,
+                )
+                if text_delta_callback and not direct_result.streamed_live:
+                    text_delta_callback(response.message_id, response.message)
+                _response_is_final.set(True)
+                return response
+            if emitted_direct_deltas:
+                # Once provider text crossed the protocol boundary, silently
+                # replacing it through the governed router would create two
+                # answers under one message id. Fail the run so replay and the
+                # canonical transcript cannot disagree with the live reader.
+                raise RuntimeError("A streamed unified answer failed its authority postcondition")
+            emit(
+                "classification",
+                "Rejected an ungrounded direct financial or mutation answer",
+                "completed",
+                "deterministic_evidence_policy",
+                "The governed router will retry with authenticated evidence or confirmation",
+            )
+
     deep_reasoning = _needs_deep_reasoning(text)
     emit(
         "classification",
@@ -2994,7 +4772,17 @@ def _run_turn(
         "agno_reasoning" if deep_reasoning else "agno_router",
     )
     superseded_scope = conversation.active_data_scope if releases_prior_scope(text) else None
-    decision = _interpret_prompt(db, user, conversation, user_message, text, deep_reasoning, emit)
+    decision = _interpret_prompt(
+        db,
+        user,
+        conversation,
+        user_message,
+        text,
+        deep_reasoning,
+        emit,
+        upstream_handoff,
+        recent_context,
+    )
     if decision and superseded_scope:
         # Widening away from the records on screen is a change the user should
         # read in the answer, not infer from a different-looking chart.
@@ -3256,6 +5044,10 @@ def _commit_draft(db: Session, user: User, draft: TransactionDraft) -> Transacti
 def handle_action(db: Session, user: User, conversation: Conversation, action: str, payload: dict) -> AgentResponse:
     action = WidgetActionId(action)
     payload = validate_action_payload(action, payload)
+    if action is WidgetActionId.RESOLVE_CLARIFICATION:
+        raise ValueError("Clarifications must resume their active agent interrupt")
+    if action is WidgetActionId.CANCEL_PENDING_ACTION:
+        return _conversation_response(db, conversation, "Cancelled. No changes were made.")
     owned = UserScopedRepository(db, user.id)
     draft_id = payload.get("draftId")
     draft = owned.get(TransactionDraft, UUID(draft_id)) if draft_id else None
@@ -3268,11 +5060,47 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
         spend_nature = str(payload.get("spendNature") or "")
         if not transaction:
             raise ValueError("Unknown transaction")
+        if transaction.transaction_type != TransactionType.EXPENSE:
+            raise ValueError("Spend nature applies only to expenses")
         transaction.spend_nature = spend_nature
         label = "potentially avoidable" if spend_nature == SpendNature.POTENTIALLY_AVOIDABLE else spend_nature
         content = f"Marked the {format_money_minor(transaction.amount_minor, transaction.currency)} {transaction.merchant_name or 'expense'} transaction as {label}."
         widget = _transaction_preview(db, transaction, status="Updated")
         return persist_agent_response(db, conversation, content, widgets=[widget])
+    if action is WidgetActionId.CANCEL_TRANSACTION_DRAFT:
+        if not draft:
+            raise ValueError("Transaction draft is no longer available")
+        if draft.state == DraftState.COMMITTED.value:
+            raise ValueError("A saved transaction cannot be cancelled as a draft")
+        draft.state = DraftState.CANCELLED.value
+        return _conversation_response(db, conversation, "Cancelled. Nothing was saved.")
+    if action is WidgetActionId.CANCEL_TRANSACTION_EDIT:
+        if not draft:
+            raise ValueError("Transaction draft is no longer available")
+        _set_ready_if_complete(draft)
+        return _draft_response(db, conversation, draft)
+    if action is WidgetActionId.REVISIT_TRANSACTION_STEP:
+        if not draft:
+            raise ValueError("Transaction draft is no longer available")
+        step = str(payload.get("step") or "")
+        if step == "transaction_type":
+            draft.transaction_type = TransactionType.UNKNOWN.value
+            draft.category_id = None
+            draft.subcategory_id = None
+            draft.account_id = None
+            draft.source_account_name = None
+            draft.destination_account_id = None
+            draft.destination_account_name = None
+        elif step == "category":
+            draft.category_id = None
+            draft.subcategory_id = None
+        elif step == "source_account":
+            draft.account_id = None
+            draft.source_account_name = None
+        else:
+            raise ValueError("Unknown transaction step")
+        _set_ready_if_complete(draft)
+        return _draft_response(db, conversation, draft)
     if action is WidgetActionId.START_ADD_CATEGORY and draft:
         widget = _new_category_widget(draft)
         content = "What should the new category be called?"
@@ -3380,6 +5208,9 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
     if action is WidgetActionId.SELECT_ACCOUNT and draft:
         account_id = payload.get("optionId") or payload.get("accountId")
         account = owned.get(Account, UUID(str(account_id))) if account_id else None
+        account_name = str(payload.get("accountName") or "").strip()
+        if not account and account_name:
+            account = AccountRepository(db, user.id).get_or_create(account_name, draft.currency)
         if not account:
             raise ValueError("Unknown account")
         role = payload.get("role")
@@ -3484,7 +5315,7 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
         prepayment_minor = payload.get("prepaymentMinor", 0)
         result = loan_with_prepayment(principal_minor, rate, months, prepayment_minor)
         content = f"A {format_money_minor(prepayment_minor, user.currency)} prepayment saves {format_money_minor(result['interest_saved_minor'], user.currency)} in interest and reduces the EMI by {format_money_minor(result['emi_reduction_minor'], user.currency)}, assuming the remaining tenure stays unchanged."
-        widget = Widget(id=f"loan-result-{now_utc().timestamp()}", type=WidgetType.LOAN_CALCULATOR, data={"title": "Home-loan prepayment result", "principalMinor": principal_minor, "annualRatePercent": rate, "tenureMonths": months, "prepaymentMinor": prepayment_minor, "currency": user.currency, "result": result})
+        widget = Widget(id=f"loan-result-{now_utc().timestamp()}", type=WidgetType.LOAN_CALCULATOR, data={"title": "Home-loan prepayment result", "principalMinor": principal_minor, "annualRatePercent": rate, "tenureMonths": months, "prepaymentMinor": prepayment_minor, "currency": user.currency, "result": result}, actions=[WidgetAction(id="calculate", label="Calculate", action=WidgetActionId.CALCULATE_LOAN_SCENARIO, style="primary", payload={})])
         citations = [DataReference(label="Deterministic amortization calculation", entity_type="calculator", query={"principalMinor": principal_minor, "annualRatePercent": rate, "tenureMonths": months, "prepaymentMinor": prepayment_minor})]
         return persist_agent_response(
             db,
@@ -3500,7 +5331,7 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
         years = payload["years"]
         result = investment_projection(monthly_minor, current_minor, rate, years)
         content = f"At an assumed {rate:g}% annual return, the projected value after {years} years is {format_money_minor(result['projected_value_minor'], user.currency)}; {format_money_minor(result['estimated_returns_minor'], user.currency)} is estimated growth, not guaranteed return."
-        widget = Widget(id=f"investment-result-{now_utc().timestamp()}", type=WidgetType.INVESTMENT_PROJECTION, data={"title": "Investment projection result", "monthlyContributionMinor": monthly_minor, "currentValueMinor": current_minor, "annualReturnPercent": rate, "years": years, "currency": user.currency, "result": result})
+        widget = Widget(id=f"investment-result-{now_utc().timestamp()}", type=WidgetType.INVESTMENT_PROJECTION, data={"title": "Investment projection result", "monthlyContributionMinor": monthly_minor, "currentValueMinor": current_minor, "annualReturnPercent": rate, "years": years, "currency": user.currency, "result": result}, actions=[WidgetAction(id="calculate", label="Project", action=WidgetActionId.CALCULATE_INVESTMENT_SCENARIO, style="primary", payload={})])
         citations = [DataReference(label="Deterministic compound-growth calculation", entity_type="calculator", query={"monthlyContributionMinor": monthly_minor, "currentValueMinor": current_minor, "annualReturnPercent": rate, "years": years})]
         return persist_agent_response(
             db,
@@ -3516,7 +5347,11 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
             id=f"edit-{draft.id}-{uuid4()}",
             type=WidgetType.TRANSACTION_EDIT,
             data={"draftId": str(draft.id), "title": "Edit transaction", "amountMinor": draft.amount_minor, "currency": draft.currency, "merchant": draft.merchant_name, "transactionAt": as_utc(draft.transaction_at), "fields": ["amount", "merchant", "transaction_at"]},
-            actions=[WidgetAction(id="update", label="Apply changes", action=WidgetActionId.UPDATE_TRANSACTION_DRAFT, style="primary", payload={"draftId": str(draft.id)})],
+            actions=[
+                WidgetAction(id="update", label="Apply changes", action=WidgetActionId.UPDATE_TRANSACTION_DRAFT, style="primary", payload={"draftId": str(draft.id)}),
+                WidgetAction(id="back", label="Back", action=WidgetActionId.CANCEL_TRANSACTION_EDIT, style="secondary", payload={"draftId": str(draft.id)}),
+                *_draft_navigation_actions(draft),
+            ],
         )
         content = "What would you like to change?"
         return persist_agent_response(
@@ -3544,7 +5379,11 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
         transaction = active_transaction(db, user.id, UUID(str(transaction_id))) if transaction_id else None
         if not transaction:
             raise ValueError("Unknown transaction")
-        categories = _expense_categories_for_user(db, user.id) if transaction.transaction_type == TransactionType.EXPENSE else []
+        # Always supply expense choices because Type is editable. An income or
+        # transfer can become an expense inside this form; withholding the
+        # taxonomy until after the save made that transition impossible to
+        # classify correctly.
+        categories = _expense_categories_for_user(db, user.id)
         subcategories = [
             item
             for category in categories

@@ -142,6 +142,18 @@ export function formatDimension(value: unknown) {
   return /^\d{4}-\d{2}(-\d{2})?$/.test(value) ? formatDay(value) : value.replaceAll("_", " ");
 }
 
+export function formatTransactionClassification(transactionType: unknown, category: unknown, subcategory: unknown) {
+  const rawType = typeof transactionType === "string" ? transactionType : "transaction";
+  const formattedType = formatDimension(rawType);
+  const typeLabel = formattedType.charAt(0).toUpperCase() + formattedType.slice(1);
+  const categoryLabel = typeof category === "string" && category ? category : null;
+  const subcategoryLabel = typeof subcategory === "string" && subcategory ? subcategory : null;
+  const expectedRoot = rawType === "income" ? "income" : rawType === "investment" ? "investments" : null;
+  const repeatsType = expectedRoot !== null && categoryLabel?.toLocaleLowerCase() === expectedRoot;
+  const hierarchy = [repeatsType ? null : categoryLabel, subcategoryLabel].filter(Boolean).join(" › ");
+  return [typeLabel, hierarchy].filter(Boolean).join(" · ");
+}
+
 export function formatRelative(iso: string, now = Date.now()) {
   const time = Date.parse(iso);
   if (!Number.isFinite(time)) return "";

@@ -1,9 +1,9 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 
 import { ChartView } from "@/components/charts";
 import { Banner, Button, Card, CardHeader, Chip, Divider, EmptyNote, Field, FieldLabel, Money, Pill, Type } from "@/components/ui";
-import { formatCount, formatDay, formatDimension, formatDuration, formatMoney, parseAmountToMinor, parseNumber } from "@/lib/format";
+import { formatCount, formatDay, formatDimension, formatDuration, formatMoney, formatTransactionClassification, parseAmountToMinor, parseNumber } from "@/lib/format";
 import {
   dataChartDataSchema,
   dataTableDataSchema,
@@ -55,6 +55,49 @@ function isWidgetActionId(value: unknown): value is WidgetActionId {
   return typeof value === "string" && (widgetActions as readonly string[]).includes(value);
 }
 
+/** Active widgets saved before draft cancellation was added still need a real
+ *  escape path. This submits the governed backend action; it is not a local
+ *  dismissal that could leave a resumable draft behind. */
+function ensureDraftCancel(widget: Widget, actions: Widget["actions"], _disabled: boolean) {
+  const draftId = str(widget.data.draftId);
+  if (!draftId || actions.some((action) => action.action === widgetActionIds.cancel_transaction_draft)) return actions;
+  return [...actions, {
+    id: "cancel-draft",
+    label: "Cancel transaction",
+    action: widgetActionIds.cancel_transaction_draft,
+    style: "ghost" as const,
+    payload: { draftId },
+  }];
+}
+
+function orderedActions(actions: Widget["actions"]) {
+  const priority = { ghost: 0, secondary: 1, primary: 2, danger: 3 } as const;
+  return actions
+    .map((action, index) => ({ action, index }))
+    .sort((left, right) => priority[left.action.style] - priority[right.action.style] || left.index - right.index)
+    .map(({ action }) => action);
+}
+
+function usePendingAction(pending: boolean): [string | null, (id: string) => void] {
+  const [submitted, setSubmitted] = useState<string | null>(null);
+  const wasPending = useRef(false);
+  useEffect(() => {
+    if (wasPending.current && !pending) setSubmitted(null);
+    wasPending.current = pending;
+  }, [pending]);
+  return [submitted, setSubmitted];
+}
+
+function useOptimisticChoice(confirmed: string, pending: boolean): [string, (id: string) => void] {
+  const [chosen, setChosen] = useState<string | null>(null);
+  const wasPending = useRef(false);
+  useEffect(() => {
+    if (wasPending.current && !pending && !confirmed) setChosen(null);
+    wasPending.current = pending;
+  }, [confirmed, pending]);
+  return [chosen ?? confirmed, setChosen];
+}
+
 /** What a completed control submitted, so the card can show its own receipt
  *  after it has gone read-only — and still show it after a cold start. */
 function completionValues(widget: Widget): Data {
@@ -74,6 +117,7 @@ type BodyProps = {
    *  in flight and the control is coming back. */
   spent: boolean;
   pending: boolean;
+  onCancel?: () => void;
   onAction: WidgetActionHandler;
 };
 
@@ -85,19 +129,22 @@ type BodyProps = {
  *  action and the payload, and the client's only job is to submit it. That is
  *  the reason the HITL layer ported at all — the decision about what may be
  *  pressed was never here. */
-function DeclaredActions({ widget, disabled, pending, onAction }: Omit<BodyProps, "data" | "currency" | "spent">) {
+function DeclaredActions({ widget, disabled, pending, onAction, onCancel, actions = widget.actions ?? [] }: Omit<BodyProps, "data" | "currency" | "spent"> & { actions?: Widget["actions"] }) {
   const styles = useStyles(makeStyles);
-  const actions = widget.actions ?? [];
-  if (!actions.length) return null;
+  const fallbackCancel = onCancel && !actions.some((action) => action.id === "cancel" || action.action.startsWith("cancel_"));
+  const [submitted, markSubmitted] = usePendingAction(pending);
+  if (!actions.length && !fallbackCancel) return null;
+  const ordered = orderedActions(actions);
   return (
     <View style={styles.actionRow}>
-      {actions.map((action) => (
+      {fallbackCancel ? <Button variant="ghost" onPress={() => { markSubmitted("protocol-cancel"); onCancel(); }} disabled={disabled || pending}>Cancel</Button> : null}
+      {ordered.map((action) => (
         <Button
           key={action.id}
-          onPress={() => onAction(widget.id, action.action, (action.payload ?? {}) as Data)}
+          onPress={() => { markSubmitted(action.id); onAction(widget.id, action.action, (action.payload ?? {}) as Data); }}
           disabled={disabled}
-          busy={pending}
-          variant={action.style === "primary" ? "filled" : action.style === "danger" ? "danger" : "outline"}
+          busy={pending && submitted === action.id}
+          variant={action.style === "primary" ? "filled" : action.style === "danger" ? "danger" : action.style === "ghost" ? "ghost" : "outline"}
           style={{ flexGrow: 1, flexBasis: actions.length > 2 ? "45%" : undefined }}
         >
           {action.label}
@@ -160,9 +207,10 @@ function optionId(option: Record<string, Primitive>, index: number) {
  *  arrays as separate lists that overlap is deliberate — the shortcut is worth
  *  the repetition — but a single list must never show one option twice, and
  *  React cannot key it if it does. */
-function OptionList({ items, disabled, selectedId, onPick }: {
+function OptionList({ items, disabled, pending = false, selectedId, onPick }: {
   items: Array<Record<string, Primitive>>;
   disabled: boolean;
+  pending?: boolean;
   selectedId?: string | null;
   onPick: (option: Record<string, Primitive>) => void;
 }) {
@@ -185,7 +233,8 @@ function OptionList({ items, disabled, selectedId, onPick }: {
             label={str(option.label ?? option.name, id)}
             detail={typeof option.detail === "string" ? option.detail : typeof option.hint === "string" ? option.hint : null}
             selected={selectedId === id}
-            disabled={disabled}
+            busy={pending && selectedId === id}
+            disabled={disabled && !(pending && selectedId === id)}
             onPress={() => onPick(option)}
           />
         );
@@ -224,7 +273,7 @@ function SpentSelector({ widget, note }: { widget: Widget; note?: string }) {
   // The receipt records which id was submitted, not what it was called. The
   // widget still carries the list it was chosen from, so the name is resolved
   // here rather than asking the server to denormalise it into every receipt.
-  const chosen = str(values.label) || str(values.name) || chosenLabel(widget, values);
+  const chosen = str(values.label) || str(values.name) || str(values.accountName) || chosenLabel(widget, values);
   const answered = lifecycle === "completed";
   const cancelled = lifecycle === "cancelled";
 
@@ -246,15 +295,88 @@ function SpentSelector({ widget, note }: { widget: Widget; note?: string }) {
 
 // ── Selectors ────────────────────────────────────────────────────────────────
 
+function Clarification({ widget, data, spent, disabled, pending, onAction, onCancel }: BodyProps) {
+  const styles = useStyles(makeStyles);
+  const [customText, setCustomText] = useState("");
+  const [customOpen, setCustomOpen] = useState(false);
+  const [selected, choose] = useOptimisticChoice(str(completionValues(widget).optionId), pending);
+  if (spent) return <SpentSelector widget={widget} note="Clarification supplied" />;
+  const choices = options(data).map((option) => ({ ...option, detail: option.description }));
+  const actions = new Map((widget.actions ?? []).map((action) => [action.id, action]));
+  const custom = actions.get("custom");
+  const choiceIds = new Set(options(data).map((choice) => str(choice.id)));
+  const navigationActions = (widget.actions ?? []).filter((action) => !choiceIds.has(action.id) && action.id !== "custom");
+  return (
+    <View style={styles.body}>
+      {str(data.reason) ? <Type size="note" color="attention">{str(data.reason)}</Type> : null}
+      <OptionList
+        items={choices}
+        disabled={disabled || pending}
+        pending={pending}
+        selectedId={selected}
+        onPick={(option) => {
+          const action = actions.get(str(option.id));
+          if (action) {
+            choose(str(option.id));
+            onAction(widget.id, action.action, (action.payload ?? {}) as Data);
+          }
+        }}
+      />
+      {data.allowCustom && custom ? (
+        <View style={{ gap: space.snug }}>
+          <Button variant="ghost" onPress={() => setCustomOpen((open) => !open)} disabled={disabled || pending} accessibilityHint={customOpen ? "Hides the custom answer field" : "Shows a field for your own answer"} style={{ alignSelf: "flex-start" }}>
+            {str(data.customLabel, "Something else")}
+          </Button>
+          {customOpen ? <View style={{ gap: space.snug }}>
+            <Field
+              value={customText}
+              onChangeText={setCustomText}
+              placeholder="Type your answer"
+              editable={!disabled && !pending}
+              maxLength={1000}
+              autoFocus
+            />
+            <Button
+              onPress={() => { choose("custom"); onAction(widget.id, custom.action, { ...(custom.payload ?? {}), customText: customText.trim() }); }}
+              disabled={disabled || pending || !customText.trim()}
+              busy={pending && selected === "custom"}
+              style={{ alignSelf: "flex-end" }}
+            >
+              Continue
+            </Button>
+          </View> : null}
+        </View>
+      ) : null}
+      <DeclaredActions widget={widget} actions={navigationActions} disabled={disabled} pending={pending} onAction={onAction} onCancel={onCancel} />
+    </View>
+  );
+}
+
 function CategorySelector({ widget, data, spent, disabled, pending, onAction }: BodyProps) {
   const styles = useStyles(makeStyles);
-  const [creating, setCreating] = useState(false);
-  const [name, setName] = useState("");
+  const [name, setName] = useState(str(completionValues(widget).name));
+  const [submittedAction, markSubmitted] = usePendingAction(pending);
+  const [chosen, choose] = useOptimisticChoice(str(completionValues(widget).categoryId), pending);
   if (spent) return <SpentSelector widget={widget} note="Category chosen" />;
   const draftId = str(data.draftId);
   const suggestions = Array.isArray(data.suggestions) ? data.suggestions as Array<Record<string, Primitive>> : [];
   const catalogue = options(data);
-  const chosen = str(completionValues(widget).categoryId) || null;
+  const startCreate = widget.actions.find((action) => action.action === widgetActionIds.start_add_category);
+
+  if (data.mode === "create") {
+    const create = widget.actions.find((action) => action.action === widgetActionIds.create_category);
+    const navigation = widget.actions.filter((action) => action.action !== widgetActionIds.create_category);
+    return (
+      <View style={styles.body}>
+        <FieldLabel>Category name</FieldLabel>
+        <Field value={name} onChangeText={setName} placeholder="e.g. Pets" editable={!disabled && !pending} autoFocus autoCapitalize="words" maxLength={80} />
+        <View style={styles.actionRow}>
+          {orderedActions(navigation).map((action) => <Button key={action.id} variant={action.style === "ghost" ? "ghost" : "outline"} onPress={() => { markSubmitted(action.id); onAction(widget.id, action.action, action.payload); }} disabled={disabled || pending} busy={pending && submittedAction === action.id} style={{ flexGrow: 1 }}>{action.label}</Button>)}
+          {create ? <Button onPress={() => { markSubmitted(create.id); onAction(widget.id, create.action, { ...create.payload, name: name.trim() }); }} disabled={disabled || pending || !name.trim()} busy={pending && submittedAction === create.id} style={{ flexGrow: 1 }}>{create.label}</Button> : null}
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.body}>
@@ -265,7 +387,8 @@ function CategorySelector({ widget, data, spent, disabled, pending, onAction }: 
             items={suggestions}
             disabled={disabled}
             selectedId={chosen}
-            onPick={(option) => onAction(widget.id, widgetActionIds.select_category, { draftId, categoryId: str(option.id ?? option.categoryId) })}
+            pending={pending}
+            onPick={(option) => { const id = str(option.id ?? option.categoryId); choose(id); onAction(widget.id, widgetActionIds.select_category, { draftId, categoryId: id }); }}
           />
         </>
       ) : null}
@@ -277,46 +400,26 @@ function CategorySelector({ widget, data, spent, disabled, pending, onAction }: 
             items={catalogue}
             disabled={disabled}
             selectedId={chosen}
-            onPick={(option) => onAction(widget.id, widgetActionIds.select_category, { draftId, categoryId: str(option.id ?? option.categoryId) })}
+            pending={pending}
+            onPick={(option) => { const id = str(option.id ?? option.categoryId); choose(id); onAction(widget.id, widgetActionIds.select_category, { draftId, categoryId: id }); }}
           />
         </>
       ) : null}
 
-      {data.allowCreate && !disabled ? (
-        creating ? (
-          <View style={{ gap: space.snug }}>
-            <FieldLabel>New category</FieldLabel>
-            <Field value={name} onChangeText={setName} placeholder="Groceries" autoFocus autoCapitalize="words" returnKeyType="done" />
-            <View style={styles.actionRow}>
-              <Button
-                onPress={() => onAction(widget.id, widgetActionIds.create_category, { draftId, name: name.trim() })}
-                disabled={!name.trim()}
-                busy={pending}
-                style={{ flex: 1 }}
-              >
-                Create
-              </Button>
-              <Button variant="ghost" onPress={() => { setCreating(false); setName(""); }} style={{ flex: 1 }}>Cancel</Button>
-            </View>
-          </View>
-        ) : (
-          <Button variant="ghost" onPress={() => setCreating(true)} style={{ alignSelf: "flex-start" }}>+ New category</Button>
-        )
-      ) : null}
+      {data.allowCreate && startCreate ? <Button variant="ghost" onPress={() => onAction(widget.id, startCreate.action, startCreate.payload)} disabled={disabled || pending} style={{ alignSelf: "flex-start" }}>+ {startCreate.label}</Button> : null}
     </View>
   );
 }
 
 function SubcategorySelector({ widget, data, spent, disabled, pending, onAction }: BodyProps) {
   const styles = useStyles(makeStyles);
-  const [creating, setCreating] = useState(false);
-  const [name, setName] = useState("");
+  const [chosen, choose] = useOptimisticChoice(str(completionValues(widget).subcategoryId), pending);
   if (spent) return <SpentSelector widget={widget} note="Subcategory chosen" />;
   const draftId = str(data.draftId);
   const suggestions = Array.isArray(data.suggestions) ? data.suggestions as Array<Record<string, Primitive>> : [];
   const catalogue = options(data);
-  const chosen = str(completionValues(widget).subcategoryId) || null;
   const all = [...suggestions, ...catalogue];
+  const startCreate = widget.actions.find((action) => action.action === widgetActionIds.start_add_subcategory);
 
   return (
     <View style={styles.body}>
@@ -325,72 +428,74 @@ function SubcategorySelector({ widget, data, spent, disabled, pending, onAction 
         items={all}
         disabled={disabled}
         selectedId={chosen}
-        onPick={(option) => onAction(widget.id, widgetActionIds.select_subcategory, { draftId, subcategoryId: str(option.id ?? option.subcategoryId) })}
+        pending={pending}
+        onPick={(option) => { const id = str(option.id ?? option.subcategoryId); choose(id); onAction(widget.id, widgetActionIds.select_subcategory, { draftId, subcategoryId: id }); }}
       />
-      {data.allowCreate && !disabled ? (
-        creating ? (
-          <View style={{ gap: space.snug }}>
-            <Field value={name} onChangeText={setName} placeholder="New subcategory" autoFocus autoCapitalize="words" />
-            <View style={styles.actionRow}>
-              <Button
-                onPress={() => onAction(widget.id, widgetActionIds.create_subcategory, { draftId, categoryId: str(data.categoryId), name: name.trim() })}
-                disabled={!name.trim()}
-                busy={pending}
-                style={{ flex: 1 }}
-              >
-                Create
-              </Button>
-              <Button variant="ghost" onPress={() => { setCreating(false); setName(""); }} style={{ flex: 1 }}>Cancel</Button>
-            </View>
-          </View>
-        ) : (
-          <Button variant="ghost" onPress={() => setCreating(true)} style={{ alignSelf: "flex-start" }}>+ New subcategory</Button>
-        )
-      ) : null}
+      {data.allowCreate && startCreate ? <Button variant="ghost" onPress={() => onAction(widget.id, startCreate.action, startCreate.payload)} disabled={disabled || pending} style={{ alignSelf: "flex-start" }}>+ {startCreate.label}</Button> : null}
     </View>
   );
 }
 
-function TransactionTypeSelector({ widget, data, spent, disabled, onAction }: BodyProps) {
+function TransactionTypeSelector({ widget, data, spent, disabled, pending, onAction }: BodyProps) {
   const styles = useStyles(makeStyles);
+  const typeValues = completionValues(widget);
+  const [chosen, choose] = useOptimisticChoice(str(typeValues.optionId) || str(typeValues.transactionType), pending);
   if (spent) return <SpentSelector widget={widget} note="Type chosen" />;
   const draftId = str(data.draftId);
-  const chosen = str(completionValues(widget).transactionType) || null;
   return (
     <View style={styles.body}>
       <OptionList
         items={options(data)}
         disabled={disabled}
         selectedId={chosen}
-        onPick={(option) => onAction(widget.id, widgetActionIds.select_transaction_type, {
-          draftId,
-          optionId: str(option.id) || undefined,
-          transactionType: str(option.transactionType ?? option.value) || undefined,
-        })}
+        pending={pending}
+        onPick={(option) => {
+          const id = str(option.id ?? option.transactionType ?? option.value);
+          choose(id);
+          onAction(widget.id, widgetActionIds.select_transaction_type, {
+            draftId,
+            optionId: str(option.id) || undefined,
+            transactionType: str(option.transactionType ?? option.value) || undefined,
+          });
+        }}
       />
     </View>
   );
 }
 
-function AccountSelector({ widget, data, spent, disabled, onAction }: BodyProps) {
+function AccountSelector({ widget, data, spent, disabled, pending, onAction }: BodyProps) {
   const styles = useStyles(makeStyles);
-  if (spent) return <SpentSelector widget={widget} note="Account chosen" />;
   const draftId = str(data.draftId);
   const role = str(data.role);
-  const chosen = str(completionValues(widget).accountId) || null;
+  const accountValues = completionValues(widget);
+  const [chosen, choose] = useOptimisticChoice(str(accountValues.accountId) || str(accountValues.optionId) || (accountValues.accountName ? "custom-account" : ""), pending);
+  const accounts = options(data);
+  const [accountName, setAccountName] = useState(str(accountValues.accountName));
+  const [enteringName, setEnteringName] = useState(accounts.length === 0);
+  if (spent) return <SpentSelector widget={widget} note="Account chosen" />;
   return (
     <View style={styles.body}>
       <OptionList
-        items={options(data)}
-        disabled={disabled}
+        items={accounts}
+        disabled={disabled || pending}
         selectedId={chosen}
-        onPick={(option) => onAction(widget.id, widgetActionIds.select_account, {
-          draftId,
-          role,
-          optionId: str(option.id) || undefined,
-          accountId: str(option.accountId ?? option.id) || undefined,
-        })}
+        pending={pending}
+        onPick={(option) => {
+          const id = str(option.accountId ?? option.id);
+          choose(id);
+          onAction(widget.id, widgetActionIds.select_account, {
+            draftId,
+            role,
+            optionId: str(option.id) || undefined,
+            accountId: id || undefined,
+          });
+        }}
       />
+      {accounts.length ? <Button variant="ghost" onPress={() => setEnteringName((open) => !open)} disabled={disabled || pending} style={{ alignSelf: "flex-start" }}>Use another account</Button> : null}
+      {enteringName ? <View style={{ flexDirection: "row", alignItems: "stretch", gap: space.snug }}>
+        <Field value={accountName} onChangeText={setAccountName} placeholder="Account name" editable={!disabled && !pending} maxLength={120} autoFocus style={{ flex: 1 }} />
+        <Button size="field" onPress={() => { choose("custom-account"); onAction(widget.id, widgetActionIds.select_account, { draftId, role, accountName: accountName.trim() }); }} disabled={disabled || pending || !accountName.trim()} busy={pending && chosen === "custom-account"}>Continue</Button>
+      </View> : null}
     </View>
   );
 }
@@ -398,10 +503,12 @@ function AccountSelector({ widget, data, spent, disabled, onAction }: BodyProps)
 function TaxonomyEditor({ widget, data, spent, disabled, pending, onAction }: BodyProps) {
   const styles = useStyles(makeStyles);
   const [name, setName] = useState(str(data.name));
+  const [submittedAction, markSubmitted] = usePendingAction(pending);
   if (spent) return <SpentSelector widget={widget} note="Saved" />;
-  const draftId = str(data.draftId) || undefined;
-  const categoryId = str(data.categoryId) || undefined;
   const subcategory = str(data.operation).includes("subcategory");
+  const createActionId = subcategory ? widgetActionIds.create_subcategory : widgetActionIds.create_category;
+  const create = widget.actions.find((action) => action.action === createActionId);
+  const navigation = widget.actions.filter((action) => action.action !== createActionId);
 
   return (
     <View style={styles.body}>
@@ -410,26 +517,18 @@ function TaxonomyEditor({ widget, data, spent, disabled, pending, onAction }: Bo
       </FieldLabel>
       <Field value={name} onChangeText={setName} placeholder="Name" editable={!disabled} autoFocus={!disabled} autoCapitalize="words" />
       <View style={styles.actionRow}>
-        <Button
-          onPress={() => onAction(
-            widget.id,
-            subcategory ? widgetActionIds.create_subcategory : widgetActionIds.create_category,
-            subcategory ? { draftId, categoryId: categoryId ?? "", name: name.trim() } : { draftId, categoryId, name: name.trim() },
-          )}
+        {orderedActions(navigation).map((action) => <Button key={action.id} variant={action.style === "ghost" ? "ghost" : "outline"} onPress={() => { markSubmitted(action.id); onAction(widget.id, action.action, action.payload); }} disabled={disabled || pending} busy={pending && submittedAction === action.id} style={{ flexGrow: 1 }}>{action.label}</Button>)}
+        {create ? <Button
+          onPress={() => {
+            markSubmitted(create.id);
+            onAction(widget.id, create.action, { ...create.payload, name: name.trim() });
+          }}
           disabled={disabled || !name.trim()}
-          busy={pending}
+          busy={pending && submittedAction === create.id}
           style={{ flex: 1 }}
         >
-          Save
-        </Button>
-        <Button
-          variant="ghost"
-          onPress={() => onAction(widget.id, widgetActionIds.cancel_taxonomy_change, { draftId, categoryId })}
-          disabled={disabled}
-          style={{ flex: 1 }}
-        >
-          Cancel
-        </Button>
+          {create.label}
+        </Button> : null}
       </View>
     </View>
   );
@@ -438,7 +537,9 @@ function TaxonomyEditor({ widget, data, spent, disabled, pending, onAction }: Bo
 // ── Transactions ─────────────────────────────────────────────────────────────
 
 function typeTone(transactionType: string) {
-  return transactionType === "income" || transactionType === "refund" ? "in" as const : "out" as const;
+  if (["income", "refund", "reimbursement", "cash_deposit"].includes(transactionType)) return "in" as const;
+  if (["expense", "investment", "loan_payment", "cash_withdrawal"].includes(transactionType)) return "out" as const;
+  return "secondary" as const;
 }
 
 function ConfirmationCard({ data, currency }: BodyProps) {
@@ -481,7 +582,7 @@ function TransactionPreview({ data, currency }: BodyProps) {
         <Type size="note" color="muted">{formatDay(str(data.transactionAt).slice(0, 10))}</Type>
       </View>
       <Rows items={[
-        ...(data.category ? [["Category", [str(data.category), str(data.subcategory)].filter(Boolean).join(" › ")] as [string, React.ReactNode]] : []),
+        ["Classification", formatTransactionClassification(type, data.category, data.subcategory)],
         ["Status", formatDimension(data.status)],
         ...(sources > 1 ? [["Sources", `${sources} matched records`] as [string, React.ReactNode]] : []),
       ]} />
@@ -497,11 +598,23 @@ function TransactionEdit({ widget, data, disabled, pending, onAction }: BodyProp
   const [amount, setAmount] = useState(data.amountMinor != null ? String(num(data.amountMinor) / 100) : "");
   const [merchant, setMerchant] = useState(str(data.merchant));
   const [location, setLocation] = useState(str(data.location));
+  const [submittedAction, markSubmitted] = usePendingAction(pending);
   const amountMinor = parseAmountToMinor(amount);
   const invalid = amount.trim().length > 0 && amountMinor === null;
+  const submitAction = saved ? widgetActionIds.update_saved_transaction : widgetActionIds.update_transaction_draft;
+  const declaredNavigation = (widget.actions ?? []).filter((action) => action.action !== submitAction);
+  const navigation: Widget["actions"] = ensureDraftCancel(widget, declaredNavigation.length || !saved ? declaredNavigation : [{
+    id: "cancel",
+    label: "Cancel",
+    action: widgetActionIds.cancel_saved_transaction_edit,
+    style: "secondary",
+    payload: { transactionId: str(data.transactionId) },
+  }], disabled);
+  const submitLabel = widget.actions.find((action) => action.action === submitAction)?.label ?? (saved ? "Apply changes" : "Save entry");
 
   function submit() {
     if (amountMinor === null) return;
+    markSubmitted("submit");
     if (saved) {
       onAction(widget.id, widgetActionIds.update_saved_transaction, {
         transactionId: str(data.transactionId),
@@ -544,17 +657,8 @@ function TransactionEdit({ widget, data, disabled, pending, onAction }: BodyProp
         </View>
       ) : null}
       <View style={styles.actionRow}>
-        <Button onPress={submit} disabled={disabled || amountMinor === null} busy={pending} style={{ flex: 1 }}>Save changes</Button>
-        {saved ? (
-          <Button
-            variant="ghost"
-            onPress={() => onAction(widget.id, widgetActionIds.cancel_saved_transaction_edit, { transactionId: str(data.transactionId) })}
-            disabled={disabled}
-            style={{ flex: 1 }}
-          >
-            Cancel
-          </Button>
-        ) : null}
+        {orderedActions(navigation).map((action) => <Button key={action.id} variant={action.style === "danger" ? "danger" : action.style === "ghost" ? "ghost" : "outline"} onPress={() => { markSubmitted(action.id); onAction(widget.id, action.action, action.payload); }} disabled={disabled || pending} busy={pending && submittedAction === action.id} style={{ flexGrow: 1 }}>{action.label}</Button>)}
+        <Button onPress={submit} disabled={disabled || amountMinor === null} busy={pending && submittedAction === "submit"} style={{ flex: 1 }}>{submitLabel}</Button>
       </View>
     </View>
   );
@@ -576,7 +680,7 @@ function TransactionList({ widget, data, currency, disabled, onAction }: BodyPro
               <View style={{ flex: 1, minWidth: 0 }}>
                 <Type size="control" weight="medium" color="ink" numberOfLines={1}>{str(row.merchant ?? row.title, "Transaction")}</Type>
                 <Type size="meta" color="muted" numberOfLines={1}>
-                  {[formatDay(str(row.transactionAt).slice(0, 10)), str(row.category)].filter(Boolean).join(" · ")}
+                  {[formatTransactionClassification(type, row.category, row.subcategory), formatDay(str(row.transactionAt).slice(0, 10))].filter(Boolean).join(" · ")}
                 </Type>
               </View>
               <Money value={formatMoney(row.amountMinor, str(row.currency, currency))} size="control" color={typeTone(type)} />
@@ -832,7 +936,10 @@ function AvoidableExpenses({ widget, data, currency, disabled, onAction }: BodyP
                       label={choice === "essential" ? "Essential" : "Could skip"}
                       selected={nature === choice}
                       disabled={disabled}
-                      onPress={() => onAction(widget.id, widgetActionIds.set_spend_nature, { transactionId: id, spendNature: choice }, { markUsed: false })}
+                      onPress={() => {
+                        const action = widget.actions.find((candidate) => candidate.payload.transactionId === id && candidate.payload.spendNature === choice);
+                        if (action) onAction(widget.id, action.action, action.payload, { markUsed: false });
+                      }}
                     />
                   ))}
                 </View>
@@ -1106,6 +1213,7 @@ function DataVisualization({ data, currency }: BodyProps) {
 
 const BODIES: Partial<Record<Widget["type"], (props: BodyProps) => React.ReactNode>> = {
   [widgetTypeIds.agent_activity]: AgentActivity,
+  [widgetTypeIds.clarification]: Clarification,
   [widgetTypeIds.category_selector]: CategorySelector,
   [widgetTypeIds.subcategory_selector]: SubcategorySelector,
   [widgetTypeIds.transaction_type_selector]: TransactionTypeSelector,
@@ -1132,21 +1240,48 @@ const BODIES: Partial<Record<Widget["type"], (props: BodyProps) => React.ReactNo
 };
 
 /** Which widgets carry their own heading rather than the card's. */
-const HEADERLESS = new Set<Widget["type"]>([widgetTypeIds.insight_card]);
+const HEADERLESS = new Set<Widget["type"]>([
+  widgetTypeIds.insight_card,
+  widgetTypeIds.clarification,
+  widgetTypeIds.category_selector,
+  widgetTypeIds.subcategory_selector,
+  widgetTypeIds.transaction_type_selector,
+  widgetTypeIds.account_selector,
+  widgetTypeIds.taxonomy_editor,
+]);
+const COMPACT_RESOLVED = new Set<Widget["type"]>([
+  widgetTypeIds.clarification,
+  widgetTypeIds.category_selector,
+  widgetTypeIds.subcategory_selector,
+  widgetTypeIds.transaction_type_selector,
+  widgetTypeIds.account_selector,
+  widgetTypeIds.taxonomy_editor,
+  widgetTypeIds.confirmation_card,
+  widgetTypeIds.transaction_edit,
+  widgetTypeIds.budget_progress,
+  widgetTypeIds.goal_progress,
+  widgetTypeIds.import_review,
+  widgetTypeIds.reconciliation_review,
+]);
 
-export const WidgetView = memo(function WidgetView({ widget, currency, disabled, spent, pending, onAction }: {
+export const WidgetView = memo(function WidgetView({ widget, currency, disabled, spent, pending, onAction, onCancel }: {
   widget: Widget;
   currency: string;
   disabled: boolean;
   spent: boolean;
   pending: boolean;
+  onCancel?: () => void;
   onAction: WidgetActionHandler;
 }) {
   const data = widget.data as Data;
   const Body = BODIES[widget.type];
-  const props: BodyProps = { widget, data, currency, disabled, spent, pending, onAction };
+  const props: BodyProps = { widget, data, currency, disabled, spent, pending, onAction, onCancel };
   const styles = useStyles(makeStyles);
   const color = useTheme();
+
+  if (spent && COMPACT_RESOLVED.has(widget.type)) {
+    return <Card><SpentSelector widget={widget} /></Card>;
+  }
 
   // The insight card is prose in a box, and giving it a header would print its
   // title twice.
@@ -1182,12 +1317,47 @@ export const WidgetView = memo(function WidgetView({ widget, currency, disabled,
 
 function DeclaredActionsFooter(props: BodyProps) {
   const styles = useStyles(makeStyles);
-  if (!(props.widget.actions ?? []).length) return null;
+  if (props.widget.type === widgetTypeIds.clarification) return null;
+  if (props.widget.type === widgetTypeIds.category_selector && props.widget.data.mode === "create") return null;
+  if (props.widget.type === widgetTypeIds.taxonomy_editor) return null;
+  const embedded = new Set<WidgetActionId>();
+  if (props.widget.type === widgetTypeIds.category_selector) {
+    embedded.add(widgetActionIds.select_category);
+    embedded.add(widgetActionIds.create_category);
+    embedded.add(widgetActionIds.start_add_category);
+  } else if (props.widget.type === widgetTypeIds.subcategory_selector) {
+    embedded.add(widgetActionIds.select_subcategory);
+    embedded.add(widgetActionIds.create_subcategory);
+    embedded.add(widgetActionIds.start_add_subcategory);
+  } else if (props.widget.type === widgetTypeIds.transaction_type_selector) {
+    embedded.add(widgetActionIds.select_transaction_type);
+  } else if (props.widget.type === widgetTypeIds.account_selector) {
+    embedded.add(widgetActionIds.select_account);
+  } else if (props.widget.type === widgetTypeIds.transaction_edit) {
+    embedded.add(widgetActionIds.update_transaction_draft);
+    embedded.add(widgetActionIds.update_saved_transaction);
+    embedded.add(widgetActionIds.cancel_saved_transaction_edit);
+    embedded.add(widgetActionIds.cancel_transaction_edit);
+    embedded.add(widgetActionIds.cancel_transaction_draft);
+  } else if (props.widget.type === widgetTypeIds.data_table) {
+    rows(props.widget.data.rowActions).forEach((action) => {
+      if (isWidgetActionId(action.action)) embedded.add(action.action);
+    });
+  } else if (props.widget.type === widgetTypeIds.avoidable_expenses) {
+    embedded.add(widgetActionIds.set_spend_nature);
+  } else if (props.widget.type === widgetTypeIds.loan_calculator) {
+    embedded.add(widgetActionIds.calculate_loan_scenario);
+  } else if (props.widget.type === widgetTypeIds.investment_projection) {
+    embedded.add(widgetActionIds.calculate_investment_scenario);
+  }
+  const declared = (props.widget.actions ?? []).filter((action) => !embedded.has(action.action));
+  const actions = ensureDraftCancel(props.widget, declared, props.disabled);
+  if (!actions.length) return null;
   // A retired card keeps its receipt, not its buttons.
   if (props.spent) return null;
   return (
     <View style={styles.footer}>
-      <DeclaredActions widget={props.widget} disabled={props.disabled} pending={props.pending} onAction={props.onAction} />
+      <DeclaredActions widget={props.widget} actions={actions} disabled={props.disabled} pending={props.pending} onAction={props.onAction} onCancel={props.onCancel} />
     </View>
   );
 }

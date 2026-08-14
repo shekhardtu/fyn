@@ -176,13 +176,22 @@ def _json_value(value: Any) -> Any:
 
 
 def serialize_rows(rows: list[Any]) -> list[dict]:
-    return [
-        {
-            column.key: _json_value(getattr(row, column.key))
-            for column in row.__table__.columns
-        }
-        for row in rows
-    ]
+    serialized: list[dict] = []
+    for row in rows:
+        mapper = row.__mapper__
+        serialized.append(
+            {
+                # Keep stable database-column keys in the export, but resolve
+                # values through the ORM attribute. These differ when a model
+                # deliberately avoids a reserved SQLAlchemy name, such as
+                # AgentInterrupt.metadata -> metadata_payload.
+                column.key: _json_value(
+                    getattr(row, mapper.get_property_by_column(column).key)
+                )
+                for column in row.__table__.columns
+            }
+        )
+    return serialized
 
 
 def _owned_rows(db: Session, user_id: UUID) -> dict[type, list[Any]]:

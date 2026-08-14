@@ -204,19 +204,19 @@ export function Button({ children, onPress, variant = "filled", size = "lg", dis
 }
 
 /** A selectable option — the shape most HITL widgets are made of. */
-export function Chip({ label, detail, selected, disabled, onPress }: { label: string; detail?: string | null; selected?: boolean; disabled?: boolean; onPress?: () => void }) {
+export function Chip({ label, detail, selected, busy, disabled, onPress }: { label: string; detail?: string | null; selected?: boolean; busy?: boolean; disabled?: boolean; onPress?: () => void }) {
   const styles = useStyles(makeStyles);
   const color = useTheme();
   return (
     <Pressable
       onPress={() => {
-        if (disabled) return;
+        if (disabled || busy) return;
         void Haptics.selectionAsync();
         onPress?.();
       }}
-      disabled={disabled}
+      disabled={disabled || busy}
       accessibilityRole="button"
-      accessibilityState={{ selected: !!selected, disabled: !!disabled }}
+      accessibilityState={{ selected: !!selected, disabled: !!disabled, busy: !!busy }}
       hitSlop={{ top: space.tight, bottom: space.tight }}
       style={({ pressed }) => [
         styles.chip,
@@ -225,8 +225,11 @@ export function Chip({ label, detail, selected, disabled, onPress }: { label: st
         disabled && { opacity: 0.45 },
       ]}
     >
-      <Type size="control" weight={selected ? "semibold" : "medium"} color={selected ? "secondary" : "ink"}>{label}</Type>
-      {detail ? <Type size="meta" color="muted" style={{ marginTop: 1 }}>{detail}</Type> : null}
+      {busy ? <ActivityIndicator size="small" color={color.secondary} /> : null}
+      <View style={{ flexShrink: 1 }}>
+        <Type size="control" weight={selected ? "semibold" : "medium"} color={selected ? "secondary" : "ink"}>{label}</Type>
+        {detail ? <Type size="meta" color="muted" style={{ marginTop: 1 }}>{detail}</Type> : null}
+      </View>
     </Pressable>
   );
 }
@@ -314,6 +317,9 @@ const makeStyles = (color: Palette) => StyleSheet.create({
   },
   chip: {
     minHeight: height.touch,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.snug,
     justifyContent: "center",
     paddingHorizontal: space.base,
     paddingVertical: space.snug,

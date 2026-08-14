@@ -1,6 +1,6 @@
 # Widget creation library
 
-The copilot uses a hybrid response contract:
+Fyn uses a hybrid response contract:
 
 - `message` is safe Markdown for narrative, explanations, and compact lists.
 - `widgets` are typed, versioned contracts for trusted data, charts, forms, and human decisions.

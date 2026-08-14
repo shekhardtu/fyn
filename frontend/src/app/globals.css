@@ -21,6 +21,7 @@
   --color-ink-body: var(--ink-body);
   --color-ink-muted: var(--ink-muted);
   --color-line: var(--line);
+  --color-line-soft: var(--line-soft);
   --color-line-strong: var(--line-strong);
 
   /* Interactive chrome */
@@ -91,6 +92,9 @@
 }
 
 :root {
+  --font-body: "DM Sans Variable";
+  --font-display: "Manrope Variable";
+
   /* Grounds */
   --surface: #ffffff;
   --ground: #fafafb;
@@ -189,9 +193,16 @@
   color: var(--secondary-hover);
 }
 
-/* Text controls are deliberately stricter than the browser's :focus-visible
-   heuristic, which may show a ring after a click or programmatic focus. The
-   root modality is set once for the whole app by FocusModality. */
+/* The browser's :focus-visible heuristic is not strict enough for this UI:
+   chart libraries and programmatic HITL focus can leave a ring behind after a
+   click. FocusModality is the app-wide source of truth instead. Before the
+   first Tab, and after every pointer press, no focused descendant may draw an
+   outline. Keyboard focus rules below remain unchanged. */
+html:not([data-focus-modality="keyboard"]) :focus {
+  outline: none;
+}
+
+/* Text controls use a border and soft halo instead of an outline. */
 html[data-focus-modality="keyboard"] .manual-field:focus,
 html[data-focus-modality="keyboard"] .manual-field-group:focus-within {
   border-color: var(--secondary);
@@ -204,14 +215,16 @@ html[data-focus-modality="keyboard"] .manual-field[aria-invalid="true"]:focus {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 15%, transparent);
 }
 
-/* Every tabbable interactive surface gets the same ring, including the raw
-   buttons that do not go through the Button primitive. Manual text fields use
-   the stricter Tab-only treatment above because browsers can match
-   :focus-visible for them after a click. `tabindex="-1"` boundaries receive
+/* Every tabbable interactive surface gets the same Tab-only ring, including
+   library-generated chart targets and raw buttons that do not go through the
+   Button primitive. Manual text fields use the treatment above.
+   `tabindex="-1"` boundaries receive
    programmatic focus for screen-reader announcements, not keyboard navigation,
    so drawing a ring around them makes an entire card look selected when a
-   response arrives. */
-:where(a, button, input, select, textarea, [role="switch"], [tabindex]):not([tabindex="-1"]):not(.manual-field):focus-visible {
+   response arrives. Inputs framed by a [data-field] box are carved out here —
+   this rule outranks the one-ring suppression below, so excluding them in the
+   suppression alone is not enough. */
+html[data-focus-modality="keyboard"] :where(a, button, input, select, textarea, [role="switch"], [tabindex]):not([tabindex="-1"]):not(.manual-field):not([data-field] :is(input, textarea)):focus {
   outline: 2px solid var(--secondary);
   outline-offset: 2px;
   border-radius: inherit;
@@ -246,24 +259,27 @@ html[data-focus-modality="keyboard"] .manual-field[aria-invalid="true"]:focus {
   stroke-linejoin: miter;
 }
 
-/* A widget whose decision has been made. Legible, still selectable, visibly
-   spent — the class was applied by the renderer long before it meant
-   anything. */
-.widget-readonly {
-  opacity: 0.72;
-}
-
+/* A widget whose decision has been made. The recorded content and its view
+   controls remain fully legible and usable; only inputs and action buttons
+   retire with the bubble. `data-readonly-keep` marks display controls such as
+   table width and maximize, which must work wherever the table sits. */
 .widget-readonly button:not([data-readonly-keep]),
 .widget-readonly input,
 .widget-readonly select,
 .widget-readonly textarea {
   pointer-events: none;
+  opacity: 0.72;
 }
 
 .conversation-scroll {
   scrollbar-color: var(--line-strong) transparent;
   scrollbar-width: thin;
   overscroll-behavior: contain;
+  /* The pane is the size container wide tables measure themselves against:
+     an expanded table takes 80cqw — 80% of the conversation pane, gutters
+     included — so it tracks the real pane across every screen size instead
+     of approximating it from the viewport. */
+  container-type: inline-size;
 }
 
 /* The transcript no longer needs a mask at its foot. It used to end underneath
@@ -760,18 +776,6 @@ html[data-focus-modality="keyboard"] .manual-field[aria-invalid="true"]:focus {
   }
 }
 
-/* Switching threads. With the rail warming a thread on hover the swap is
-   usually a single frame, and a single frame of hard cut reads as a flicker;
-   this is just enough motion to say the page changed. */
-.thread-enter {
-  animation: thread-enter var(--m-enter) var(--ease);
-}
-
-@keyframes thread-enter {
-  from { opacity: 0; transform: translateY(3px); }
-  to { opacity: 1; transform: none; }
-}
-
 /* ── The entry dock ───────────────────────────────────────────────────────
    Whatever has not been written yet belongs below the transcript's closing
    rule, so the composer sits there and the transcript stops at it. The band
@@ -793,6 +797,24 @@ html[data-focus-modality="keyboard"] .manual-field[aria-invalid="true"]:focus {
   background: var(--surface);
 }
 
+/* Scroll feedback is written directly to this composited overlay. Keeping it
+   outside React means wheel/touch frames never re-render the workspace merely
+   to change one button's opacity. */
+.jump-to-latest {
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 150ms linear;
+}
+
+.jump-to-latest[data-visible="true"] {
+  visibility: visible;
+  opacity: 1;
+}
+
+.jump-to-latest[data-visible="true"][data-scrolling="true"] {
+  opacity: 0.3;
+}
+
 /* The line you write on. One ring for the whole card — the textarea's own
    outline is suppressed, so focus is not drawn twice, nested, and clipped. */
 .entry-card {
@@ -802,11 +824,11 @@ html[data-focus-modality="keyboard"] .manual-field[aria-invalid="true"]:focus {
   transition: border-color var(--m-state) linear, background-color var(--m-state) linear;
 }
 
-.entry-card textarea:focus-visible {
+html[data-focus-modality="keyboard"] .entry-card textarea:focus {
   outline: none;
 }
 
-.entry-card:has(textarea:focus-visible) {
+html[data-focus-modality="keyboard"] .entry-card:has(textarea:focus) {
   border-color: var(--secondary);
 }
 
@@ -844,10 +866,10 @@ html[data-focus-modality="keyboard"] .manual-field[aria-invalid="true"]:focus {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   width: 100%;
-  min-height: 2.5rem;
-  padding: 8px 12px;
+  min-height: 38px;
+  padding: 7px 10px;
   border-radius: var(--radius-md);
   border: 1px solid var(--line-strong);
   background: var(--surface);
@@ -855,7 +877,16 @@ html[data-focus-modality="keyboard"] .manual-field[aria-invalid="true"]:focus {
   font-size: var(--text-control);
   font-weight: 500;
   color: var(--ink-body);
+  outline: none;
   transition: border-color var(--m-state) linear, background-color var(--m-state) linear, color var(--m-state) linear, opacity var(--m-state) linear, transform 90ms var(--ease);
+}
+
+/* A 38px visual row still owns a 44px target. Adjacent rows are separated by
+   6px, so the invisible targets meet without overlapping. */
+.option-tile::after {
+  position: absolute;
+  inset: -3px 0;
+  content: "";
 }
 
 .option-tile:hover:not(:disabled):not([data-selected]) {
@@ -867,12 +898,18 @@ html[data-focus-modality="keyboard"] .manual-field[aria-invalid="true"]:focus {
   transform: scale(0.98);
 }
 
+.option-tile:focus-visible {
+  outline: 2px solid var(--secondary);
+  outline-offset: 2px;
+}
+
 /* Chosen — set the instant you press, not when the server agrees. */
 .option-tile[data-selected] {
   border-color: var(--secondary);
   background: var(--secondary-tint);
   color: var(--secondary-hover);
   font-weight: 550;
+  box-shadow: inset 2px 0 0 var(--secondary);
 }
 
 /* The others step back so the choice reads. The chosen tile never dims: it is
@@ -908,6 +945,129 @@ html[data-focus-modality="keyboard"] .manual-field[aria-invalid="true"]:focus {
   border-color: var(--secondary);
   background: transparent;
   color: var(--secondary);
+}
+
+/* ── HITL density and state ────────────────────────────────────────────────
+   A human decision is a compact interruption inside a transcript, not a
+   second page. These shared rules keep every selector, form and approval on
+   the same 12px inset and the same action direction. */
+.hitl-card {
+  border-color: var(--line-strong);
+}
+
+.hitl-options {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+}
+
+.hitl-section-label {
+  margin: 0 4px 7px;
+  color: var(--ink-muted);
+  font-size: var(--text-meta);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.hitl-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  column-gap: 8px;
+  row-gap: 12px;
+  padding: 10px 12px;
+}
+
+.hitl-actions [data-slot="button"]::after {
+  inset-block: -6px;
+}
+
+.hitl-disclosure {
+  position: relative;
+  display: flex;
+  min-height: 44px;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  color: var(--secondary);
+  font-size: var(--text-control);
+  font-weight: 550;
+  text-align: left;
+  outline: none;
+  transition: color var(--m-state) linear, background-color var(--m-state) linear, transform 90ms var(--ease);
+}
+
+.hitl-disclosure:hover:not(:disabled) {
+  background: var(--secondary-tint);
+  color: var(--secondary-hover);
+}
+
+.hitl-disclosure:active:not(:disabled) {
+  transform: scale(0.995);
+}
+
+.hitl-disclosure:focus-visible {
+  outline: 2px solid var(--secondary);
+  outline-offset: -2px;
+}
+
+.hitl-disclosure:disabled {
+  opacity: 0.45;
+}
+
+.hitl-reveal {
+  animation: hitl-reveal var(--m-enter) var(--ease);
+  transform-origin: top;
+}
+
+@keyframes hitl-reveal {
+  from { opacity: 0; transform: translateY(-3px) scaleY(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+.hitl-receipt {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 7px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--secondary-line);
+  border-radius: var(--radius-md);
+  background: var(--secondary-tint);
+  color: var(--secondary);
+  font-size: var(--text-note);
+}
+
+.hitl-receipt-mark {
+  display: grid;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--secondary);
+  color: var(--on-secondary);
+}
+
+.hitl-receipt-cancelled {
+  border-color: var(--line-strong);
+  background: var(--sunken);
+  color: var(--ink-muted);
+}
+
+.hitl-receipt-cancelled .hitl-receipt-mark {
+  background: var(--ink-muted);
+}
+
+@media (max-width: 639px) {
+  .hitl-actions > * {
+    flex: 1 1 auto;
+  }
 }
 
 /* A widget arriving in the transcript. Same reveal for every renderer, so a

@@ -1,28 +1,31 @@
-FROM node:22-alpine AS dependencies
+FROM node:24-alpine AS dependencies
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 
-FROM node:22-alpine AS builder
+FROM node:24-alpine AS builder
 WORKDIR /app
-ARG NEXT_PUBLIC_API_URL=http://localhost:8000
-ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
-# Inlined into the client bundle at build time, so it has to be present here
-# rather than only in the runtime environment. Empty simply hides Google
-# sign-in; phone and email codes are unaffected.
-ARG NEXT_PUBLIC_GOOGLE_CLIENT_ID=
-ENV NEXT_PUBLIC_GOOGLE_CLIENT_ID=$NEXT_PUBLIC_GOOGLE_CLIENT_ID
+
+# Vite embeds these public values into the browser bundle at build time.
+# VITE_API_URL stays empty so the bundle talks to its own origin and nginx
+# relays /api to BACKEND_ORIGIN below.
+ARG VITE_API_URL=
+ARG VITE_GOOGLE_CLIENT_ID=
+ENV VITE_API_URL=$VITE_API_URL
+ENV VITE_GOOGLE_CLIENT_ID=$VITE_GOOGLE_CLIENT_ID
+
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
 
-FROM node:22-alpine AS runner
-WORKDIR /app
-ENV NODE_ENV=production
-COPY --from=builder /app/.next ./.next
-COPY --from=builder /app/public ./public
-COPY --from=builder /app/package.json ./package.json
-COPY --from=dependencies /app/node_modules ./node_modules
-EXPOSE 3000
-CMD ["npm", "start"]
+FROM nginxinc/nginx-unprivileged:1.29-alpine AS runner
+# The entrypoint substitutes ${BACKEND_ORIGIN} into the template at start,
+# so one image serves any deployment: set BACKEND_ORIGIN to the API's
+# internal address (e.g. http://api:8000) when running the container.
+ENV BACKEND_ORIGIN=http://localhost:8000
+COPY nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY --from=builder --chown=101:101 /app/dist /usr/share/nginx/html
 
+EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:3000/ >/dev/null || exit 1

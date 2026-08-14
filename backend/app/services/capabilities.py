@@ -6,6 +6,7 @@ from ..domain import ValueEnum
 
 class CapabilityId(ValueEnum):
     CONVERSATION = "conversation"
+    REQUEST_CLARIFICATION = "request_clarification"
     CREATE_TRANSACTION_DRAFT = "create_transaction_draft"
     FIND_TRANSACTIONS_FOR_REMOVAL = "find_transactions_for_removal"
     MANAGE_TAXONOMY = "manage_taxonomy"
@@ -37,6 +38,7 @@ class AccessMode(ValueEnum):
 
 class ExecutorKind(ValueEnum):
     CONVERSATION = "conversation"
+    CLARIFICATION = "clarification"
     DRAFT = "draft"
     REMOVAL = "removal"
     TAXONOMY = "taxonomy"
@@ -48,6 +50,19 @@ class ExecutorKind(ValueEnum):
     UNKNOWN = "unknown"
 
 
+class ValidationMode(ValueEnum):
+    """How much independent semantic review a routed decision needs.
+
+    Typed read and calculator contracts are checked by deterministic domain
+    code. A second model is reserved for mutation intent and generated or
+    coordinated workflows where a plausible-looking route can carry a much
+    larger semantic consequence.
+    """
+
+    DETERMINISTIC = "deterministic"
+    MODEL = "model"
+
+
 @dataclass(frozen=True)
 class CapabilitySpec:
     id: CapabilityId
@@ -55,17 +70,23 @@ class CapabilitySpec:
     executor: ExecutorKind
     execution_label: str
     metric: str | None = None
+    validation: ValidationMode = ValidationMode.DETERMINISTIC
 
     @property
     def is_safe_read(self) -> bool:
         return self.access in {AccessMode.READ, AccessMode.COMPUTE}
 
+    @property
+    def requires_model_validation(self) -> bool:
+        return self.validation is ValidationMode.MODEL
+
 
 CAPABILITY_REGISTRY: tuple[CapabilitySpec, ...] = (
     CapabilitySpec(CapabilityId.CONVERSATION, AccessMode.CONVERSATION, ExecutorKind.CONVERSATION, "Writing contextual response"),
-    CapabilitySpec(CapabilityId.CREATE_TRANSACTION_DRAFT, AccessMode.WRITE, ExecutorKind.DRAFT, "Extracting and validating transaction"),
-    CapabilitySpec(CapabilityId.FIND_TRANSACTIONS_FOR_REMOVAL, AccessMode.READ, ExecutorKind.REMOVAL, "Finding transactions eligible for removal"),
-    CapabilitySpec(CapabilityId.MANAGE_TAXONOMY, AccessMode.WORKFLOW, ExecutorKind.TAXONOMY, "Preparing a governed taxonomy change"),
+    CapabilitySpec(CapabilityId.REQUEST_CLARIFICATION, AccessMode.WORKFLOW, ExecutorKind.CLARIFICATION, "Preparing an interactive clarification"),
+    CapabilitySpec(CapabilityId.CREATE_TRANSACTION_DRAFT, AccessMode.WRITE, ExecutorKind.DRAFT, "Extracting and validating transaction", validation=ValidationMode.MODEL),
+    CapabilitySpec(CapabilityId.FIND_TRANSACTIONS_FOR_REMOVAL, AccessMode.READ, ExecutorKind.REMOVAL, "Finding transactions eligible for removal", validation=ValidationMode.MODEL),
+    CapabilitySpec(CapabilityId.MANAGE_TAXONOMY, AccessMode.WORKFLOW, ExecutorKind.TAXONOMY, "Preparing a governed taxonomy change", validation=ValidationMode.MODEL),
     CapabilitySpec(CapabilityId.SEARCH_TRANSACTIONS, AccessMode.READ, ExecutorKind.QUERY, "Searching canonical transactions"),
     CapabilitySpec(CapabilityId.GET_SPENDING_SUMMARY, AccessMode.READ, ExecutorKind.QUERY, "Calculating spending summary"),
     CapabilitySpec(CapabilityId.GET_MONTHLY_COMPARISON, AccessMode.READ, ExecutorKind.QUERY, "Comparing monthly spending", "monthly_comparison"),
@@ -76,10 +97,10 @@ CAPABILITY_REGISTRY: tuple[CapabilitySpec, ...] = (
     CapabilitySpec(CapabilityId.CALCULATE_LOAN, AccessMode.COMPUTE, ExecutorKind.QUERY, "Opening deterministic loan calculator", "loan"),
     CapabilitySpec(CapabilityId.CALCULATE_INVESTMENT_PROJECTION, AccessMode.COMPUTE, ExecutorKind.QUERY, "Opening deterministic investment calculator", "investment_projection"),
     CapabilitySpec(CapabilityId.SHOW_RECONCILIATION_REVIEW, AccessMode.READ, ExecutorKind.QUERY, "Loading reconciliation review", "reconciliation_review"),
-    CapabilitySpec(CapabilityId.RUN_ANALYSIS_HARNESS, AccessMode.READ, ExecutorKind.HARNESS, "Running the governed analysis harness"),
-    CapabilitySpec(CapabilityId.RUN_QUERY_BUNDLE, AccessMode.READ, ExecutorKind.BUNDLE, "Running coordinated data views"),
+    CapabilitySpec(CapabilityId.RUN_ANALYSIS_HARNESS, AccessMode.READ, ExecutorKind.HARNESS, "Running the governed analysis harness", validation=ValidationMode.MODEL),
+    CapabilitySpec(CapabilityId.RUN_QUERY_BUNDLE, AccessMode.READ, ExecutorKind.BUNDLE, "Running coordinated data views", validation=ValidationMode.MODEL),
     CapabilitySpec(CapabilityId.VISUALIZE_COMPUTATION, AccessMode.COMPUTE, ExecutorKind.COMPUTED_VISUAL, "Rendering a governed calculation dataset"),
-    CapabilitySpec(CapabilityId.PLANNING, AccessMode.WORKFLOW, ExecutorKind.PLANNING, "Running planning workflow"),
+    CapabilitySpec(CapabilityId.PLANNING, AccessMode.WORKFLOW, ExecutorKind.PLANNING, "Running planning workflow", validation=ValidationMode.MODEL),
     CapabilitySpec(CapabilityId.UNKNOWN, AccessMode.UNKNOWN, ExecutorKind.UNKNOWN, "Preparing clarification"),
 )
 

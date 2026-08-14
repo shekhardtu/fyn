@@ -1,9 +1,8 @@
-"use client";
-
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Check, CheckCircle2, Loader2, LogOut, Mail, Plus, Smartphone, Trash2, TriangleAlert } from "lucide-react";
-import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useNavigate } from "react-router";
+import { appPaths } from "@/routing/paths";
 import { CHANNEL_COPY, CodeExchange } from "@/components/sign-in";
 import { Button } from "@/components/ui/button";
 import { getProfile, isUnauthorized, removeIdentity, signOut, startLinkCode, verifyLinkCode, type OtpChannel, type Profile } from "@/lib/api";
@@ -54,7 +53,7 @@ function removalBlock(profile: Profile): string | null {
 }
 
 export function ProfilePanel() {
-  const router = useRouter();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [linking, setLinking] = useState<OtpChannel | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -62,7 +61,7 @@ export function ProfilePanel() {
 
   const profile = useQuery({ queryKey: ["profile"], queryFn: getProfile, retry: false });
 
-  const leave = useCallback(() => { queryClient.clear(); router.replace("/login"); }, [queryClient, router]);
+  const leave = useCallback(() => { queryClient.clear(); navigate(appPaths.login, { replace: true }); }, [navigate, queryClient]);
   const signedOut = isUnauthorized(profile.error);
   useEffect(() => {
     if (signedOut) leave();
@@ -105,7 +104,7 @@ export function ProfilePanel() {
 
   return <main className="min-h-dvh bg-ground px-4 py-8">
     <div className="mx-auto w-full max-w-lg">
-      <button type="button" onClick={() => router.push("/")} className="inline-flex items-center gap-2 text-control font-medium text-ink-muted hover:text-ink-body">
+      <button type="button" onClick={() => navigate(appPaths.home)} className="inline-flex items-center gap-2 text-control font-medium text-ink-muted hover:text-ink-body">
         <ArrowLeft size={14} /> Back to your workspace
       </button>
 

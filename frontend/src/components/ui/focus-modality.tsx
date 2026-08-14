@@ -1,13 +1,10 @@
-"use client";
-
 import { useEffect } from "react";
 
 const ATTRIBUTE = "focusModality";
 
-/**
- * Browsers may match :focus-visible for pointer-focused text fields. Keep the
- * app's field treatment stricter: only a Tab navigation enables focus rings.
- */
+/** Browsers and component libraries disagree about :focus-visible after
+ * pointer or programmatic focus. Keep one app-wide contract instead: only Tab
+ * navigation enables visible focus treatment; any pointer press disables it. */
 export function FocusModality() {
   useEffect(() => {
     const root = document.documentElement;

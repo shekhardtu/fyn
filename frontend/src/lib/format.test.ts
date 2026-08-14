@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatCount, formatMoney, formatTimestamp, readComposerEntry, timestampInputToUtc, timestampInputValue } from "@/lib/format";
+import { formatCount, formatMoney, formatTimestamp, formatTransactionClassification, readComposerEntry, timestampInputToUtc, timestampInputValue } from "@/lib/format";
 
 /** The formatters are cached across calls, so these assert two things at once:
  *  the printed figure, and that a second call through the same cached formatter
@@ -85,6 +85,21 @@ describe("formatTimestamp", () => {
   it("round-trips the browser-local editor value back to the same UTC instant", () => {
     const instant = "2026-08-11T09:30:00.000Z";
     expect(timestampInputToUtc(timestampInputValue(instant))).toBe(instant);
+  });
+});
+
+describe("formatTransactionClassification", () => {
+  it("keeps direction visible without repeating typed taxonomy roots", () => {
+    expect(formatTransactionClassification("income", "Income", "Salary")).toBe("Income · Salary");
+    expect(formatTransactionClassification("investment", "Investments", "Stocks")).toBe("Investment · Stocks");
+  });
+
+  it("shows both direction and an expense hierarchy", () => {
+    expect(formatTransactionClassification("expense", "Food", "Dining")).toBe("Expense · Food → Dining");
+  });
+
+  it("does not conceal an incompatible legacy hierarchy", () => {
+    expect(formatTransactionClassification("income", "Other", "Other")).toBe("Income · Other → Other");
   });
 });
 

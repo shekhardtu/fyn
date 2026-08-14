@@ -299,6 +299,16 @@ export default function ConversationScreen() {
           ? "Waiting for your choice"
           : initial.data?.user.name ?? "Private workspace";
   const liveWidget = useMemo(() => activeWidgetId(messages), [messages]);
+  const interruptWidget = useMemo(
+    () => availableInterrupts.find((current) => current.widgetId === liveWidget)?.widgetId ?? null,
+    [availableInterrupts, liveWidget],
+  );
+
+  const cancelWidgetInterrupt = useCallback((widgetId: string) => {
+    if (interrupt.isPending) return;
+    const current = availableInterrupts.find((candidate) => candidate.widgetId === widgetId);
+    if (current) interrupt.mutate({ current, response: { status: "cancelled" } });
+  }, [availableInterrupts, interrupt]);
 
   const stopAgent = useCallback(() => {
     if (!activeRunId || stoppingRun) return;
@@ -418,7 +428,7 @@ export default function ConversationScreen() {
       <FlashList
         ref={listRef}
         data={rows}
-        extraData={{ liveWidget, pendingWidget, usedWidgets, busy, agentRunning, reasoningSummary }}
+        extraData={{ liveWidget, interruptWidget, pendingWidget, usedWidgets, busy, agentRunning, reasoningSummary }}
         keyExtractor={(row, index) => (row.kind === "message" ? row.message.id : `${row.kind}-${index}`)}
         contentContainerStyle={{ paddingHorizontal: space.gutter, paddingTop: space.gutter, paddingBottom: space.gutter }}
         keyboardShouldPersistTaps="handled"
@@ -440,10 +450,12 @@ export default function ConversationScreen() {
               message={item.message}
               currency={currency}
               liveWidget={liveWidget}
+              interruptWidget={interruptWidget}
               pendingWidget={pendingWidget}
               usedWidgets={usedWidgets}
               busy={busy}
               onAction={onWidgetAction}
+              onCancelWidget={cancelWidgetInterrupt}
             />
           );
         }}
@@ -572,14 +584,16 @@ function EmptyThread({ onPick }: { onPick: (starter: string) => void }) {
   );
 }
 
-function MessageRow({ message, currency, liveWidget, pendingWidget, usedWidgets, busy, onAction }: {
+function MessageRow({ message, currency, liveWidget, interruptWidget, pendingWidget, usedWidgets, busy, onAction, onCancelWidget }: {
   message: Message;
   currency: string;
   liveWidget: string | null;
+  interruptWidget: string | null;
   pendingWidget: string | null;
   usedWidgets: Set<string>;
   busy: boolean;
   onAction: WidgetActionHandler;
+  onCancelWidget: (widgetId: string) => void;
 }) {
   const styles = useStyles(makeStyles);
   const mine = message.role === "user";
@@ -612,6 +626,7 @@ function MessageRow({ message, currency, liveWidget, pendingWidget, usedWidgets,
                 disabled={busy || spent}
                 spent={spent}
                 pending={pendingWidget === widget.id}
+                onCancel={widget.id === interruptWidget ? () => onCancelWidget(widget.id) : undefined}
                 onAction={onAction}
               />
             );

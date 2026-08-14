@@ -1,4 +1,4 @@
-from app.services.calculators import affordability, investment_projection, loan_amortization_schedule, loan_payment, loan_strategy_options, loan_with_prepayment
+from app.services.calculators import affordability, fixed_payment_amortization_schedule, investment_projection, loan_amortization_schedule, loan_payment, loan_strategy_options, loan_with_prepayment
 
 
 def test_zero_interest_loan_is_exact():
@@ -34,6 +34,17 @@ def test_amortization_schedule_is_complete_typed_and_clears_principal():
     assert sum(row["principal_payment_minor"] for row in result["rows"]) == 520_000_000
     assert result["default_dimension"] == "installment"
     assert result["default_measures"] == ["principal_payment_minor", "remaining_principal_minor"]
+
+
+def test_fixed_payment_amortization_schedule_preserves_the_supplied_payment():
+    result = fixed_payment_amortization_schedule(10_000_000, 10, 200_000)
+
+    assert result["kind"] == "computed_dataset"
+    assert result["summary"]["payment_minor"] == 200_000
+    assert result["summary"]["tenure_months"] == len(result["rows"])
+    assert result["rows"][0]["payment_minor"] == 200_000
+    assert result["rows"][-1]["remaining_principal_minor"] == 0
+    assert result["rows"][-1]["payment_minor"] <= 200_000
 
 
 def test_investment_projection_uses_decimal_math():

@@ -1,5 +1,3 @@
-"use client";
-
 import { FolderTree, Lightbulb, Loader2, PencilLine, Plus, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";

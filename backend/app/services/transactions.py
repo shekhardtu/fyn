@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from ..domain import SpendNature, TransactionStatus, TransactionType
 from ..event_time import as_utc
 from ..models import Transaction, TransactionFieldValue, TransactionSource
+from ..taxonomy_catalog import DefaultCategorySlug, TRANSACTION_CATEGORY_ROOTS, category_slug_matches_transaction_type
 from .extraction import normalize_merchant
 from .merchants import MerchantRepository
 from .tags import TagRepository
@@ -58,6 +59,15 @@ def canonical_transactions(
         user_id,
         currency=currency,
     )
+
+
+def transaction_log(user_id: UUID) -> Select[tuple[Transaction]]:
+    """One user's full transaction log, soft-deleted rows included.
+
+    Only for audit-style listings that render removed records explicitly;
+    every calculation must keep using the canonical scope.
+    """
+    return select(Transaction).where(Transaction.user_id == user_id)
 
 
 def apply_expense_transaction_scope(
@@ -110,6 +120,64 @@ def owned_transaction_source(
     )
 
 
+def _spend_nature_or_unknown(value: SpendNature | str | None) -> SpendNature:
+    """Normalize optional transport values without weakening enum validation.
+
+    Older persisted chat widgets can submit a present field as JSON ``null``.
+    Treat null and common null-like strings as the absence they represent, but
+    continue to reject any other value that is not part of ``SpendNature``.
+    """
+    if value is None:
+        return SpendNature.UNKNOWN
+    raw = str(value).strip()
+    if not raw or raw.casefold() in {"none", "null", "undefined"}:
+        return SpendNature.UNKNOWN
+    return SpendNature(raw)
+
+
+def canonical_transaction_classification(
+    db: Session,
+    user_id: UUID,
+    transaction_type: TransactionType | str,
+    category_id: UUID | str | None,
+    subcategory_id: UUID | str | None,
+    spend_nature: SpendNature | str | None,
+) -> tuple[UUID | None, UUID | None, SpendNature]:
+    """Return the only category/nature combination valid for a direction.
+
+    This is the write invariant shared by chat drafts, manual API edits and
+    imported/reconciled observations. Model output and client payloads are
+    proposals; a canonical transaction never persists an expense category on
+    income, an income category on an expense, or spend nature on a non-expense.
+    """
+    kind = TransactionType(str(transaction_type))
+    taxonomy = TaxonomyRepository(db, user_id)
+    supplied_category = taxonomy.category(UUID(str(category_id))) if category_id else None
+    supplied_subcategory = taxonomy.subcategory(UUID(str(subcategory_id))) if subcategory_id else None
+
+    if kind is TransactionType.EXPENSE:
+        category = supplied_category if supplied_category and category_slug_matches_transaction_type(kind, supplied_category.slug) else taxonomy.category_by_slug(DefaultCategorySlug.OTHER, expense_only=True)
+    elif kind in TRANSACTION_CATEGORY_ROOTS:
+        category = taxonomy.category_by_slug(TRANSACTION_CATEGORY_ROOTS[kind])
+    else:
+        return None, None, SpendNature.UNKNOWN
+
+    if category is None:
+        return None, None, _spend_nature_or_unknown(spend_nature) if kind is TransactionType.EXPENSE else SpendNature.UNKNOWN
+
+    subcategory = supplied_subcategory if supplied_subcategory and supplied_subcategory.category_id == category.id else None
+    # When the root changes, preserve a meaningful leaf if the destination root
+    # knows the same slug (for example Other), otherwise use its explicit Other
+    # leaf. This avoids both cross-parent IDs and unlabeled category records.
+    if subcategory is None and supplied_subcategory is not None:
+        subcategory = taxonomy.subcategory_by_slug(category.id, supplied_subcategory.slug)
+    if subcategory is None:
+        subcategory = taxonomy.subcategory_by_slug(category.id, "other")
+
+    nature = _spend_nature_or_unknown(spend_nature) if kind is TransactionType.EXPENSE else SpendNature.UNKNOWN
+    return category.id, subcategory.id if subcategory else None, nature
+
+
 def create_transaction(db: Session, /, **values: Any) -> Transaction:
     """Bind source-specific values to the canonical ORM record and persist it.
 
@@ -122,6 +190,21 @@ def create_transaction(db: Session, /, **values: Any) -> Transaction:
     missing = _REQUIRED_CREATE_FIELDS - set(values)
     if missing:
         raise ValueError(f"Missing transaction fields: {', '.join(sorted(missing))}")
+    kind = TransactionType(str(values["transaction_type"]))
+    category_id, subcategory_id, spend_nature = canonical_transaction_classification(
+        db,
+        UUID(str(values["user_id"])),
+        kind,
+        values.get("category_id"),
+        values.get("subcategory_id"),
+        values.get("spend_nature", SpendNature.UNKNOWN),
+    )
+    values.update(
+        transaction_type=kind.value,
+        category_id=category_id,
+        subcategory_id=subcategory_id,
+        spend_nature=spend_nature.value,
+    )
     values.setdefault("status", TransactionStatus.PROVISIONAL)
     transaction = Transaction(**values)
     db.add(transaction)
@@ -199,7 +282,7 @@ def create_manual_transaction(
         posted_at=as_utc(transaction_at),
         location_label=str(location or "").strip()[:160] or None,
         location_source="user" if location and location.strip() else None,
-        spend_nature=SpendNature(str(spend_nature)).value,
+        spend_nature=_spend_nature_or_unknown(spend_nature).value,
         status=TransactionStatus.CONFIRMED.value,
     )
     _canonicalize_merchant(db, user_id, transaction)
@@ -262,20 +345,43 @@ def update_saved_transaction(
         transaction.location_source = "user" if transaction.location_label else None
         changed_fields["location"] = transaction.location_label
     if spend_nature is not UNSET:
-        transaction.spend_nature = SpendNature(str(spend_nature)).value
+        transaction.spend_nature = _spend_nature_or_unknown(spend_nature).value
         changed_fields["spend_nature"] = transaction.spend_nature
 
-    if category_id is not UNSET:
-        category, subcategory = _taxonomy_path(db, user_id, category_id, None if subcategory_id is UNSET else subcategory_id)
-        transaction.category_id = category.id if category else None
-        transaction.subcategory_id = subcategory.id if subcategory else None
-        changed_fields["category_id"] = str(category.id) if category else None
-        if subcategory_id is not UNSET:
+    kind = TransactionType(transaction.transaction_type)
+    # Category payloads are meaningful only for expenses. Other directions are
+    # normalized from their type below, so a hidden stale form value can never
+    # preserve the prior expense taxonomy after a type change.
+    if kind is TransactionType.EXPENSE:
+        if category_id is not UNSET:
+            category, subcategory = _taxonomy_path(db, user_id, category_id, None if subcategory_id is UNSET else subcategory_id)
+            transaction.category_id = category.id if category else None
+            transaction.subcategory_id = subcategory.id if subcategory else None
+            changed_fields["category_id"] = str(category.id) if category else None
+            if subcategory_id is not UNSET:
+                changed_fields["subcategory_id"] = str(subcategory.id) if subcategory else None
+        elif subcategory_id is not UNSET:
+            _category, subcategory = _taxonomy_path(db, user_id, transaction.category_id, subcategory_id)
+            transaction.subcategory_id = subcategory.id if subcategory else None
             changed_fields["subcategory_id"] = str(subcategory.id) if subcategory else None
-    elif subcategory_id is not UNSET:
-        _category, subcategory = _taxonomy_path(db, user_id, transaction.category_id, subcategory_id)
-        transaction.subcategory_id = subcategory.id if subcategory else None
-        changed_fields["subcategory_id"] = str(subcategory.id) if subcategory else None
+
+    canonical_category_id, canonical_subcategory_id, canonical_nature = canonical_transaction_classification(
+        db,
+        user_id,
+        kind,
+        transaction.category_id,
+        transaction.subcategory_id,
+        transaction.spend_nature,
+    )
+    if transaction.category_id != canonical_category_id:
+        transaction.category_id = canonical_category_id
+        changed_fields["category_id"] = str(canonical_category_id) if canonical_category_id else None
+    if transaction.subcategory_id != canonical_subcategory_id:
+        transaction.subcategory_id = canonical_subcategory_id
+        changed_fields["subcategory_id"] = str(canonical_subcategory_id) if canonical_subcategory_id else None
+    if transaction.spend_nature != canonical_nature.value:
+        transaction.spend_nature = canonical_nature.value
+        changed_fields["spend_nature"] = canonical_nature.value
     if tags is not UNSET:
         raw_tags = tags if isinstance(tags, list) else str(tags or "").split(",")
         changed_fields["tags"] = TagRepository(db, user_id).replace_transaction_tags(

@@ -1,16 +1,14 @@
-"use client";
-
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { defaultRangeExtractor, type Range, useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowDownLeft, ArrowUpRight, CheckCircle2, Loader2, PencilLine, Plus, ReceiptText, RotateCcw, Search, X } from "lucide-react";
-import { FormEvent, type RefObject, type UIEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ArrowDownLeft, ArrowUpRight, CheckCircle2, Loader2, PencilLine, Plus, ReceiptText, RotateCcw, Search, Trash2, X } from "lucide-react";
+import { type CSSProperties, FormEvent, type RefObject, type UIEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { CategoryManager, type CategoryUsage } from "@/components/category-manager";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { SITE_HEADER_HEIGHT, SiteHeader, useAutoHideSiteHeader } from "@/components/ui/site-header";
 import { useWorkspaceOverlay, useWorkspaceShell } from "@/components/workspace";
 import { createCategory, createSubcategory, createTransactionHint, createTransactionRecord, deleteCategory, deleteSubcategory, deleteTransactionHint, loadCategories, loadOverview, loadTransactions, renameCategory, renameSubcategory, updateTransaction, updateTransactionHint } from "@/lib/api";
-import { formatMoney, parseAmountToMinor, timestampInputToUtc, timestampInputValue } from "@/lib/format";
+import { formatInstant, formatMoney, formatTransactionClassification, parseAmountToMinor, timestampInputToUtc, timestampInputValue } from "@/lib/format";
 import { editableTransactionTypes, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type TransactionListItemOut, type TransactionUpdateIn } from "@/lib/protocol";
 import { cn } from "@/lib/utils";
 
@@ -46,7 +44,7 @@ function PageSkeleton({ rows = 6 }: { rows?: number }) {
 
 function transactionTone(transaction: TransactionListItemOut) {
   if (["income", "refund", "reimbursement", "cash_deposit"].includes(transaction.transactionType)) return { className: "text-money-in", prefix: "+", icon: ArrowDownLeft };
-  if (["expense", "loan_payment"].includes(transaction.transactionType)) return { className: "text-money-out", prefix: "−", icon: ArrowUpRight };
+  if (["expense", "investment", "loan_payment", "cash_withdrawal"].includes(transaction.transactionType)) return { className: "text-money-out", prefix: "−", icon: ArrowUpRight };
   return { className: "text-ink", prefix: "", icon: ReceiptText };
 }
 
@@ -98,7 +96,7 @@ export function TransactionEditor({ transaction, categories, saving, problem, on
       transactionType,
       categoryId: transactionType === "expense" ? categoryId || null : null,
       subcategoryId: transactionType === "expense" ? subcategoryId || null : null,
-      spendNature,
+      spendNature: transactionType === "expense" ? spendNature : "unknown",
       location: location.trim() || null,
     });
   }
@@ -117,14 +115,21 @@ export function TransactionEditor({ transaction, categories, saving, problem, on
         {(problem || validation) ? <p role="alert" className="mb-4 rounded-lg border border-danger-line bg-danger-tint px-4 py-3 text-note text-danger-ink">{validation || problem}</p> : null}
         <div className="grid gap-4 sm:grid-cols-2">
           <label className="text-note font-medium text-ink-body">Amount<input aria-label="Transaction amount" inputMode="decimal" disabled={saving} value={amount} onChange={(event) => setAmount(event.target.value)} className={inputClass} /></label>
-          <div className="text-note font-medium text-ink-body">Type<Combobox aria-label="Transaction type" disabled={saving} value={transactionType} onValueChange={(next) => { setTransactionType(next as TransactionListItemOut["transactionType"]); if (next !== "expense") { setCategoryId(""); setSubcategoryId(""); } }} options={editableTransactionTypes.map((type) => ({ value: type, label: titleCase(type) }))} searchable={false} triggerClassName="mt-1" /></div>
+          <div className="text-note font-medium text-ink-body">Type<Combobox aria-label="Transaction type" disabled={saving} value={transactionType} onValueChange={(next) => {
+            setTransactionType(next as TransactionListItemOut["transactionType"]);
+            if (next !== "expense" || !categories.some((item) => item.id === categoryId)) {
+              setCategoryId("");
+              setSubcategoryId("");
+            }
+            if (next !== "expense") setSpendNature("unknown");
+          }} options={editableTransactionTypes.map((type) => ({ value: type, label: titleCase(type) }))} searchable={false} triggerClassName="mt-1" /></div>
           <label className="text-note font-medium text-ink-body sm:col-span-2">Merchant<input aria-label="Merchant" disabled={saving} value={merchant} maxLength={160} onChange={(event) => setMerchant(event.target.value)} className={inputClass} /></label>
           <label className="text-note font-medium text-ink-body sm:col-span-2">Date and time<input aria-label="Transaction date and time" type="datetime-local" disabled={saving} value={transactionAt} onChange={(event) => setTransactionAt(event.target.value)} className={inputClass} /></label>
           {transactionType === "expense" ? <>
             <div className="text-note font-medium text-ink-body">Category<Combobox aria-label="Transaction category" disabled={saving} value={categoryId} onValueChange={(next) => { setCategoryId(next); setSubcategoryId(""); }} options={[{ value: "", label: "Uncategorized" }, ...categories.map((category) => ({ value: category.id, label: category.label }))]} searchPlaceholder="Search or add new" onCreate={onCreateCategory ? (name) => void addTaxonomy(async () => { const created = await onCreateCategory(name); setCategoryId(created.id); setSubcategoryId(""); }) : undefined} createHint="New category" triggerClassName="mt-1" /></div>
             <div className="text-note font-medium text-ink-body">Subcategory<Combobox aria-label="Transaction subcategory" disabled={saving || !categoryId} value={subcategoryId} onValueChange={setSubcategoryId} placeholder={categoryId ? "No subcategory" : "Choose category first"} options={[{ value: "", label: "No subcategory" }, ...subcategories.map((subcategory) => ({ value: subcategory.id, label: subcategory.label }))]} searchPlaceholder="Search or add new" onCreate={onCreateSubcategory && categoryId ? (name) => void addTaxonomy(async () => { const created = await onCreateSubcategory(categoryId, name); setSubcategoryId(created.id); }) : undefined} createHint={`New in ${categories.find((category) => category.id === categoryId)?.label ?? "this category"}`} triggerClassName="mt-1" /></div>
           </> : null}
-          <div className="text-note font-medium text-ink-body">Spend nature<Combobox aria-label="Spend nature" disabled={saving} value={spendNature} onValueChange={(next) => setSpendNature(next as TransactionListItemOut["spendNature"])} options={[{ value: "unknown", label: "Not set" }, { value: "essential", label: "Essential" }, { value: "discretionary", label: "Discretionary" }, { value: "potentially_avoidable", label: "Potentially avoidable" }]} triggerClassName="mt-1" /></div>
+          {transactionType === "expense" ? <div className="text-note font-medium text-ink-body">Spend nature<Combobox aria-label="Spend nature" disabled={saving} value={spendNature} onValueChange={(next) => setSpendNature(next as TransactionListItemOut["spendNature"])} options={[{ value: "unknown", label: "Not set" }, { value: "essential", label: "Essential" }, { value: "discretionary", label: "Discretionary" }, { value: "potentially_avoidable", label: "Potentially avoidable" }]} triggerClassName="mt-1" /></div> : null}
           <label className="text-note font-medium text-ink-body">Location<input aria-label="Transaction location" disabled={saving} value={location} maxLength={160} onChange={(event) => setLocation(event.target.value)} className={inputClass} /></label>
         </div>
         <div className="mt-6 flex gap-2 border-t border-line pt-5">
@@ -137,6 +142,26 @@ export function TransactionEditor({ transaction, categories, saving, problem, on
 }
 
 const TRANSACTION_PAGE_SIZE = 50;
+
+export function TransactionRow({ transaction, style, onEdit }: {
+  transaction: TransactionListItemOut;
+  style?: CSSProperties;
+  onEdit: (transaction: TransactionListItemOut) => void;
+}) {
+  const removed = Boolean(transaction.deletedAt);
+  const tone = transactionTone(transaction);
+  const Icon = removed ? Trash2 : tone.icon;
+  const classification = formatTransactionClassification(transaction.transactionType, transaction.category, transaction.subcategory);
+  return <article className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-b border-line px-4 sm:gap-4 sm:px-5" style={style}>
+    <span className={cn("grid size-9 place-items-center rounded-lg bg-ground", removed ? "text-ink-muted" : tone.className)}><Icon size={17} /></span>
+    <div className="min-w-0"><p className={cn("truncate text-control font-semibold", removed ? "text-ink-muted line-through" : "text-ink")}>{transaction.merchant ?? titleCase(transaction.transactionType)}</p><p className="mt-0.5 truncate text-note text-ink-muted">{[classification, timeFormatter.format(new Date(transaction.transactionAt)), removed ? `Removed ${formatInstant(transaction.deletedAt)}` : null].filter(Boolean).join(" · ")}</p></div>
+    <div className="flex items-center gap-2 sm:gap-4">
+      {removed ? <span className="rounded-full bg-danger-tint px-2.5 py-1 text-meta font-semibold text-danger-ink">Removed</span> : null}
+      <p className={cn("font-heading text-control font-semibold tabular-nums", removed ? "text-ink-muted line-through" : tone.className)}>{tone.prefix}{formatMoney(transaction.amountMinor, transaction.currency)}</p>
+      {removed ? null : <Button type="button" variant="ghost" size="icon" aria-label={`Edit ${transaction.merchant ?? titleCase(transaction.transactionType)} transaction`} onClick={() => onEdit(transaction)}><PencilLine /></Button>}
+    </div>
+  </article>;
+}
 
 type TransactionVirtualRow =
   | { kind: "date"; id: string; label: string }
@@ -200,7 +225,7 @@ function VirtualTransactionList({ items, scrollRef, headerVisible, layoutKey, ha
     if (hasNextPage && !fetchingNextPage && lastVirtualIndex >= rows.length - 6) onLoadMore();
   }, [fetchingNextPage, hasNextPage, lastVirtualIndex, onLoadMore, rows.length]);
 
-  return <div ref={listRef} className="relative rounded-xl border border-line bg-surface" style={{ height: virtualizer.getTotalSize() }}>
+  return <div ref={listRef} className="relative overflow-clip rounded-t-xl border border-line bg-surface" style={{ height: virtualizer.getTotalSize() }}>
     {virtualItems.map((virtualRow) => {
       if (virtualRow.index >= rows.length) {
         return <div key="transaction-loader" className="absolute inset-x-0 top-0 flex h-16 items-center justify-center gap-2 text-note text-ink-muted" style={{ transform: `translateY(${virtualRow.start - scrollMargin}px)` }}>
@@ -215,15 +240,7 @@ function VirtualTransactionList({ items, scrollRef, headerVisible, layoutKey, ha
       if (row.kind === "date") {
         return <h3 key={row.id} className="ledger-meta flex items-center border-b border-line bg-ground/98 px-4 shadow-[0_1px_0_var(--line)] backdrop-blur-sm transition-[top] duration-200 sm:px-5" style={rowStyle}>{row.label}</h3>;
       }
-      const transaction = row.transaction;
-      const tone = transactionTone(transaction);
-      const Icon = tone.icon;
-      const hierarchy = [transaction.category, transaction.subcategory].filter(Boolean).join(" · ");
-      return <article key={row.id} className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-b border-line px-4 sm:gap-4 sm:px-5" style={rowStyle}>
-        <span className={cn("grid size-9 place-items-center rounded-lg bg-ground", tone.className)}><Icon size={17} /></span>
-        <div className="min-w-0"><p className="truncate text-control font-semibold text-ink">{transaction.merchant ?? titleCase(transaction.transactionType)}</p><p className="mt-0.5 truncate text-note text-ink-muted">{[hierarchy || titleCase(transaction.transactionType), timeFormatter.format(new Date(transaction.transactionAt))].join(" · ")}</p></div>
-        <div className="flex items-center gap-2 sm:gap-4"><p className={cn("font-heading text-control font-semibold tabular-nums", tone.className)}>{tone.prefix}{formatMoney(transaction.amountMinor, transaction.currency)}</p><Button type="button" variant="ghost" size="icon" aria-label={`Edit ${transaction.merchant ?? titleCase(transaction.transactionType)} transaction`} onClick={() => onEdit(transaction)}><PencilLine /></Button></div>
-      </article>;
+      return <TransactionRow key={row.id} transaction={row.transaction} style={rowStyle} onEdit={onEdit} />;
     })}
   </div>;
 }

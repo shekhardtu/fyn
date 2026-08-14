@@ -38,7 +38,7 @@ An AI-native personal finance application whose primary interface is a conversat
 ## Architecture
 
 ```text
-Next.js HttpAgent / Expo native AG-UI adapter + typed widgets
+Vite HttpAgent SPA / Expo native AG-UI adapter + typed widgets
                  │  AG-UI over SSE
                  ▼
 FastAPI AG-UI runtime + durable runs/events/interrupts
@@ -46,8 +46,13 @@ FastAPI AG-UI runtime + durable runs/events/interrupts
                  ▼
 Conversation harness + persisted workflow state
         │
-        ├── greeting / bare amount ───────► safe deterministic gate
-        └── semantic financial request ──► Agno Luna router
+        ├── bare amount ──────────────────► safe deterministic clarification
+        ├── explicit rich analysis ───────► governed Luna router
+        └── unified Luna read agent
+                 │ authenticated read/calculation tools
+                 ├── conversation/read ──► contextual answer from the same run
+                 ├── complete typed read ─► governed query executor
+                 └── generic handoff ─────► governed Luna router
                                                    │
                                       fast Luna contract validator
                                                    │
@@ -71,9 +76,7 @@ Conversation harness + persisted workflow state
 
 Financial facts, drafts, conversations, preferences, and provenance are stored separately. The LLM is never the database and important calculations are not delegated to it.
 
-The web client uses AG-UI's official `HttpAgent`. AG-UI does not currently ship a React Native adapter, so Expo uses its native streaming fetch with the official `@ag-ui/core` event schemas as a deliberately thin transport adapter. Both clients consume the same protocol and Fyn projection; neither translates a legacy Fyn event stream. The typed widget protocol, governed finance actions, and BI rendering remain application code, so adopting AG-UI does not hand financial authority to client-provided tools or arbitrary generated UI.
-
-The cutover is unconditional: there is no transport feature flag and the legacy chat/action endpoints are not registered. See [the AG-UI runtime contract](docs/AG_UI_RUNTIME.md) for event, reconnect, interrupt, cancellation, and capability semantics.
+The web client uses AG-UI's official `HttpAgent`. AG-UI does not currently ship a React Native adapter, so Expo uses its native streaming fetch with the official `@ag-ui/core` event schemas as a deliberately thin transport adapter. Both clients consume the same protocol and Fyn projection. The typed widget protocol, governed finance actions, and BI rendering remain application code, so AG-UI does not hand financial authority to client-provided tools or arbitrary generated UI. See [the AG-UI runtime contract](docs/AG_UI_RUNTIME.md) for event, reconnect, interrupt, cancellation, and capability semantics.
 
 The semantic registry is reconstructed from versioned application code for every planner/validator contract; it is not remembered in model chat history. Startup drift checks verify unique semantic names, every exposed field and relationship against SQLAlchemy, and complete compiler adapters for every queryable dimension and join. Relationships needed only for domain context are explicitly marked non-queryable. Before execution, the deterministic compiler independently verifies the metric/base-entity pairing, dimension and filter availability, approved joins, operator/type compatibility, integer-minor-unit money values, event-versus-snapshot time behavior, tenant scope, and bounded query cost. Only parameterized SQLAlchemy `SELECT` statements can be produced. Each result includes the registry version and schema hash for lineage.
 
@@ -87,7 +90,10 @@ Create the backend environment and put your OpenAI key there—the key must neve
 
 ```bash
 cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env.local
 # Edit backend/.env and set OPENAI_API_KEY=...
+# For Google web sign-in, copy GOOGLE_CLIENT_ID into
+# frontend/.env.local as VITE_GOOGLE_CLIENT_ID.
 ```
 
 Sign-in works with no provider accounts: leave the MSG91, Postmark, and Google
@@ -119,8 +125,14 @@ Open `http://localhost:3000`.
 Alternatively, run the complete container stack after creating `backend/.env`:
 
 ```bash
-docker compose up --build
+docker compose --env-file backend/.env up --build
 ```
+
+The explicit Compose environment file is important: it makes the public
+`GOOGLE_CLIENT_ID` available as the frontend's Vite build argument while the
+backend continues to read the same file as its service environment. Without
+it, Compose would build a frontend with Google sign-in hidden unless that value
+also happened to exist in the invoking shell.
 
 Check the active mode at `http://localhost:8000/api/health`. It should report `"database":"postgresql"` and `"agent_mode":"llm"`.
 
@@ -153,7 +165,7 @@ The account that predates authentication is adopted by the first sign-in, so loc
 
 ### Providers
 
-Phone codes go through the MSG91 Flow API and email codes through Postmark; `MSG91_OTP_VARIABLE` must exactly match the case-sensitive variable in your DLT-registered template (`OTP` for `##OTP##`). Google sign-in needs an OAuth 2.0 **Web application** client id from Google Cloud Console → APIs & Services → Credentials, with your origins listed as authorised JavaScript origins. The same value goes to the server as `GOOGLE_CLIENT_ID` and to the browser as `NEXT_PUBLIC_GOOGLE_CLIENT_ID`; leaving it empty hides Google sign-in and leaves the code flows working.
+Phone codes go through the MSG91 Flow API and email codes through Postmark; `MSG91_OTP_VARIABLE` must exactly match the case-sensitive variable in your DLT-registered template (`OTP` for `##OTP##`). Google sign-in needs an OAuth 2.0 **Web application** client id from Google Cloud Console → APIs & Services → Credentials, with your origins listed as authorised JavaScript origins. The same value goes to the server as `GOOGLE_CLIENT_ID` and to the browser as `VITE_GOOGLE_CLIENT_ID`; leaving it empty hides Google sign-in and leaves the code flows working.
 
 With no provider credentials the codes are printed to the API log and, with `OTP_DEBUG_ECHO=true`, returned in the response — which is how a fresh checkout and the browser suite sign in. Startup prints exactly which shortcuts are active. Set `ENVIRONMENT=production` and each one becomes a startup failure instead.
 
@@ -203,6 +215,6 @@ Before a public deployment, set `ENVIRONMENT=production` (which refuses the deve
 
 ## Agent credentials
 
-`OPENAI_API_KEY` in `backend/.env` enables the Agno model path. Greetings and deliberately ambiguous bare amounts stay on a safe local path; complete financial events, natural-language queries, workflow continuations, and taxonomy changes are semantically routed. Luna handles routing, extraction, reconciliation advice, and independent response-contract validation; Terra handles complex analysis generation and rejected-route repair. Models emit typed contracts only. Deterministic services enforce user scope, mutations, read-only queries, calculations, evidence lineage, and state transitions. The in-chat trace reports retrieval, routing, validation/rerouting, execution, grounding, individual timings, and cumulative runtime.
+`OPENAI_API_KEY` in `backend/.env` enables the Agno model path. With `UNIFIED_READ_AGENT_ENABLED=true`, one Luna run owns ordinary conversation and authenticated read/calculation answers from understanding through final wording. It has no mutation authority: a stop-after-call handoff sends transaction changes, taxonomy, budgets/goals, and unsupported finance work into the typed governed pipeline. A handoff that already contains a complete low-risk read query executes directly without a duplicate router; explicit charts and richer analysis enter the semantic planner directly instead of paying for an inevitable handoff first. Deliberately ambiguous bare amounts retain their safe local clarification path. Luna also handles governed routing, extraction, reconciliation advice, and independent response-contract validation; Terra handles complex analysis generation and rejected-route repair. Deterministic services enforce user scope, mutations, read-only queries, calculations, evidence lineage, and state transitions. Governed read/analysis executors produce the final verified copy with their widgets and citations, so no second prose model can add latency or unsupported figures. The in-chat trace reports direct read/handoff selection, retrieval, routing, validation/rerouting, execution, grounding, individual timings, and cumulative runtime.
 
 Raw model chain-of-thought is never exposed. The visible reasoning text is a short structured execution plan plus observable harness stages (tool discovery/synthesis, validation, repair, execution, and verification).

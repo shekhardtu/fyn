@@ -1,6 +1,9 @@
 from datetime import date, timedelta
 from types import SimpleNamespace
 
+from agno.models.response import ToolExecution
+from agno.run.agent import ReasoningContentDeltaEvent, RunContentEvent, RunOutput, ToolCallCompletedEvent
+
 from app.config import get_settings
 from app.services import agents
 from app.services.agents import AIAssistedMatch, CopilotRouteDecision, PresentationIntent, build_reconciliation_assistant
@@ -22,6 +25,152 @@ def test_agno_assistant_constructs_typed_advice_without_network_call(monkeypatch
     assert assistant.name == "Reconciliation evaluator"
     assert assistant.output_schema is AIAssistedMatch
     get_settings.cache_clear()
+
+
+def test_conversation_writer_returns_the_exact_emitted_model_deltas(monkeypatch):
+    class StubWriter:
+        def run(self, *_args, **_kwargs):
+            return iter([
+                RunContentEvent(content="A clear "),
+                RunContentEvent(content="answer."),
+                RunOutput(content="A clear answer."),
+            ])
+
+    monkeypatch.setattr(agents, "build_conversation_writer", lambda **_kwargs: StubWriter())
+    deltas = []
+
+    answer = agents.stream_conversation_reply(
+        "What can you do?",
+        "I can explain the product.",
+        [],
+        on_delta=deltas.append,
+    )
+
+    assert deltas == ["A clear ", "answer."]
+    assert answer == "A clear answer."
+
+
+def test_unified_read_agent_keeps_tool_answer_and_evidence_in_one_run(monkeypatch):
+    execution = ToolExecution(
+        tool_name="spending_summary",
+        tool_args={"start": "2026-08-01", "end": "2026-08-14", "category_slug": None},
+        result=(
+            '{"total_minor":125000,"count":3,"currency":"INR",'
+            '"start":"2026-08-01","end":"2026-08-14"}'
+        ),
+    )
+
+    class StubReader:
+        def run(self, *_args, **_kwargs):
+            return iter([
+                ToolCallCompletedEvent(tool=execution),
+                RunContentEvent(content="You spent ₹1,250 "),
+                RunContentEvent(content="across 3 transactions this month."),
+                RunOutput(
+                    content="You spent ₹1,250 across 3 transactions this month.",
+                    tools=[execution],
+                ),
+            ])
+
+    monkeypatch.setattr(agents, "build_unified_read_agent", lambda *args, **kwargs: StubReader())
+    deltas = []
+    result = agents.run_unified_read_agent(
+        "How much did I spend this month?",
+        [],
+        date(2026, 8, 14),
+        "Asia/Kolkata",
+        [],
+        runtime_tools=[SimpleNamespace(name="spending_summary")],
+        on_delta=deltas.append,
+        allow_live_deltas=False,
+    )
+
+    assert result.reply == "You spent ₹1,250 across 3 transactions this month."
+    assert result.tool_grounding[0].name == "spending_summary"
+    assert result.tool_grounding[0].result.data["total_minor"] == 125000
+    assert result.streamed_live is False
+    assert deltas == []
+
+
+def test_unified_read_agent_streams_and_retains_provider_reasoning(monkeypatch):
+    class StubReader:
+        def run(self, *_args, **_kwargs):
+            return iter([
+                ReasoningContentDeltaEvent(reasoning_content="Read the follow-up context. "),
+                RunContentEvent(reasoning_content="Keep the prior Housing filter. "),
+                RunContentEvent(content="Here is the contextual answer."),
+                RunOutput(
+                    content="Here is the contextual answer.",
+                    reasoning_content="Read the follow-up context. Keep the prior Housing filter. ",
+                ),
+            ])
+
+    monkeypatch.setattr(agents, "build_unified_read_agent", lambda *args, **kwargs: StubReader())
+    reasoning = []
+
+    result = agents.run_unified_read_agent(
+        "What about July?",
+        [],
+        date(2026, 8, 14),
+        "Asia/Kolkata",
+        [],
+        on_reasoning_delta=reasoning.append,
+    )
+
+    assert reasoning == ["Read the follow-up context. ", "Keep the prior Housing filter. "]
+    assert result.reasoning_trace == "".join(reasoning)
+    assert result.reply == "Here is the contextual answer."
+
+
+def test_unified_read_agent_stops_on_governed_handoff(monkeypatch):
+    execution = ToolExecution(
+        tool_name=agents.UNIFIED_HANDOFF_TOOL,
+        tool_args={
+            "workflow": "transaction",
+            "reason": "Recording an expense requires the confirmed transaction workflow.",
+        },
+        result=(
+            '{"workflow":"transaction","reason":'
+            '"Recording an expense requires the confirmed transaction workflow."}'
+        ),
+        stop_after_tool_call=True,
+    )
+
+    class StubReader:
+        def run(self, *_args, **_kwargs):
+            return iter([
+                ToolCallCompletedEvent(tool=execution),
+                RunOutput(content=None, tools=[execution]),
+            ])
+
+    monkeypatch.setattr(agents, "build_unified_read_agent", lambda *args, **kwargs: StubReader())
+    result = agents.run_unified_read_agent(
+        "Add ₹500 for lunch",
+        [],
+        date(2026, 8, 14),
+        "Asia/Kolkata",
+        [],
+    )
+
+    assert result.reply is None
+    assert result.handoff.workflow == "transaction"
+    assert result.tool_grounding == []
+
+
+def test_governed_handoff_schema_supports_nullable_typed_read_contract():
+    tool = agents._governed_handoff_tool()
+    schema = tool.parameters
+
+    assert tool.strict is False
+    assert "additionalProperties" not in schema
+    assert schema["required"] == ["workflow", "reason"]
+    assert {item.get("type") for item in schema["properties"]["resolved_request"]["anyOf"]} == {
+        "string",
+        "null",
+    }
+    query_options = schema["properties"]["query"]["anyOf"]
+    assert any(item.get("type") == "null" for item in query_options)
+    assert any(item.get("$ref") == "#/$defs/QueryInterpretation" for item in query_options)
 
 
 def test_chart_presentation_forces_analysis_factory_before_transaction_search(monkeypatch):
@@ -566,10 +715,17 @@ def test_unstated_period_is_declared_and_all_records_are_not_reduced_to_month_to
     scoped = _compile("Chart my spending by merchant", PresentationIntent(
         mode="chart", visual_goal="comparison", unit_of_analysis="merchant", value_semantics="amount",
     ), query=agents.QueryInterpretation(metric="gross_spend", transaction_type="expense"), today=today)
+    already_bound = _compile(
+        "Render the same all-transaction plot by date",
+        PresentationIntent(mode="chart", visual_goal="trend", unit_of_analysis="date", value_semantics="amount"),
+        query=agents.QueryInterpretation(metric="transaction_amount"),
+        today=today,
+    )
 
     assert universal.proposal.plan.queries[0].start_date < today.replace(day=1)
+    assert already_bound.proposal.plan.queries[0].start_date < today.replace(day=1)
     assert scoped.proposal.plan.queries[0].start_date == today.replace(day=1)
-    for compilation in (universal, scoped):
+    for compilation in (universal, already_bound, scoped):
         assert any(item.code == "defaulted_period" for item in compilation.assumptions)
 
 

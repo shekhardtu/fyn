@@ -32,13 +32,12 @@ services:
     build:
       context: ./frontend
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:8000
+        VITE_API_URL: http://localhost:8000
         # Baked in at build time: the browser needs the client id to render
-        # Google's button, and the server verifies what it sends back.
-        NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
-    environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
-      NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+        # Google's button, and the server verifies what it sends back. Invoke
+        # Compose with `--env-file backend/.env` so interpolation sees it;
+        # service-level `env_file` is applied too late for build arguments.
+        VITE_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
     ports:
       - "3000:3000"
     depends_on:

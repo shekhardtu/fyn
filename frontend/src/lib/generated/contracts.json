@@ -3,6 +3,7 @@
   "enums": {
     "widgetTypes": [
       "agent_activity",
+      "clarification",
       "category_selector",
       "transaction_type_selector",
       "subcategory_selector",
@@ -41,6 +42,9 @@
       "select_subcategory",
       "change_category",
       "select_account",
+      "revisit_transaction_step",
+      "cancel_transaction_draft",
+      "cancel_pending_action",
       "save_budget",
       "save_goal",
       "contribute_goal",
@@ -49,6 +53,7 @@
       "calculate_investment_scenario",
       "commit_transaction",
       "edit_transaction",
+      "cancel_transaction_edit",
       "update_transaction_draft",
       "edit_saved_transaction",
       "cancel_saved_transaction_edit",
@@ -57,7 +62,8 @@
       "confirm_remove_transaction",
       "cancel_remove_transaction",
       "merge_reconciliation",
-      "separate_reconciliation"
+      "separate_reconciliation",
+      "resolve_clarification"
     ],
     "editableTransactionTypes": [
       "expense",
@@ -92,6 +98,9 @@
             "select_subcategory",
             "change_category",
             "select_account",
+            "revisit_transaction_step",
+            "cancel_transaction_draft",
+            "cancel_pending_action",
             "save_budget",
             "save_goal",
             "contribute_goal",
@@ -100,6 +109,7 @@
             "calculate_investment_scenario",
             "commit_transaction",
             "edit_transaction",
+            "cancel_transaction_edit",
             "update_transaction_draft",
             "edit_saved_transaction",
             "cancel_saved_transaction_edit",
@@ -108,7 +118,8 @@
             "confirm_remove_transaction",
             "cancel_remove_transaction",
             "merge_reconciliation",
-            "separate_reconciliation"
+            "separate_reconciliation",
+            "resolve_clarification"
           ],
           "title": "WidgetActionId",
           "type": "string"
@@ -448,6 +459,20 @@
           ],
           "default": null,
           "title": "Accountid"
+        },
+        "accountName": {
+          "anyOf": [
+            {
+              "maxLength": 120,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Accountname"
         }
       },
       "required": [
@@ -455,6 +480,47 @@
         "role"
       ],
       "title": "SelectAccountPayload",
+      "type": "object"
+    },
+    "RevisitTransactionStepPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "draftId": {
+          "format": "uuid",
+          "title": "Draftid",
+          "type": "string"
+        },
+        "step": {
+          "enum": [
+            "transaction_type",
+            "category",
+            "source_account"
+          ],
+          "title": "Step",
+          "type": "string"
+        }
+      },
+      "required": [
+        "draftId",
+        "step"
+      ],
+      "title": "RevisitTransactionStepPayload",
+      "type": "object"
+    },
+    "CancelPendingActionPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "resourceId": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Resourceid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resourceId"
+      ],
+      "title": "CancelPendingActionPayload",
       "type": "object"
     },
     "SaveBudgetPayload": {
@@ -872,6 +938,43 @@
       "title": "ReconciliationActionPayload",
       "type": "object"
     },
+    "ResolveClarificationPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "clarificationId": {
+          "format": "uuid",
+          "title": "Clarificationid",
+          "type": "string"
+        },
+        "optionId": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+          "title": "Optionid",
+          "type": "string"
+        },
+        "customText": {
+          "anyOf": [
+            {
+              "maxLength": 1000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Customtext"
+        }
+      },
+      "required": [
+        "clarificationId",
+        "optionId"
+      ],
+      "title": "ResolveClarificationPayload",
+      "type": "object"
+    },
     "DataTableColumn": {
       "$defs": {
         "TableColumnAlign": {
@@ -991,6 +1094,9 @@
             "select_subcategory",
             "change_category",
             "select_account",
+            "revisit_transaction_step",
+            "cancel_transaction_draft",
+            "cancel_pending_action",
             "save_budget",
             "save_goal",
             "contribute_goal",
@@ -999,6 +1105,7 @@
             "calculate_investment_scenario",
             "commit_transaction",
             "edit_transaction",
+            "cancel_transaction_edit",
             "update_transaction_draft",
             "edit_saved_transaction",
             "cancel_saved_transaction_edit",
@@ -1007,7 +1114,8 @@
             "confirm_remove_transaction",
             "cancel_remove_transaction",
             "merge_reconciliation",
-            "separate_reconciliation"
+            "separate_reconciliation",
+            "resolve_clarification"
           ],
           "title": "WidgetActionId",
           "type": "string"
@@ -1658,6 +1766,42 @@
       "title": "VisualizationLayout",
       "type": "object"
     },
+    "ClarificationOptionData": {
+      "properties": {
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "maxLength": 240,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "title": "ClarificationOptionData",
+      "type": "object"
+    },
     "AgentActivityData": {
       "$defs": {
         "WidgetLifecycle": {
@@ -1708,6 +1852,28 @@
           "title": "Model",
           "type": "string"
         },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "reasoningTrace": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reasoningtrace"
+        },
+        "debugTrace": {
+          "default": false,
+          "title": "Debugtrace",
+          "type": "boolean"
+        },
         "steps": {
           "items": {
             "additionalProperties": true,
@@ -1734,6 +1900,149 @@
         "model"
       ],
       "title": "AgentActivityData",
+      "type": "object"
+    },
+    "ClarificationData": {
+      "$defs": {
+        "ClarificationOptionData": {
+          "properties": {
+            "id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+              "title": "Id",
+              "type": "string"
+            },
+            "label": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Label",
+              "type": "string"
+            },
+            "description": {
+              "anyOf": [
+                {
+                  "maxLength": 240,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Description"
+            }
+          },
+          "required": [
+            "id",
+            "label"
+          ],
+          "title": "ClarificationOptionData",
+          "type": "object"
+        },
+        "WidgetLifecycle": {
+          "enum": [
+            "pending",
+            "completed",
+            "cancelled"
+          ],
+          "title": "WidgetLifecycle",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "lifecycle": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WidgetLifecycle"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "completion": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completion"
+        },
+        "clarificationId": {
+          "format": "uuid",
+          "title": "Clarificationid",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "question": {
+          "maxLength": 500,
+          "minLength": 3,
+          "title": "Question",
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 500,
+          "minLength": 3,
+          "title": "Reason",
+          "type": "string"
+        },
+        "conflictFields": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8,
+          "title": "Conflictfields",
+          "type": "array"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/ClarificationOptionData"
+          },
+          "maxItems": 6,
+          "minItems": 2,
+          "title": "Options",
+          "type": "array"
+        },
+        "allowCustom": {
+          "default": false,
+          "title": "Allowcustom",
+          "type": "boolean"
+        },
+        "customLabel": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Customlabel"
+        }
+      },
+      "required": [
+        "clarificationId",
+        "title",
+        "question",
+        "reason",
+        "options"
+      ],
+      "title": "ClarificationData",
       "type": "object"
     },
     "CategorySelectorData": {
@@ -3132,6 +3441,9 @@
             "select_subcategory",
             "change_category",
             "select_account",
+            "revisit_transaction_step",
+            "cancel_transaction_draft",
+            "cancel_pending_action",
             "save_budget",
             "save_goal",
             "contribute_goal",
@@ -3140,6 +3452,7 @@
             "calculate_investment_scenario",
             "commit_transaction",
             "edit_transaction",
+            "cancel_transaction_edit",
             "update_transaction_draft",
             "edit_saved_transaction",
             "cancel_saved_transaction_edit",
@@ -3148,7 +3461,8 @@
             "confirm_remove_transaction",
             "cancel_remove_transaction",
             "merge_reconciliation",
-            "separate_reconciliation"
+            "separate_reconciliation",
+            "resolve_clarification"
           ],
           "title": "WidgetActionId",
           "type": "string"
@@ -4038,8 +4352,7 @@
         },
         "columns": {
           "items": {
-            "additionalProperties": true,
-            "type": "object"
+            "type": "string"
           },
           "title": "Columns",
           "type": "array"
@@ -5162,6 +5475,9 @@
             "select_subcategory",
             "change_category",
             "select_account",
+            "revisit_transaction_step",
+            "cancel_transaction_draft",
+            "cancel_pending_action",
             "save_budget",
             "save_goal",
             "contribute_goal",
@@ -5170,6 +5486,7 @@
             "calculate_investment_scenario",
             "commit_transaction",
             "edit_transaction",
+            "cancel_transaction_edit",
             "update_transaction_draft",
             "edit_saved_transaction",
             "cancel_saved_transaction_edit",
@@ -5178,7 +5495,8 @@
             "confirm_remove_transaction",
             "cancel_remove_transaction",
             "merge_reconciliation",
-            "separate_reconciliation"
+            "separate_reconciliation",
+            "resolve_clarification"
           ],
           "title": "WidgetActionId",
           "type": "string"
@@ -5196,6 +5514,7 @@
         "WidgetType": {
           "enum": [
             "agent_activity",
+            "clarification",
             "category_selector",
             "transaction_type_selector",
             "subcategory_selector",
@@ -5277,6 +5596,9 @@
             "select_subcategory",
             "change_category",
             "select_account",
+            "revisit_transaction_step",
+            "cancel_transaction_draft",
+            "cancel_pending_action",
             "save_budget",
             "save_goal",
             "contribute_goal",
@@ -5285,6 +5607,7 @@
             "calculate_investment_scenario",
             "commit_transaction",
             "edit_transaction",
+            "cancel_transaction_edit",
             "update_transaction_draft",
             "edit_saved_transaction",
             "cancel_saved_transaction_edit",
@@ -5293,7 +5616,8 @@
             "confirm_remove_transaction",
             "cancel_remove_transaction",
             "merge_reconciliation",
-            "separate_reconciliation"
+            "separate_reconciliation",
+            "resolve_clarification"
           ],
           "title": "WidgetActionId",
           "type": "string"
@@ -5434,6 +5758,9 @@
             "select_subcategory",
             "change_category",
             "select_account",
+            "revisit_transaction_step",
+            "cancel_transaction_draft",
+            "cancel_pending_action",
             "save_budget",
             "save_goal",
             "contribute_goal",
@@ -5442,6 +5769,7 @@
             "calculate_investment_scenario",
             "commit_transaction",
             "edit_transaction",
+            "cancel_transaction_edit",
             "update_transaction_draft",
             "edit_saved_transaction",
             "cancel_saved_transaction_edit",
@@ -5450,7 +5778,8 @@
             "confirm_remove_transaction",
             "cancel_remove_transaction",
             "merge_reconciliation",
-            "separate_reconciliation"
+            "separate_reconciliation",
+            "resolve_clarification"
           ],
           "title": "WidgetActionId",
           "type": "string"
@@ -5468,6 +5797,7 @@
         "WidgetType": {
           "enum": [
             "agent_activity",
+            "clarification",
             "category_selector",
             "transaction_type_selector",
             "subcategory_selector",
@@ -5650,6 +5980,9 @@
             "select_subcategory",
             "change_category",
             "select_account",
+            "revisit_transaction_step",
+            "cancel_transaction_draft",
+            "cancel_pending_action",
             "save_budget",
             "save_goal",
             "contribute_goal",
@@ -5658,6 +5991,7 @@
             "calculate_investment_scenario",
             "commit_transaction",
             "edit_transaction",
+            "cancel_transaction_edit",
             "update_transaction_draft",
             "edit_saved_transaction",
             "cancel_saved_transaction_edit",
@@ -5666,7 +6000,8 @@
             "confirm_remove_transaction",
             "cancel_remove_transaction",
             "merge_reconciliation",
-            "separate_reconciliation"
+            "separate_reconciliation",
+            "resolve_clarification"
           ],
           "title": "WidgetActionId",
           "type": "string"
@@ -5684,6 +6019,7 @@
         "WidgetType": {
           "enum": [
             "agent_activity",
+            "clarification",
             "category_selector",
             "transaction_type_selector",
             "subcategory_selector",
@@ -5883,6 +6219,24 @@
           "title": "Cancelrequested",
           "type": "boolean"
         },
+        "finalMessageId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Finalmessageid"
+        },
+        "deliveryMode": {
+          "default": "verified_final",
+          "title": "Deliverymode",
+          "type": "string"
+        },
         "createdAt": {
           "format": "date-time",
           "title": "Createdat",
@@ -5901,6 +6255,19 @@
           "default": null,
           "title": "Startedat"
         },
+        "firstResponseAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Firstresponseat"
+        },
         "finishedAt": {
           "anyOf": [
             {
@@ -5913,6 +6280,30 @@
           ],
           "default": null,
           "title": "Finishedat"
+        },
+        "durationMs": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Durationms"
+        },
+        "timeToFirstResponseMs": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timetofirstresponsems"
         }
       },
       "required": [
@@ -5923,6 +6314,311 @@
         "createdAt"
       ],
       "title": "AgentRunOut",
+      "type": "object"
+    },
+    "AgentRunEvaluationOut": {
+      "properties": {
+        "complete": {
+          "title": "Complete",
+          "type": "boolean"
+        },
+        "evidencePassed": {
+          "title": "Evidencepassed",
+          "type": "boolean"
+        },
+        "contextual": {
+          "title": "Contextual",
+          "type": "boolean"
+        },
+        "grounded": {
+          "title": "Grounded",
+          "type": "boolean"
+        },
+        "groundingRequired": {
+          "title": "Groundingrequired",
+          "type": "boolean"
+        },
+        "depthScore": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Depthscore",
+          "type": "integer"
+        },
+        "qualityScore": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Qualityscore",
+          "type": "integer"
+        },
+        "responseWords": {
+          "minimum": 0,
+          "title": "Responsewords",
+          "type": "integer"
+        },
+        "citationCount": {
+          "minimum": 0,
+          "title": "Citationcount",
+          "type": "integer"
+        },
+        "widgetCount": {
+          "minimum": 0,
+          "title": "Widgetcount",
+          "type": "integer"
+        },
+        "correctnessBasis": {
+          "enum": [
+            "structured_evidence",
+            "claim_integrity",
+            "unsupported_financial_figure"
+          ],
+          "title": "Correctnessbasis",
+          "type": "string"
+        },
+        "signals": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Signals",
+          "type": "array"
+        }
+      },
+      "required": [
+        "complete",
+        "evidencePassed",
+        "contextual",
+        "grounded",
+        "groundingRequired",
+        "depthScore",
+        "qualityScore",
+        "responseWords",
+        "citationCount",
+        "widgetCount",
+        "correctnessBasis"
+      ],
+      "title": "AgentRunEvaluationOut",
+      "type": "object"
+    },
+    "AgentRunMetricOut": {
+      "$defs": {
+        "AgentRunEvaluationOut": {
+          "properties": {
+            "complete": {
+              "title": "Complete",
+              "type": "boolean"
+            },
+            "evidencePassed": {
+              "title": "Evidencepassed",
+              "type": "boolean"
+            },
+            "contextual": {
+              "title": "Contextual",
+              "type": "boolean"
+            },
+            "grounded": {
+              "title": "Grounded",
+              "type": "boolean"
+            },
+            "groundingRequired": {
+              "title": "Groundingrequired",
+              "type": "boolean"
+            },
+            "depthScore": {
+              "maximum": 100,
+              "minimum": 0,
+              "title": "Depthscore",
+              "type": "integer"
+            },
+            "qualityScore": {
+              "maximum": 100,
+              "minimum": 0,
+              "title": "Qualityscore",
+              "type": "integer"
+            },
+            "responseWords": {
+              "minimum": 0,
+              "title": "Responsewords",
+              "type": "integer"
+            },
+            "citationCount": {
+              "minimum": 0,
+              "title": "Citationcount",
+              "type": "integer"
+            },
+            "widgetCount": {
+              "minimum": 0,
+              "title": "Widgetcount",
+              "type": "integer"
+            },
+            "correctnessBasis": {
+              "enum": [
+                "structured_evidence",
+                "claim_integrity",
+                "unsupported_financial_figure"
+              ],
+              "title": "Correctnessbasis",
+              "type": "string"
+            },
+            "signals": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Signals",
+              "type": "array"
+            }
+          },
+          "required": [
+            "complete",
+            "evidencePassed",
+            "contextual",
+            "grounded",
+            "groundingRequired",
+            "depthScore",
+            "qualityScore",
+            "responseWords",
+            "citationCount",
+            "widgetCount",
+            "correctnessBasis"
+          ],
+          "title": "AgentRunEvaluationOut",
+          "type": "object"
+        },
+        "AgentRunOut": {
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "status": {
+              "title": "Status",
+              "type": "string"
+            },
+            "lastSequence": {
+              "title": "Lastsequence",
+              "type": "integer"
+            },
+            "cancelRequested": {
+              "title": "Cancelrequested",
+              "type": "boolean"
+            },
+            "finalMessageId": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Finalmessageid"
+            },
+            "deliveryMode": {
+              "default": "verified_final",
+              "title": "Deliverymode",
+              "type": "string"
+            },
+            "createdAt": {
+              "format": "date-time",
+              "title": "Createdat",
+              "type": "string"
+            },
+            "startedAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Startedat"
+            },
+            "firstResponseAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Firstresponseat"
+            },
+            "finishedAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Finishedat"
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Durationms"
+            },
+            "timeToFirstResponseMs": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Timetofirstresponsems"
+            }
+          },
+          "required": [
+            "id",
+            "status",
+            "lastSequence",
+            "cancelRequested",
+            "createdAt"
+          ],
+          "title": "AgentRunOut",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/AgentRunOut"
+        },
+        "evaluation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentRunEvaluationOut"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "run"
+      ],
+      "title": "AgentRunMetricOut",
       "type": "object"
     },
     "AgentThreadStateOut": {
@@ -6023,6 +6719,24 @@
               "title": "Cancelrequested",
               "type": "boolean"
             },
+            "finalMessageId": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Finalmessageid"
+            },
+            "deliveryMode": {
+              "default": "verified_final",
+              "title": "Deliverymode",
+              "type": "string"
+            },
             "createdAt": {
               "format": "date-time",
               "title": "Createdat",
@@ -6041,6 +6755,19 @@
               "default": null,
               "title": "Startedat"
             },
+            "firstResponseAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Firstresponseat"
+            },
             "finishedAt": {
               "anyOf": [
                 {
@@ -6053,6 +6780,30 @@
               ],
               "default": null,
               "title": "Finishedat"
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Durationms"
+            },
+            "timeToFirstResponseMs": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Timetofirstresponsems"
             }
           },
           "required": [
@@ -6106,6 +6857,398 @@
         "threadId"
       ],
       "title": "AgentThreadStateOut",
+      "type": "object"
+    },
+    "AgentThreadMetricsOut": {
+      "$defs": {
+        "AgentRunEvaluationOut": {
+          "properties": {
+            "complete": {
+              "title": "Complete",
+              "type": "boolean"
+            },
+            "evidencePassed": {
+              "title": "Evidencepassed",
+              "type": "boolean"
+            },
+            "contextual": {
+              "title": "Contextual",
+              "type": "boolean"
+            },
+            "grounded": {
+              "title": "Grounded",
+              "type": "boolean"
+            },
+            "groundingRequired": {
+              "title": "Groundingrequired",
+              "type": "boolean"
+            },
+            "depthScore": {
+              "maximum": 100,
+              "minimum": 0,
+              "title": "Depthscore",
+              "type": "integer"
+            },
+            "qualityScore": {
+              "maximum": 100,
+              "minimum": 0,
+              "title": "Qualityscore",
+              "type": "integer"
+            },
+            "responseWords": {
+              "minimum": 0,
+              "title": "Responsewords",
+              "type": "integer"
+            },
+            "citationCount": {
+              "minimum": 0,
+              "title": "Citationcount",
+              "type": "integer"
+            },
+            "widgetCount": {
+              "minimum": 0,
+              "title": "Widgetcount",
+              "type": "integer"
+            },
+            "correctnessBasis": {
+              "enum": [
+                "structured_evidence",
+                "claim_integrity",
+                "unsupported_financial_figure"
+              ],
+              "title": "Correctnessbasis",
+              "type": "string"
+            },
+            "signals": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Signals",
+              "type": "array"
+            }
+          },
+          "required": [
+            "complete",
+            "evidencePassed",
+            "contextual",
+            "grounded",
+            "groundingRequired",
+            "depthScore",
+            "qualityScore",
+            "responseWords",
+            "citationCount",
+            "widgetCount",
+            "correctnessBasis"
+          ],
+          "title": "AgentRunEvaluationOut",
+          "type": "object"
+        },
+        "AgentRunMetricOut": {
+          "properties": {
+            "run": {
+              "$ref": "#/$defs/AgentRunOut"
+            },
+            "evaluation": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AgentRunEvaluationOut"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "run"
+          ],
+          "title": "AgentRunMetricOut",
+          "type": "object"
+        },
+        "AgentRunOut": {
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "status": {
+              "title": "Status",
+              "type": "string"
+            },
+            "lastSequence": {
+              "title": "Lastsequence",
+              "type": "integer"
+            },
+            "cancelRequested": {
+              "title": "Cancelrequested",
+              "type": "boolean"
+            },
+            "finalMessageId": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Finalmessageid"
+            },
+            "deliveryMode": {
+              "default": "verified_final",
+              "title": "Deliverymode",
+              "type": "string"
+            },
+            "createdAt": {
+              "format": "date-time",
+              "title": "Createdat",
+              "type": "string"
+            },
+            "startedAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Startedat"
+            },
+            "firstResponseAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Firstresponseat"
+            },
+            "finishedAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Finishedat"
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Durationms"
+            },
+            "timeToFirstResponseMs": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Timetofirstresponsems"
+            }
+          },
+          "required": [
+            "id",
+            "status",
+            "lastSequence",
+            "cancelRequested",
+            "createdAt"
+          ],
+          "title": "AgentRunOut",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "threadId": {
+          "format": "uuid",
+          "title": "Threadid",
+          "type": "string"
+        },
+        "sampleSize": {
+          "minimum": 0,
+          "title": "Samplesize",
+          "type": "integer"
+        },
+        "completionRate": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Completionrate",
+          "type": "number"
+        },
+        "evidencePassRate": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidencepassrate"
+        },
+        "contextualityRate": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Contextualityrate"
+        },
+        "groundingRate": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Groundingrate"
+        },
+        "averageQualityScore": {
+          "anyOf": [
+            {
+              "maximum": 100,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Averagequalityscore"
+        },
+        "averageDepthScore": {
+          "anyOf": [
+            {
+              "maximum": 100,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Averagedepthscore"
+        },
+        "averageDurationMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Averagedurationms"
+        },
+        "p50DurationMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "P50Durationms"
+        },
+        "p95DurationMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "P95Durationms"
+        },
+        "averageTimeToFirstResponseMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Averagetimetofirstresponsems"
+        },
+        "p50TimeToFirstResponseMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "P50Timetofirstresponsems"
+        },
+        "recentRuns": {
+          "items": {
+            "$ref": "#/$defs/AgentRunMetricOut"
+          },
+          "title": "Recentruns",
+          "type": "array"
+        }
+      },
+      "required": [
+        "threadId",
+        "sampleSize",
+        "completionRate"
+      ],
+      "title": "AgentThreadMetricsOut",
       "type": "object"
     },
     "MessageOut": {
@@ -6222,6 +7365,9 @@
             "select_subcategory",
             "change_category",
             "select_account",
+            "revisit_transaction_step",
+            "cancel_transaction_draft",
+            "cancel_pending_action",
             "save_budget",
             "save_goal",
             "contribute_goal",
@@ -6230,6 +7376,7 @@
             "calculate_investment_scenario",
             "commit_transaction",
             "edit_transaction",
+            "cancel_transaction_edit",
             "update_transaction_draft",
             "edit_saved_transaction",
             "cancel_saved_transaction_edit",
@@ -6238,7 +7385,8 @@
             "confirm_remove_transaction",
             "cancel_remove_transaction",
             "merge_reconciliation",
-            "separate_reconciliation"
+            "separate_reconciliation",
+            "resolve_clarification"
           ],
           "title": "WidgetActionId",
           "type": "string"
@@ -6256,6 +7404,7 @@
         "WidgetType": {
           "enum": [
             "agent_activity",
+            "clarification",
             "category_selector",
             "transaction_type_selector",
             "subcategory_selector",
@@ -6490,6 +7639,9 @@
             "select_subcategory",
             "change_category",
             "select_account",
+            "revisit_transaction_step",
+            "cancel_transaction_draft",
+            "cancel_pending_action",
             "save_budget",
             "save_goal",
             "contribute_goal",
@@ -6498,6 +7650,7 @@
             "calculate_investment_scenario",
             "commit_transaction",
             "edit_transaction",
+            "cancel_transaction_edit",
             "update_transaction_draft",
             "edit_saved_transaction",
             "cancel_saved_transaction_edit",
@@ -6506,7 +7659,8 @@
             "confirm_remove_transaction",
             "cancel_remove_transaction",
             "merge_reconciliation",
-            "separate_reconciliation"
+            "separate_reconciliation",
+            "resolve_clarification"
           ],
           "title": "WidgetActionId",
           "type": "string"
@@ -6524,6 +7678,7 @@
         "WidgetType": {
           "enum": [
             "agent_activity",
+            "clarification",
             "category_selector",
             "transaction_type_selector",
             "subcategory_selector",
@@ -6921,6 +8076,9 @@
             "select_subcategory",
             "change_category",
             "select_account",
+            "revisit_transaction_step",
+            "cancel_transaction_draft",
+            "cancel_pending_action",
             "save_budget",
             "save_goal",
             "contribute_goal",
@@ -6929,6 +8087,7 @@
             "calculate_investment_scenario",
             "commit_transaction",
             "edit_transaction",
+            "cancel_transaction_edit",
             "update_transaction_draft",
             "edit_saved_transaction",
             "cancel_saved_transaction_edit",
@@ -6937,7 +8096,8 @@
             "confirm_remove_transaction",
             "cancel_remove_transaction",
             "merge_reconciliation",
-            "separate_reconciliation"
+            "separate_reconciliation",
+            "resolve_clarification"
           ],
           "title": "WidgetActionId",
           "type": "string"
@@ -6955,6 +8115,7 @@
         "WidgetType": {
           "enum": [
             "agent_activity",
+            "clarification",
             "category_selector",
             "transaction_type_selector",
             "subcategory_selector",
@@ -7812,6 +8973,19 @@
         "sourceCount": {
           "title": "Sourcecount",
           "type": "integer"
+        },
+        "deletedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deletedat"
         }
       },
       "required": [
@@ -8139,6 +9313,9 @@
             "select_subcategory",
             "change_category",
             "select_account",
+            "revisit_transaction_step",
+            "cancel_transaction_draft",
+            "cancel_pending_action",
             "save_budget",
             "save_goal",
             "contribute_goal",
@@ -8147,6 +9324,7 @@
             "calculate_investment_scenario",
             "commit_transaction",
             "edit_transaction",
+            "cancel_transaction_edit",
             "update_transaction_draft",
             "edit_saved_transaction",
             "cancel_saved_transaction_edit",
@@ -8155,7 +9333,8 @@
             "confirm_remove_transaction",
             "cancel_remove_transaction",
             "merge_reconciliation",
-            "separate_reconciliation"
+            "separate_reconciliation",
+            "resolve_clarification"
           ],
           "title": "WidgetActionId",
           "type": "string"
@@ -8173,6 +9352,7 @@
         "WidgetType": {
           "enum": [
             "agent_activity",
+            "clarification",
             "category_selector",
             "transaction_type_selector",
             "subcategory_selector",
@@ -9533,6 +10713,18 @@
           "title": "Id",
           "type": "string"
         },
+        "stageId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stageid"
+        },
         "label": {
           "title": "Label",
           "type": "string"
@@ -9551,6 +10743,18 @@
           ],
           "default": null,
           "title": "Tool"
+        },
+        "resultTool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resulttool"
         },
         "detail": {
           "anyOf": [
@@ -9600,6 +10804,7 @@
   },
   "widgetDataModels": {
     "agent_activity": "AgentActivityData",
+    "clarification": "ClarificationData",
     "category_selector": "CategorySelectorData",
     "transaction_type_selector": "TransactionTypeSelectorData",
     "subcategory_selector": "SubcategorySelectorData",
@@ -9638,6 +10843,9 @@
     "select_subcategory": "SelectSubcategoryPayload",
     "change_category": "DraftActionPayload",
     "select_account": "SelectAccountPayload",
+    "revisit_transaction_step": "RevisitTransactionStepPayload",
+    "cancel_transaction_draft": "DraftActionPayload",
+    "cancel_pending_action": "CancelPendingActionPayload",
     "save_budget": "SaveBudgetPayload",
     "save_goal": "SaveGoalPayload",
     "contribute_goal": "ContributeGoalPayload",
@@ -9646,6 +10854,7 @@
     "calculate_investment_scenario": "InvestmentScenarioActionPayload",
     "commit_transaction": "DraftActionPayload",
     "edit_transaction": "DraftActionPayload",
+    "cancel_transaction_edit": "DraftActionPayload",
     "update_transaction_draft": "UpdateDraftPayload",
     "edit_saved_transaction": "TransactionActionPayload",
     "cancel_saved_transaction_edit": "TransactionActionPayload",
@@ -9654,7 +10863,8 @@
     "confirm_remove_transaction": "TransactionActionPayload",
     "cancel_remove_transaction": "TransactionActionPayload",
     "merge_reconciliation": "ReconciliationActionPayload",
-    "separate_reconciliation": "ReconciliationActionPayload"
+    "separate_reconciliation": "ReconciliationActionPayload",
+    "resolve_clarification": "ResolveClarificationPayload"
   },
-  "schemaHash": "8931e4aba2cdff063a90c9a6e8a7034c883bcb8f00cd0254f24a38d5243f23d2"
+  "schemaHash": "d620a6d8a00bac4facd487eb4530945c6d3efeec3adb6445dd64dc1aef1ffd30"
 }

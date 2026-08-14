@@ -2,7 +2,7 @@ from datetime import date
 
 from sqlalchemy import func, select
 
-from app.models import ReconciliationCandidate, Transaction, TransactionSource, User
+from app.models import Category, ReconciliationCandidate, Subcategory, Transaction, TransactionSource, User
 from app.event_time import from_local_parts
 from app.schemas import ObservationIn
 from app.seed import default_user
@@ -47,6 +47,7 @@ def test_categorized_bare_manual_entry_is_corroborated_by_toit_sources(db):
     conversation = get_or_create_conversation(db, user)
     response = handle_chat(db, user, conversation, "₹2,000")
     draft_id = response.widgets[0].data["draftId"]
+    response = handle_action(db, user, conversation, "select_transaction_type", {"draftId": draft_id, "optionId": "expense"})
     food_id = next(item["id"] for item in response.widgets[0].data["options"] if item["slug"] == "food")
     response = handle_action(db, user, conversation, "select_category", {"draftId": draft_id, "categoryId": food_id})
     dining_id = next(item["id"] for item in response.widgets[0].data["options"] if item["slug"] == "dining")
@@ -69,6 +70,26 @@ def test_ingestion_is_idempotent(db):
     assert first.transaction_id == second.transaction_id
     assert second.idempotent_replay is True
     assert db.scalar(select(func.count(Transaction.id))) == 1
+
+
+def test_ingested_income_receives_a_direction_compatible_taxonomy(db):
+    user = default_user(db)
+    result = ingest_observation(db, user.id, ObservationIn(
+        source_type="bank",
+        external_transaction_id="salary-credit",
+        transaction_type="income",
+        amount_minor=500_000,
+        merchant="Employer",
+        description="Monthly salary credit",
+        transaction_date=date(2026, 8, 10),
+    ))
+
+    transaction = db.get(Transaction, result.transaction_id)
+    category = db.get(Category, transaction.category_id)
+    subcategory = db.get(Subcategory, transaction.subcategory_id)
+    assert category.slug == "income"
+    assert subcategory.slug == "other"
+    assert transaction.spend_nature == "unknown"
 
 
 def test_external_transaction_id_is_idempotent_even_if_payload_changes(db):

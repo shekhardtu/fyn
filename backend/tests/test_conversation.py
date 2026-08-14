@@ -6,14 +6,15 @@ from fastapi import HTTPException
 from sqlalchemy import Uuid, func, select
 
 from app.api import delete_conversation, list_conversations
+from app.config import get_settings
 from app.database import Base
 from app.models import AIAction, Account, AnalysisTool, AnalysisToolRun, Budget, Category, Conversation, DraftState, Goal, GoalContribution, Message, Subcategory, Tag, TaxonomyScope, Transaction, TransactionDraft, TransactionFieldValue, TransactionTag, User
 from app.seed import default_user
-from app.services.agents import CopilotDecision, CopilotDecisionValidation, PresentationIntent, QueryBundleInterpretation, QueryInterpretation, QueryView, TaxonomyInterpretation, ToolGrounding, TransactionInterpretation
+from app.services.agents import ClarificationOption, ClarificationRequest, CopilotDecision, CopilotDecisionValidation, GovernedWorkflowHandoff, PresentationIntent, QueryBundleInterpretation, QueryInterpretation, QueryView, TaxonomyInterpretation, ToolGrounding, TransactionInterpretation, UnifiedReadResult
 from app.services import conversation as conversation_service
 from app.services.agui import execute_widget_action
 from app.services.calculators import loan_amortization_schedule
-from app.schemas import ActionRequest
+from app.schemas import ActionRequest, PendingAction, Widget, WidgetAction, WidgetType
 from app.services.conversation import get_or_create_conversation, handle_action, handle_chat
 
 
@@ -40,9 +41,18 @@ def test_bare_amount_complete_conversation(db):
     conversation = get_or_create_conversation(db, user)
 
     response = handle_chat(db, user, conversation, "₹2,000")
-    assert response.widgets[0].type == "category_selector"
+    assert response.widgets[0].type == "transaction_type_selector"
     draft = db.scalar(select(TransactionDraft).where(TransactionDraft.conversation_id == conversation.id))
     assert draft.state == DraftState.NEEDS_CLARIFICATION.value
+    assert draft.transaction_type == "unknown"
+
+    response = execute_widget_action(ActionRequest(
+        conversation_id=conversation.id,
+        widget_id=response.widgets[0].id,
+        action="select_transaction_type",
+        payload={"draftId": str(draft.id), "optionId": "expense"},
+    ), db, user)
+    assert response.widgets[0].type == "category_selector"
 
     category_id = next(option["id"] for option in response.widgets[0].data["options"] if option["slug"] == "food")
     response = execute_widget_action(ActionRequest(
@@ -72,6 +82,67 @@ def test_bare_amount_complete_conversation(db):
     assert len(transaction.sources) == 1
 
 
+def test_conflicting_loan_lineage_requires_human_choice_before_charting(db):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    conversation.active_analysis_state = {
+        "sourceMessageId": str(uuid4()),
+        "entityType": "calculator",
+        "query": {
+            "source_kind": "calculator",
+            "tool": "loan_payment",
+            "arguments": {
+                "principal_minor": 10_000_000,
+                "annual_rate_percent": 10,
+                "tenure_months": 24,
+            },
+            "result_summary": {"emi_minor": 461_449, "tenure_months": 24},
+        },
+        "queries": [
+            {
+                "source_kind": "calculator",
+                "tool": "loan_payment",
+                "arguments": {
+                    "principal_minor": 10_000_000,
+                    "annual_rate_percent": 10,
+                    "tenure_months": 24,
+                },
+                "result_summary": {"emi_minor": 461_449, "tenure_months": 24},
+            },
+            {
+                "source_kind": "calculator",
+                "tool": "amortize_with_fixed_payment",
+                "arguments": {
+                    "principal_minor": 10_000_000,
+                    "annual_rate_percent": 10,
+                    "payment_minor": 200_000,
+                    "max_months": 1200,
+                },
+            },
+        ],
+        "resultShapes": [],
+    }
+    db.commit()
+
+    response = handle_chat(
+        db,
+        user,
+        conversation,
+        "Can you draw on a chart with diminishing principal amount along with installment?",
+    )
+
+    assert response.widgets[0].type == "clarification"
+    assert response.pending_action.action == "resolve_clarification"
+    assert response.widgets[0].data["conflictFields"] == ["tenure", "monthly installment"]
+    assert [option["id"] for option in response.widgets[0].data["options"]] == [
+        "use_tenure",
+        "use_installment",
+        "compare_scenarios",
+    ]
+    assert "₹2,000" in response.widgets[0].data["reason"]
+    assert "₹4,614.49" in response.widgets[0].data["reason"]
+
+
 def test_active_draft_semantically_routes_subcategory_creation_with_state_context(db, monkeypatch):
     user = default_user(db)
     db.add(Category(slug="construction", name="Construction", icon="hammer"))
@@ -79,6 +150,7 @@ def test_active_draft_semantically_routes_subcategory_creation_with_state_contex
     conversation = get_or_create_conversation(db, user)
     response = handle_chat(db, user, conversation, "₹500")
     draft = db.scalar(select(TransactionDraft).where(TransactionDraft.conversation_id == conversation.id))
+    response = handle_action(db, user, conversation, "select_transaction_type", {"draftId": str(draft.id), "optionId": "expense"})
     construction_id = next(option["id"] for option in response.widgets[0].data["options"] if option["slug"] == "construction")
     handle_action(db, user, conversation, "select_category", {"draftId": str(draft.id), "categoryId": construction_id})
     captured = {}
@@ -127,37 +199,41 @@ def test_active_draft_semantically_routes_subcategory_creation_with_state_contex
     assert db.get(Subcategory, transaction.subcategory_id).name == "Materials"
 
 
-def test_every_semantic_turn_receives_the_last_five_persisted_messages(db, monkeypatch):
+def test_every_semantic_turn_receives_five_complete_unclipped_turns(db, monkeypatch):
     user = default_user(db)
     conversation = get_or_create_conversation(db, user)
     routed_contexts = []
-    validated_contexts = []
+    long_reply = "Complete answer: " + ("context " * 120)
 
     def router(*args, **kwargs):
         routed_contexts.append(list(args[4]))
-        return CopilotDecision(tool="conversation", reply="Understood.", confidence=0.99, reason="Conversation turn.")
-
-    def validator(*args, **kwargs):
-        validated_contexts.append(list(args[5]))
-        return CopilotDecisionValidation(outcome="approve", confidence=0.99, summary="Contextually valid.")
+        reply = long_reply if args[0] == "sixth" else f"Answer to {args[0]}."
+        return CopilotDecision(tool="conversation", reply=reply, confidence=0.99, reason="Conversation turn.")
 
     monkeypatch.setattr(conversation_service, "interpret_with_financial_copilot", router)
-    monkeypatch.setattr(conversation_service, "validate_copilot_decision", validator)
+    monkeypatch.setattr(
+        conversation_service,
+        "validate_copilot_decision",
+        lambda *args, **kwargs: pytest.fail("Low-risk conversation turns must not call the model validator"),
+    )
 
-    handle_chat(db, user, conversation, "first")
-    handle_chat(db, user, conversation, "second")
-    handle_chat(db, user, conversation, "third")
-    handle_chat(db, user, conversation, "fourth")
+    for prompt in ("first", "second", "third", "fourth", "fifth", "sixth", "seventh"):
+        handle_chat(db, user, conversation, prompt)
 
     expected = [
-        {"role": "assistant", "content": "Understood."},
         {"role": "user", "content": "second"},
-        {"role": "assistant", "content": "Understood."},
+        {"role": "assistant", "content": "Answer to second."},
         {"role": "user", "content": "third"},
-        {"role": "assistant", "content": "Understood."},
+        {"role": "assistant", "content": "Answer to third."},
+        {"role": "user", "content": "fourth"},
+        {"role": "assistant", "content": "Answer to fourth."},
+        {"role": "user", "content": "fifth"},
+        {"role": "assistant", "content": "Answer to fifth."},
+        {"role": "user", "content": "sixth"},
+        {"role": "assistant", "content": long_reply},
     ]
     assert routed_contexts[-1] == expected
-    assert validated_contexts[-1] == expected
+    assert len(routed_contexts[-1][-1]["content"]) > 500
 
 
 def test_category_count_uses_authenticated_runtime_taxonomy_tool(db, monkeypatch):
@@ -203,6 +279,46 @@ def test_category_count_uses_authenticated_runtime_taxonomy_tool(db, monkeypatch
     assert response.citations[0].entity_type == "runtime_tool"
     assert response.citations[0].label == "Read User Expense Taxonomy result"
     assert captured["tool_schema"]["properties"] == {}
+
+
+def test_runtime_grounded_reply_replaces_a_number_missing_from_tool_evidence(db, monkeypatch):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    monkeypatch.setattr(conversation_service, "_fast_path_decision", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        conversation_service,
+        "interpret_with_financial_copilot",
+        lambda *args, **kwargs: CopilotDecision(
+            tool="conversation",
+            reply="You spent ₹999 across 2 transactions.",
+            tool_grounding=[ToolGrounding(
+                name="spending_summary",
+                arguments={"start": "2026-08-01", "end": "2026-08-14", "category_slug": None},
+                result={
+                    "total_minor": 12_000,
+                    "count": 2,
+                    "currency": "INR",
+                    "start": "2026-08-01",
+                    "end": "2026-08-14",
+                    "category": None,
+                },
+            )],
+            confidence=0.99,
+            reason="Authenticated spending summary.",
+        ),
+    )
+    monkeypatch.setattr(
+        conversation_service,
+        "validate_copilot_decision",
+        lambda *args, **kwargs: pytest.fail("Runtime-grounded answers use deterministic evidence policy"),
+    )
+
+    response = handle_chat(db, user, conversation, "How much did I spend?")
+
+    assert "₹999" not in response.message
+    assert "₹120" in response.message
+    assert "2 transactions" in response.message
+    assert response.citations[0].query["tool"] == "spending_summary"
 
 
 def test_computed_calculator_dataset_renders_through_generic_visualization(db, monkeypatch):
@@ -414,6 +530,661 @@ def test_greeting_never_creates_a_transaction_draft_or_calls_llm(db, monkeypatch
     assert next(event for event in activity if event["id"] == "classification")["durationMs"] == 0
 
 
+def test_model_enabled_acknowledgement_uses_recent_context_instead_of_template(db, monkeypatch):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    handle_chat(db, user, conversation, "Hi")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+    monkeypatch.setenv("PRIMARY_AGENT_ENABLED", "true")
+    get_settings.cache_clear()
+    captured = {}
+
+    def unified_reader(text, _taxonomy, _today, _timezone, recent_context, **kwargs):
+        captured["text"] = text
+        captured["context"] = recent_context
+        kwargs["on_delta"]("Got it — I’ll wait for your next request.")
+        return UnifiedReadResult(
+            reply="Got it — I’ll wait for your next request.",
+            streamed_live=True,
+        )
+
+    monkeypatch.setattr(conversation_service, "run_unified_read_agent", unified_reader)
+    monkeypatch.setattr(
+        conversation_service,
+        "stream_conversation_reply",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a direct unified reply must not enter the second writer")
+        ),
+    )
+    deltas = []
+
+    response = handle_chat(
+        db,
+        user,
+        conversation,
+        "OK",
+        text_delta_callback=lambda message_id, delta: deltas.append((message_id, delta)),
+    )
+
+    assert captured["text"] == "OK"
+    assert captured["context"][-1]["content"].startswith("Hi!")
+    assert response.message == "Got it — I’ll wait for your next request."
+    assert "What would you like to look at next?" not in response.message
+    assert "".join(delta for _message_id, delta in deltas) == response.message
+    get_settings.cache_clear()
+
+
+def test_repeated_assistant_text_is_recognized_without_router_or_echo(db, monkeypatch):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    previous = handle_chat(db, user, conversation, "Hi").message
+    repeated_input = f"Earlier you said: {previous}"
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+    monkeypatch.setenv("PRIMARY_AGENT_ENABLED", "true")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        conversation_service,
+        "interpret_with_financial_copilot",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("exact repeated context should not need the semantic router")),
+    )
+
+    def unified_reader(text, _taxonomy, _today, _timezone, recent_context, **kwargs):
+        assert text == repeated_input
+        assert recent_context[-1]["content"] == previous
+        return UnifiedReadResult(
+            reply="It looks like you pasted my last reply back to me. Were you testing context, or did you want to continue from there?"
+        )
+
+    monkeypatch.setattr(conversation_service, "run_unified_read_agent", unified_reader)
+    monkeypatch.setattr(
+        conversation_service,
+        "stream_conversation_reply",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a direct unified reply must not enter the second writer")
+        ),
+    )
+
+    response = handle_chat(db, user, conversation, repeated_input)
+
+    assert response.message != repeated_input
+    assert "pasted my last reply" in response.message
+    get_settings.cache_clear()
+
+
+def test_unified_grounded_read_persists_and_emits_the_same_verified_reply(db, monkeypatch):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+    monkeypatch.setenv("PRIMARY_AGENT_ENABLED", "true")
+    monkeypatch.setenv("UNIFIED_READ_AGENT_ENABLED", "true")
+    get_settings.cache_clear()
+    grounding = ToolGrounding(
+        name="spending_summary",
+        arguments={"start": "2026-08-01", "end": "2026-08-14", "category_slug": None},
+        result={
+            "tool": "spending_summary",
+            "schema_name": "SpendingSummaryResult",
+            "data": {
+                "total_minor": 125_000,
+                "count": 3,
+                "currency": "INR",
+                "start": "2026-08-01",
+                "end": "2026-08-14",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        conversation_service,
+        "run_unified_read_agent",
+        lambda *args, **kwargs: UnifiedReadResult(
+            reply="You spent ₹1,250 across 3 transactions from August 1 through August 14.",
+            tool_grounding=[grounding],
+        ),
+    )
+    monkeypatch.setattr(
+        conversation_service,
+        "stream_conversation_reply",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a verified unified read must not enter the second writer")
+        ),
+    )
+    deltas = []
+
+    response = handle_chat(
+        db,
+        user,
+        conversation,
+        "How much did I spend this month?",
+        text_delta_callback=lambda message_id, delta: deltas.append((message_id, delta)),
+    )
+
+    assert response.message == "You spent ₹1,250 across 3 transactions from August 1 through August 14."
+    assert "".join(delta for _message_id, delta in deltas) == response.message
+    assert response.citations[0].query["tool"] == "spending_summary"
+    persisted = db.get(Message, response.message_id)
+    assert persisted.content == response.message
+    get_settings.cache_clear()
+
+
+def test_correction_handoff_preserves_prior_query_lineage_and_skips_duplicate_models(db, monkeypatch):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    first = handle_chat(db, user, conversation, "Spent ₹700 on rent today")
+    second = handle_chat(db, user, conversation, "Spent ₹900 on rent today")
+    monkeypatch.setattr(conversation_service, "_fast_path_decision", lambda *args, **kwargs: None)
+
+    monkeypatch.setattr(
+        conversation_service,
+        "interpret_with_financial_copilot",
+        lambda *args, **kwargs: CopilotDecision(
+            tool="search_transactions",
+            query=QueryInterpretation(
+                metric="spending_summary",
+                result_mode="summary",
+                operation="total",
+                transaction_type="expense",
+                category_slug="housing",
+                limit=100,
+            ),
+            confidence=0.99,
+            reason="Read all recorded Housing spending.",
+        ),
+    )
+    summary = handle_chat(db, user, conversation, "How much have I spent on Housing across all time?")
+    assert summary.citations[0].query["category_slug"] == "housing"
+    assert "start_date" not in summary.citations[0].query
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+    monkeypatch.setenv("PRIMARY_AGENT_ENABLED", "true")
+    monkeypatch.setenv("UNIFIED_READ_AGENT_ENABLED", "true")
+    get_settings.cache_clear()
+    captured = {}
+
+    def unified_reader(text, _taxonomy, _today, _timezone, recent_context, **kwargs):
+        captured["context"] = recent_context
+        captured["workflow"] = kwargs["workflow_context"]
+        prior = recent_context[-1]["grounding"]["queries"][0]
+        assert prior["category_slug"] == "housing"
+        assert "start_date" not in prior
+        return UnifiedReadResult(handoff=GovernedWorkflowHandoff(
+            workflow="advanced_analysis",
+            reason="The correction asks for the individual records behind the all-time Housing total.",
+            resolved_request="List every Housing expense across all recorded time.",
+            query=QueryInterpretation(
+                metric="transaction_summary",
+                result_mode="transaction_list",
+                operation="list",
+                transaction_type="expense",
+                category_slug="housing",
+                # Deliberately repeat the bad month-to-date default. The domain
+                # correction postcondition must restore the matching all-time
+                # grounded scope before execution.
+                start_date=date(2026, 8, 1),
+                end_date=date(2026, 8, 14),
+                limit=100,
+            ),
+        ))
+
+    monkeypatch.setattr(conversation_service, "run_unified_read_agent", unified_reader)
+    monkeypatch.setattr(
+        conversation_service,
+        "interpret_with_financial_copilot",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("a complete typed handoff must not enter a second router")
+        ),
+    )
+    monkeypatch.setattr(
+        conversation_service,
+        "stream_conversation_reply",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("a governed read result must not enter a second prose writer")
+        ),
+    )
+
+    response = handle_chat(
+        db,
+        user,
+        conversation,
+        "But I meant the Housing expenses behind that total—show the list.",
+    )
+
+    assert captured["workflow"]["correctionRequested"] is True
+    assert "matching prior all-time filters" in response.message
+    assert response.widgets[0].type == "data_table"
+    assert {row["id"] for row in response.widgets[0].data["rows"]} == {
+        first.widgets[0].data["transactionId"],
+        second.widgets[0].data["transactionId"],
+    }
+    assert response.citations[0].query["category_slug"] == "housing"
+    assert "start_date" not in response.citations[0].query
+    action = db.scalar(select(AIAction).where(AIAction.action_type == "unified_typed_handoff"))
+    assert action.payload_redacted["queryShape"]["resultMode"] == "transaction_list"
+    get_settings.cache_clear()
+
+
+def test_independent_top_n_handoff_releases_prior_direction_and_preserves_limit(db, monkeypatch):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    handle_chat(db, user, conversation, "Got ₹2,000 salary today")
+    handle_chat(db, user, conversation, "Received a ₹1,500 refund today")
+    handle_chat(db, user, conversation, "Spent ₹1,000 at Toit today")
+    handle_chat(db, user, conversation, "Spent ₹500 at Starbucks today")
+
+    month_start = date.today().replace(day=1)
+    monkeypatch.setattr(
+        conversation_service,
+        "interpret_with_financial_copilot",
+        lambda *args, **kwargs: CopilotDecision(
+            tool="search_transactions",
+            query=QueryInterpretation(
+                result_mode="transaction_list",
+                operation="list",
+                transaction_type="expense",
+                start_date=month_start,
+                end_date=date.today(),
+                limit=100,
+            ),
+            confidence=0.99,
+            reason="List this month's expenses.",
+        ),
+    )
+    prior = handle_chat(db, user, conversation, "Show this month's expenses")
+    assert {row["transactionType"] for row in prior.widgets[0].data["rows"]} == {"Expense"}
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+    monkeypatch.setenv("PRIMARY_AGENT_ENABLED", "true")
+    monkeypatch.setenv("UNIFIED_READ_AGENT_ENABLED", "true")
+    get_settings.cache_clear()
+    def independent_handoff(*args, **kwargs):
+        # Prior state remains available for calculators and real follow-ups;
+        # the domain postcondition below is what prevents implicit inheritance.
+        assert kwargs["workflow_context"]["activeAnalysisState"] is not None
+        return UnifiedReadResult(handoff=GovernedWorkflowHandoff(
+            workflow="advanced_analysis",
+            reason="Rank the requested individual transaction records.",
+            resolved_request="Find the top 3 transactions in August.",
+            query=QueryInterpretation(
+                metric="transaction_summary",
+                result_mode="transaction_list",
+                operation="rank",
+                group_by="none",
+                sort_direction="desc",
+                # Simulate the production mistake: the agent copied expense
+                # from the prior analysis even though this prompt did not.
+                transaction_type="expense",
+                start_date=month_start,
+                end_date=date.today(),
+                limit=3,
+            ),
+        ))
+
+    monkeypatch.setattr(conversation_service, "run_unified_read_agent", independent_handoff)
+    monkeypatch.setattr(
+        conversation_service,
+        "interpret_with_financial_copilot",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("a complete typed handoff must not enter a second router")
+        ),
+    )
+
+    response = handle_chat(db, user, conversation, "Can you find me top 3 transaction list of Agust?")
+
+    assert response.message == "I found the top 3 matching transactions, ranked by amount."
+    assert response.widgets[0].data["title"] == "Top 3 matching transactions"
+    assert [row["amountMinor"] for row in response.widgets[0].data["rows"]] == [200_000, 150_000, 100_000]
+    assert [row["transactionType"] for row in response.widgets[0].data["rows"]] == ["Income", "Refund", "Expense"]
+    assert response.citations[0].query["limit"] == 3
+    assert response.citations[0].query["start_date"] == month_start.isoformat()
+    assert response.citations[0].query["end_date"] == date.today().isoformat()
+    assert "transaction_type" not in response.citations[0].query
+    get_settings.cache_clear()
+
+
+def test_unified_clarification_handoff_compiles_without_a_second_router(db, monkeypatch):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    clarification = ClarificationRequest(
+        question="Which account should fund this transfer?",
+        reason="Two source accounts were supplied and choosing one changes the transaction.",
+        conflict_fields=["source account"],
+        options=[
+            ClarificationOption(id="salary", label="Salary account", resolution="Use the Salary account."),
+            ClarificationOption(id="savings", label="Savings account", resolution="Use the Savings account."),
+        ],
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+    monkeypatch.setenv("PRIMARY_AGENT_ENABLED", "true")
+    monkeypatch.setenv("UNIFIED_READ_AGENT_ENABLED", "true")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        conversation_service,
+        "run_unified_read_agent",
+        lambda *args, **kwargs: UnifiedReadResult(handoff=GovernedWorkflowHandoff(
+            workflow="clarification",
+            reason="The source account is ambiguous.",
+            clarification=clarification,
+        )),
+    )
+    monkeypatch.setattr(
+        conversation_service,
+        "interpret_with_financial_copilot",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("a complete clarification handoff must not enter a second router")
+        ),
+    )
+
+    response = handle_chat(db, user, conversation, "Transfer ₹5,000 from Salary or Savings")
+
+    assert response.widgets[0].type == "clarification"
+    assert response.pending_action.action == "resolve_clarification"
+    assert response.widgets[0].data["question"] == clarification.question
+    get_settings.cache_clear()
+
+
+def test_unified_mutation_handoff_keeps_confirmation_pipeline_in_control(db, monkeypatch):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+    monkeypatch.setenv("PRIMARY_AGENT_ENABLED", "true")
+    monkeypatch.setenv("UNIFIED_READ_AGENT_ENABLED", "true")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        conversation_service,
+        "run_unified_read_agent",
+        lambda *args, **kwargs: UnifiedReadResult(
+            handoff=GovernedWorkflowHandoff(
+                workflow="transaction",
+                reason="Recording an expense requires the confirmed transaction workflow.",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        conversation_service,
+        "interpret_with_financial_copilot",
+        lambda *args, **kwargs: CopilotDecision(
+            tool="create_transaction_draft",
+            transaction=TransactionInterpretation(
+                transaction_type="expense",
+                amount_minor=50_000,
+                currency="INR",
+                explicit_fields=["transaction_type", "amount"],
+                confidence=0.99,
+            ),
+            confidence=0.99,
+            reason="Create a governed expense draft.",
+        ),
+    )
+    monkeypatch.setattr(
+        conversation_service,
+        "validate_copilot_decision",
+        lambda *args, **kwargs: CopilotDecisionValidation(
+            outcome="approve",
+            confidence=1,
+            summary="The transaction draft matches the request.",
+        ),
+    )
+    monkeypatch.setattr(
+        conversation_service,
+        "stream_conversation_reply",
+        lambda _text, draft_reply, _context, **_kwargs: draft_reply,
+    )
+
+    response = handle_chat(db, user, conversation, "Record an expense for ₹500")
+
+    assert response.widgets[0].type in {"category_selector", "transaction_preview"}
+    assert db.scalar(select(Transaction)) is None
+    assert db.scalar(select(TransactionDraft)) is not None
+    handoff_action = db.scalar(
+        select(AIAction).where(AIAction.action_type == "unified_read_handoff")
+    )
+    assert handoff_action.payload_redacted["workflow"] == "transaction"
+    get_settings.cache_clear()
+
+
+def test_unified_agent_cannot_stream_a_mutation_claim_instead_of_handoff(db, monkeypatch):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+    monkeypatch.setenv("PRIMARY_AGENT_ENABLED", "true")
+    monkeypatch.setenv("UNIFIED_READ_AGENT_ENABLED", "true")
+    get_settings.cache_clear()
+
+    def invalid_direct_reply(*_args, **kwargs):
+        kwargs["on_delta"]("I added the expense.")
+        return UnifiedReadResult(reply="I added the expense.", streamed_live=True)
+
+    monkeypatch.setattr(conversation_service, "run_unified_read_agent", invalid_direct_reply)
+
+    with pytest.raises(RuntimeError, match="authority postcondition"):
+        handle_chat(
+            db,
+            user,
+            conversation,
+            "Record an expense for ₹500",
+            text_delta_callback=lambda _message_id, _delta: None,
+        )
+
+    assert db.scalar(select(Transaction)) is None
+    assert list(
+        db.scalars(
+            select(Message).where(
+                Message.conversation_id == conversation.id,
+                Message.role == "assistant",
+                Message.content == "",
+            )
+        )
+    ) == []
+    get_settings.cache_clear()
+
+
+def test_old_unresolved_draft_stops_contaminating_later_conversation(db):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    first = handle_chat(db, user, conversation, "Spent ₹500")
+    assert first.widgets[0].data["draftId"]
+
+    # The first unrelated turn can explicitly move away from the visible
+    # clarification. Once its answer is latest, that older audit row is no
+    # longer the active workflow for every future prompt.
+    handle_chat(db, user, conversation, "Hi")
+    activity = []
+    response = handle_chat(db, user, conversation, "How are you?", activity.append)
+
+    assert response.message
+    assert not any(event["label"] == "Resumed transaction workflow" for event in activity)
+
+
+def test_analysis_language_about_savings_is_not_misrouted_to_goal_crud():
+    assert not conversation_service._looks_like_planning_command(
+        "Let's discuss my expense pattern in detail so I can improve savings"
+    )
+    assert conversation_service._looks_like_planning_command("Create a ₹2 lakh savings goal")
+
+
+def test_correction_language_is_marked_for_scope_reconciliation():
+    assert conversation_service._is_correction_followup("No, I meant the Housing expenses")
+    assert conversation_service._is_correction_followup("But that does not match what you said")
+    assert not conversation_service._is_correction_followup("Show Housing expenses this month")
+
+
+def test_expense_pattern_savings_request_runs_contextual_governed_analysis(db, monkeypatch):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    handle_chat(db, user, conversation, "Spent ₹300 on ice cream today")
+    handle_chat(db, user, conversation, "Spent ₹100 on a cab today")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+    monkeypatch.setenv("PRIMARY_AGENT_ENABLED", "true")
+    monkeypatch.setenv("UNIFIED_READ_AGENT_ENABLED", "true")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        conversation_service,
+        "run_unified_read_agent",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("a known governed analysis should not pay for a handoff model")
+        ),
+    )
+    monkeypatch.setattr(
+        conversation_service,
+        "interpret_with_financial_copilot",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("known expense-pattern analysis should not wait for the semantic router")
+        ),
+    )
+    monkeypatch.setattr(
+        conversation_service,
+        "stream_conversation_reply",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("a verified analysis result should not enter a second prose writer")
+        ),
+    )
+
+    response = handle_chat(
+        db,
+        user,
+        conversation,
+        "Let's discuss my expense pattern in details so convince on savings",
+    )
+
+    assert response.widgets[0].type == "analysis_table"
+    assert response.widgets[0].data["rows"]
+    assert "recorded expenses" in response.message
+    assert "Food" in response.message
+    assert all(widget.type != "goal_progress" for widget in response.widgets)
+    get_settings.cache_clear()
+
+
+def test_every_grounded_reply_uses_contextual_writer_but_rejects_new_numbers(db, monkeypatch):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+    monkeypatch.setenv("PRIMARY_AGENT_ENABLED", "true")
+    get_settings.cache_clear()
+    captured = {}
+
+    def unsupported_writer(text, draft_reply, recent_context, **kwargs):
+        captured["grounded"] = kwargs["grounded_response"]
+        captured["draft"] = draft_reply
+        captured["context"] = kwargs["response_context"]
+        return "I prepared a ₹999 transaction draft."
+
+    monkeypatch.setattr(conversation_service, "stream_conversation_reply", unsupported_writer)
+
+    response = handle_chat(db, user, conversation, "₹500")
+
+    assert captured["grounded"] is True
+    assert captured["context"]["widgets"]
+    assert "₹999" not in response.message
+    assert response.message == captured["draft"]
+    get_settings.cache_clear()
+
+
+def test_failed_analysis_reroute_cannot_fall_through_to_unrelated_planning(db, monkeypatch):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    prompt = Message(
+        conversation_id=conversation.id,
+        role="user",
+        content="Discuss my expense pattern so I can save more",
+        widgets=[],
+        citations=[],
+    )
+    db.add(prompt)
+    db.flush()
+    calls = 0
+
+    def router(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return CopilotDecision(
+                tool="run_analysis_harness",
+                confidence=0.9,
+                reason="Analyse recorded expense patterns.",
+            )
+        raise ValueError("invalid stronger contract")
+
+    monkeypatch.setattr(conversation_service, "interpret_with_financial_copilot", router)
+    monkeypatch.setattr(
+        conversation_service,
+        "validate_copilot_decision",
+        lambda *args, **kwargs: CopilotDecisionValidation(
+            outcome="reject",
+            confidence=0.99,
+            issues=["The governed analysis needs a valid presentation contract."],
+            summary="The analysis contract is invalid.",
+        ),
+    )
+
+    decision = conversation_service._interpret_prompt(
+        db,
+        user,
+        conversation,
+        prompt,
+        prompt.content,
+    )
+
+    assert calls == 2
+    assert decision.tool == "unknown"
+    assert "couldn’t draw" in decision.reply
+    assert "savings goal" not in decision.reply
+
+
+def test_validator_human_input_outcome_becomes_typed_clarification(db, monkeypatch):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    prompt = Message(
+        conversation_id=conversation.id,
+        role="user",
+        content="Set a savings plan using either my target or monthly contribution",
+        widgets=[],
+        citations=[],
+    )
+    db.add(prompt)
+    db.flush()
+    clarification = ClarificationRequest(
+        question="Which value should control the savings plan?",
+        reason="The target and contribution imply different schedules.",
+        conflict_fields=["target", "monthly contribution"],
+        options=[
+            ClarificationOption(id="use_target", label="Use target", resolution="Use the target as authoritative."),
+            ClarificationOption(id="use_contribution", label="Use contribution", resolution="Use the contribution as authoritative."),
+        ],
+        allow_custom=True,
+    )
+    monkeypatch.setattr(
+        conversation_service,
+        "interpret_with_financial_copilot",
+        lambda *args, **kwargs: CopilotDecision(
+            tool="planning",
+            confidence=0.9,
+            reason="A planning workflow is required.",
+        ),
+    )
+    monkeypatch.setattr(
+        conversation_service,
+        "validate_copilot_decision",
+        lambda *args, **kwargs: CopilotDecisionValidation(
+            outcome="request_human_input",
+            confidence=0.99,
+            issues=["The controlling savings input is ambiguous."],
+            summary="Ask the customer which input should control the plan.",
+            clarification=clarification,
+        ),
+    )
+
+    decision = conversation_service._interpret_prompt(
+        db,
+        user,
+        conversation,
+        prompt,
+        prompt.content,
+    )
+
+    assert decision.tool == "request_clarification"
+    assert decision.clarification == clarification
+    assert decision.validated_by == get_settings().validator_model
+
+
 def test_chat_reports_safe_timed_agent_activity(db):
     user = default_user(db)
     conversation = get_or_create_conversation(db, user)
@@ -528,7 +1299,7 @@ def test_fast_gate_handles_bare_amount_without_calling_llm(db, monkeypatch):
     activity = []
     response = handle_chat(db, user, conversation, "₹1,234", activity.append)
 
-    assert response.widgets[0].type == "category_selector"
+    assert response.widgets[0].type == "transaction_type_selector"
     assert next(event for event in reversed(activity) if event["id"] == "classification")["tool"] == "create_transaction_draft"
     assert "Detected a standalone amount" in next(event for event in reversed(activity) if event["id"] == "classification")["detail"]
 
@@ -703,6 +1474,116 @@ def test_transfer_asks_only_for_missing_accounts(db):
     assert response.widgets[0].data["role"] == "destination_account"
     response = handle_chat(db, user, conversation, "SBI")
     assert response.widgets[0].type == "transaction_preview"
+
+
+def test_account_selector_accepts_a_new_account_without_leaving_the_hitl_card(db):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    response = handle_chat(db, user, conversation, "Transferred ₹5,000 today")
+    source = response.widgets[0]
+    draft_id = source.data["draftId"]
+
+    assert {action.label for action in source.actions} >= {"Change type", "Cancel transaction"}
+    response = handle_action(db, user, conversation, "select_account", {
+        "draftId": draft_id,
+        "role": "source_account",
+        "accountName": "HDFC",
+    })
+    assert response.widgets[0].data["role"] == "destination_account"
+    assert {action.label for action in response.widgets[0].actions} >= {"Change source account", "Cancel transaction"}
+
+    response = handle_action(db, user, conversation, "select_account", {
+        "draftId": draft_id,
+        "role": "destination_account",
+        "accountName": "SBI",
+    })
+    assert response.widgets[0].type == "transaction_preview"
+    assert [account.name for account in db.scalars(select(Account).order_by(Account.name))] == ["HDFC", "SBI"]
+
+
+def test_transaction_draft_can_go_back_or_cancel_without_saving(db):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    response = handle_chat(db, user, conversation, "Transferred ₹5,000 today")
+    draft_id = response.widgets[0].data["draftId"]
+
+    response = handle_action(db, user, conversation, "revisit_transaction_step", {
+        "draftId": draft_id,
+        "step": "transaction_type",
+    })
+    assert response.widgets[0].type == "transaction_type_selector"
+    draft = db.get(TransactionDraft, UUID(draft_id))
+    assert draft.transaction_type == "unknown"
+
+    response = handle_action(db, user, conversation, "cancel_transaction_draft", {"draftId": draft_id})
+    assert response.message == "Cancelled. Nothing was saved."
+    assert draft.state == DraftState.CANCELLED.value
+    assert db.scalar(select(Transaction)) is None
+
+
+def test_every_blocking_planning_card_declares_a_cancel_transition(db):
+    user = default_user(db)
+    for prompt in (
+        "Set a food budget of ₹20,000",
+        "Create a vacation goal of ₹2 lakh",
+    ):
+        conversation = get_or_create_conversation(db, user)
+        response = handle_chat(db, user, conversation, prompt)
+        assert any(action.action == "cancel_pending_action" for action in response.widgets[0].actions)
+        cancel = next(action for action in response.widgets[0].actions if action.action == "cancel_pending_action")
+        cancelled = handle_action(db, user, conversation, "cancel_pending_action", cancel.payload)
+        assert cancelled.message == "Cancelled. No changes were made."
+
+
+def test_blocking_widget_contract_rejects_a_forward_only_card():
+    forward_only = Widget(
+        id="unsafe-budget",
+        type=WidgetType.BUDGET_PROGRESS,
+        data={
+            "budgetId": "draft",
+            "title": "Budget",
+            "amountMinor": 20_000,
+            "spentMinor": 0,
+            "remainingMinor": 20_000,
+            "percentUsed": 0,
+            "currency": "INR",
+        },
+        actions=[WidgetAction(id="save", label="Set budget", action="save_budget", payload={
+            "name": "Budget",
+            "amountMinor": 20_000,
+        })],
+    )
+
+    with pytest.raises(ValueError, match="cancellation transition"):
+        conversation_service._validate_blocking_widget_contract(
+            [forward_only],
+            PendingAction(action="save_budget", resource_id="draft"),
+        )
+
+
+def test_category_creation_is_a_declared_reversible_transition(db):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    response = handle_chat(db, user, conversation, "₹500")
+    draft_id = response.widgets[0].data["draftId"]
+    response = handle_action(db, user, conversation, "select_transaction_type", {
+        "draftId": draft_id,
+        "optionId": "expense",
+    })
+    start = next(action for action in response.widgets[0].actions if action.action == "start_add_category")
+
+    response = handle_action(db, user, conversation, start.action, start.payload)
+    assert response.widgets[0].data["mode"] == "create"
+    assert {action.action for action in response.widgets[0].actions} >= {
+        "create_category",
+        "cancel_add_category",
+        "cancel_transaction_draft",
+    }
+
+    back = next(action for action in response.widgets[0].actions if action.action == "cancel_add_category")
+    response = handle_action(db, user, conversation, back.action, back.payload)
+    assert response.widgets[0].type == "category_selector"
+    assert response.widgets[0].data.get("mode") != "create"
 
 
 def test_budget_creation_requires_action_and_uses_recorded_spending(db):
@@ -1233,12 +2114,11 @@ def test_validator_can_repair_missing_scope_and_rank_an_individual_transaction(d
     assert len(response.citations[0].query["scope_transaction_ids"]) == 2
 
 
-def test_replanner_receives_validator_feedback_and_normalizes_filtered_rank(db, monkeypatch):
+def test_deterministic_policy_preserves_explicit_filtered_rank_without_a_critic(db, monkeypatch):
     user = default_user(db)
     conversation = get_or_create_conversation(db, user)
     low = handle_chat(db, user, conversation, "Spent ₹100 on a movie ticket today")
     high = handle_chat(db, user, conversation, "Spent ₹500 on a concert ticket today")
-    captured_repair = {}
     final_attempts = 0
 
     def semantic_router(*args, **kwargs):
@@ -1273,38 +2153,14 @@ def test_replanner_receives_validator_feedback_and_normalizes_filtered_rank(db, 
                 confidence=0.8,
                 reason="Incorrectly retained a list shape.",
             )
-        captured_repair.update((kwargs.get("workflow_context") or {}).get("decisionRepair") or {})
-        return CopilotDecision(
-            tool="search_transactions",
-            query=QueryInterpretation(
-                result_mode="summary",
-                operation="rank",
-                group_by="category",
-                sort_direction="desc",
-                transaction_type="expense",
-                category_slug="entertainment",
-                start_date=date.today().replace(day=1),
-                end_date=date.today(),
-                limit=10,
-            ),
-            confidence=0.98,
-            reason="Rank within the fixed Entertainment filter.",
-        )
-
-    def validator(text, decision, *_args, **_kwargs):
-        if text == "Show transactions in Entertainment":
-            return CopilotDecisionValidation(outcome="approve", confidence=0.99, summary="Valid list.")
-        if decision.query and decision.query.operation == "rank" and decision.query.group_by == "none" and decision.query.limit == 1:
-            return CopilotDecisionValidation(outcome="approve", confidence=0.99, summary="Valid individual rank.")
-        return CopilotDecisionValidation(
-            outcome="reject",
-            confidence=0.99,
-            issues=["The decision loses the requested highest individual transaction."],
-            summary="Preserve the Entertainment filter and rank individual records.",
-        )
+        raise AssertionError("Deterministic rank normalization should avoid a reroute")
 
     monkeypatch.setattr(conversation_service, "interpret_with_financial_copilot", semantic_router)
-    monkeypatch.setattr(conversation_service, "validate_copilot_decision", validator)
+    monkeypatch.setattr(
+        conversation_service,
+        "validate_copilot_decision",
+        lambda *args, **kwargs: pytest.fail("A typed read should not call the model validator"),
+    )
     listed = handle_chat(db, user, conversation, "Show transactions in Entertainment")
     assert {row["id"] for row in listed.widgets[0].data["rows"]} == {
         low.widgets[0].data["transactionId"],
@@ -1313,7 +2169,7 @@ def test_replanner_receives_validator_feedback_and_normalizes_filtered_rank(db, 
 
     response = handle_chat(db, user, conversation, "highest spend in the entertainment category/")
 
-    assert captured_repair["validatorOutcome"]["issues"] == ["The decision loses the requested highest individual transaction."]
+    assert final_attempts == 1
     assert response.message.startswith("The highest matching transaction is ₹500")
     assert response.citations[0].query["operation"] == "rank"
     assert response.citations[0].query["group_by"] == "none"
@@ -1477,6 +2333,8 @@ def test_category_selector_has_ranked_guesses_and_can_create_private_category(db
     user = default_user(db)
     conversation = get_or_create_conversation(db, user)
     response = handle_chat(db, user, conversation, "₹300")
+    draft_id = response.widgets[0].data["draftId"]
+    response = handle_action(db, user, conversation, "select_transaction_type", {"draftId": draft_id, "optionId": "expense"})
     widget = response.widgets[0]
     assert widget.type == "category_selector"
     assert len(widget.data["suggestions"]) == 3
@@ -1581,6 +2439,88 @@ def test_explicit_user_subcategory_name_resolves_to_canonical_hierarchy(db, monk
     assert transaction.merchant_name is None
     assert response.widgets[0].data["category"] == "Construction"
     assert response.widgets[0].data["subcategory"] == "Labour Wages"
+
+
+def test_model_cannot_pair_income_with_an_expense_taxonomy(db, monkeypatch):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    monkeypatch.setattr(conversation_service, "_fast_path_decision", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        conversation_service,
+        "interpret_with_financial_copilot",
+        lambda *args, **kwargs: CopilotDecision(
+            tool="create_transaction_draft",
+            transaction=TransactionInterpretation(
+                transaction_type="income",
+                amount_minor=50_000,
+                merchant="earning",
+                transaction_date=date.today(),
+                category_slug="other",
+                subcategory_slug="other",
+                explicit_fields=["amount"],
+                confidence=0.98,
+            ),
+            confidence=0.99,
+            reason="The user asked to record income.",
+        ),
+    )
+
+    response = handle_chat(db, user, conversation, "add 500 to earning in salary")
+
+    transaction = db.get(Transaction, UUID(response.widgets[0].data["transactionId"]))
+    assert transaction.transaction_type == "income"
+    assert response.widgets[0].data["category"] == "Income"
+    assert response.widgets[0].data["subcategory"] == "Salary"
+    assert transaction.spend_nature == "unknown"
+
+
+def test_saved_type_change_reclassifies_hidden_stale_taxonomy(db):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    created = handle_chat(db, user, conversation, "₹250 for coffee")
+    transaction_id = created.widgets[0].data["transactionId"]
+    old_category_id = created.widgets[0].data.get("categoryId")
+    transaction = db.get(Transaction, UUID(transaction_id))
+    old_category_id = old_category_id or str(transaction.category_id)
+    old_subcategory_id = str(transaction.subcategory_id)
+
+    changed = handle_action(db, user, conversation, "update_saved_transaction", {
+        "transactionId": transaction_id,
+        "amountMinor": 25_000,
+        "transactionType": "income",
+        # Simulate an older client submitting fields hidden after Type changed.
+        "categoryId": old_category_id,
+        "subcategoryId": old_subcategory_id,
+        "spendNature": "discretionary",
+    })
+
+    db.refresh(transaction)
+    assert transaction.transaction_type == "income"
+    assert transaction.spend_nature == "unknown"
+    assert changed.widgets[0].data["category"] == "Income"
+    assert changed.widgets[0].data["subcategory"] == "Other"
+
+    edit = handle_action(db, user, conversation, "edit_saved_transaction", {"transactionId": transaction_id})
+    assert edit.widgets[0].data["categories"], "expense choices must be available before changing Type back"
+
+
+def test_saved_income_edit_treats_legacy_null_spend_nature_as_unknown(db):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    created = handle_chat(db, user, conversation, "Salary ₹500 credited today")
+    transaction_id = created.widgets[0].data["transactionId"]
+
+    updated = handle_action(db, user, conversation, "update_saved_transaction", {
+        "transactionId": transaction_id,
+        "amountMinor": 50_000,
+        "transactionType": "income",
+        # Persisted widgets from before the field was hidden submit JSON null.
+        "spendNature": None,
+    })
+
+    transaction = db.get(Transaction, UUID(transaction_id))
+    assert transaction.spend_nature == "unknown"
+    assert updated.widgets[0].data["spendNature"] == "unknown"
 
 
 def test_automatic_transaction_can_be_removed_after_confirmation(db):
@@ -1799,6 +2739,22 @@ def test_non_converging_repair_stops_before_spending_a_second_validation(db, mon
     user = default_user(db)
     conversation = get_or_create_conversation(db, user)
     validations = []
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+    monkeypatch.setenv("PRIMARY_AGENT_ENABLED", "true")
+    monkeypatch.setenv("UNIFIED_READ_AGENT_ENABLED", "true")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        conversation_service,
+        "run_unified_read_agent",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("an explicit rich analysis should enter its semantic planner directly")
+        ),
+    )
+    monkeypatch.setattr(
+        conversation_service,
+        "stream_conversation_reply",
+        lambda _text, draft_reply, _context, **_kwargs: draft_reply,
+    )
 
     def router(*args, **kwargs):
         return CopilotDecision(
@@ -1824,6 +2780,7 @@ def test_non_converging_repair_stops_before_spending_a_second_validation(db, mon
 
     assert len(validations) == 1
     assert "composition has no coherent total" in response.message.casefold()
+    get_settings.cache_clear()
 
 
 def test_universal_request_releases_the_previous_result_scope(db, monkeypatch):

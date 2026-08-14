@@ -8,7 +8,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ListSkeleton } from "@/components/skeleton";
 import { Banner, Button, Chip, Divider, Field, Money, Type } from "@/components/ui";
 import { loadTransactions } from "@/lib/api";
-import { formatDay, formatDimension, formatMoney } from "@/lib/format";
+import { formatDay, formatDimension, formatInstant, formatMoney, formatTransactionClassification } from "@/lib/format";
 import type { TransactionListItemOut } from "@/lib/protocol";
 import { space, type Palette } from "@/lib/theme";
 import { useStyles, useTheme } from "@/lib/appearance";
@@ -23,9 +23,10 @@ const FILTERS: Array<{ id: TransactionListItemOut["transactionType"] | null; lab
   { id: "investment", label: "Investments" },
 ];
 
-/** Money coming in reads green; everything else is money leaving. */
 function tone(type: TransactionListItemOut["transactionType"]) {
-  return type === "income" || type === "refund" || type === "reimbursement" || type === "cash_deposit" ? "in" as const : "out" as const;
+  if (type === "income" || type === "refund" || type === "reimbursement" || type === "cash_deposit") return "in" as const;
+  if (type === "expense" || type === "investment" || type === "loan_payment" || type === "cash_withdrawal") return "out" as const;
+  return "ink" as const;
 }
 
 /**
@@ -130,19 +131,20 @@ export default function TransactionsScreen() {
 
 function Row({ row }: { row: TransactionListItemOut }) {
   const styles = useStyles(makeStyles);
-  const detail = [formatDay(row.transactionAt.slice(0, 10)), row.category, row.location].filter(Boolean).join(" · ");
+  const removed = Boolean(row.deletedAt);
+  const detail = [formatTransactionClassification(row.transactionType, row.category, row.subcategory), formatDay(row.transactionAt.slice(0, 10)), row.location, removed ? `Removed ${formatInstant(row.deletedAt)}` : null].filter(Boolean).join(" · ");
   return (
     <View>
       <View style={styles.row}>
         <View style={{ flex: 1, minWidth: 0 }}>
-          <Type size="control" weight="medium" color="ink" numberOfLines={1}>
+          <Type size="control" weight="medium" color={removed ? "muted" : "ink"} numberOfLines={1} style={removed ? styles.struck : undefined}>
             {row.merchant || formatDimension(row.transactionType)}
           </Type>
           <Type size="meta" color="muted" numberOfLines={1}>{detail}</Type>
         </View>
         <View style={{ alignItems: "flex-end" }}>
-          <Money value={formatMoney(row.amountMinor, row.currency)} size="control" color={tone(row.transactionType)} />
-          {row.status === "provisional" ? <Type size="meta" color="attention">Provisional</Type> : null}
+          <Money value={formatMoney(row.amountMinor, row.currency)} size="control" color={removed ? "muted" : tone(row.transactionType)} style={removed ? styles.struck : undefined} />
+          {removed ? <Type size="meta" color="danger">Removed</Type> : row.status === "provisional" ? <Type size="meta" color="attention">Provisional</Type> : null}
           {row.sourceCount > 1 ? <Type size="meta" color="muted">{row.sourceCount} sources</Type> : null}
         </View>
       </View>
@@ -158,5 +160,6 @@ const makeStyles = (color: Palette) => StyleSheet.create({
   controls: { paddingBottom: space.base, gap: space.snug },
   filters: { flexDirection: "row", gap: space.snug, paddingRight: space.gutter },
   row: { flexDirection: "row", alignItems: "center", gap: space.base, paddingHorizontal: space.gutter, paddingVertical: space.base, minHeight: 64 },
+  struck: { textDecorationLine: "line-through" },
   empty: { padding: space.section, textAlign: "center" },
 });

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -37,9 +38,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..config import get_settings
-from ..domain import AgentInterruptStatus, AgentRunStatus, ExecutionStatus, WidgetActionId
+from ..domain import AgentInterruptStatus, AgentRunStatus, DraftState, ExecutionStatus, WidgetActionId
 from ..event_time import now_utc
-from ..models import AgentEvent, AgentInterrupt, AgentRun, Conversation, Message, User
+from ..models import AgentEvent, AgentInterrupt, AgentRun, Conversation, Message, TransactionDraft, User
 from ..schemas import (
     ACTION_PAYLOAD_MODELS,
     ActionRequest,
@@ -52,8 +53,10 @@ from ..schemas import (
 from .conversation import (
     handle_action,
     handle_chat,
+    handle_clarification_resolution,
     persist_agent_response,
     prepare_widget_action,
+    prepare_widget_cancellation,
     resolve_widget_action,
 )
 
@@ -71,6 +74,91 @@ TERMINAL_RUN_STATUSES = frozenset(
         AgentRunStatus.CANCELLED.value,
     }
 )
+
+
+def _one_line_reasoning(value: str, limit: int = 320) -> str:
+    """Make streamed reasoning readable as one stable transcript line."""
+    normalized = " ".join(value.split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 1].rstrip() + "…"
+
+
+def _activity_reasoning_summary(steps: list[dict[str, Any]]) -> str:
+    """Choose the decision behind a run, never a transport lifecycle label."""
+    for step in reversed(steps):
+        if step.get("id") == "classification" and step.get("detail"):
+            return _one_line_reasoning(str(step["detail"]))
+    for step in reversed(steps):
+        if step.get("detail"):
+            return _one_line_reasoning(str(step["detail"]))
+    for step in reversed(steps):
+        if step.get("id") != "request" and step.get("label"):
+            return _one_line_reasoning(str(step["label"]))
+    return "Preparing a contextual answer"
+
+
+def _record_activity_event(
+    activities: dict[str, dict[str, Any]],
+    open_activity_ids: dict[str, str],
+    occurrence_counts: dict[str, int],
+    event: dict[str, Any],
+) -> dict[str, Any]:
+    """Give every logical activity occurrence a stable trace identity.
+
+    A running/completed pair replaces one live row. A later occurrence of the
+    same stage receives a suffixed id instead of erasing the earlier decision.
+    When a model stage finishes by selecting a domain tool, retain both names:
+    the model remains the internal tool and its selected tool is the result.
+    """
+    stage_id = str(event["id"])
+    status = str(event.get("status", ""))
+
+    def allocate_id() -> str:
+        occurrence = occurrence_counts.get(stage_id, 0) + 1
+        occurrence_counts[stage_id] = occurrence
+        return stage_id if occurrence == 1 else f"{stage_id}-{occurrence}"
+
+    if status == ExecutionStatus.RUNNING.value:
+        trace_id = open_activity_ids.get(stage_id)
+        if trace_id is None:
+            trace_id = allocate_id()
+            open_activity_ids[stage_id] = trace_id
+    else:
+        trace_id = open_activity_ids.pop(stage_id, None) or allocate_id()
+
+    traced = dict(event)
+    traced["id"] = trace_id
+    traced["stageId"] = stage_id
+    previous = activities.get(trace_id)
+    prior_elapsed = max(
+        (float(item.get("cumulativeMs", 0)) for key, item in activities.items() if key != trace_id),
+        default=0.0,
+    )
+    reported_elapsed = float(traced.get("cumulativeMs", 0))
+    if status == ExecutionStatus.RUNNING.value:
+        # Some stages are timed inside a nested operation and report elapsed
+        # time relative to that operation. At the trace boundary cumulative
+        # always means elapsed since the beginning of the complete run.
+        traced["cumulativeMs"] = max(reported_elapsed, prior_elapsed)
+    elif previous:
+        stage_started_at = float(previous.get("cumulativeMs", prior_elapsed))
+        traced["cumulativeMs"] = max(
+            reported_elapsed,
+            stage_started_at + float(traced.get("durationMs", 0)),
+        )
+    else:
+        traced["cumulativeMs"] = max(reported_elapsed, prior_elapsed)
+    if previous:
+        started_tool = str(previous.get("tool") or "").strip()
+        finished_tool = str(traced.get("tool") or "").strip()
+        if started_tool and finished_tool and started_tool != finished_tool:
+            traced["tool"] = started_tool
+            traced["resultTool"] = finished_tool
+        elif started_tool and not finished_tool:
+            traced["tool"] = started_tool
+    activities[trace_id] = traced
+    return traced
 
 
 class RunCancelled(Exception):
@@ -142,6 +230,8 @@ class DurableEventPublisher:
         self._sequence = start_sequence
         self._pending: list[tuple[int, dict[str, Any]]] = []
         self._publish_live = publish_live
+        self._final_message_id: UUID | None = None
+        self._delivery_mode: str | None = None
 
     @property
     def supports_incremental_flush(self) -> bool:
@@ -157,6 +247,13 @@ class DurableEventPublisher:
         payload = event_payload(event)
         self._pending.append((self._sequence, payload))
         return self._sequence
+
+    def bind_final_message(self, message_id: UUID) -> None:
+        """Link this execution to the canonical, complete assistant reply."""
+        self._final_message_id = message_id
+
+    def bind_delivery_mode(self, delivery_mode: str) -> None:
+        self._delivery_mode = delivery_mode
 
     def _commit(self, terminal_status: AgentRunStatus | None = None, *, error_code: str | None = None) -> None:
         if not self._pending:
@@ -186,6 +283,26 @@ class DurableEventPublisher:
                     )
                 )
             run.last_sequence = committed[-1][0]
+            if self._final_message_id is not None:
+                run.final_message_id = self._final_message_id
+            if self._delivery_mode is not None:
+                run.delivery_mode = self._delivery_mode
+            if run.first_response_at is None:
+                first_response = next(
+                    (
+                        payload
+                        for _sequence, payload in committed
+                        if payload.get("type") == "TEXT_MESSAGE_CONTENT"
+                    ),
+                    None,
+                )
+                if first_response is not None:
+                    raw_timestamp = first_response.get("timestamp")
+                    run.first_response_at = (
+                        datetime.fromtimestamp(float(raw_timestamp) / 1000, tz=timezone.utc)
+                        if isinstance(raw_timestamp, (int, float))
+                        else now_utc()
+                    )
             if terminal_status is not None:
                 run.status = terminal_status.value
                 run.finished_at = now_utc()
@@ -393,8 +510,22 @@ def _cancelled_interrupt_response(
     conversation: Conversation,
     interrupt: AgentInterrupt,
 ) -> AgentResponse:
-    origin = prepare_widget_action(db, conversation, interrupt.widget_id, "cancel_interrupt")
-    response = persist_agent_response(db, conversation, "No changes were made.")
+    origin = prepare_widget_cancellation(db, conversation, interrupt.widget_id)
+    if origin:
+        widget = origin[2]
+        draft_id = widget.data.get("draftId")
+        if draft_id:
+            try:
+                draft_uuid = UUID(str(draft_id))
+            except ValueError:
+                draft_uuid = None
+            draft = db.scalar(select(TransactionDraft).where(
+                TransactionDraft.id == draft_uuid,
+                TransactionDraft.conversation_id == conversation.id,
+            )) if draft_uuid else None
+            if draft and draft.state != DraftState.COMMITTED.value:
+                draft.state = DraftState.CANCELLED.value
+    response = persist_agent_response(db, conversation, "No changes were made.", commit=False)
     update = resolve_widget_action(
         db,
         origin,
@@ -404,8 +535,18 @@ def _cancelled_interrupt_response(
     )
     if update:
         response.widget_updates.append(update)
-        db.commit()
     return response
+
+
+def _clarification_option_cancels(option_id: str, option: dict[str, Any]) -> bool:
+    """Recognize typed cancellation and old server-authored cancel choices."""
+    disposition = str(option.get("disposition") or "").strip().casefold()
+    if disposition:
+        return disposition == "cancel"
+    # Clarifications persisted before disposition existed used semantic option
+    # ids such as `cancel_transfer`. The id is read from the server's durable
+    # continuation map, never trusted directly from the client.
+    return option_id.casefold() == "cancel" or option_id.casefold().startswith("cancel_")
 
 
 def _resume_entry_payload(entry: dict[str, Any]) -> dict[str, Any] | None:
@@ -490,6 +631,9 @@ def _resume_response(
     conversation: Conversation,
     run: AgentRun,
     entries: list[dict[str, Any]],
+    activity_callback: Callable[[dict[str, Any]], None] | None = None,
+    text_delta_callback: Callable[[UUID, str], None] | None = None,
+    reasoning_delta_callback: Callable[[str], None] | None = None,
 ) -> tuple[AgentResponse, list[AgentInterrupt]]:
     entry_ids = [str(entry.get("interruptId")) for entry in entries]
     if len(entry_ids) != len(set(entry_ids)):
@@ -531,6 +675,89 @@ def _resume_response(
         response = _cancelled_interrupt_response(db, conversation, interrupt)
         interrupt.status = AgentInterruptStatus.CANCELLED.value
         interrupt.response_payload = None
+    elif interrupt.reason == "clarification":
+        payload = entry.get("payload")
+        if not isinstance(payload, dict) or payload.get("approved") is not True:
+            raise ProtocolRunError("Choose one clarification option to continue.", "invalid_resume")
+        if set(payload) - {"approved", "editedArgs"}:
+            raise ProtocolRunError("The clarification response contains unsupported fields.", "invalid_resume")
+        edited_args = payload.get("editedArgs")
+        if not isinstance(edited_args, dict) or set(edited_args) - {"widgetId", "action", "payload", "completeWidget"}:
+            raise ProtocolRunError("The clarification response is incomplete.", "invalid_resume")
+        if edited_args.get("widgetId") != interrupt.widget_id or edited_args.get("action") != WidgetActionId.RESOLVE_CLARIFICATION.value:
+            raise ProtocolRunError("The clarification response targets a different request.", "invalid_resume")
+        try:
+            selected = ACTION_PAYLOAD_MODELS[WidgetActionId.RESOLVE_CLARIFICATION].model_validate(
+                edited_args.get("payload") or {}
+            ).model_dump(mode="json", by_alias=True, exclude_unset=True)
+        except ValueError as error:
+            raise ProtocolRunError(str(error), "invalid_resume_payload") from error
+        continuation = interrupt.metadata_payload.get("continuation")
+        if not isinstance(continuation, dict):
+            raise ProtocolRunError("The clarification continuation is unavailable.", "invalid_resume")
+        if selected.get("clarificationId") != continuation.get("clarificationId"):
+            raise ProtocolRunError("The clarification response targets a different request.", "invalid_resume")
+        option_id = str(selected.get("optionId") or "")
+        options = continuation.get("options")
+        if not isinstance(options, dict):
+            raise ProtocolRunError("The clarification choices are unavailable.", "invalid_resume")
+        if option_id == "custom":
+            custom_text = str(selected.get("customText") or "").strip()
+            if not continuation.get("allowCustom") or not custom_text:
+                raise ProtocolRunError("Enter the clarification you want fyn AI to use.", "invalid_resume_payload")
+            selected_label = "Customer-provided clarification"
+            resolution = custom_text
+        else:
+            option = options.get(option_id)
+            if not isinstance(option, dict):
+                raise ProtocolRunError("Choose one of the available clarification options.", "invalid_resume_payload")
+            selected_label = str(option.get("label") or option_id)
+            resolution = str(option.get("resolution") or "").strip()
+            if not resolution:
+                raise ProtocolRunError("The selected clarification has no continuation.", "invalid_resume")
+        try:
+            source_message_id = UUID(str(continuation.get("sourceMessageId")))
+        except ValueError as error:
+            raise ProtocolRunError("The original request is unavailable.", "invalid_resume") from error
+        origin = prepare_widget_action(
+            db,
+            conversation,
+            interrupt.widget_id,
+            WidgetActionId.RESOLVE_CLARIFICATION.value,
+        )
+        if option_id != "custom" and _clarification_option_cancels(option_id, option):
+            response = persist_agent_response(
+                db,
+                conversation,
+                "The request was cancelled. No changes were made.",
+                commit=False,
+            )
+            lifecycle = WidgetLifecycle.CANCELLED
+        else:
+            response = handle_clarification_resolution(
+                db,
+                user,
+                conversation,
+                original_request=str(continuation.get("originalRequest") or ""),
+                selected_label=selected_label,
+                resolution=resolution,
+                source_message_id=source_message_id,
+                activity_callback=activity_callback,
+                text_delta_callback=text_delta_callback,
+                reasoning_delta_callback=reasoning_delta_callback,
+            )
+            lifecycle = WidgetLifecycle.COMPLETED
+        update = resolve_widget_action(
+            db,
+            origin,
+            lifecycle=lifecycle,
+            action=WidgetActionId.RESOLVE_CLARIFICATION.value,
+            payload=selected,
+        )
+        if update:
+            response.widget_updates.append(update)
+        interrupt.status = AgentInterruptStatus.RESOLVED.value
+        interrupt.response_payload = payload
     else:
         payload = entry.get("payload")
         if not isinstance(payload, dict):
@@ -632,13 +859,23 @@ def _pending_interrupt(
         "actionLabel": action.label,
         "proposedArgs": proposed_args,
     }
+    if pending.action is WidgetActionId.RESOLVE_CLARIFICATION:
+        metadata["continuation"] = pending.continuation
     stored = AgentInterrupt(
         id=interrupt_id,
         run_id=run.id,
         tool_call_id=tool_call_id,
         widget_id=widget.id,
-        reason="tool_call",
-        message=action.label,
+        reason=(
+            "clarification"
+            if pending.action is WidgetActionId.RESOLVE_CLARIFICATION
+            else "tool_call"
+        ),
+        message=(
+            response.message
+            if pending.action is WidgetActionId.RESOLVE_CLARIFICATION
+            else action.label
+        ),
         response_schema=response_schema,
         metadata_payload=metadata,
         status=AgentInterruptStatus.OPEN.value,
@@ -660,6 +897,7 @@ def _attach_activity_trace(
     db: Session,
     response: AgentResponse,
     activities: dict[str, dict[str, Any]],
+    reasoning_trace: str = "",
 ) -> AgentResponse:
     """Retain the completed live AG-UI trace on the assistant message.
 
@@ -695,7 +933,11 @@ def _attach_activity_trace(
         default=0,
     )
     settings = get_settings()
-    used_agno = any(
+    used_unified = any(
+        str(step.get("tool", "")) == "unified_read_agent"
+        for step in steps
+    )
+    used_agno = used_unified or any(
         str(step.get("tool", "")).startswith("agno_")
         or str(step.get("label", "")).startswith("Agno")
         for step in steps
@@ -704,22 +946,30 @@ def _attach_activity_trace(
         str(step.get("tool", "")) in {"analysis_harness", "agno_reroute"}
         for step in steps
     )
-    model_path = (
+    model_path = settings.router_model if used_unified and not used_analysis else (
         f"{settings.router_model} → "
         f"{settings.analysis_model + ' → ' if used_analysis else ''}"
         f"{settings.validator_model}"
     )
+    summary = _one_line_reasoning(reasoning_trace) or _activity_reasoning_summary(steps)
+    widget_data: dict[str, Any] = {
+        "title": "AG-UI agent run",
+        "engine": "Agno harness" if used_agno else "Deterministic domain",
+        "model": model_path if used_agno else "no model call",
+        "summary": summary,
+        "debugTrace": settings.environment != "production",
+        "steps": steps,
+        "totalMs": total_ms,
+        "live": False,
+    }
+    if settings.environment != "production" and reasoning_trace:
+        # Development keeps the complete provider-emitted reasoning for run
+        # inspection even though the transcript deliberately renders one line.
+        widget_data["reasoningTrace"] = reasoning_trace
     widget = Widget(
         id=f"agent-activity-{response.message_id}",
         type=WidgetType.AGENT_ACTIVITY,
-        data={
-            "title": "AG-UI agent run",
-            "engine": "Agno harness" if used_agno else "Deterministic domain",
-            "model": model_path if used_agno else "no model call",
-            "steps": steps,
-            "totalMs": total_ms,
-            "live": False,
-        },
+        data=widget_data,
     )
     response.widgets.append(widget)
     message = db.get(Message, response.message_id)
@@ -768,21 +1018,19 @@ def _emit_response(
     run: AgentRun,
     response: AgentResponse,
     publisher: DurableEventPublisher,
-    completed_activity_labels: list[str],
+    streamed_message_id: UUID | None = None,
+    streamed_text: str = "",
 ) -> bool:
-    if completed_activity_labels:
-        reasoning_id = f"{run.id}-reasoning"
-        summary = "Completed: " + "; ".join(dict.fromkeys(completed_activity_labels)) + "."
-        publisher.emit(ReasoningStartEvent(message_id=reasoning_id, timestamp=timestamp_ms()))
-        publisher.emit(ReasoningMessageStartEvent(message_id=reasoning_id, role="reasoning", timestamp=timestamp_ms()))
-        publisher.emit(ReasoningMessageContentEvent(message_id=reasoning_id, delta=summary, timestamp=timestamp_ms()))
-        publisher.emit(ReasoningMessageEndEvent(message_id=reasoning_id, timestamp=timestamp_ms()))
-        publisher.emit(ReasoningEndEvent(message_id=reasoning_id, timestamp=timestamp_ms()))
-
+    publisher.bind_final_message(response.message_id)
     message_id = str(response.message_id)
-    publisher.emit(TextMessageStartEvent(message_id=message_id, role="assistant", timestamp=timestamp_ms()))
-    if response.message:
-        publisher.emit(TextMessageContentEvent(message_id=message_id, delta=response.message, timestamp=timestamp_ms()))
+    if streamed_message_id is not None:
+        if streamed_message_id != response.message_id or streamed_text != response.message:
+            raise ValueError("Streamed assistant text does not match the canonical persisted reply")
+    else:
+        publisher.bind_delivery_mode("verified_final")
+        publisher.emit(TextMessageStartEvent(message_id=message_id, role="assistant", timestamp=timestamp_ms()))
+        if response.message:
+            publisher.emit(TextMessageContentEvent(message_id=message_id, delta=response.message, timestamp=timestamp_ms()))
     publisher.emit(TextMessageEndEvent(message_id=message_id, timestamp=timestamp_ms()))
     publisher.emit(
         CustomEvent(
@@ -909,9 +1157,15 @@ def execute_run(
             )
         publisher.flush()
 
-        completed_activity_labels: list[str] = []
         activities: dict[str, dict[str, Any]] = {}
+        open_activity_ids: dict[str, str] = {}
+        activity_occurrence_counts: dict[str, int] = {}
         resumed_interrupts: list[AgentInterrupt] = []
+        streamed_message_id: UUID | None = None
+        streamed_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        reasoning_started = False
+        reasoning_closed = False
         with session_factory() as db:
             run = _owned_run(db, run_id, user_id)
             user = db.scalar(select(User).where(User.id == user_id))
@@ -920,21 +1174,91 @@ def execute_run(
             conversation = _owned_conversation(db, run.conversation_id, user_id)
 
             def on_activity(event: dict[str, Any]) -> None:
-                activities[str(event["id"])] = event
+                stage_id = str(event["id"])
+                traced_event = _record_activity_event(
+                    activities,
+                    open_activity_ids,
+                    activity_occurrence_counts,
+                    event,
+                )
                 if (
                     event.get("status") == ExecutionStatus.RUNNING.value
-                    and event.get("id") != "grounding"
+                    and stage_id != "grounding"
                     and publisher.cancellation_requested()
                 ):
                     raise RunCancelled
-                if event.get("status") == ExecutionStatus.COMPLETED.value:
-                    completed_activity_labels.append(str(event.get("label") or event.get("id")))
                 publisher.emit(
                     ActivitySnapshotEvent(
-                        message_id=f"{run.id}-activity-{event['id']}",
+                        message_id=f"{run.id}-activity-{traced_event['id']}",
                         activity_type=FYN_ACTIVITY_TYPE,
-                        content=event,
+                        content=traced_event,
                         replace=True,
+                        timestamp=timestamp_ms(),
+                    )
+                )
+                if publisher.supports_incremental_flush:
+                    publisher.flush()
+
+            def close_reasoning() -> None:
+                nonlocal reasoning_closed
+                if not reasoning_started or reasoning_closed:
+                    return
+                reasoning_id = f"{run.id}-reasoning"
+                publisher.emit(ReasoningMessageEndEvent(message_id=reasoning_id, timestamp=timestamp_ms()))
+                publisher.emit(ReasoningEndEvent(message_id=reasoning_id, timestamp=timestamp_ms()))
+                reasoning_closed = True
+                if publisher.supports_incremental_flush:
+                    publisher.flush()
+
+            def on_reasoning_delta(delta: str) -> None:
+                nonlocal reasoning_started
+                if not delta:
+                    return
+                reasoning_parts.append(delta)
+                # AG-UI reasoning must precede assistant text. Late decision
+                # details are still retained in the persisted development
+                # trace, but are not emitted out of protocol order.
+                if streamed_message_id is not None or reasoning_closed:
+                    return
+                reasoning_id = f"{run.id}-reasoning"
+                if not reasoning_started:
+                    publisher.emit(ReasoningStartEvent(message_id=reasoning_id, timestamp=timestamp_ms()))
+                    publisher.emit(ReasoningMessageStartEvent(
+                        message_id=reasoning_id,
+                        role="reasoning",
+                        timestamp=timestamp_ms(),
+                    ))
+                    reasoning_started = True
+                publisher.emit(ReasoningMessageContentEvent(
+                    message_id=reasoning_id,
+                    delta=delta,
+                    timestamp=timestamp_ms(),
+                ))
+                if publisher.supports_incremental_flush:
+                    publisher.flush()
+
+            def on_text_delta(message_id: UUID, delta: str) -> None:
+                nonlocal streamed_message_id
+                if not delta:
+                    return
+                if streamed_message_id is None:
+                    close_reasoning()
+                    streamed_message_id = message_id
+                    publisher.bind_delivery_mode("model_delta")
+                    publisher.emit(
+                        TextMessageStartEvent(
+                            message_id=str(message_id),
+                            role="assistant",
+                            timestamp=timestamp_ms(),
+                        )
+                    )
+                elif streamed_message_id != message_id:
+                    raise ValueError("One run attempted to stream more than one assistant message")
+                streamed_parts.append(delta)
+                publisher.emit(
+                    TextMessageContentEvent(
+                        message_id=str(message_id),
+                        delta=delta,
                         timestamp=timestamp_ms(),
                     )
                 )
@@ -944,8 +1268,27 @@ def execute_run(
             command = run.input_payload
             kind = command.get("kind")
             if kind == "message":
-                response = handle_chat(db, user, conversation, str(command["text"]), on_activity)
-                response = _attach_activity_trace(db, response, activities)
+                response = handle_chat(
+                    db,
+                    user,
+                    conversation,
+                    str(command["text"]),
+                    on_activity,
+                    on_text_delta,
+                    on_reasoning_delta,
+                )
+                reasoning_trace = "".join(reasoning_parts)
+                if not reasoning_trace:
+                    fallback_summary = _activity_reasoning_summary(list(activities.values()))
+                    on_reasoning_delta(fallback_summary)
+                    reasoning_trace = fallback_summary
+                close_reasoning()
+                response = _attach_activity_trace(
+                    db,
+                    response,
+                    activities,
+                    reasoning_trace,
+                )
             elif kind == "action":
                 response = _action_response(db, user, conversation, dict(command["action"]))
             elif kind == "resume":
@@ -955,7 +1298,23 @@ def execute_run(
                     conversation,
                     run,
                     list(command.get("entries") or []),
+                    on_activity,
+                    on_text_delta,
+                    on_reasoning_delta,
                 )
+                if activities:
+                    reasoning_trace = "".join(reasoning_parts)
+                    if not reasoning_trace:
+                        fallback_summary = _activity_reasoning_summary(list(activities.values()))
+                        on_reasoning_delta(fallback_summary)
+                        reasoning_trace = fallback_summary
+                    close_reasoning()
+                    response = _attach_activity_trace(
+                        db,
+                        response,
+                        activities,
+                        reasoning_trace,
+                    )
             elif kind == "protocol_error":
                 raise ProtocolRunError(
                     str(command.get("message") or "This AG-UI input is not valid for the current thread."),
@@ -981,7 +1340,14 @@ def execute_run(
                         timestamp=timestamp_ms(),
                     )
                 )
-            interrupted = _emit_response(db, run, response, publisher, completed_activity_labels)
+            interrupted = _emit_response(
+                db,
+                run,
+                response,
+                publisher,
+                streamed_message_id,
+                "".join(streamed_parts),
+            )
 
         publisher.finish(AgentRunStatus.INTERRUPTED if interrupted else AgentRunStatus.SUCCEEDED)
     except RunCancelled:
@@ -1073,6 +1439,7 @@ def recover_agent_runs(
 
 def capabilities() -> AgentCapabilities:
     """Advertise implemented behavior, including Fyn-specific safety semantics."""
+    settings = get_settings()
     return AgentCapabilities.model_validate(
         {
             "identity": {
@@ -1121,7 +1488,7 @@ def capabilities() -> AgentCapabilities:
                 "memory": True,
                 "persistentState": True,
             },
-            "reasoning": {"supported": True, "streaming": False, "encrypted": False},
+            "reasoning": {"supported": True, "streaming": True, "encrypted": False},
             "multimodal": {
                 "input": {
                     "image": False,
@@ -1152,6 +1519,11 @@ def capabilities() -> AgentCapabilities:
                     "canonicalFinancialState": "server",
                     "clientToolsAreAuthority": False,
                     "rawChainOfThoughtExposed": False,
+                    "reasoningTraceMode": (
+                        "full_provider_events"
+                        if settings.environment != "production"
+                        else "provider_summary"
+                    ),
                 }
             },
         }

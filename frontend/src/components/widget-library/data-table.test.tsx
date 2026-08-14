@@ -1,7 +1,8 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DataTableView } from "@/components/widget-library/data-table";
 import type { DataTableData } from "@/lib/protocol";
+import { setTablesWide } from "@/lib/wide-tables";
 
 const data: DataTableData = {
   title: "Open invoices",
@@ -22,6 +23,23 @@ const data: DataTableData = {
 };
 
 describe("DataTableView", () => {
+  beforeEach(() => setTablesWide(false));
+
+  it("shares one width preference across every table, while maximize stays per-table", () => {
+    render(<>
+      <DataTableView data={data} />
+      <DataTableView data={{ ...data, title: "Recurring charges" }} />
+    </>);
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Use full conversation width" })[0]);
+    expect(screen.getAllByRole("button", { name: "Use normal table width" })).toHaveLength(2);
+    expect(screen.getByRole("region", { name: /Open invoices table/ }).closest("section")?.className).toContain("80cqw");
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Maximize table" })[1]);
+    expect(screen.getByRole("dialog", { name: "Recurring charges maximized table" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Open invoices maximized table" })).toBeNull();
+  });
+
   it("renders generated columns and only backend-authorized actions", () => {
     const onAction = vi.fn();
     render(<DataTableView data={data} onAction={onAction} />);
@@ -57,6 +75,24 @@ describe("DataTableView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Use full conversation width" }));
     expect(screen.getByRole("button", { name: "Use normal table width" })).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(screen.getByRole("button", { name: "Maximize table" }));
+    expect(screen.getByRole("dialog", { name: "Open invoices maximized table" })).toBeInTheDocument();
+  });
+
+  it("keeps width and maximize controls interactive when row actions are disabled", () => {
+    const onAction = vi.fn();
+    render(<DataTableView data={data} disabled onAction={onAction} />);
+
+    const widthButton = screen.getByRole("button", { name: "Use full conversation width" });
+    const maximizeButton = screen.getByRole("button", { name: "Maximize table" });
+    expect(widthButton).not.toBeDisabled();
+    expect(widthButton).toHaveAttribute("data-readonly-keep");
+    expect(maximizeButton).not.toBeDisabled();
+    expect(maximizeButton).toHaveAttribute("data-readonly-keep");
+    expect(screen.getByRole("button", { name: "View" })).toBeDisabled();
+
+    fireEvent.click(widthButton);
+    expect(screen.getByRole("button", { name: "Use normal table width" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(maximizeButton);
     expect(screen.getByRole("dialog", { name: "Open invoices maximized table" })).toBeInTheDocument();
   });
 });

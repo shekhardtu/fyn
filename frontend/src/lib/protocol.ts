@@ -16,6 +16,7 @@ import {
   type AgentActivityEvent,
   type AgentInterruptOut,
   type AgentRunOut,
+  type AgentThreadMetricsOut,
   type AgentThreadStateOut,
   type AuthStatusOut,
   type Bootstrap,
@@ -119,12 +120,14 @@ export const otpSentSchema = generatedSchema<OtpSentOut>("OtpSentOut");
 export const importResultSchema = generatedSchema<ImportResult>("ImportResultOut");
 export const agentActivityEventSchema = generatedSchema<AgentActivityEvent>("AgentActivityEvent");
 export const agentThreadStateSchema = generatedSchema<AgentThreadStateOut>("AgentThreadStateOut");
+export const agentThreadMetricsSchema = generatedSchema<AgentThreadMetricsOut>("AgentThreadMetricsOut");
 
 export type {
   AgentResponse,
   AgentActivityEvent,
   AgentInterruptOut,
   AgentRunOut,
+  AgentThreadMetricsOut,
   AgentThreadStateOut,
   AuthStatusOut,
   Bootstrap,

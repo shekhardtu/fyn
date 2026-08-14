@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en" class="h-full antialiased">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- viewport-fit=cover activates the env(safe-area-inset-*) rules in
+         globals.css on notched devices; without it they compute to zero. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="theme-color" content="#fafafb" />
+    <meta
+      name="description"
+      content="A conversational personal finance workspace that turns natural language into structured financial truth."
+    />
+    <link rel="icon" href="/src/app/favicon.ico" sizes="any" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="fyn" />
+    <title>fyn AI</title>
+  </head>
+  <body class="min-h-full">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

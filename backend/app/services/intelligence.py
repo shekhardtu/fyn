@@ -8,10 +8,10 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..domain import ACTIVE_STATUS, SpendNature
+from ..domain import ACTIVE_STATUS, SpendNature, WidgetActionId
 from ..event_time import as_utc, utc_range_for_local_dates
 from ..models import Account, Budget, Goal, Loan, Transaction
-from ..schemas import DataReference, Widget, WidgetType
+from ..schemas import DataReference, Widget, WidgetAction, WidgetType
 from .analytics import category_breakdown, month_bounds, recurring_expenses, shift_month, spending_summary
 from .calculators import loan_strategy_options
 from .currency import format_money_minor, user_currency, user_timezone
@@ -321,9 +321,31 @@ def three_month_allocation(db: Session, user_id: UUID, currency: str, today: dat
         if spent < budget.amount_minor:
             budget_room.append({"label": category.name if category else budget.name, "room_minor": budget.amount_minor - spent})
     if budget_room:
-        message = "I compared the last three months. The highlighted categories are below limits you explicitly set; that is spending room, not a recommendation to spend it."
+        room = ", ".join(
+            f"{item['label']} ({format_money_minor(item['room_minor'], currency)} below its limit)"
+            for item in budget_room[:3]
+        )
+        message = (
+            "I reviewed your recorded expenses across the last three months. "
+            f"Your current budgets still have room in {room}. That is available budget, not evidence that you should spend it; "
+            "redirecting some of that room toward a saved goal would be the clearest savings lever."
+        )
     else:
-        message = "I can compare the last three months, but your transaction history alone cannot determine where you should spend more. Add budgets or priorities and I can evaluate allocation against them."
+        if categories:
+            leaders = ", ".join(
+                f"{item['label']} ({format_money_minor(sum(item['months'].values()), currency)})"
+                for item in categories[:3]
+            )
+            message = (
+                "I reviewed your recorded expenses across the last three months. "
+                f"The largest category totals were {leaders}. These totals show where money went, but without a saved budget or goal they do not prove which spending is unnecessary. "
+                "Start with the largest flexible category, set a realistic cap, and move the difference to a named savings goal."
+            )
+        else:
+            message = (
+                "I found no recorded expenses in the last three months, so there is not enough evidence to identify a savings pattern yet. "
+                "Once expenses are recorded, I can compare categories against budgets and goals."
+            )
     widget = Widget(
         id=f"allocation-{today.isoformat()}",
         type=WidgetType.ANALYSIS_TABLE,
@@ -400,7 +422,21 @@ def avoidable_expense_candidates(db: Session, user_id: UUID, currency: str, toda
         id=f"avoidable-{today.isoformat()}",
         type=WidgetType.AVOIDABLE_EXPENSES,
         data={"title": "Potentially avoidable expenses", "body": "Review candidates—this is not an automatic judgement.", "transactions": candidates, "potentialMinor": potential, "currency": currency},
-        actions=[],
+        actions=[
+            WidgetAction(
+                id=f"nature-{item['id']}-{nature.value}",
+                label=nature.value.replace("_", " ").title(),
+                action=WidgetActionId.SET_SPEND_NATURE,
+                style="secondary",
+                payload={"transactionId": item["id"], "spendNature": nature.value},
+            )
+            for item in candidates
+            for nature in (
+                SpendNature.ESSENTIAL,
+                SpendNature.DISCRETIONARY,
+                SpendNature.POTENTIALLY_AVOIDABLE,
+            )
+        ],
     )
     citations = [DataReference(label="Candidate expense transactions", entity_type="transaction", entity_ids=[item["id"] for item in candidates], query={"start": start.isoformat(), "end": today.isoformat()})]
     return IntelligenceResult(message, [widget], citations)
@@ -413,6 +449,13 @@ def loan_strategy(db: Session, user_id: UUID, currency: str) -> IntelligenceResu
             id="loan-setup",
             type=WidgetType.LOAN_CALCULATOR,
             data={"title": "Add your loan details", "body": "Enter outstanding principal, rate, remaining months and an optional prepayment. Saveable loan profiles are now supported by the backend.", "prepaymentMinor": 0},
+            actions=[WidgetAction(
+                id="calculate",
+                label="Calculate",
+                action=WidgetActionId.CALCULATE_LOAN_SCENARIO,
+                style="primary",
+                payload={},
+            )],
         )
         return IntelligenceResult(
             "I need the loan principal, rate and remaining tenure before comparing reduction strategies.",
