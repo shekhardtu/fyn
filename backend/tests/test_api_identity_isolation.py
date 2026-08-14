@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from uuid import uuid4
+from uuid import uuid4
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -67,13 +69,15 @@ def test_api_enforces_one_identity_boundary_across_user_data(db, monkeypatch):
         foreign_id = str(other_thread.id)
         assert client.get(f"/api/conversations/{foreign_id}").status_code == 404
         assert client.delete(f"/api/conversations/{foreign_id}").status_code == 404
-        assert client.post("/api/chat", json={"conversation_id": foreign_id, "text": "hello"}).status_code == 404
-        assert client.post("/api/chat/stream", json={"conversation_id": foreign_id, "text": "hello"}).status_code == 404
-        assert client.post("/api/actions", json={
-            "conversation_id": foreign_id,
-            "widget_id": "foreign-widget",
-            "action": "save_budget",
-            "payload": {},
+        assert client.get(f"/api/agent/threads/{foreign_id}").status_code == 404
+        assert client.post("/api/agent", json={
+            "threadId": foreign_id,
+            "runId": str(uuid4()),
+            "state": {},
+            "messages": [{"id": str(uuid4()), "role": "user", "content": "hello"}],
+            "tools": [],
+            "context": [],
+            "forwardedProps": {},
         }).status_code == 404
         assert client.post(
             "/api/imports/csv",

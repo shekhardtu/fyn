@@ -2,7 +2,7 @@
 
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowDown, Check, CheckCircle2, Copy, Download, FileText, LayoutDashboard, Loader2, MapPin, MessageSquareText, Paperclip, ReceiptText, RotateCcw, SendHorizontal, Settings, ShieldCheck, Sparkles, SquarePen, Tags, Trash2, TriangleAlert, X } from "lucide-react";
+import { ArrowDown, Check, CheckCircle2, Copy, Download, FileText, LayoutDashboard, Loader2, MapPin, MessageSquareText, Paperclip, ReceiptText, RotateCcw, SendHorizontal, Settings, ShieldCheck, Sparkles, Square, SquarePen, Tags, Trash2, TriangleAlert, X } from "lucide-react";
 import { useParams, usePathname, useRouter } from "next/navigation";
 import { createContext, FormEvent, memo, RefObject, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,7 @@ import { Toast, ToastAction, ToastContent, ToastDescription, ToastPortal, ToastP
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { WidgetRenderer } from "@/components/widget-renderer";
 import { MarkdownMessage } from "@/components/widget-library/markdown-message";
-import { bootstrap, createConversation, deleteAllData, deleteConversation, downloadDataExport, flushConversationDeletion, getPrivacyStatus, isUnauthorized, listConversations, loadConversation, revokeSource, sendAction, sendChatStream, setLocationEnabled, uploadCsv, type AgentActivity } from "@/lib/api";
+import { bootstrap, cancelAgentRun, createConversation, deleteAllData, deleteConversation, downloadDataExport, flushConversationDeletion, getPrivacyStatus, isUnauthorized, listConversations, loadAgentThreadState, loadConversation, openInterrupts, reconnectAgentRun, resumeAgentInterrupt, revokeSource, sendAgentAction, sendAgentMessage, setLocationEnabled, uploadCsv, type AgentActivity, type AgentRunPhase, type FynInterrupt } from "@/lib/api";
 import { formatBytes, formatMoney, readComposerEntry } from "@/lib/format";
 import { widgetTypeIds, type AgentResponse, type Bootstrap, type ConversationSummary, type Message, type Widget, type WidgetActionId } from "@/lib/protocol";
 import { cn } from "@/lib/utils";
@@ -353,13 +353,13 @@ const noAction = () => undefined;
 /** Marks where the copilot's turn starts. Shared so the reply being written and
  *  the reply already written begin at exactly the same pixel. */
 function AssistantByline() {
-  return <div className="mb-2 flex items-center gap-2"><span className="grid size-6 place-items-center rounded-full bg-secondary-tint text-secondary"><Sparkles size={14} /></span><span className="text-meta font-semibold tracking-[0.08em] text-ink-muted uppercase">Copilot</span></div>;
+  return <div className="mb-2 flex items-center gap-2"><span className="grid size-6 place-items-center rounded-full bg-secondary-tint text-secondary"><Sparkles size={14} /></span><span className="text-meta font-semibold tracking-[0.08em] text-ink-muted uppercase">fyn AI</span></div>;
 }
 
 /** The reply forming in place: same byline and same run card the finished message
  *  will carry, in the same spot, so landing the answer collapses the run and
  *  fills in the prose rather than moving anything. */
-function AgentActivityIndicator({ activities }: { activities: AgentActivity[] }) {
+function AgentActivityIndicator({ activities, reasoningSummary }: { activities: AgentActivity[]; reasoningSummary: string }) {
   // Rebuilt only when a step actually streams in. A fresh object every render
   // would be a fresh `widget` prop, and the run card would re-render along with
   // whatever else moved on the page.
@@ -368,8 +368,8 @@ function AgentActivityIndicator({ activities }: { activities: AgentActivity[] })
     type: widgetTypeIds.agent_activity,
     version: 1,
     data: {
-      title: "Copilot is working",
-      engine: "Copilot",
+      title: "fyn AI is working",
+      engine: "AG-UI",
       model: "live run",
       steps: activities,
       // Folded rather than spread: `Math.max(...array)` passes every element as
@@ -383,6 +383,7 @@ function AgentActivityIndicator({ activities }: { activities: AgentActivity[] })
   return <div className="max-w-[680px]">
     <AssistantByline />
     <div className="pl-0 sm:pl-8"><WidgetRenderer widget={widget} disabled onAction={noAction} /></div>
+    {reasoningSummary ? <p className="mt-2 pl-0 text-meta leading-5 text-ink-muted sm:pl-8">{reasoningSummary}</p> : null}
   </div>;
 }
 
@@ -567,16 +568,20 @@ const STARTERS = ["Got ₹2 lakh salary today", "How much did I spend this month
 /** One composer, two placements. On a blank conversation it sits in the middle
  *  of the page next to the invitation; once there is a transcript to read it
  *  docks at the bottom. Same element either way, so nothing drifts. */
-function Composer({ variant, value, onValueChange, onSubmit, textRef, fileRef, onAttach, busy, sending, disabled, dragging, upload }: {
+function Composer({ variant, value, onValueChange, onSubmit, onStop, textRef, fileRef, onAttach, busy, sending, running, stopping, paused, disabled, dragging, upload }: {
   variant: "focused" | "docked";
   value: string;
   onValueChange: (value: string) => void;
   onSubmit: (event?: FormEvent) => void;
+  onStop: () => void;
   textRef: RefObject<HTMLTextAreaElement | null>;
   fileRef: RefObject<HTMLInputElement | null>;
   onAttach: (file: File | undefined) => void;
   busy: boolean;
   sending: boolean;
+  running: boolean;
+  stopping: boolean;
+  paused: boolean;
   disabled: boolean;
   dragging: boolean;
   upload: { name: string; percent: number } | null;
@@ -590,7 +595,7 @@ function Composer({ variant, value, onValueChange, onSubmit, textRef, fileRef, o
       {/* 14px of text inset is not arbitrary: it is where a 16px glyph lands
           inside a 44px control, so the first character of what you write sits
           on the same vertical as the paperclip below it. */}
-      <Textarea id="composer" ref={textRef} value={value} disabled={disabled} onChange={(event) => onValueChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); onSubmit(); } }} placeholder={disabled ? "Opening conversation…" : focused ? "Spent ₹500 on lunch" : "Ask anything about your finances…"} aria-label="Message fyn AI" aria-describedby="composer-hint" rows={1} className="max-h-36 min-h-10 resize-none border-0 bg-transparent px-3 py-2 text-control leading-6 shadow-none placeholder:text-ink-muted" />
+      <Textarea id="composer" ref={textRef} value={value} disabled={disabled || paused} onChange={(event) => onValueChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); onSubmit(); } }} placeholder={disabled ? "Opening conversation…" : paused ? "Respond to the card above to continue…" : focused ? "Spent ₹500 on lunch" : "Ask anything about your finances…"} aria-label="Message fyn AI" aria-describedby="composer-hint" rows={1} className="max-h-36 min-h-10 resize-none border-0 bg-transparent px-3 py-2 text-control leading-6 shadow-none placeholder:text-ink-muted" />
       <div className="flex items-center gap-2">
         <input ref={fileRef} type="file" accept=".csv,text/csv" className="sr-only" tabIndex={-1} aria-hidden aria-label="Choose a CSV statement" onChange={(event) => { onAttach(event.target.files?.[0]); event.currentTarget.value = ""; }} />
         <Tooltip><TooltipTrigger render={<Button type="button" variant="ghost" size="icon" disabled={busy} onClick={() => fileRef.current?.click()} className="shrink-0" aria-label="Attach a CSV statement" />}><Paperclip /></TooltipTrigger><TooltipContent>Attach a CSV statement, or drop one anywhere</TooltipContent></Tooltip>
@@ -611,10 +616,36 @@ function Composer({ variant, value, onValueChange, onSubmit, textRef, fileRef, o
             </span>
             : <><CheckCircle2 size={14} className="shrink-0" /><span className="truncate">Complete entries are added automatically</span></>}
         </p>
-        <Button type="submit" size="icon" disabled={!value.trim() || busy} className="ml-auto shrink-0" aria-label="Send message">{sending ? <Loader2 className="animate-spin" /> : <SendHorizontal />}</Button>
+        {running
+          ? <Button type="button" size="icon" variant="outline" disabled={stopping} onClick={onStop} className="ml-auto shrink-0" aria-label={stopping ? "Stopping fyn AI" : "Stop fyn AI"}>{stopping ? <Loader2 className="animate-spin" /> : <Square size={14} fill="currentColor" />}</Button>
+          : <Button type="submit" size="icon" disabled={!value.trim() || busy} className="ml-auto shrink-0" aria-label="Send message">{sending ? <Loader2 className="animate-spin" /> : <SendHorizontal />}</Button>}
       </div>
     </div>
   </form>;
+}
+
+function InterruptFallback({ interrupt, busy, onResolve }: {
+  interrupt: FynInterrupt;
+  busy: boolean;
+  onResolve: (response: { status: "resolved"; payload: unknown } | { status: "cancelled" }) => void;
+}) {
+  const toolApproval = interrupt.reason === "tool_call";
+  return <div role="group" aria-label="Agent response required" className="mx-auto mb-2 w-full max-w-[var(--column-w)] rounded-xl border border-line-strong bg-surface px-4 py-3 shadow-[var(--shadow-card)]">
+    <div className="flex gap-3">
+      <ShieldCheck className="mt-0.5 shrink-0 text-secondary" />
+      <div className="min-w-0 flex-1">
+        <p className="text-control font-semibold text-ink">fyn AI is waiting for you</p>
+        <p className="mt-1 text-note leading-5 text-ink-muted">{interrupt.message || "Review this request before the agent continues."}</p>
+      </div>
+    </div>
+    <div className="mt-3 flex flex-wrap justify-end gap-2">
+      <Button type="button" variant="ghost" disabled={busy} onClick={() => onResolve({ status: "cancelled" })}>Cancel request</Button>
+      {toolApproval ? <>
+        <Button type="button" variant="outline" disabled={busy} onClick={() => onResolve({ status: "resolved", payload: { approved: false } })}>Don’t approve</Button>
+        <Button type="button" disabled={busy} onClick={() => onResolve({ status: "resolved", payload: { approved: true } })}>{busy ? <Loader2 className="animate-spin" /> : null}Approve</Button>
+      </> : null}
+    </div>
+  </div>;
 }
 
 /** The dock's height is the transcript's bottom margin, so it is measured
@@ -721,9 +752,10 @@ const MessageArticle = memo(function MessageArticle({ message, activeWidget, use
 /** The thread itself, held behind the same boundary and for the same reason.
  *  Every prop it takes is either state that does not move while you type or a
  *  callback held stable by the workspace, so a keystroke stops here. */
-const Transcript = memo(function Transcript({ messages, agentActivities, streaming, busy, usedWidgets, pendingWidget, openCitations, activeWidget, activeWidgetFocusKey, error, retry, onAction, onActiveWidgetFocus, onToggleCitations, onRetry, scrollRef }: {
+const Transcript = memo(function Transcript({ messages, agentActivities, reasoningSummary, streaming, busy, usedWidgets, pendingWidget, openCitations, activeWidget, activeWidgetFocusKey, error, retry, onAction, onActiveWidgetFocus, onToggleCitations, onRetry, scrollRef }: {
   messages: Message[];
   agentActivities: AgentActivity[];
+  reasoningSummary: string;
   streaming: boolean;
   busy: boolean;
   usedWidgets: Set<string>;
@@ -827,7 +859,7 @@ const Transcript = memo(function Transcript({ messages, agentActivities, streami
         </div>
       </div>)}
     </div>
-    {streaming ? <div aria-hidden><AgentActivityIndicator activities={agentActivities} /></div> : null}
+    {streaming ? <div aria-hidden><AgentActivityIndicator activities={agentActivities} reasoningSummary={reasoningSummary} /></div> : null}
     {busy && !streaming ? <div className="mt-6 flex items-center gap-3 px-1 py-2 text-control text-ink-muted"><span className="grid size-7 place-items-center rounded-full bg-secondary-tint text-secondary"><Sparkles size={14} /></span><span className="flex gap-1" aria-hidden><i className="typing-dot" /><i className="typing-dot" /><i className="typing-dot" /></span><span className="sr-only">Working on it</span></div> : null}
     {error ? <div role="alert" className="mt-6 flex flex-wrap items-center gap-3 gap-2 rounded-lg border border-danger-line bg-danger-tint px-4 py-3 text-note leading-5 text-danger-ink sm:mx-8"><TriangleAlert className="shrink-0" /><span className="min-w-0 flex-1">{error}</span>{retry ? <Button type="button" variant="outline" size="lg" onClick={onRetry} className="rounded-xl border-danger-line text-danger-ink hover:bg-danger-tint"><RotateCcw size={14} /> Try again</Button> : null}</div> : null}
   </div>;
@@ -859,10 +891,22 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
   const [retry, setRetry] = useState<Retry>(null);
   const [connectionLost, setConnectionLost] = useState(false);
   const [agentActivities, setAgentActivities] = useState<AgentActivity[]>([]);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [runPhase, setRunPhase] = useState<AgentRunPhase | null>(null);
+  const [stoppingRun, setStoppingRun] = useState(false);
+  const [interrupts, setInterrupts] = useState<FynInterrupt[] | null>(null);
+  const [reasoningSummary, setReasoningSummary] = useState("");
   const [openCitations, setOpenCitations] = useState<Set<string>>(new Set());
   const [upload, setUpload] = useState<{ name: string; percent: number } | null>(null);
   const [atBottom, setAtBottom] = useState(true);
   const [announcement, setAnnouncement] = useState("");
+  const agentState = useQuery({
+    queryKey: ["agent-state", conversationId],
+    queryFn: () => loadAgentThreadState(conversationId),
+    enabled: !loadingThread,
+    staleTime: 2_000,
+    refetchOnWindowFocus: true,
+  });
   // Switching threads used to replace this whole component — a `key` on it
   // meant the header, the composer, the scroll container and every widget were
   // thrown away and rebuilt for what is really a change of contents. Re-seeding
@@ -890,6 +934,11 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
     setRetry(null);
     setConnectionLost(false);
     setAgentActivities([]);
+    setActiveRunId(null);
+    setRunPhase(null);
+    setStoppingRun(false);
+    setInterrupts(null);
+    setReasoningSummary("");
     setOpenCitations(new Set());
     setUpload(null);
     setAtBottom(true);
@@ -909,9 +958,9 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
   const settleFrame = useRef(0);
   // Which transcript was last placed on screen; reset when the thread changes.
   const arrivals = useRef<string | null>(null);
-  // One controller for everything this thread has in flight. Aborting is what
-  // tells a run that nobody is watching it any more — a reply takes seconds to
-  // arrive, which is long enough to walk away from.
+  // One controller for everything this thread is currently listening to.
+  // Aborting detaches this screen; the durable server run deliberately keeps
+  // going and can be replayed when the reader comes back.
   //
   // Keyed on the conversation rather than on the mount, and that is the whole
   // reason this is safe now that the component survives a switch: leaving a
@@ -938,7 +987,12 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
   }, [conversationId, showHeader]);
 
   const succeeded = useCallback((response: AgentResponse) => {
-    setMessages((current) => [...applyWidgetUpdates(current, response.widgetUpdates), responseToMessage(response)]);
+    setMessages((current) => {
+      const updated = applyWidgetUpdates(current, response.widgetUpdates);
+      return updated.some((message) => message.id === response.message_id)
+        ? updated
+        : [...updated, responseToMessage(response)];
+    });
     setError(null);
     setRetry(null);
     setConnectionLost(false);
@@ -950,6 +1004,7 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
     void Promise.all([
       queryClient.invalidateQueries({ queryKey: ["conversations"] }),
       queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] }),
+      queryClient.invalidateQueries({ queryKey: ["agent-state", conversationId] }),
     ]);
   }, [queryClient, conversationId]);
 
@@ -964,35 +1019,105 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
     setAnnouncement("");
   }, []);
 
+  const availableInterrupts = useMemo(
+    () => interrupts ?? (agentState.data ? openInterrupts(agentState.data) : []),
+    [agentState.data, interrupts],
+  );
+  const fallbackInterrupt = useMemo(() => {
+    const widgetIds = new Set(messages.flatMap((message) => message.widgets.map((widget) => widget.id)));
+    return availableInterrupts.find((interrupt) => !interrupt.widgetId || !widgetIds.has(interrupt.widgetId)) ?? null;
+  }, [availableInterrupts, messages]);
+
+  const updateActivity = useCallback((activity: AgentActivity) => {
+    setAgentActivities((current) => {
+      const index = current.findIndex((item) => item.id === activity.id);
+      if (index === -1) return [...current, activity];
+      return current.map((item, itemIndex) => itemIndex === index ? activity : item);
+    });
+  }, []);
+
+  const agentRunCallbacks = useMemo(() => ({
+    onRunCreated: (runId: string) => {
+      setActiveRunId(runId);
+      setStoppingRun(false);
+    },
+    onPhase: (phase: AgentRunPhase) => setRunPhase(phase),
+    onActivity: updateActivity,
+    onReasoning: (summary: string) => setReasoningSummary(summary),
+  }), [updateActivity]);
+
   const chatMutation = useMutation({
-    mutationFn: ({ id, text }: { id: string; text: string }) => sendChatStream(id, text, (activity) => {
-      setAgentActivities((current) => {
-        const index = current.findIndex((item) => item.id === activity.id);
-        if (index === -1) return [...current, activity];
-        return current.map((item, itemIndex) => itemIndex === index ? activity : item);
-      });
-    }, inFlight.current?.signal),
-    onMutate: () => { setAgentActivities([]); setAnnouncement("Copilot is working on your message."); },
-    onSuccess: (response) => { setAgentActivities([]); succeeded(response); },
+    mutationFn: ({ id, text }: { id: string; text: string }) => sendAgentMessage(id, text, agentRunCallbacks, inFlight.current?.signal),
+    onMutate: () => { setAgentActivities([]); setReasoningSummary(""); setAnnouncement("fyn AI is working on your message."); },
+    onSuccess: (result) => {
+      setAgentActivities([]);
+      setActiveRunId(null);
+      setStoppingRun(false);
+      setInterrupts(result.interrupts);
+      succeeded(result.response);
+    },
     // A message that never reached the server should not look delivered: drop
     // the bubble and put the text back where the user can send it again.
     onError: (cause: Error, variables) => {
       setAgentActivities([]);
+      setActiveRunId(null);
+      setStoppingRun(false);
       setMessages((current) => current.filter((message) => !(message.id.startsWith("optimistic-") && message.content === variables.text)));
+      if (cause.name === "AbortError") return;
       setInput((current) => current || variables.text);
       failed(cause, { kind: "chat", text: variables.text });
     },
   });
   const actionMutation = useMutation({
-    mutationFn: ({ widgetId, action, payload, markUsed }: { widgetId: string; action: WidgetActionId; payload: Record<string, unknown>; markUsed: boolean }) => sendAction(conversationId, widgetId, action, payload, markUsed),
-    onSuccess: (response, variables) => {
+    mutationFn: ({ widgetId, action, payload, markUsed }: { widgetId: string; action: WidgetActionId; payload: Record<string, unknown>; markUsed: boolean }) => sendAgentAction(
+      conversationId,
+      widgetId,
+      action,
+      payload,
+      markUsed,
+      availableInterrupts.find((interrupt) => interrupt.widgetId === widgetId),
+      agentRunCallbacks,
+      inFlight.current?.signal,
+    ),
+    onSuccess: (result, variables) => {
       setPendingWidget(null);
+      setActiveRunId(null);
+      setStoppingRun(false);
+      setInterrupts(result.interrupts);
       // Locking the card belongs to the success path; a failed action has to
       // stay clickable or the user is stuck until a reload.
       if (variables.markUsed) setUsedWidgets((current) => new Set(current).add(variables.widgetId));
-      succeeded(response);
+      succeeded(result.response);
     },
-    onError: (cause: Error, variables) => { setPendingWidget(null); failed(cause, { kind: "action", ...variables }); },
+    onError: (cause: Error, variables) => {
+      setPendingWidget(null);
+      setActiveRunId(null);
+      setStoppingRun(false);
+      failed(cause, { kind: "action", ...variables });
+    },
+  });
+  const interruptMutation = useMutation({
+    mutationFn: ({ interrupt, response }: {
+      interrupt: FynInterrupt;
+      response: { status: "resolved"; payload: unknown } | { status: "cancelled" };
+    }) => resumeAgentInterrupt(
+      conversationId,
+      interrupt,
+      response,
+      agentRunCallbacks,
+      inFlight.current?.signal,
+    ),
+    onSuccess: (result) => {
+      setActiveRunId(null);
+      setStoppingRun(false);
+      setInterrupts(result.interrupts);
+      succeeded(result.response);
+    },
+    onError: (cause: Error) => {
+      setActiveRunId(null);
+      setStoppingRun(false);
+      failed(cause, null);
+    },
   });
   const uploadMutation = useMutation({
     mutationFn: (file: File) => uploadCsv(conversationId, file, (percent) => setUpload({ name: file.name, percent }), inFlight.current?.signal),
@@ -1011,12 +1136,40 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
   // change identity every render and the memoised thread would never bail out.
   const { mutate: startChat, isPending: chatPending } = chatMutation;
   const { mutate: startAction, isPending: actionPending } = actionMutation;
+  const { mutate: resolveInterrupt, isPending: interruptPending } = interruptMutation;
   const { mutate: startUpload, isPending: uploadPending } = uploadMutation;
+
+  const reconnectingRun = useRef<string | null>(null);
+  useEffect(() => {
+    if (!agentState.data) return;
+    const discovered = agentState.data.activeRun;
+    if (!discovered || chatPending || actionPending || interruptPending || activeRunId === discovered.id || reconnectingRun.current === discovered.id) return;
+    reconnectingRun.current = discovered.id;
+    setAgentActivities([]);
+    setReasoningSummary("");
+    reconnectAgentRun(conversationId, discovered.id, agentRunCallbacks, inFlight.current?.signal)
+      .then((result) => {
+        setAgentActivities([]);
+        setActiveRunId(null);
+        setStoppingRun(false);
+        setInterrupts(result.interrupts);
+        succeeded(result.response);
+      })
+      .catch((cause: Error) => {
+        setAgentActivities([]);
+        setActiveRunId(null);
+        setStoppingRun(false);
+        if (cause.name !== "AbortError") failed(cause, null);
+      })
+      .finally(() => { reconnectingRun.current = null; });
+  }, [activeRunId, actionPending, agentRunCallbacks, agentState.data, chatPending, conversationId, failed, interruptPending, succeeded]);
 
   // Declared above the handlers below rather than beside the render: they are
   // dependencies of those handlers now, and a `const` read from a dependency
   // list has to already exist by the time the list is evaluated.
-  const busy = switchingConversation || chatPending || actionPending || uploadPending;
+  const agentRunning = Boolean(activeRunId) && runPhase !== "interrupted" && runPhase !== "succeeded" && runPhase !== "failed";
+  const pausedForInterrupt = availableInterrupts.length > 0;
+  const busy = switchingConversation || chatPending || actionPending || interruptPending || uploadPending || agentRunning;
   const activeInteractionWidgetId = useMemo(() => activeWidgetId(messages), [messages]);
   const activeWidgetFocusKey = activeInteractionWidgetId && messages.at(-1)?.role === "assistant"
     ? `${messages.at(-1)?.id}:${activeInteractionWidgetId}`
@@ -1025,6 +1178,16 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
     cancelAnimationFrame(settleFrame.current);
     setAtBottom(false);
   }, []);
+
+  const stopAgent = useCallback(() => {
+    if (!activeRunId || stoppingRun) return;
+    setStoppingRun(true);
+    setAnnouncement("Stopping fyn AI after the current safe operation.");
+    void cancelAgentRun(activeRunId).catch((cause: Error) => {
+      setStoppingRun(false);
+      failed(cause, null);
+    });
+  }, [activeRunId, failed, stoppingRun]);
 
   async function copyConversationLink() {
     try {
@@ -1046,12 +1209,12 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
   // request lands, which is precisely when the thread should redraw.
   const sendPrompt = useCallback((value: string) => {
     const text = value.trim();
-    if (!text || chatPending || actionPending || uploadPending) return;
+    if (!text || chatPending || actionPending || uploadPending || agentRunning || pausedForInterrupt) return;
     setInput(""); setError(null); setRetry(null);
     setAtBottom(true);
     setMessages((current) => [...current, { id: `optimistic-${Date.now()}`, role: "user", content: text, widgets: [], citations: [], created_at: new Date().toISOString() }]);
     startChat({ id: conversationId, text });
-  }, [chatPending, actionPending, uploadPending, startChat, conversationId]);
+  }, [chatPending, actionPending, uploadPending, agentRunning, pausedForInterrupt, startChat, conversationId]);
 
   function submit(event?: FormEvent) {
     event?.preventDefault();
@@ -1227,6 +1390,17 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
   }
 
   const title = initialData.active_conversation.title || "Financial check-in";
+  const statusLabel = connectionLost
+    ? "Can’t reach your financial data"
+    : stoppingRun
+      ? "Stopping after the current safe operation"
+      : runPhase === "reconnecting"
+        ? "Reconnecting to fyn AI"
+        : agentRunning
+          ? "fyn AI is working"
+          : pausedForInterrupt
+            ? "Waiting for your choice"
+            : "Financial data connected";
 
   // No dependency list: the shell calls through this handle at arbitrary times,
   // so it has to hold this render's closures, not the first render's.
@@ -1248,7 +1422,7 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
         >
           <SiteHeader
             title={title}
-            subtitle={<><span className={cn("size-1 rounded-full", connectionLost ? "bg-danger" : "bg-ink-muted")} />{connectionLost ? "Can’t reach your financial data" : "Financial data connected"}</>}
+            subtitle={<><span className={cn("size-1 rounded-full", connectionLost ? "bg-danger" : agentRunning || pausedForInterrupt ? "bg-secondary" : "bg-ink-muted")} />{statusLabel}</>}
             subtitleClassName={cn("mt-0.5 flex items-center gap-2", connectionLost && "font-medium text-danger-ink")}
             hidden={!headerVisible}
             navOpen={navOpen}
@@ -1257,7 +1431,7 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
           />
           {loadingThread ? <div className="mx-auto flex min-h-[calc(100%-3.5rem)] w-full max-w-[var(--column-w)] flex-col px-4 pt-8 pb-10 sm:px-6 sm:pt-12"><ThreadSkeleton /></div> : focusedMode ? <div className="leaf mx-auto flex min-h-[calc(100%-3.5rem)] w-full max-w-[34rem] flex-col justify-center px-4 py-12 sm:px-6">
             <h2 className="leaf-title">What happened?</h2>
-            <div className="mt-6"><Composer variant="focused" value={input} onValueChange={setInput} onSubmit={submit} textRef={textRef} fileRef={fileRef} onAttach={attach} busy={busy} sending={chatPending} disabled={switchingConversation} dragging={dragging} upload={upload} /></div>
+            <div className="mt-6"><Composer variant="focused" value={input} onValueChange={setInput} onSubmit={submit} onStop={stopAgent} textRef={textRef} fileRef={fileRef} onAttach={attach} busy={busy} sending={chatPending} running={agentRunning} stopping={stoppingRun} paused={pausedForInterrupt} disabled={switchingConversation} dragging={dragging} upload={upload} /></div>
             {error ? <div role="alert" className="mt-3 flex flex-wrap items-center gap-3 gap-2 rounded-lg border border-danger-line bg-danger-tint px-4 py-3 text-note leading-5 text-danger-ink"><TriangleAlert className="shrink-0" /><span className="min-w-0 flex-1">{error}</span>{retry ? <Button type="button" variant="outline" size="lg" onClick={retryLast} className="rounded-xl border-danger-line text-danger-ink hover:bg-danger-tint"><RotateCcw size={14} /> Try again</Button> : null}</div> : null}
             <p className="leaf-band mt-9">Try</p>
             <div className="mt-1">{STARTERS.map((starter) => <button key={starter} type="button" onClick={() => applyStarter(starter)} className="leaf-example"><span aria-hidden className="ledger-mark" />{starter}</button>)}</div>
@@ -1265,7 +1439,8 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
             <Transcript
               messages={messages}
               agentActivities={agentActivities}
-              streaming={chatPending}
+              reasoningSummary={reasoningSummary}
+              streaming={agentRunning}
               busy={busy}
               usedWidgets={usedWidgets}
               pendingWidget={pendingWidget}
@@ -1291,7 +1466,8 @@ function CopilotWorkspace({ initialData, loadingThread, navOpen, onOpenNav, swit
               position it exists to restore. */}
           {!atBottom ? <div style={{ bottom: `calc(var(--dock-h) + 0.75rem)` }} className="pointer-events-none absolute inset-x-0 z-20 flex justify-center px-3 sm:px-6"><Button type="button" onClick={jumpToLatest} variant="outline" className="pointer-events-auto rounded-full shadow-[var(--shadow-overlay)]"><ArrowDown size={14} /> Jump to latest</Button></div> : null}
           <div ref={dockRef} className="entry-dock z-20 shrink-0 px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6 sm:pt-4 sm:pb-4">
-            <Composer variant="docked" value={input} onValueChange={setInput} onSubmit={submit} textRef={textRef} fileRef={fileRef} onAttach={attach} busy={busy} sending={chatPending} disabled={switchingConversation} dragging={dragging} upload={upload} />
+            {fallbackInterrupt ? <InterruptFallback interrupt={fallbackInterrupt} busy={interruptPending} onResolve={(response) => resolveInterrupt({ interrupt: fallbackInterrupt, response })} /> : null}
+            <Composer variant="docked" value={input} onValueChange={setInput} onSubmit={submit} onStop={stopAgent} textRef={textRef} fileRef={fileRef} onAttach={attach} busy={busy} sending={chatPending} running={agentRunning} stopping={stoppingRun} paused={pausedForInterrupt} disabled={switchingConversation} dragging={dragging} upload={upload} />
           </div>
         </> : null}
       </main>

@@ -770,6 +770,38 @@ class AgentResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class AgentInterruptOut(BaseModel):
+    id: UUID
+    run_id: UUID = Field(serialization_alias="runId")
+    tool_call_id: str = Field(serialization_alias="toolCallId")
+    widget_id: str = Field(serialization_alias="widgetId")
+    reason: str
+    message: str | None = None
+    response_schema: dict[str, Any] = Field(serialization_alias="responseSchema")
+    metadata: dict[str, Any] = Field(validation_alias="metadata_payload", serialization_alias="metadata")
+    status: str
+    expires_at: datetime | None = Field(default=None, serialization_alias="expiresAt")
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AgentRunOut(BaseModel):
+    id: UUID
+    status: str
+    last_sequence: int = Field(serialization_alias="lastSequence")
+    cancel_requested: bool = Field(serialization_alias="cancelRequested")
+    created_at: datetime = Field(serialization_alias="createdAt")
+    started_at: datetime | None = Field(default=None, serialization_alias="startedAt")
+    finished_at: datetime | None = Field(default=None, serialization_alias="finishedAt")
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AgentThreadStateOut(BaseModel):
+    thread_id: UUID = Field(serialization_alias="threadId")
+    active_run: AgentRunOut | None = Field(default=None, serialization_alias="activeRun")
+    latest_run: AgentRunOut | None = Field(default=None, serialization_alias="latestRun")
+    interrupts: list[AgentInterruptOut] = Field(default_factory=list)
+
+
 class ImportResultOut(ImportSummaryData):
     agent_response: AgentResponse = Field(serialization_alias="agentResponse")
 
@@ -1185,10 +1217,4 @@ class AgentActivityEvent(BaseModel):
     badge: str | None = None
     duration_ms: float = Field(alias="durationMs", ge=0)
     cumulative_ms: float = Field(alias="cumulativeMs", ge=0)
-    model_config = ConfigDict(populate_by_name=True)
-
-
-class StreamErrorEvent(BaseModel):
-    message: str
-    error_type: str = Field(alias="errorType")
     model_config = ConfigDict(populate_by_name=True)

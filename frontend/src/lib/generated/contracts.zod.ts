@@ -15,14 +15,6 @@ export const AccountSelectorData = z.looseObject({
   "role": z.string(),
   "options": z.array(z.record(z.string(), z.unknown())).optional(),
 });
-export const WidgetActionId = z.enum(["set_spend_nature", "start_add_category", "start_add_subcategory", "cancel_add_category", "cancel_taxonomy_change", "create_category", "create_subcategory", "select_category", "select_transaction_type", "select_subcategory", "change_category", "select_account", "save_budget", "save_goal", "contribute_goal", "commit_import", "calculate_loan_scenario", "calculate_investment_scenario", "commit_transaction", "edit_transaction", "update_transaction_draft", "edit_saved_transaction", "cancel_saved_transaction_edit", "update_saved_transaction", "request_remove_transaction", "confirm_remove_transaction", "cancel_remove_transaction", "merge_reconciliation", "separate_reconciliation"]);
-export const ActionRequest = z.looseObject({
-  "conversation_id": z.uuid(),
-  "widget_id": z.string(),
-  "action": WidgetActionId,
-  "payload": z.record(z.string(), z.unknown()).optional(),
-  "completeWidget": z.boolean().default(true),
-});
 export const AffordabilityResult = z.looseObject({
   "affordable_now": z.boolean(),
   "purchase_minor": z.int(),
@@ -72,12 +64,25 @@ export const AgentDiagnosticsOut = z.looseObject({
   "models": z.union([AgentModelSet, z.null()]).default(null),
   "recent_decisions": z.array(AgentDecisionDiagnostic),
 });
+export const AgentInterruptOut = z.looseObject({
+  "id": z.uuid(),
+  "runId": z.uuid(),
+  "toolCallId": z.string(),
+  "widgetId": z.string(),
+  "reason": z.string(),
+  "message": z.union([z.string(), z.null()]).default(null),
+  "responseSchema": z.record(z.string(), z.unknown()),
+  "metadata": z.record(z.string(), z.unknown()),
+  "status": z.string(),
+  "expiresAt": z.union([z.iso.datetime(), z.null()]).default(null),
+});
 export const DataReference = z.looseObject({
   "label": z.string(),
   "entity_type": z.string(),
   "entity_ids": z.array(z.string()).optional(),
   "query": z.record(z.string(), z.unknown()).optional(),
 });
+export const WidgetActionId = z.enum(["set_spend_nature", "start_add_category", "start_add_subcategory", "cancel_add_category", "cancel_taxonomy_change", "create_category", "create_subcategory", "select_category", "select_transaction_type", "select_subcategory", "change_category", "select_account", "save_budget", "save_goal", "contribute_goal", "commit_import", "calculate_loan_scenario", "calculate_investment_scenario", "commit_transaction", "edit_transaction", "update_transaction_draft", "edit_saved_transaction", "cancel_saved_transaction_edit", "update_saved_transaction", "request_remove_transaction", "confirm_remove_transaction", "cancel_remove_transaction", "merge_reconciliation", "separate_reconciliation"]);
 export const PendingAction = z.looseObject({
   "action": WidgetActionId,
   "resource_id": z.string(),
@@ -111,6 +116,21 @@ export const AgentResponse = z.looseObject({
   "citations": z.array(DataReference).optional(),
   "conversation_id": z.uuid(),
   "message_id": z.uuid(),
+});
+export const AgentRunOut = z.looseObject({
+  "id": z.uuid(),
+  "status": z.string(),
+  "lastSequence": z.int(),
+  "cancelRequested": z.boolean(),
+  "createdAt": z.iso.datetime(),
+  "startedAt": z.union([z.iso.datetime(), z.null()]).default(null),
+  "finishedAt": z.union([z.iso.datetime(), z.null()]).default(null),
+});
+export const AgentThreadStateOut = z.looseObject({
+  "threadId": z.uuid(),
+  "activeRun": z.union([AgentRunOut, z.null()]).default(null),
+  "latestRun": z.union([AgentRunOut, z.null()]).default(null),
+  "interrupts": z.array(AgentInterruptOut).optional(),
 });
 export const AnalysisTableData = z.looseObject({
   "lifecycle": z.union([WidgetLifecycle, z.null()]).default(null),
@@ -669,10 +689,6 @@ export const SourceRevocationOut = z.looseObject({
   "sourceType": z.string(),
   "active": z.literal(false),
 });
-export const StreamErrorEvent = z.looseObject({
-  "message": z.string(),
-  "errorType": z.string(),
-});
 export const SubcategorySelectorData = z.looseObject({
   "lifecycle": z.union([WidgetLifecycle, z.null()]).default(null),
   "completion": z.union([z.record(z.string(), z.unknown()), z.null()]).default(null),
@@ -814,14 +830,16 @@ export const UpdateSavedTransactionPayload = z.looseObject({
 
 export const schemas = {
   AccountSelectorData,
-  ActionRequest,
   AffordabilityResult,
   AgentActivityData,
   AgentActivityEvent,
   AgentDecisionDiagnostic,
   AgentDiagnosticsOut,
+  AgentInterruptOut,
   AgentModelSet,
   AgentResponse,
+  AgentRunOut,
+  AgentThreadStateOut,
   AnalysisTableData,
   AuthStatusOut,
   AvoidableExpensesData,
@@ -893,7 +911,6 @@ export const schemas = {
   SelectTransactionTypePayload,
   SignOutOut,
   SourceRevocationOut,
-  StreamErrorEvent,
   SubcategorySelectorData,
   TaxonomyCancelPayload,
   TaxonomyCreateIn,

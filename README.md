@@ -11,6 +11,7 @@ An AI-native personal finance application whose primary interface is a conversat
 - State-aware orchestration: greetings and bare amounts use safe fast paths; every semantic financial request is routed by Agno, compiled to a typed domain action, independently validated by a fast model, and rerouted through a stronger model when rejected.
 - Governed analysis-tool factory: Agno can propose new declarative capabilities; the harness validates, compiles, executes, verifies, versions, repairs, saves, and reuses them without accepting arbitrary code or SQL.
 - Live in-chat agent activity showing the selected tool, individual stage timing, cumulative timing, model, and total runtime; traces persist after refresh.
+- Native AG-UI transport with ordered lifecycle, text, activity, safe reasoning, tool-call, state snapshot/delta, interrupt, error, and completion events. Runs survive navigation or a dropped client connection and can be replayed from the persisted event log.
 - Typed, Zod/Pydantic-validated widget protocol; the model never emits arbitrary UI code.
 - Durable widget action receipts: completed or cancelled HITL controls persist their submitted values, become read-only immediately, and remain read-only after refresh.
 - Stateful transaction drafts with category/subcategory clarification, user-scoped taxonomy creation, edit, confirmation, and idempotent commit. The router receives the active workflow state and may choose only state-valid actions.
@@ -37,10 +38,13 @@ An AI-native personal finance application whose primary interface is a conversat
 ## Architecture
 
 ```text
-Next.js conversation + typed widgets
+Next.js HttpAgent / Expo native AG-UI adapter + typed widgets
+                 │  AG-UI over SSE
+                 ▼
+FastAPI AG-UI runtime + durable runs/events/interrupts
                  │
                  ▼
-FastAPI conversation harness + persisted workflow state
+Conversation harness + persisted workflow state
         │
         ├── greeting / bare amount ───────► safe deterministic gate
         └── semantic financial request ──► Agno Luna router
@@ -67,7 +71,9 @@ FastAPI conversation harness + persisted workflow state
 
 Financial facts, drafts, conversations, preferences, and provenance are stored separately. The LLM is never the database and important calculations are not delegated to it.
 
-The frontend owns its conversation transport, Zod widget protocol, HITL actions, and BI rendering directly. It does not depend on CopilotKit or a generated-component CLI/runtime; reusable primitives come from Base UI and domain widgets remain application code.
+The web client uses AG-UI's official `HttpAgent`. AG-UI does not currently ship a React Native adapter, so Expo uses its native streaming fetch with the official `@ag-ui/core` event schemas as a deliberately thin transport adapter. Both clients consume the same protocol and Fyn projection; neither translates a legacy Fyn event stream. The typed widget protocol, governed finance actions, and BI rendering remain application code, so adopting AG-UI does not hand financial authority to client-provided tools or arbitrary generated UI.
+
+The cutover is unconditional: there is no transport feature flag and the legacy chat/action endpoints are not registered. See [the AG-UI runtime contract](docs/AG_UI_RUNTIME.md) for event, reconnect, interrupt, cancellation, and capability semantics.
 
 The semantic registry is reconstructed from versioned application code for every planner/validator contract; it is not remembered in model chat history. Startup drift checks verify unique semantic names, every exposed field and relationship against SQLAlchemy, and complete compiler adapters for every queryable dimension and join. Relationships needed only for domain context are explicitly marked non-queryable. Before execution, the deterministic compiler independently verifies the metric/base-entity pairing, dimension and filter availability, approved joins, operator/type compatibility, integer-minor-unit money values, event-versus-snapshot time behavior, tenant scope, and bounded query cost. Only parameterized SQLAlchemy `SELECT` statements can be produced. Each result includes the registry version and schema hash for lineage.
 
@@ -124,6 +130,7 @@ Check the active mode at `http://localhost:8000/api/health`. It should report `"
 cd backend && ../.venv/bin/pytest
 cd frontend && npm test && npm run lint && npm run build
 cd frontend && npm run test:e2e
+cd mobile && npm run typecheck
 ```
 
 The end-to-end tests exercise bare-amount clarification through save/refresh, rich merchant entry through grounded analytics, confirmation-safe CSV upload, privacy/export controls, and active-conversation persistence. The reconciliation benchmark covers exact replay, cross-source corroboration, pending/posted events, same-amount and same-merchant false-merge traps, refunds, transfers, recurring charges, and human review. Its current gate requires 100% precision, at least 95% recall, zero false merges, and at most 5% false splits; the bundled dataset currently scores 100% precision/recall with zero false merges/splits.
@@ -161,9 +168,11 @@ With no provider credentials the codes are printed to the API log and, with `OTP
 - `DELETE /api/profile/identities/{id}` — unlink a sign-in method, never the last one.
 - `GET /api/conversations` — one keyset-paged page of history for the rail (`cursor`, `limit`).
 - `DELETE /api/conversations/{id}` — erase a thread and every row that points at it; transactions it recorded are kept.
-- `POST /api/chat` — interpret conversation input.
-- `POST /api/chat/stream` — stream safe Agno classification/tool/timing events and the final validated response.
-- `POST /api/actions` — apply typed widget actions through backend state transitions.
+- `GET /api/agent/capabilities` — the implemented AG-UI capability declaration, including Fyn's authority boundaries.
+- `POST /api/agent` — start or resume an AG-UI run and stream canonical events over SSE.
+- `GET /api/agent/threads/{id}` — active run and open-interrupt projection used to recover UI state.
+- `GET /api/agent/runs/{id}/events` — replay and follow a persisted run; accepts `after` or `Last-Event-ID`.
+- `POST /api/agent/runs/{id}/cancel` — request cooperative cancellation at a safe execution boundary.
 - `POST /api/observations` — ingest an already-structured observation.
 - `POST /api/ingest/message` — classify and ingest SMS/email text.
 - `POST /api/imports/csv` — idempotent, staged bank CSV review (10 MB limit).

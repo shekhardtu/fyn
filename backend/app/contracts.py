@@ -8,12 +8,14 @@ from .domain import EDITABLE_TRANSACTION_TYPES
 from .services.tool_models import AffordabilityResult, InvestmentProjectionResult, LoanPaymentResult, LoanPrepaymentResult
 from .schemas import (
     ACTION_PAYLOAD_MODELS,
-    ActionRequest,
     AgentActivityEvent,
     AgentDecisionDiagnostic,
     AgentDiagnosticsOut,
     AgentModelSet,
     AgentResponse,
+    AgentInterruptOut,
+    AgentRunOut,
+    AgentThreadStateOut,
     AuthStatusOut,
     BootstrapResponse,
     BootstrapUser,
@@ -51,7 +53,6 @@ from .schemas import (
     ReconciliationReviewOut,
     SourceRevocationOut,
     SignOutOut,
-    StreamErrorEvent,
     TaxonomyCreateIn,
     TransactionCategoryHintIn,
     TransactionCategoryHintOut,
@@ -87,6 +88,9 @@ FRONTEND_CONTRACT_MODELS = (
     DataReference,
     WidgetUpdate,
     AgentResponse,
+    AgentInterruptOut,
+    AgentRunOut,
+    AgentThreadStateOut,
     MessageOut,
     ConversationOut,
     ConversationSummaryOut,
@@ -106,7 +110,6 @@ FRONTEND_CONTRACT_MODELS = (
     TransactionListItemOut,
     TransactionUpdateIn,
     ImportResultOut,
-    ActionRequest,
     AgentModelSet,
     HealthOut,
     AgentDecisionDiagnostic,
@@ -132,14 +135,7 @@ FRONTEND_CONTRACT_MODELS = (
     LoanPrepaymentResult,
     InvestmentProjectionResult,
     AgentActivityEvent,
-    StreamErrorEvent,
 )
-
-STREAM_EVENT_MODELS = {
-    "activity": AgentActivityEvent,
-    "result": AgentResponse,
-    "error": StreamErrorEvent,
-}
 
 
 def frontend_contract_bundle() -> dict:
@@ -166,10 +162,6 @@ def frontend_contract_bundle() -> dict:
         "actionPayloadModels": {
             action.value: model.__name__
             for action, model in ACTION_PAYLOAD_MODELS.items()
-        },
-        "streamEventModels": {
-            event: model.__name__
-            for event, model in STREAM_EVENT_MODELS.items()
         },
     }
     fingerprint = hashlib.sha256(

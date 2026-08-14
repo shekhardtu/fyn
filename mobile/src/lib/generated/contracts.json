@@ -5787,6 +5787,327 @@
       "title": "AgentResponse",
       "type": "object"
     },
+    "AgentInterruptOut": {
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "runId": {
+          "format": "uuid",
+          "title": "Runid",
+          "type": "string"
+        },
+        "toolCallId": {
+          "title": "Toolcallid",
+          "type": "string"
+        },
+        "widgetId": {
+          "title": "Widgetid",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        },
+        "responseSchema": {
+          "additionalProperties": true,
+          "title": "Responseschema",
+          "type": "object"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "expiresAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expiresat"
+        }
+      },
+      "required": [
+        "id",
+        "runId",
+        "toolCallId",
+        "widgetId",
+        "reason",
+        "responseSchema",
+        "metadata",
+        "status"
+      ],
+      "title": "AgentInterruptOut",
+      "type": "object"
+    },
+    "AgentRunOut": {
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "lastSequence": {
+          "title": "Lastsequence",
+          "type": "integer"
+        },
+        "cancelRequested": {
+          "title": "Cancelrequested",
+          "type": "boolean"
+        },
+        "createdAt": {
+          "format": "date-time",
+          "title": "Createdat",
+          "type": "string"
+        },
+        "startedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Startedat"
+        },
+        "finishedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Finishedat"
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "lastSequence",
+        "cancelRequested",
+        "createdAt"
+      ],
+      "title": "AgentRunOut",
+      "type": "object"
+    },
+    "AgentThreadStateOut": {
+      "$defs": {
+        "AgentInterruptOut": {
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "runId": {
+              "format": "uuid",
+              "title": "Runid",
+              "type": "string"
+            },
+            "toolCallId": {
+              "title": "Toolcallid",
+              "type": "string"
+            },
+            "widgetId": {
+              "title": "Widgetid",
+              "type": "string"
+            },
+            "reason": {
+              "title": "Reason",
+              "type": "string"
+            },
+            "message": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Message"
+            },
+            "responseSchema": {
+              "additionalProperties": true,
+              "title": "Responseschema",
+              "type": "object"
+            },
+            "metadata": {
+              "additionalProperties": true,
+              "title": "Metadata",
+              "type": "object"
+            },
+            "status": {
+              "title": "Status",
+              "type": "string"
+            },
+            "expiresAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Expiresat"
+            }
+          },
+          "required": [
+            "id",
+            "runId",
+            "toolCallId",
+            "widgetId",
+            "reason",
+            "responseSchema",
+            "metadata",
+            "status"
+          ],
+          "title": "AgentInterruptOut",
+          "type": "object"
+        },
+        "AgentRunOut": {
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "status": {
+              "title": "Status",
+              "type": "string"
+            },
+            "lastSequence": {
+              "title": "Lastsequence",
+              "type": "integer"
+            },
+            "cancelRequested": {
+              "title": "Cancelrequested",
+              "type": "boolean"
+            },
+            "createdAt": {
+              "format": "date-time",
+              "title": "Createdat",
+              "type": "string"
+            },
+            "startedAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Startedat"
+            },
+            "finishedAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Finishedat"
+            }
+          },
+          "required": [
+            "id",
+            "status",
+            "lastSequence",
+            "cancelRequested",
+            "createdAt"
+          ],
+          "title": "AgentRunOut",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "threadId": {
+          "format": "uuid",
+          "title": "Threadid",
+          "type": "string"
+        },
+        "activeRun": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentRunOut"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "latestRun": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentRunOut"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "interrupts": {
+          "items": {
+            "$ref": "#/$defs/AgentInterruptOut"
+          },
+          "title": "Interrupts",
+          "type": "array"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "title": "AgentThreadStateOut",
+      "type": "object"
+    },
     "MessageOut": {
       "$defs": {
         "DataReference": {
@@ -7949,77 +8270,6 @@
       "title": "ImportResultOut",
       "type": "object"
     },
-    "ActionRequest": {
-      "$defs": {
-        "WidgetActionId": {
-          "description": "Stable command identifiers shared by domain workflows and UI widgets.",
-          "enum": [
-            "set_spend_nature",
-            "start_add_category",
-            "start_add_subcategory",
-            "cancel_add_category",
-            "cancel_taxonomy_change",
-            "create_category",
-            "create_subcategory",
-            "select_category",
-            "select_transaction_type",
-            "select_subcategory",
-            "change_category",
-            "select_account",
-            "save_budget",
-            "save_goal",
-            "contribute_goal",
-            "commit_import",
-            "calculate_loan_scenario",
-            "calculate_investment_scenario",
-            "commit_transaction",
-            "edit_transaction",
-            "update_transaction_draft",
-            "edit_saved_transaction",
-            "cancel_saved_transaction_edit",
-            "update_saved_transaction",
-            "request_remove_transaction",
-            "confirm_remove_transaction",
-            "cancel_remove_transaction",
-            "merge_reconciliation",
-            "separate_reconciliation"
-          ],
-          "title": "WidgetActionId",
-          "type": "string"
-        }
-      },
-      "properties": {
-        "conversation_id": {
-          "format": "uuid",
-          "title": "Conversation Id",
-          "type": "string"
-        },
-        "widget_id": {
-          "title": "Widget Id",
-          "type": "string"
-        },
-        "action": {
-          "$ref": "#/$defs/WidgetActionId"
-        },
-        "payload": {
-          "additionalProperties": true,
-          "title": "Payload",
-          "type": "object"
-        },
-        "completeWidget": {
-          "default": true,
-          "title": "Completewidget",
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "conversation_id",
-        "widget_id",
-        "action"
-      ],
-      "title": "ActionRequest",
-      "type": "object"
-    },
     "AgentModelSet": {
       "properties": {
         "router": {
@@ -9346,24 +9596,6 @@
       ],
       "title": "AgentActivityEvent",
       "type": "object"
-    },
-    "StreamErrorEvent": {
-      "properties": {
-        "message": {
-          "title": "Message",
-          "type": "string"
-        },
-        "errorType": {
-          "title": "Errortype",
-          "type": "string"
-        }
-      },
-      "required": [
-        "message",
-        "errorType"
-      ],
-      "title": "StreamErrorEvent",
-      "type": "object"
     }
   },
   "widgetDataModels": {
@@ -9424,10 +9656,5 @@
     "merge_reconciliation": "ReconciliationActionPayload",
     "separate_reconciliation": "ReconciliationActionPayload"
   },
-  "streamEventModels": {
-    "activity": "AgentActivityEvent",
-    "result": "AgentResponse",
-    "error": "StreamErrorEvent"
-  },
-  "schemaHash": "1a284b8ef1a3e7b132a2d1967abb927cab51fd0c853bfb439e4640a814658243"
+  "schemaHash": "8931e4aba2cdff063a90c9a6e8a7034c883bcb8f00cd0254f24a38d5243f23d2"
 }

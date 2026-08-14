@@ -1,26 +1,28 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from datetime import date, datetime
 from uuid import UUID, uuid4
 
 import hashlib
 import json
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
+from ag_ui.core import AgentCapabilities, RunAgentInput
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Response, UploadFile, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import and_, delete, or_, select
-from sqlalchemy.orm import Session, selectinload
+from pydantic import ValidationError
+from sqlalchemy.orm import Session, selectinload, sessionmaker
 
-from .database import SessionLocal, get_db
+from .database import get_db
 from .event_time import as_utc, local_date_string, local_now, now_utc
 from .config import CSV_UPLOAD_MAX_BYTES, get_settings
-from .contracts import STREAM_EVENT_MODELS
-from .domain import ExecutionStatus, FinancialSourceType, ImportRecordStatus, ImportStatus, REVOCABLE_SOURCE_TYPES, ReconciliationOutcome, TransactionType, WidgetActionId
+from .domain import AgentInterruptStatus, AgentRunStatus, FinancialSourceType, ImportRecordStatus, ImportStatus, REVOCABLE_SOURCE_TYPES, ReconciliationOutcome, TransactionType, WidgetActionId
 from .models import (
     AIAction,
+    AgentEvent,
+    AgentInterrupt,
+    AgentRun,
     AnalysisToolRun,
     AuditLog,
     Category,
@@ -36,15 +38,15 @@ from .models import (
     UserPreference,
 )
 from .schemas import (
-    ActionRequest,
-    AgentActivityEvent,
+    AgentInterruptOut,
+    AgentRunOut,
+    AgentThreadStateOut,
     AffordabilityIn,
     AgentDiagnosticsOut,
     AgentResponse,
     BootstrapResponse,
     CategoryDirectoryOut,
     CategoryDirectorySubcategoryOut,
-    ChatRequest,
     ConversationOut,
     ConversationCreatedOut,
     ConversationPage,
@@ -73,7 +75,6 @@ from .schemas import (
     TransactionUpdateIn,
     Widget,
     WidgetAction,
-    WidgetLifecycle,
     WidgetType,
 )
 # Every route below is user-scoped through this one dependency, so protecting
@@ -81,7 +82,7 @@ from .schemas import (
 from .security import clear_session_cookie, current_user
 from .services.calculators import affordability, investment_projection, loan_with_prepayment
 from .services.adapters import CSVAdapter, MessageAdapter, import_summary
-from .services.conversation import get_or_create_conversation, handle_action, handle_chat, persist_agent_response, prepare_widget_action, resolve_widget_action, user_conversation
+from .services.conversation import get_or_create_conversation, persist_agent_response, user_conversation
 from .services.reconciliation import ingest_observation
 from .services.preferences import set_user_preference, user_preference
 from .services.overview import overview_snapshot
@@ -93,6 +94,15 @@ from .services.transactions import (
 )
 from .services.user_data import delete_user_data, export_user_data
 from .services.tool_models import AffordabilityResult, InvestmentProjectionResult, LoanPrepaymentResult
+from .services.agui import (
+    ACTIVE_RUN_STATUSES,
+    TERMINAL_RUN_STATUSES,
+    DurableEventPublisher,
+    capabilities as agui_capabilities,
+    execute_run as execute_agui_run,
+    normalize_run_input,
+    sse_event as agui_sse_event,
+)
 
 
 router = APIRouter(prefix="/api")
@@ -100,6 +110,7 @@ router = APIRouter(prefix="/api")
 # Enough to fill the history rail past the fold on a tall screen, so the first
 # lazy page is fetched while scrolling rather than immediately on load.
 CONVERSATION_PAGE_SIZE = 25
+_agui_tasks: set[asyncio.Task] = set()
 
 
 def _agent_mode(settings) -> str:
@@ -266,6 +277,10 @@ def delete_conversation(conversation_id: UUID, db: Session = Depends(get_db), us
     its `SET NULL` rule, and keep a trace of the deleted thread.
     """
     conversation = _owned_conversation(db, user, conversation_id)
+    run_ids = select(AgentRun.id).where(AgentRun.conversation_id == conversation_id)
+    db.execute(delete(AgentInterrupt).where(AgentInterrupt.run_id.in_(run_ids)))
+    db.execute(delete(AgentEvent).where(AgentEvent.run_id.in_(run_ids)))
+    db.execute(delete(AgentRun).where(AgentRun.conversation_id == conversation_id))
     for model in (Message, TransactionDraft, AIAction, AnalysisToolRun):
         db.execute(delete(model).where(model.conversation_id == conversation_id))
     db.delete(conversation)
@@ -273,230 +288,290 @@ def delete_conversation(conversation_id: UUID, db: Session = Depends(get_db), us
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/chat", response_model=AgentResponse)
-def chat(request: ChatRequest, db: Session = Depends(get_db), user: User = Depends(current_user)) -> AgentResponse:
-    conversation = (
-        _owned_conversation(db, user, request.conversation_id)
-        if request.conversation_id
-        else get_or_create_conversation(db, user)
-    )
-    activities: dict[str, dict] = {}
-    response = handle_chat(db, user, conversation, request.text, lambda event: activities.__setitem__(event["id"], event))
-    return _attach_activity_trace(db, response, activities)
+def _agui_session_factory(db: Session) -> sessionmaker[Session]:
+    """Create worker sessions against the same engine used by this request.
+
+    Deriving the factory from the injected session keeps the runtime compatible
+    with the isolated SQLite engines used by the test suite as well as the
+    production PostgreSQL engine.
+    """
+    return sessionmaker(bind=db.get_bind(), autoflush=False, expire_on_commit=False)
 
 
-def _attach_activity_trace(db: Session, response: AgentResponse, activities: dict[str, dict]) -> AgentResponse:
-    terminal_ms = max((float(step.get("cumulativeMs", 0)) for step in activities.values()), default=0)
-    steps = []
-    for raw_step in activities.values():
-        step = dict(raw_step)
-        if step.get("status") == ExecutionStatus.RUNNING:
-            started_ms = float(step.get("cumulativeMs", 0))
-            step.update({
-                "status": ExecutionStatus.FAILED,
-                "detail": step.get("detail") or "This stage ended before producing a valid terminal result.",
-                "durationMs": max(float(step.get("durationMs", 0)), round(terminal_ms - started_ms, 1)),
-                "cumulativeMs": terminal_ms,
-            })
-        steps.append(step)
-    steps.sort(key=lambda step: float(step.get("cumulativeMs", 0)))
-    total_ms = max((float(step.get("cumulativeMs", 0)) for step in steps), default=0)
-    settings = get_settings()
-    used_agno = any(str(step.get("tool", "")).startswith("agno_") or str(step.get("label", "")).startswith("Agno") for step in steps)
-    used_analysis = any(str(step.get("tool", "")) in {"analysis_harness", "agno_reroute"} for step in steps)
-    model_path = f"{settings.router_model} → {settings.analysis_model + ' → ' if used_analysis else ''}{settings.validator_model}"
-    widget = Widget(
-        id=f"agent-activity-{response.message_id}",
-        type=WidgetType.AGENT_ACTIVITY,
-        data={
-            "title": "Agno agent run" if used_agno else "Copilot fast path",
-            "engine": "Agno harness" if used_agno else "Deterministic domain",
-            "model": model_path if used_agno else "no model call",
-            "steps": steps,
-            "totalMs": total_ms,
-            "live": False,
-        },
-    )
-    response.widgets.append(widget)
-    message = db.get(Message, response.message_id)
-    if message:
-        message.widgets = [*message.widgets, widget.model_dump(mode="json")]
-        db.commit()
-    return response
+def _agui_stream_headers() -> dict[str, str]:
+    return {
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+        "Connection": "keep-alive",
+    }
 
 
-# One turn at a time per conversation. A second message sent while a turn is
-# still running waits for it rather than racing it — the "enqueue" policy, and
-# the reason a reply can no longer be filed against the wrong question.
-#
-# The client disables its composer while a turn runs, but that flag lives in a
-# mounted React component: it does not survive a reload, a second tab, or
-# navigating away and back, and the stream it started keeps running regardless.
-# Admission control has to be here, where every caller passes through.
-#
-# Scope: one process. `uvicorn app.main:app` runs single-process, so this holds
-# for the deployed topology. Running with `--workers` would need the same gate
-# on a shared resource — a PostgreSQL advisory lock keyed on the conversation.
-def _sse(kind: str, payload: dict) -> str:
-    model = STREAM_EVENT_MODELS[kind]
-    validated = model.model_validate(payload).model_dump(mode="json", by_alias=True)
-    return f"event: {kind}\ndata: {json.dumps(validated, separators=(',', ':'))}\n\n"
-
-
-_conversation_locks: dict[UUID, asyncio.Lock] = {}
-_conversation_lock_waiters: dict[UUID, int] = {}
-_locks_guard = asyncio.Lock()
-
-# How long a queued turn will wait before giving up. Without a ceiling, one
-# wedged run makes the conversation permanently unusable — the failure mode
-# reported repeatedly against thread-locking agent APIs.
-QUEUE_WAIT_SECONDS = 90
-
-
-class TurnQueueTimeout(Exception):
-    """Waited too long behind another turn. Reported as a stream error rather
-    than an HTTP status: by the time this can happen the response has already
-    begun, so the status line is long since sent."""
-
-
-@asynccontextmanager
-async def _conversation_turn(conversation_id: UUID | None) -> AsyncIterator[bool]:
-    """Holds the conversation for one turn, yielding whether it had to wait.
-
-    A brand-new conversation has no id yet and nothing to contend with."""
-    if conversation_id is None:
-        yield False
-        return
-    async with _locks_guard:
-        lock = _conversation_locks.setdefault(conversation_id, asyncio.Lock())
-        _conversation_lock_waiters[conversation_id] = _conversation_lock_waiters.get(conversation_id, 0) + 1
-    queued = lock.locked()
-    try:
-        try:
-            await asyncio.wait_for(lock.acquire(), timeout=QUEUE_WAIT_SECONDS)
-        # Spelled out rather than caught as the builtin: on Python 3.9 these are
-        # two different classes, and the builtin catches nothing here.
-        except asyncio.TimeoutError as error:
-            raise TurnQueueTimeout from error
-        try:
-            yield queued
-        finally:
-            lock.release()
-    finally:
-        async with _locks_guard:
-            remaining = _conversation_lock_waiters.get(conversation_id, 1) - 1
-            if remaining > 0:
-                _conversation_lock_waiters[conversation_id] = remaining
-            else:
-                # Nobody else is holding or waiting, so the entry would only
-                # accumulate — one per conversation the user ever opened.
-                _conversation_lock_waiters.pop(conversation_id, None)
-                _conversation_locks.pop(conversation_id, None)
-
-
-@router.post("/chat/stream")
-async def chat_stream(
-    request: ChatRequest,
-    db: Session = Depends(get_db),
-    user: User = Depends(current_user),
+def _agui_replay_response(
+    session_factory: sessionmaker[Session],
+    run_id: UUID,
+    user_id: UUID,
+    *,
+    after: int = 0,
 ) -> StreamingResponse:
-    """Stream safe agent activity events, then the validated structured response."""
-    if request.conversation_id:
-        _owned_conversation(db, user, request.conversation_id)
-    user_id = user.id
-    loop = asyncio.get_running_loop()
-    queue: asyncio.Queue[tuple[str, dict]] = asyncio.Queue()
-
-    def publish(kind: str, payload: dict) -> None:
-        loop.call_soon_threadsafe(queue.put_nowait, (kind, payload))
-
-    def run_chat() -> None:
-        activities: dict[str, dict] = {}
-
-        def on_activity(event: dict) -> None:
-            activities[event["id"]] = event
-            publish("activity", event)
-
-        try:
-            with SessionLocal() as worker_db:
-                worker_user = worker_db.get(User, user_id)
-                if not worker_user:
-                    raise ValueError("User not found")
-                conversation = get_or_create_conversation(worker_db, worker_user, request.conversation_id)
-                response = handle_chat(worker_db, worker_user, conversation, request.text, on_activity)
-                response = _attach_activity_trace(worker_db, response, activities)
-                publish("result", response.model_dump(mode="json", by_alias=True))
-        except Exception as error:
-            publish("error", {"message": "fyn AI could not complete this request.", "errorType": type(error).__name__})
-
     async def events():
-        try:
-            # The gate is held across the whole stream, so it is released only
-            # once this turn's result has been written and sent.
-            async with _conversation_turn(request.conversation_id) as queued:
-                async for chunk in _run_turn_stream(queued):
-                    yield chunk
-        except TurnQueueTimeout:
-            # The client turns an error event into a retryable banner, which is
-            # the honest offer here: the message was never sent to the copilot.
-            yield _sse("error", {
-                "message": "The previous message in this conversation is still running. Try sending this again in a moment.",
-                "errorType": "TurnQueueTimeout",
-            })
-
-    async def _run_turn_stream(queued: bool):
-        if queued:
-            # A silent stream reads as a hung one. Say what it is waiting for.
-            queued_event = AgentActivityEvent(
-                id="queued",
-                label="Waiting for the previous message to finish",
-                status=ExecutionStatus.COMPLETED,
-                detail="One message is answered at a time so replies stay with their questions.",
-                duration_ms=0.0,
-                cumulative_ms=0.0,
-            )
-            yield _sse(
-                "activity",
-                queued_event.model_dump(mode="json", by_alias=True),
-            )
-        task = asyncio.create_task(asyncio.to_thread(run_chat))
-        try:
-            while True:
-                kind, payload = await queue.get()
-                yield _sse(kind, payload)
-                if kind in {"result", "error"}:
-                    break
-        finally:
-            await task
+        cursor = max(after, 0)
+        if cursor > 0:
+            with session_factory() as replay_db:
+                run_started = replay_db.scalar(
+                    select(AgentEvent)
+                    .where(AgentEvent.run_id == run_id, AgentEvent.event_type == "RUN_STARTED")
+                    .order_by(AgentEvent.sequence)
+                    .limit(1)
+                )
+            if run_started is not None:
+                # Each HTTP continuation is independently verifiable by the
+                # official client. The synthetic boundary is not persisted and
+                # does not advance the durable cursor.
+                yield agui_sse_event(cursor, run_started.payload)
+        while True:
+            with session_factory() as replay_db:
+                rows = list(
+                    replay_db.scalars(
+                        select(AgentEvent)
+                        .join(AgentRun, AgentRun.id == AgentEvent.run_id)
+                        .where(
+                            AgentEvent.run_id == run_id,
+                            AgentRun.user_id == user_id,
+                            AgentEvent.sequence > cursor,
+                        )
+                        .order_by(AgentEvent.sequence)
+                    )
+                )
+                run_state = replay_db.execute(
+                    select(AgentRun.status, AgentRun.last_sequence).where(
+                        AgentRun.id == run_id,
+                        AgentRun.user_id == user_id,
+                    )
+                ).one_or_none()
+            for event in rows:
+                cursor = event.sequence
+                yield agui_sse_event(event.sequence, event.payload)
+            if run_state is None:
+                return
+            run_status, last_sequence = run_state
+            if run_status in TERMINAL_RUN_STATUSES and cursor >= last_sequence:
+                return
+            await asyncio.sleep(0.25)
 
     return StreamingResponse(
         events(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+        headers=_agui_stream_headers(),
     )
 
 
-@router.post("/actions", response_model=AgentResponse)
-def action(request: ActionRequest, db: Session = Depends(get_db), user: User = Depends(current_user)) -> AgentResponse:
-    conversation = _owned_conversation(db, user, request.conversation_id)
-    try:
-        origin = prepare_widget_action(db, conversation, request.widget_id, request.action)
-        response = handle_action(db, user, conversation, request.action, request.payload)
-        if request.complete_widget:
-            lifecycle = WidgetLifecycle.CANCELLED if request.action.startswith("cancel_") else WidgetLifecycle.COMPLETED
-            update = resolve_widget_action(
-                db,
-                origin,
-                lifecycle=lifecycle,
-                action=request.action,
-                payload=request.payload,
+@router.get(
+    "/agent/capabilities",
+    response_model=AgentCapabilities,
+    response_model_exclude_none=True,
+)
+def agent_capabilities() -> AgentCapabilities:
+    return agui_capabilities()
+
+
+@router.get("/agent/threads/{thread_id}", response_model=AgentThreadStateOut)
+def agent_thread_state(
+    thread_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> AgentThreadStateOut:
+    _owned_conversation(db, user, thread_id)
+    runs = list(
+        db.scalars(
+            select(AgentRun)
+            .where(AgentRun.user_id == user.id, AgentRun.conversation_id == thread_id)
+            .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+            .limit(20)
+        )
+    )
+    latest = runs[0] if runs else None
+    active = next((run for run in runs if run.status in ACTIVE_RUN_STATUSES), None)
+    interrupts = list(
+        db.scalars(
+            select(AgentInterrupt)
+            .join(AgentRun, AgentRun.id == AgentInterrupt.run_id)
+            .where(
+                AgentRun.user_id == user.id,
+                AgentRun.conversation_id == thread_id,
+                AgentInterrupt.status == AgentInterruptStatus.OPEN.value,
             )
-            if update:
-                response.widget_updates.append(update)
-                db.commit()
-        return response
-    except (ValueError, KeyError) as error:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+            .order_by(AgentInterrupt.created_at, AgentInterrupt.id)
+        )
+    )
+    return AgentThreadStateOut(
+        thread_id=thread_id,
+        active_run=AgentRunOut.model_validate(active) if active else None,
+        latest_run=AgentRunOut.model_validate(latest) if latest else None,
+        interrupts=[AgentInterruptOut.model_validate(interrupt) for interrupt in interrupts],
+    )
+
+
+@router.post("/agent", response_class=StreamingResponse)
+async def run_agent(
+    request: RunAgentInput,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> StreamingResponse:
+    try:
+        thread_id = UUID(request.thread_id)
+        run_id = UUID(request.run_id)
+        parent_run_id = UUID(request.parent_run_id) if request.parent_run_id else None
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="threadId, runId and parentRunId must be UUIDs") from error
+    if parent_run_id is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="parentRunId branching is not supported by this governed financial agent",
+        )
+
+    # The conversation row is the admission lock. Across API workers this
+    # makes predecessor selection deterministic and establishes a durable run
+    # chain instead of relying on a process-local asyncio lock.
+    conversation = db.scalar(
+        select(Conversation)
+        .where(Conversation.id == thread_id, Conversation.user_id == user.id)
+        .with_for_update()
+    )
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    session_factory = _agui_session_factory(db)
+
+    existing = db.scalar(select(AgentRun).where(AgentRun.id == run_id, AgentRun.user_id == user.id))
+    if existing:
+        if existing.conversation_id != thread_id:
+            raise HTTPException(status_code=409, detail="runId already belongs to a different conversation")
+        db.commit()
+        return _agui_replay_response(session_factory, existing.id, user.id)
+
+    try:
+        input_payload, client_message_id = normalize_run_input(request)
+    except (ValueError, ValidationError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    open_interrupt = db.scalar(
+        select(AgentInterrupt.id)
+        .join(AgentRun, AgentRun.id == AgentInterrupt.run_id)
+        .where(
+            AgentRun.user_id == user.id,
+            AgentRun.conversation_id == thread_id,
+            AgentInterrupt.status == AgentInterruptStatus.OPEN.value,
+        )
+        .limit(1)
+    )
+    if open_interrupt and input_payload.get("kind") != "resume":
+        input_payload = {
+            "kind": "protocol_error",
+            "message": "Resolve the current agent interrupt before starting another run.",
+            "code": "pending_interrupt",
+        }
+
+    if client_message_id:
+        prior_message_run = db.scalar(
+            select(AgentRun).where(
+                AgentRun.user_id == user.id,
+                AgentRun.client_message_id == client_message_id,
+            )
+        )
+        if prior_message_run:
+            if prior_message_run.conversation_id != thread_id:
+                raise HTTPException(status_code=409, detail="Message id already belongs to a different conversation")
+            db.commit()
+            return _agui_replay_response(session_factory, prior_message_run.id, user.id)
+
+    blocker = db.scalar(
+        select(AgentRun)
+        .where(
+            AgentRun.user_id == user.id,
+            AgentRun.conversation_id == thread_id,
+            AgentRun.status.in_(ACTIVE_RUN_STATUSES),
+        )
+        .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+        .limit(1)
+    )
+    run = AgentRun(
+        id=run_id,
+        user_id=user.id,
+        conversation_id=thread_id,
+        parent_run_id=parent_run_id,
+        blocked_by_run_id=blocker.id if blocker else None,
+        client_message_id=client_message_id,
+        status=AgentRunStatus.QUEUED.value,
+        cancel_requested=False,
+        input_payload=input_payload,
+        last_sequence=0,
+    )
+    db.add(run)
+    db.commit()
+
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[tuple[int, dict] | None] = asyncio.Queue()
+
+    def publish_live(sequence: int, payload: dict) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, (sequence, payload))
+
+    publisher = DurableEventPublisher(session_factory, run.id, user.id, 0, publish_live)
+
+    async def execute() -> None:
+        try:
+            await asyncio.to_thread(execute_agui_run, session_factory, run.id, user.id, publisher)
+        finally:
+            queue.put_nowait(None)
+
+    task = asyncio.create_task(execute())
+    _agui_tasks.add(task)
+    task.add_done_callback(_agui_tasks.discard)
+
+    async def events():
+        while True:
+            item = await queue.get()
+            if item is None:
+                return
+            sequence, payload = item
+            yield agui_sse_event(sequence, payload)
+            if payload.get("type") in {"RUN_FINISHED", "RUN_ERROR"}:
+                return
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers=_agui_stream_headers(),
+    )
+
+
+@router.get("/agent/runs/{run_id}/events")
+def replay_agent_run(
+    run_id: UUID,
+    after: int = Query(default=0, ge=0),
+    last_event_id: int | None = Header(default=None, alias="Last-Event-ID"),
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> StreamingResponse:
+    run = db.scalar(select(AgentRun).where(AgentRun.id == run_id, AgentRun.user_id == user.id))
+    if not run:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    cursor = max(after, last_event_id or 0)
+    return _agui_replay_response(_agui_session_factory(db), run.id, user.id, after=cursor)
+
+
+@router.post("/agent/runs/{run_id}/cancel", response_model=AgentRunOut)
+def cancel_agent_run(
+    run_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> AgentRunOut:
+    run = db.scalar(select(AgentRun).where(AgentRun.id == run_id, AgentRun.user_id == user.id))
+    if not run:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    if run.status in ACTIVE_RUN_STATUSES:
+        run.cancel_requested = True
+        db.commit()
+        db.refresh(run)
+    return AgentRunOut.model_validate(run)
 
 
 @router.post("/observations", response_model=ReconciliationResultOut)

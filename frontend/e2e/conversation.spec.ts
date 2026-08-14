@@ -20,18 +20,18 @@ test.skip("thread deletion requires a disposable thread and is disabled by the f
 
 test.skip("invalid-link recovery opens another thread and is disabled by the fixed-thread policy", async () => {});
 
-test("copilot activity streams the selected path with individual and cumulative timing", async ({ page }) => {
+test("agent activity streams the selected path with individual and cumulative timing", async ({ page }) => {
   await page.goto(sharedThreadUrl());
   const input = page.getByLabel("Message fyn AI");
   await input.fill("How much did I spend in the last two days?");
   await input.press("Enter");
   // The run is expanded while it streams, then folds to a summary line once the
   // answer lands — reopening it has to bring the whole trace back.
-  await expect(page.getByText("Copilot is working").last()).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText("fyn AI is working").last()).toBeVisible({ timeout: 30_000 });
   const finished = page.getByRole("button", { name: /Worked for .* step/ });
   await expect(finished.last()).toBeVisible({ timeout: 30_000 });
   await finished.last().click();
-  await expect(page.getByText("Agno agent run").last()).toBeVisible();
+  await expect(page.getByText("AG-UI agent run").last()).toBeVisible();
   await expect(page.getByText(/search_transactions|get_spending_summary|calculate_affordability/).last()).toBeVisible();
   // The validator runs on every Agno route; whether it accepts, rejects and
   // reroutes, or falls through to the deterministic path is the model's call,
@@ -41,9 +41,9 @@ test("copilot activity streams the selected path with individual and cumulative 
   await expect(page.getByText(/^Σ (?:<1|\d+(?:\.\d+)?) (?:ms|s)$/).last()).toBeVisible();
   await page.reload();
   // A reloaded run comes back collapsed: the trace is kept, not foregrounded.
-  await expect(page.getByText("Agno agent run")).toHaveCount(0);
+  await expect(page.getByText("AG-UI agent run")).toHaveCount(0);
   await finished.last().click();
-  await expect(page.getByText("Agno agent run").last()).toBeVisible();
+  await expect(page.getByText("AG-UI agent run").last()).toBeVisible();
   await expect(page.getByText("agno_validator").last()).toBeVisible();
 });
 

@@ -83,7 +83,7 @@ function Stage({ activity, last }: { activity: AgentActivity; last: boolean }) {
   );
 }
 
-export const AgentActivityTrace = memo(function AgentActivityTrace({ activities }: { activities: AgentActivity[] }) {
+export const AgentActivityTrace = memo(function AgentActivityTrace({ activities, reasoningSummary = "" }: { activities: AgentActivity[]; reasoningSummary?: string }) {
   const styles = useStyles(makeStyles);
   // Only the tail is worth the height on a phone; the full trace is persisted
   // on the turn and readable there once the run lands.
@@ -104,6 +104,11 @@ export const AgentActivityTrace = memo(function AgentActivityTrace({ activities 
       {visible.map((activity, index) => (
         <Stage key={activity.id} activity={activity} last={index === visible.length - 1} />
       ))}
+      {reasoningSummary ? (
+        <Type size="meta" color="muted" style={styles.reasoning}>
+          {reasoningSummary}
+        </Type>
+      ) : null}
     </View>
   );
 });
@@ -126,4 +131,9 @@ const makeStyles = (color: Palette) => StyleSheet.create({
   markerDone: { backgroundColor: color.secondary },
   markerLive: { backgroundColor: color.secondary, opacity: 0.5 },
   markerFailed: { backgroundColor: color.danger },
+  reasoning: {
+    paddingTop: space.tight,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: color.secondaryLine,
+  },
 });

@@ -170,6 +170,24 @@ class ExecutionStatus(ValueEnum):
     FAILED = "failed"
 
 
+class AgentRunStatus(ValueEnum):
+    """Durable lifecycle states for one AG-UI run."""
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    INTERRUPTED = "interrupted"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class AgentInterruptStatus(ValueEnum):
+    OPEN = "open"
+    RESOLVED = "resolved"
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"
+
+
 class AnalysisToolStatus(ValueEnum):
     DRAFT = "draft"
     VALIDATING = "validating"

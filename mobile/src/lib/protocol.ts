@@ -14,6 +14,9 @@ import {
   editableTransactionTypeIds,
   type AgentResponse,
   type AgentActivityEvent,
+  type AgentInterruptOut,
+  type AgentRunOut,
+  type AgentThreadStateOut,
   type AuthStatusOut,
   type Bootstrap,
   type CategoryDirectoryOut,
@@ -34,7 +37,6 @@ import {
   type OverviewOut,
   type PrivacyStatusOut,
   type ProfileOut,
-  type StreamErrorEvent,
   type TransactionListItemOut,
   type TransactionCategoryHintOut,
   type TransactionUpdateIn,
@@ -116,11 +118,14 @@ export const profileSchema = generatedSchema<ProfileOut>("ProfileOut");
 export const otpSentSchema = generatedSchema<OtpSentOut>("OtpSentOut");
 export const importResultSchema = generatedSchema<ImportResult>("ImportResultOut");
 export const agentActivityEventSchema = generatedSchema<AgentActivityEvent>("AgentActivityEvent");
-export const streamErrorEventSchema = generatedSchema<StreamErrorEvent>("StreamErrorEvent");
+export const agentThreadStateSchema = generatedSchema<AgentThreadStateOut>("AgentThreadStateOut");
 
 export type {
   AgentResponse,
   AgentActivityEvent,
+  AgentInterruptOut,
+  AgentRunOut,
+  AgentThreadStateOut,
   AuthStatusOut,
   Bootstrap,
   CategoryDirectoryOut,
@@ -140,7 +145,6 @@ export type {
   OverviewOut,
   PrivacyStatusOut,
   ProfileOut,
-  StreamErrorEvent,
   TransactionListItemOut,
   TransactionCategoryHintOut,
   TransactionUpdateIn,

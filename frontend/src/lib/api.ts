@@ -1,4 +1,7 @@
-import { agentActivityEventSchema, agentResponseSchema, authStatusSchema, bootstrapSchema, categoryDirectoryEntrySchema, categoryDirectorySchema, categorySubcategorySchema, conversationCreatedSchema, conversationPageSchema, conversationSchema, importResultSchema, otpSentSchema, overviewSchema, parseActionPayload, privacyStatusSchema, profileSchema, streamErrorEventSchema, transactionCategoryHintSchema, transactionListItemSchema, transactionListSchema, type AgentActivityEvent, type AgentResponse, type AuthStatusOut, type Bootstrap, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type ConversationCreatedOut, type ConversationOut, type ConversationPage, type ImportResult, type OtpSentOut, type OverviewOut, type PrivacyStatusOut, type ProfileOut, type TransactionCategoryHintOut, type TransactionListItemOut, type TransactionUpdateIn, type WidgetActionId } from "@/lib/protocol";
+import { HttpAgent, type AgentSubscriber, type Interrupt } from "@ag-ui/client";
+import { AgentCapabilitiesSchema, type AgentCapabilities, type Message as AgUiMessage } from "@ag-ui/core";
+
+import { agentActivityEventSchema, agentResponseSchema, agentThreadStateSchema, authStatusSchema, bootstrapSchema, categoryDirectoryEntrySchema, categoryDirectorySchema, categorySubcategorySchema, conversationCreatedSchema, conversationPageSchema, conversationSchema, importResultSchema, otpSentSchema, overviewSchema, parseActionPayload, privacyStatusSchema, profileSchema, transactionCategoryHintSchema, transactionListItemSchema, transactionListSchema, type AgentActivityEvent, type AgentInterruptOut, type AgentResponse, type AgentThreadStateOut, type AuthStatusOut, type Bootstrap, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type ConversationCreatedOut, type ConversationOut, type ConversationPage, type ImportResult, type OtpSentOut, type OverviewOut, type PrivacyStatusOut, type ProfileOut, type TransactionCategoryHintOut, type TransactionListItemOut, type TransactionUpdateIn, type WidgetActionId } from "@/lib/protocol";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -106,7 +109,9 @@ function conform<T>(schema: { parse: (value: unknown) => T }, payload: unknown, 
 }
 
 export async function bootstrap(): Promise<Bootstrap> {
-  return conform(bootstrapSchema, await request("/api/bootstrap"), "workspace");
+  const result = conform(bootstrapSchema, await request("/api/bootstrap"), "workspace");
+  hydrateFynAgent(result.active_conversation.id, result.active_conversation.messages);
+  return result;
 }
 
 export async function loadOverview(month?: string): Promise<OverviewOut> {
@@ -198,7 +203,9 @@ export async function updateTransaction(id: string, payload: TransactionUpdateIn
 }
 
 export async function loadConversation(id: string): Promise<ConversationOut> {
-  return conform(conversationSchema, await request(`/api/conversations/${id}`), "conversation");
+  const result = conform(conversationSchema, await request(`/api/conversations/${id}`), "conversation");
+  hydrateFynAgent(result.id, result.messages);
+  return result;
 }
 
 export async function createConversation(): Promise<ConversationCreatedOut> {
@@ -224,77 +231,342 @@ export function flushConversationDeletion(id: string): void {
   void fetch(`${API_URL}/api/conversations/${id}`, { method: "DELETE", keepalive: true }).catch(() => undefined);
 }
 
-export async function sendChat(conversationId: string, text: string): Promise<AgentResponse> {
-  return conform(agentResponseSchema, await request("/api/chat", {
-    method: "POST", body: JSON.stringify({ conversation_id: conversationId, text }),
-  }), "reply");
-}
-
 export type AgentActivity = AgentActivityEvent;
 
-/** A run can take ten seconds, which is long enough for the reader to leave.
- *  The signal is how the thread says it is no longer listening: without it the
- *  request, the reader loop and this closure all keep going against a
- *  conversation that has been unmounted. */
-export async function sendChatStream(
-  conversationId: string,
-  text: string,
-  onActivity: (activity: AgentActivity) => void,
-  signal?: AbortSignal,
-): Promise<AgentResponse> {
-  const response = await fetch(`${API_URL}/api/chat/stream`, {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-    body: JSON.stringify({ conversation_id: conversationId, text }),
-    signal,
-  });
-  if (!response.ok || !response.body) {
-    const payload = await response.json().catch(() => null);
-    throw new ApiError(payload?.detail ?? "fyn AI is unavailable.", response.status);
-  }
+export type AgentRunPhase = "connecting" | "running" | "interrupted" | "succeeded" | "failed" | "reconnecting";
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let result: AgentResponse | null = null;
-
-  function consume(block: string) {
-    const lines = block.split(/\r?\n/);
-    const event = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
-    const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("\n");
-    if (!event || !data) return;
-    const payload = JSON.parse(data);
-    if (event === "activity") onActivity(conform(agentActivityEventSchema, payload, "progress update"));
-    if (event === "result") result = conform(agentResponseSchema, payload, "reply");
-    if (event === "error") throw new Error(conform(streamErrorEventSchema, payload, "error").message);
-  }
-
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      buffer += decoder.decode(value, { stream: !done });
-      const blocks = buffer.split(/\r?\n\r?\n/);
-      buffer = blocks.pop() ?? "";
-      blocks.forEach(consume);
-      if (done) break;
-    }
-  } finally {
-    // Releases the lock on the body whichever way the loop ended — a thrown
-    // stream error, an abort, or a clean finish — so the response can be
-    // collected rather than left half-read.
-    reader.releaseLock();
-  }
-  if (buffer.trim()) consume(buffer);
-  if (!result) throw new Error("The agent stream ended before returning a result.");
-  return result;
+export interface FynInterrupt {
+  id: string;
+  runId: string;
+  toolCallId?: string;
+  widgetId: string;
+  reason: string;
+  message?: string;
+  expiresAt?: string;
+  responseSchema?: Record<string, unknown>;
+  metadata: Record<string, unknown>;
 }
 
-export async function sendAction(conversationId: string, widgetId: string, action: WidgetActionId, payload: Record<string, unknown>, completeWidget = true): Promise<AgentResponse> {
+export interface FynAgentRunResult {
+  response: AgentResponse;
+  runId: string;
+  interrupts: FynInterrupt[];
+  reasoningSummary: string;
+}
+
+export interface AgentRunCallbacks {
+  onActivity?: (activity: AgentActivity) => void;
+  onRunCreated?: (runId: string) => void;
+  onPhase?: (phase: AgentRunPhase) => void;
+  onReasoning?: (summary: string) => void;
+  onText?: (text: string) => void;
+}
+
+interface RunCommand {
+  message?: string;
+  forwardedProps?: Record<string, unknown>;
+  resume?: Array<{ interruptId: string; status: "resolved" | "cancelled"; payload?: unknown }>;
+  runId?: string;
+  replay?: boolean;
+}
+
+function linkedAbortController(signal?: AbortSignal) {
+  const controller = new AbortController();
+  if (!signal) return controller;
+  if (signal.aborted) controller.abort(signal.reason);
+  else signal.addEventListener("abort", () => controller.abort(signal.reason), { once: true });
+  return controller;
+}
+
+class FynHttpAgent extends HttpAgent {
+  replayMode = false;
+  private capabilitiesRequest?: Promise<AgentCapabilities>;
+  private runCursors = new Map<string, { safe: number; seen: Set<number> }>();
+
+  protected override requestInit(input: Parameters<HttpAgent["run"]>[0]): RequestInit {
+    if (!this.replayMode) return super.requestInit(input);
+    return {
+      method: "GET",
+      headers: { Accept: "text/event-stream" },
+      signal: this.abortController.signal,
+    };
+  }
+
+  override async getCapabilities(): Promise<AgentCapabilities> {
+    this.capabilitiesRequest ??= fetch(`${API_URL}/api/agent/capabilities`, { credentials: "include" })
+      .then(async (response) => {
+        if (!response.ok) throw new ApiError(describe(await response.json().catch(() => null), response.status), response.status);
+        return conform(AgentCapabilitiesSchema, await response.json(), "agent capability declaration");
+      })
+      .catch((error) => {
+        this.capabilitiesRequest = undefined;
+        throw error;
+      });
+    return this.capabilitiesRequest;
+  }
+
+  cursorFor(runId: string): { safe: number; seen: Set<number> } {
+    const existing = this.runCursors.get(runId);
+    if (existing) return existing;
+    const cursor = { safe: 0, seen: new Set<number>() };
+    this.runCursors.set(runId, cursor);
+    if (this.runCursors.size > 20) this.runCursors.delete(this.runCursors.keys().next().value as string);
+    return cursor;
+  }
+}
+
+const fynAgents = new Map<string, FynHttpAgent>();
+
+function fynAgent(threadId: string): FynHttpAgent {
+  const existing = fynAgents.get(threadId);
+  if (existing) return existing;
+  const agent = new FynHttpAgent({
+    url: `${API_URL}/api/agent`,
+    threadId,
+    fetch: (url, init) => fetch(url, { ...init, credentials: "include" }),
+  });
+  fynAgents.set(threadId, agent);
+  return agent;
+}
+
+function hydrateFynAgent(threadId: string, messages: ConversationOut["messages"]): void {
+  const agent = fynAgent(threadId);
+  if (agent.isRunning) return;
+  const hydrated = messages
+    .filter((message) => message.role === "user" || message.role === "assistant")
+    .map((message) => ({ id: message.id, role: message.role, content: message.content }) as AgUiMessage);
+  const localOnly = agent.messages.filter((message) => message.role === "activity" || message.role === "reasoning");
+  agent.setMessages([...hydrated, ...localOnly]);
+}
+
+function eventCursor(event: { rawEvent?: unknown }): { sequence: number; replaySafe: boolean } | null {
+  const raw = event.rawEvent;
+  if (!raw || typeof raw !== "object") return null;
+  const fyn = (raw as { fyn?: unknown }).fyn;
+  if (!fyn || typeof fyn !== "object") return null;
+  const sequence = Number((fyn as { sequence?: unknown }).sequence);
+  if (!Number.isInteger(sequence) || sequence < 1) return null;
+  return { sequence, replaySafe: (fyn as { replaySafe?: unknown }).replaySafe === true };
+}
+
+function protocolInterrupt(interrupt: Interrupt, runId: string): FynInterrupt {
+  const metadata = interrupt.metadata ?? {};
+  return {
+    id: interrupt.id,
+    runId,
+    toolCallId: interrupt.toolCallId,
+    widgetId: typeof metadata.widgetId === "string" ? metadata.widgetId : "",
+    reason: interrupt.reason,
+    message: interrupt.message,
+    expiresAt: interrupt.expiresAt,
+    responseSchema: interrupt.responseSchema,
+    metadata,
+  };
+}
+
+function storedInterrupt(interrupt: AgentInterruptOut): FynInterrupt {
+  return {
+    id: interrupt.id,
+    runId: interrupt.runId,
+    toolCallId: interrupt.toolCallId,
+    widgetId: interrupt.widgetId,
+    reason: interrupt.reason,
+    message: interrupt.message ?? undefined,
+    expiresAt: interrupt.expiresAt ?? undefined,
+    responseSchema: interrupt.responseSchema,
+    metadata: interrupt.metadata,
+  };
+}
+
+async function runFynAgent(
+  conversationId: string,
+  command: RunCommand,
+  callbacks: AgentRunCallbacks = {},
+  signal?: AbortSignal,
+): Promise<FynAgentRunResult> {
+  const runId = command.runId ?? crypto.randomUUID();
+  const controller = linkedAbortController(signal);
+  let response: AgentResponse | null = null;
+  let interrupts: FynInterrupt[] = [];
+  let reasoningSummary = "";
+  let assistantText = "";
+  let assistantMessageId = "";
+  const runFailure: { message: string | null; code: string | null } = { message: null, code: null };
+  callbacks.onRunCreated?.(runId);
+  callbacks.onPhase?.(command.replay ? "reconnecting" : "connecting");
+
+  const agent = fynAgent(conversationId);
+  const cursorState = agent.cursorFor(runId);
+  const advertised = await agent.getCapabilities();
+  if (!advertised.transport?.streaming) throw new Error("fyn AI does not currently advertise streaming AG-UI support.");
+  if (command.resume && !advertised.humanInTheLoop?.interrupts) {
+    throw new Error("fyn AI does not currently advertise interrupt resumption.");
+  }
+  let inputMessageId: string | null = null;
+  if (command.message) {
+    inputMessageId = crypto.randomUUID();
+    agent.addMessage({ id: inputMessageId, role: "user", content: command.message });
+  }
+  const discardRejectedInput = () => {
+    if (inputMessageId) agent.setMessages(agent.messages.filter((message) => message.id !== inputMessageId));
+  };
+  let replay = Boolean(command.replay);
+  const subscriber: AgentSubscriber = {
+    onEvent: ({ event }) => {
+      const cursor = eventCursor(event);
+      if (!cursor) return;
+      if (cursorState.seen.has(cursor.sequence)) return { stopPropagation: true };
+      cursorState.seen.add(cursor.sequence);
+      if (cursor.replaySafe) cursorState.safe = Math.max(cursorState.safe, cursor.sequence);
+    },
+    onRunStartedEvent: () => callbacks.onPhase?.(replay ? "reconnecting" : "running"),
+    onActivitySnapshotEvent: ({ event }) => {
+      if (event.activityType !== "fyn.agent_activity.v1") return;
+      callbacks.onActivity?.(conform(agentActivityEventSchema, event.content, "progress update"));
+    },
+    onReasoningMessageContentEvent: ({ event, reasoningMessageBuffer }) => {
+      reasoningSummary = `${reasoningMessageBuffer}${event.delta}`;
+      callbacks.onReasoning?.(reasoningSummary);
+    },
+    onTextMessageContentEvent: ({ event, textMessageBuffer }) => {
+      assistantMessageId = event.messageId;
+      assistantText = `${textMessageBuffer}${event.delta}`;
+      callbacks.onText?.(assistantText);
+    },
+    onCustomEvent: ({ event }) => {
+      if (event.name !== "fyn.response.v1" || !event.value || typeof event.value !== "object") return;
+      response = conform(agentResponseSchema, (event.value as { response?: unknown }).response, "reply");
+    },
+    onRunFinishedEvent: (finished) => {
+      if (finished.outcome === "interrupt") {
+        interrupts = finished.interrupts.map((interrupt) => protocolInterrupt(interrupt, runId));
+        callbacks.onPhase?.("interrupted");
+      } else {
+        callbacks.onPhase?.("succeeded");
+      }
+    },
+    onRunErrorEvent: ({ event }) => {
+      runFailure.message = event.message;
+      runFailure.code = event.code ?? null;
+      callbacks.onPhase?.("failed");
+    },
+  };
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const replayUrl = `${API_URL}/api/agent/runs/${encodeURIComponent(runId)}/events${cursorState.safe ? `?after=${cursorState.safe}` : ""}`;
+    agent.replayMode = replay;
+    agent.url = replay ? replayUrl : `${API_URL}/api/agent`;
+    try {
+      await agent.runAgent({
+        runId,
+        forwardedProps: command.forwardedProps ?? {},
+        ...(command.resume ? { resume: command.resume } : {}),
+        abortController: controller,
+      }, subscriber);
+      break;
+    } catch (cause) {
+      if (controller.signal.aborted) throw new DOMException("The agent run was detached.", "AbortError");
+      const status = typeof cause === "object" && cause && "status" in cause ? Number((cause as { status: unknown }).status) : 0;
+      if (status || replay || attempt > 0) {
+        discardRejectedInput();
+        if (status) throw new ApiError(describe(typeof cause === "object" && cause && "payload" in cause ? (cause as { payload: unknown }).payload : null, status), status);
+        throw cause;
+      }
+      replay = true;
+      callbacks.onPhase?.("reconnecting");
+    }
+  }
+  if (controller.signal.aborted) throw new DOMException("The agent run was detached.", "AbortError");
+  if (!response && assistantText) {
+    response = {
+      message: assistantText,
+      widgets: [],
+      widgetUpdates: [],
+      pendingAction: null,
+      citations: [],
+      conversation_id: conversationId,
+      message_id: assistantMessageId || crypto.randomUUID(),
+    };
+  }
+  if (!response) {
+    discardRejectedInput();
+    if (runFailure.code === "cancelled") throw new DOMException("The agent run was stopped.", "AbortError");
+    throw new Error(runFailure.message ?? "The agent stream ended before returning a verified response.");
+  }
+  return { response, runId, interrupts, reasoningSummary };
+}
+
+export function sendAgentMessage(
+  conversationId: string,
+  text: string,
+  callbacks?: AgentRunCallbacks,
+  signal?: AbortSignal,
+) {
+  return runFynAgent(conversationId, { message: text }, callbacks, signal);
+}
+
+export function sendAgentAction(
+  conversationId: string,
+  widgetId: string,
+  action: WidgetActionId,
+  payload: Record<string, unknown>,
+  completeWidget = true,
+  interrupt?: FynInterrupt,
+  callbacks?: AgentRunCallbacks,
+  signal?: AbortSignal,
+) {
   const validatedPayload = parseActionPayload(action, payload);
-  return conform(agentResponseSchema, await request("/api/actions", {
-    method: "POST", body: JSON.stringify({ conversation_id: conversationId, widget_id: widgetId, action, payload: validatedPayload, completeWidget }),
-  }), "reply");
+  const actionCommand = { widgetId, action, payload: validatedPayload, completeWidget };
+  return runFynAgent(
+    conversationId,
+    interrupt
+      ? { resume: [{ interruptId: interrupt.id, status: "resolved", payload: { approved: true, editedArgs: actionCommand } }] }
+      : { forwardedProps: { fynAction: actionCommand } },
+    callbacks,
+    signal,
+  );
+}
+
+export function resumeAgentInterrupt(
+  conversationId: string,
+  interrupt: FynInterrupt,
+  response: { status: "resolved"; payload: unknown } | { status: "cancelled" },
+  callbacks?: AgentRunCallbacks,
+  signal?: AbortSignal,
+) {
+  return runFynAgent(
+    conversationId,
+    {
+      resume: [{
+        interruptId: interrupt.id,
+        status: response.status,
+        ...(response.status === "resolved" ? { payload: response.payload } : {}),
+      }],
+    },
+    callbacks,
+    signal,
+  );
+}
+
+export function reconnectAgentRun(
+  conversationId: string,
+  runId: string,
+  callbacks?: AgentRunCallbacks,
+  signal?: AbortSignal,
+) {
+  return runFynAgent(conversationId, { runId, replay: true }, callbacks, signal);
+}
+
+export async function loadAgentThreadState(conversationId: string): Promise<AgentThreadStateOut> {
+  return conform(agentThreadStateSchema, await request(`/api/agent/threads/${encodeURIComponent(conversationId)}`), "agent state");
+}
+
+export async function cancelAgentRun(runId: string): Promise<void> {
+  await request(`/api/agent/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST", body: "{}" });
+}
+
+export function openInterrupts(state: AgentThreadStateOut): FynInterrupt[] {
+  return state.interrupts.map(storedInterrupt);
 }
 
 /** Carries the same name `fetch` gives an aborted request, so a cancelled

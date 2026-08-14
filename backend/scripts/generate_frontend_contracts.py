@@ -121,15 +121,6 @@ def render_types(bundle: dict) -> str:
         "}",
         "export type ActionPayload<A extends keyof ActionPayloadById> = ActionPayloadById[A];",
     ])
-    lines.append("export interface StreamEventDataByType {")
-    for event, model_name in bundle["streamEventModels"].items():
-        lines.append(f"  {json.dumps(event)}: {model_name};")
-    lines.extend([
-        "}",
-        "export type StreamEvent = {",
-        "  [K in keyof StreamEventDataByType]: { event: K; data: StreamEventDataByType[K] }",
-        "}[keyof StreamEventDataByType];",
-    ])
     lines.extend([
         "export type Message = MessageOut;",
         "export type Bootstrap = BootstrapResponse;",

@@ -14,6 +14,9 @@ from ..models import (
     AIAction,
     Account,
     AccountBalanceSnapshot,
+    AgentEvent,
+    AgentInterrupt,
+    AgentRun,
     AnalysisTool,
     AnalysisToolRun,
     AuditLog,
@@ -89,6 +92,7 @@ class DependentDataSpec:
 # This order is also a safe explicit deletion order when a database does not
 # enforce every ON DELETE action (for example, a lightweight test database).
 OWNED_USER_DATA: tuple[OwnedDataSpec, ...] = (
+    OwnedDataSpec(AgentRun),
     OwnedDataSpec(AnalysisToolRun),
     OwnedDataSpec(AIAction),
     OwnedDataSpec(Subscription),
@@ -127,6 +131,8 @@ OWNED_USER_DATA: tuple[OwnedDataSpec, ...] = (
 
 
 DEPENDENT_USER_DATA: tuple[DependentDataSpec, ...] = (
+    DependentDataSpec(AgentInterrupt, AgentRun, "run_id"),
+    DependentDataSpec(AgentEvent, AgentRun, "run_id"),
     DependentDataSpec(ReconciliationDecision, ReconciliationCandidate, "candidate_id"),
     DependentDataSpec(ImportRecord, Import, "import_id"),
     DependentDataSpec(TransactionFieldValue, Transaction, "transaction_id"),

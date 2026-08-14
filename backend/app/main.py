@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -10,6 +11,10 @@ from .api_auth import router as auth_router
 from .config import get_settings, require_production_auth_config
 from .database import Base, SessionLocal, engine
 from .seed import seed_system_taxonomy
+from .services.agui import DurableEventPublisher, execute_run as execute_agui_run, recover_agent_runs
+
+
+_recovered_agui_tasks: set[asyncio.Task] = set()
 
 
 @asynccontextmanager
@@ -27,6 +32,11 @@ async def lifespan(_: FastAPI):
     # sees useful categories without inheriting a placeholder identity.
     with SessionLocal() as db:
         seed_system_taxonomy(db)
+    for run_id, user_id, last_sequence in recover_agent_runs(SessionLocal):
+        publisher = DurableEventPublisher(SessionLocal, run_id, user_id, last_sequence, lambda _seq, _event: None)
+        task = asyncio.create_task(asyncio.to_thread(execute_agui_run, SessionLocal, run_id, user_id, publisher))
+        _recovered_agui_tasks.add(task)
+        task.add_done_callback(_recovered_agui_tasks.discard)
     yield
 
 
@@ -40,7 +50,7 @@ app.add_middleware(
     # `X-Client` is how a caller declares it cannot hold a cookie and needs its
     # session token in the response body instead. Native builds never preflight,
     # so this entry exists for the Expo web target during development.
-    allow_headers=["Content-Type", "Authorization", "Idempotency-Key", "X-Client"],
+    allow_headers=["Content-Type", "Authorization", "Idempotency-Key", "Last-Event-ID", "X-Client"],
 )
 app.include_router(auth_router)
 app.include_router(router)

@@ -1,8 +1,8 @@
 from sqlalchemy import select
 
-from app.api import _attach_activity_trace
 from app.models import Message, User
 from app.seed import DEFAULT_USER_EMAIL
+from app.services.agui import _attach_activity_trace
 from app.services.conversation import get_or_create_conversation, handle_chat
 
 

@@ -22,13 +22,20 @@ import { Banner, Button, Divider, Type } from "@/components/ui";
 import { WidgetView, type WidgetActionHandler } from "@/components/widget-renderer";
 import {
   bootstrap,
+  cancelAgentRun,
   createConversation,
   isUnauthorized,
+  loadAgentThreadState,
   loadConversation,
-  sendAction,
-  sendChatStream,
+  openInterrupts,
+  reconnectAgentRun,
+  resumeAgentInterrupt,
+  sendAgentAction,
+  sendAgentMessage,
   uploadCsv,
   type AgentActivity,
+  type AgentRunPhase,
+  type FynInterrupt,
   type PickedFile,
 } from "@/lib/api";
 import { useIsOffline } from "@/lib/connectivity";
@@ -62,12 +69,24 @@ export default function ConversationScreen() {
     queryFn: () => loadConversation(conversationId),
     enabled: Boolean(conversationId),
   });
+  const agentState = useQuery({
+    queryKey: ["agent-state", conversationId],
+    queryFn: () => loadAgentThreadState(conversationId),
+    enabled: Boolean(conversationId),
+    staleTime: 2_000,
+    refetchOnWindowFocus: true,
+  });
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [usedWidgets, setUsedWidgets] = useState<Set<string>>(new Set());
   const [pendingWidget, setPendingWidget] = useState<string | null>(null);
   const [activities, setActivities] = useState<AgentActivity[]>([]);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [runPhase, setRunPhase] = useState<AgentRunPhase | null>(null);
+  const [stoppingRun, setStoppingRun] = useState(false);
+  const [interrupts, setInterrupts] = useState<FynInterrupt[] | null>(null);
+  const [reasoningSummary, setReasoningSummary] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [retry, setRetry] = useState<Retry>(null);
   const [upload, setUpload] = useState<{ name: string; percent: number } | null>(null);
@@ -82,6 +101,11 @@ export default function ConversationScreen() {
     hydrated.current = conversationId;
     setMessages(loaded);
     setUsedWidgets(completedWidgetIds(loaded));
+    setActiveRunId(null);
+    setRunPhase(null);
+    setStoppingRun(false);
+    setInterrupts(null);
+    setReasoningSummary("");
   }, [thread.data, conversationId]);
 
   // One controller for everything this screen has in flight. Created inside the
@@ -102,8 +126,12 @@ export default function ConversationScreen() {
     setError(null);
     setRetry(null);
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    void queryClient.invalidateQueries({ queryKey: ["conversations"] });
-  }, [queryClient]);
+    void Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["conversations"] }),
+      queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] }),
+      queryClient.invalidateQueries({ queryKey: ["agent-state", conversationId] }),
+    ]);
+  }, [conversationId, queryClient]);
 
   const failed = useCallback((cause: Error, next: Retry) => {
     // An abort is this screen being closed, not something that went wrong with
@@ -119,21 +147,51 @@ export default function ConversationScreen() {
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
   }, []);
 
+  const availableInterrupts = useMemo(
+    () => interrupts ?? (agentState.data ? openInterrupts(agentState.data) : []),
+    [agentState.data, interrupts],
+  );
+  const fallbackInterrupt = useMemo(() => {
+    const widgetIds = new Set(messages.flatMap((message) => message.widgets.map((widget) => widget.id)));
+    return availableInterrupts.find((interrupt) => !interrupt.widgetId || !widgetIds.has(interrupt.widgetId)) ?? null;
+  }, [availableInterrupts, messages]);
+
+  const updateActivity = useCallback((activity: AgentActivity) => {
+    setActivities((current) => {
+      const index = current.findIndex((item) => item.id === activity.id);
+      if (index === -1) return [...current, activity];
+      return current.map((item, itemIndex) => (itemIndex === index ? activity : item));
+    });
+  }, []);
+
+  const agentRunCallbacks = useMemo(() => ({
+    onRunCreated: (runId: string) => {
+      setActiveRunId(runId);
+      setStoppingRun(false);
+    },
+    onPhase: (phase: AgentRunPhase) => setRunPhase(phase),
+    onActivity: updateActivity,
+    onReasoning: setReasoningSummary,
+  }), [updateActivity]);
+
   const chat = useMutation({
-    mutationFn: ({ text }: { text: string }) => sendChatStream(conversationId, text, (activity) => {
-      setActivities((current) => {
-        const index = current.findIndex((item) => item.id === activity.id);
-        if (index === -1) return [...current, activity];
-        return current.map((item, itemIndex) => (itemIndex === index ? activity : item));
-      });
-    }, inFlight.current?.signal),
-    onMutate: () => setActivities([]),
-    onSuccess: (response) => { setActivities([]); succeeded(response); },
+    mutationFn: ({ text }: { text: string }) => sendAgentMessage(conversationId, text, agentRunCallbacks, inFlight.current?.signal),
+    onMutate: () => { setActivities([]); setReasoningSummary(""); },
+    onSuccess: (result) => {
+      setActivities([]);
+      setActiveRunId(null);
+      setStoppingRun(false);
+      setInterrupts(result.interrupts);
+      succeeded(result.response);
+    },
     onError: (cause: Error, variables) => {
       setActivities([]);
+      setActiveRunId(null);
+      setStoppingRun(false);
       // A message that never reached the server should not look delivered: drop
       // the bubble and put the text back where it can be sent again.
       setMessages((current) => current.filter((message) => !(message.id.startsWith("optimistic-") && message.content === variables.text)));
+      if (cause.name === "AbortError") return;
       setInput((current) => current || variables.text);
       failed(cause, { kind: "chat", text: variables.text });
     },
@@ -141,15 +199,56 @@ export default function ConversationScreen() {
 
   const action = useMutation({
     mutationFn: ({ widgetId, action: id, payload, markUsed }: { widgetId: string; action: WidgetActionId; payload: Record<string, unknown>; markUsed: boolean }) =>
-      sendAction(conversationId, widgetId, id, payload, markUsed),
-    onSuccess: (response, variables) => {
+      sendAgentAction(
+        conversationId,
+        widgetId,
+        id,
+        payload,
+        markUsed,
+        availableInterrupts.find((interrupt) => interrupt.widgetId === widgetId),
+        agentRunCallbacks,
+        inFlight.current?.signal,
+      ),
+    onSuccess: (result, variables) => {
       setPendingWidget(null);
+      setActiveRunId(null);
+      setStoppingRun(false);
+      setInterrupts(result.interrupts);
       // Locking the card belongs to the success path; a failed action has to
       // stay pressable or the person is stuck until a restart.
       if (variables.markUsed) setUsedWidgets((current) => new Set(current).add(variables.widgetId));
-      succeeded(response);
+      succeeded(result.response);
     },
-    onError: (cause: Error, variables) => { setPendingWidget(null); failed(cause, { kind: "action", ...variables }); },
+    onError: (cause: Error, variables) => {
+      setPendingWidget(null);
+      setActiveRunId(null);
+      setStoppingRun(false);
+      failed(cause, { kind: "action", ...variables });
+    },
+  });
+
+  const interrupt = useMutation({
+    mutationFn: ({ current, response }: {
+      current: FynInterrupt;
+      response: { status: "resolved"; payload: unknown } | { status: "cancelled" };
+    }) => resumeAgentInterrupt(
+      conversationId,
+      current,
+      response,
+      agentRunCallbacks,
+      inFlight.current?.signal,
+    ),
+    onSuccess: (result) => {
+      setActiveRunId(null);
+      setStoppingRun(false);
+      setInterrupts(result.interrupts);
+      succeeded(result.response);
+    },
+    onError: (cause: Error) => {
+      setActiveRunId(null);
+      setStoppingRun(false);
+      failed(cause, null);
+    },
   });
 
   const importing = useMutation({
@@ -163,12 +262,57 @@ export default function ConversationScreen() {
     onError: (cause: Error, file) => { setUpload(null); failed(cause, { kind: "upload", file }); },
   });
 
-  const busy = chat.isPending || action.isPending || importing.isPending;
+  const reconnectingRun = useRef<string | null>(null);
+  useEffect(() => {
+    const discovered = agentState.data?.activeRun;
+    if (!discovered || chat.isPending || action.isPending || interrupt.isPending || activeRunId === discovered.id || reconnectingRun.current === discovered.id) return;
+    reconnectingRun.current = discovered.id;
+    setActivities([]);
+    setReasoningSummary("");
+    reconnectAgentRun(conversationId, discovered.id, agentRunCallbacks, inFlight.current?.signal)
+      .then((result) => {
+        setActivities([]);
+        setActiveRunId(null);
+        setStoppingRun(false);
+        setInterrupts(result.interrupts);
+        succeeded(result.response);
+      })
+      .catch((cause: Error) => {
+        setActivities([]);
+        setActiveRunId(null);
+        setStoppingRun(false);
+        if (cause.name !== "AbortError") failed(cause, null);
+      })
+      .finally(() => { reconnectingRun.current = null; });
+  }, [activeRunId, action.isPending, agentRunCallbacks, agentState.data?.activeRun, chat.isPending, conversationId, failed, interrupt.isPending, succeeded]);
+
+  const agentRunning = Boolean(activeRunId) && runPhase !== "interrupted" && runPhase !== "succeeded" && runPhase !== "failed";
+  const pausedForInterrupt = availableInterrupts.length > 0;
+  const busy = chat.isPending || action.isPending || interrupt.isPending || importing.isPending || agentRunning;
+  const agentStatus = stoppingRun
+    ? "Stopping after the current safe step"
+    : runPhase === "reconnecting"
+      ? "Reconnecting to fyn AI"
+      : agentRunning
+        ? "fyn AI is working"
+        : pausedForInterrupt
+          ? "Waiting for your choice"
+          : initial.data?.user.name ?? "Private workspace";
   const liveWidget = useMemo(() => activeWidgetId(messages), [messages]);
+
+  const stopAgent = useCallback(() => {
+    if (!activeRunId || stoppingRun) return;
+    setStoppingRun(true);
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    void cancelAgentRun(activeRunId).catch((cause: Error) => {
+      setStoppingRun(false);
+      failed(cause, null);
+    });
+  }, [activeRunId, failed, stoppingRun]);
 
   const send = useCallback((value: string) => {
     const text = value.trim();
-    if (!text || busy) return;
+    if (!text || busy || pausedForInterrupt) return;
     if (offline) {
       // Deliberately not queued. A message held on the device and replayed
       // later could commit a financial action out of order, and the server
@@ -183,7 +327,7 @@ export default function ConversationScreen() {
     setRetry(null);
     setMessages((current) => [...current, optimisticMessage(text)]);
     chat.mutate({ text });
-  }, [busy, chat, offline]);
+  }, [busy, chat, offline, pausedForInterrupt]);
 
   const onWidgetAction = useCallback<WidgetActionHandler>((widgetId, id, payload, options) => {
     // Per-row controls (avoidable expenses, the calculators) opt out of the
@@ -226,10 +370,10 @@ export default function ConversationScreen() {
 
   const rows: Row[] = useMemo(() => {
     const built: Row[] = messages.map((message) => ({ kind: "message" as const, message }));
-    if (chat.isPending) built.push({ kind: "activity" });
+    if (agentRunning) built.push({ kind: "activity" });
     if (error) built.push({ kind: "error" });
     return built;
-  }, [messages, chat.isPending, error]);
+  }, [messages, agentRunning, error]);
 
   // Following the conversation means staying with its newest turn. FlashList
   // maintains position from the bottom, so this only has to nudge it when the
@@ -263,7 +407,7 @@ export default function ConversationScreen() {
           <Type size="control" weight="semibold" color="ink" numberOfLines={1}>
             {thread.data?.title || "New conversation"}
           </Type>
-          <Type size="meta" color="muted">{initial.data?.user.name ?? "Private workspace"}</Type>
+          <Type size="meta" color={agentRunning || pausedForInterrupt ? "secondary" : "muted"}>{agentStatus}</Type>
         </View>
         <Button variant="ghost" size="control" onPress={() => router.push("/conversations")} accessibilityLabel="All conversations">Threads</Button>
         <Button variant="ghost" size="control" onPress={startNewConversation} accessibilityLabel="Start a new conversation">New</Button>
@@ -274,14 +418,14 @@ export default function ConversationScreen() {
       <FlashList
         ref={listRef}
         data={rows}
-        extraData={{ liveWidget, pendingWidget, usedWidgets, busy }}
+        extraData={{ liveWidget, pendingWidget, usedWidgets, busy, agentRunning, reasoningSummary }}
         keyExtractor={(row, index) => (row.kind === "message" ? row.message.id : `${row.kind}-${index}`)}
         contentContainerStyle={{ paddingHorizontal: space.gutter, paddingTop: space.gutter, paddingBottom: space.gutter }}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
         ListEmptyComponent={<EmptyThread onPick={(starter) => send(starter)} />}
         renderItem={({ item }) => {
-          if (item.kind === "activity") return <AgentActivityTrace activities={activities} />;
+          if (item.kind === "activity") return <AgentActivityTrace activities={activities} reasoningSummary={reasoningSummary} />;
           if (item.kind === "error") {
             return (
               <View style={{ marginTop: space.base }}>
@@ -306,6 +450,13 @@ export default function ConversationScreen() {
       />
 
       <View style={[styles.dock, { paddingBottom: Math.max(insets.bottom, space.base) }]}>
+        {fallbackInterrupt ? (
+          <InterruptFallback
+            interrupt={fallbackInterrupt}
+            busy={interrupt.isPending}
+            onResolve={(response) => interrupt.mutate({ current: fallbackInterrupt, response })}
+          />
+        ) : null}
         {offline ? (
           <View style={styles.offline}>
             <Type size="meta" weight="semibold" color="attention">Offline</Type>
@@ -341,29 +492,61 @@ export default function ConversationScreen() {
             ref={composerRef}
             value={input}
             onChangeText={setInput}
-            placeholder="Spent ₹500 on lunch…"
+            placeholder={pausedForInterrupt ? "Respond using the card above…" : "Spent ₹500 on lunch…"}
             placeholderTextColor={color.inkMuted}
             multiline
             style={styles.input}
-            editable={!busy}
+            editable={!busy && !pausedForInterrupt}
             accessibilityLabel="Message fyn AI"
             onSubmitEditing={() => send(input)}
             blurOnSubmit={false}
           />
           <Pressable
-            onPress={() => send(input)}
-            disabled={busy || !input.trim()}
-            accessibilityLabel="Send"
+            onPress={agentRunning ? stopAgent : () => send(input)}
+            disabled={agentRunning ? stoppingRun : busy || pausedForInterrupt || !input.trim()}
+            accessibilityLabel={agentRunning ? "Stop fyn AI" : "Send"}
             style={({ pressed }) => [
               styles.sendButton,
-              { backgroundColor: busy || !input.trim() ? color.lineStrong : pressed ? color.secondaryHover : color.secondary },
+              {
+                backgroundColor: agentRunning
+                  ? pressed ? color.lineStrong : color.ink
+                  : busy || pausedForInterrupt || !input.trim()
+                    ? color.lineStrong
+                    : pressed ? color.secondaryHover : color.secondary,
+              },
             ]}
           >
-            {busy ? <ActivityIndicator size="small" color={color.onSecondary} /> : <Type size="control" weight="semibold" color="onSecondary">↑</Type>}
+            {agentRunning
+              ? stoppingRun
+                ? <ActivityIndicator size="small" color={color.onSecondary} />
+                : <Type size="control" weight="semibold" color="onSecondary">■</Type>
+              : <Type size="control" weight="semibold" color="onSecondary">↑</Type>}
           </Pressable>
         </View>
       </View>
     </KeyboardAvoidingView>
+  );
+}
+
+function InterruptFallback({ interrupt, busy, onResolve }: {
+  interrupt: FynInterrupt;
+  busy: boolean;
+  onResolve: (response: { status: "resolved"; payload: unknown } | { status: "cancelled" }) => void;
+}) {
+  const styles = useStyles(makeStyles);
+  const toolApproval = interrupt.reason === "tool_call";
+  return (
+    <View style={styles.interruptFallback} accessibilityLabel="Agent response required">
+      <Type size="control" weight="semibold" color="ink">fyn AI is waiting for you</Type>
+      <Type size="note" color="muted">{interrupt.message || "Review this request before the agent continues."}</Type>
+      <View style={styles.interruptActions}>
+        <Button size="control" variant="ghost" disabled={busy} onPress={() => onResolve({ status: "cancelled" })}>Cancel request</Button>
+        {toolApproval ? <>
+          <Button size="control" variant="outline" disabled={busy} onPress={() => onResolve({ status: "resolved", payload: { approved: false } })}>Don’t approve</Button>
+          <Button size="control" busy={busy} onPress={() => onResolve({ status: "resolved", payload: { approved: true } })}>Approve</Button>
+        </> : null}
+      </View>
+    </View>
   );
 }
 
@@ -474,6 +657,21 @@ const makeStyles = (color: Palette) => StyleSheet.create({
     borderTopColor: color.line,
     backgroundColor: color.surface,
     gap: space.snug,
+  },
+  interruptFallback: {
+    gap: space.tight,
+    padding: space.base,
+    borderRadius: radius.card,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: color.lineStrong,
+    backgroundColor: color.surface,
+  },
+  interruptActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
+    gap: space.snug,
+    marginTop: space.tight,
   },
   composer: {
     flexDirection: "row",

@@ -24,7 +24,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .config import DEFAULT_CURRENCY, DEFAULT_TIMEZONE
 from .database import Base
-from .domain import ACTIVE_STATUS, AnalysisToolStatus, DraftState, FinancialSourceType, IdentitySource, ImportStatus, ObservationProcessingState, SpendNature, TaxonomyScope, TransactionStatus, TransactionType
+from .domain import ACTIVE_STATUS, AgentInterruptStatus, AgentRunStatus, AnalysisToolStatus, DraftState, FinancialSourceType, IdentitySource, ImportStatus, ObservationProcessingState, SpendNature, TaxonomyScope, TransactionStatus, TransactionType
 from .event_time import as_utc, now_utc
 
 
@@ -295,6 +295,64 @@ class Message(UUIDPrimaryKeyMixin, ConversationChildMixin, TimestampMixin, Base)
     widgets: Mapped[list] = mapped_column(JSON, default=list)
     citations: Mapped[list] = mapped_column(JSON, default=list)
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
+
+
+class AgentRun(UUIDPrimaryKeyMixin, UserOwnedMixin, ConversationChildMixin, TimestampMixin, Base):
+    """One durable AG-UI execution, independent of an HTTP connection."""
+
+    __tablename__ = "agent_runs"
+    parent_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"),
+        index=True,
+    )
+    blocked_by_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"),
+        index=True,
+    )
+    client_message_id: Mapped[Optional[str]] = mapped_column(String(120), index=True)
+    status: Mapped[str] = mapped_column(String(24), default=AgentRunStatus.QUEUED.value, index=True)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    input_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    last_sequence: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    error_code: Mapped[Optional[str]] = mapped_column(String(80))
+    __table_args__ = (
+        Index("ix_agent_run_thread_status_created", "conversation_id", "status", "created_at"),
+        UniqueConstraint("user_id", "client_message_id", name="uq_agent_run_user_client_message"),
+    )
+
+
+class AgentEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """An ordered AG-UI event retained for reconnect and audit."""
+
+    __tablename__ = "agent_events"
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("agent_runs.id", ondelete="CASCADE"), index=True)
+    sequence: Mapped[int] = mapped_column(Integer)
+    event_type: Mapped[str] = mapped_column(String(80), index=True)
+    payload: Mapped[dict] = mapped_column(JSON)
+    __table_args__ = (UniqueConstraint("run_id", "sequence", name="uq_agent_event_run_sequence"),)
+
+
+class AgentInterrupt(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """A resumable human decision emitted by a completed AG-UI run."""
+
+    __tablename__ = "agent_interrupts"
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("agent_runs.id", ondelete="CASCADE"), index=True)
+    resolved_by_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"),
+        index=True,
+    )
+    tool_call_id: Mapped[str] = mapped_column(String(120), unique=True)
+    widget_id: Mapped[str] = mapped_column(String(120), index=True)
+    reason: Mapped[str] = mapped_column(String(120))
+    message: Mapped[Optional[str]] = mapped_column(Text)
+    response_schema: Mapped[dict] = mapped_column(JSON, default=dict)
+    metadata_payload: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(24), default=AgentInterruptStatus.OPEN.value, index=True)
+    response_payload: Mapped[Optional[dict]] = mapped_column(JSON)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), index=True)
+    __table_args__ = (Index("ix_agent_interrupt_run_status", "run_id", "status"),)
 
 
 class TransactionDraft(UUIDPrimaryKeyMixin, CurrencyMixin, UserOwnedMixin, ConversationChildMixin, TimestampMixin, Base):
