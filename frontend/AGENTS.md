@@ -4,12 +4,12 @@ Read [`ARCHITECTURE.md`](./ARCHITECTURE.md) before changing application structur
 
 ## Commands
 
-- `npm run dev` — Vite on port 3000
-- `npm run typecheck` — TypeScript without emitting files
-- `npm run lint` — ESLint
-- `npm test` — Vitest
-- `npm run build` — typecheck plus the production Vite build
-- `npm run test:e2e` — Playwright against the configured frontend and API
+- `yarn dev` — Vite on port 3000
+- `yarn typecheck` — TypeScript without emitting files
+- `yarn lint` — ESLint
+- `yarn test` — Vitest
+- `yarn build` — typecheck plus the production Vite build
+- `yarn test:e2e` — Playwright against the configured frontend and API
 
 Run typecheck, lint, tests, and build for structural changes.
 

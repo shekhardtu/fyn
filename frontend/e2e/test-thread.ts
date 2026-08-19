@@ -18,7 +18,7 @@ export function sharedThreadUrl(): string {
   try {
     id = JSON.parse(readFileSync(SHARED_THREAD_STATE, "utf8")).id;
   } catch {
-    throw new Error(`No shared thread recorded at ${SHARED_THREAD_STATE}. Run the setup project first (npm run test:e2e runs it automatically).`);
+    throw new Error(`No shared thread recorded at ${SHARED_THREAD_STATE}. Run the setup project first (yarn test:e2e runs it automatically).`);
   }
   if (!id) throw new Error(`${SHARED_THREAD_STATE} does not name a conversation.`);
   return `/c/${id}`;

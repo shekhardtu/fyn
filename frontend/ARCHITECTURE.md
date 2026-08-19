@@ -88,4 +88,4 @@ Keep a small feature in `components/` with its test. When an area develops sever
 
 ## Production
 
-`npm run build` emits `dist/`. The production image serves it through unprivileged Nginx with immutable hashed assets, non-cached `index.html`, real asset 404s, and SPA fallback for application routes. `VITE_API_URL` and `VITE_GOOGLE_CLIENT_ID` are public values embedded during the build.
+`yarn build` emits `dist/`. The production image serves it through unprivileged Nginx with immutable hashed assets, non-cached `index.html`, real asset 404s, and SPA fallback for application routes. `VITE_API_URL` and `VITE_GOOGLE_CLIENT_ID` are public values embedded during the build.
