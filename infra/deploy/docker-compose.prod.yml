@@ -31,7 +31,12 @@
 name: fyn
 
 services:
-  postgres:
+  fyn-postgres:
+    # Every service is prefixed with the project it belongs to. Compose
+    # publishes the service name as a network alias, so a generic name is a
+    # collision waiting for the next application onto this box — even for a
+    # service that is private today and could be shared tomorrow.
+    container_name: fyn-postgres-1
     image: postgres:16-alpine
     restart: unless-stopped
     mem_limit: 512m
@@ -64,7 +69,7 @@ services:
     environment:
       # Wins over the same key in env_file: the server's .env may still carry a
       # localhost URL from a copy of .env.example.
-      DATABASE_URL: postgresql+psycopg://finance:${POSTGRES_PASSWORD:?}@postgres:5432/finance
+      DATABASE_URL: postgresql+psycopg://finance:${POSTGRES_PASSWORD:?}@fyn-postgres:5432/finance
       OPERATIONS_CORE_DIR: /app/operations
       OPERATIONS_MANAGED_DIR: /app/managed-operations
     volumes:
@@ -76,7 +81,7 @@ services:
       default:
       edge:
     depends_on:
-      postgres:
+      fyn-postgres:
         condition: service_healthy
     healthcheck:
       # python:3.12-slim ships neither curl nor wget.

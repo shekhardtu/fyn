@@ -55,7 +55,7 @@ rather than an overcommit:
 |---|---|
 | `edge-caddy-1` | 192M |
 | `jitraa-backend-1` / `-litestream-1` / `-web-1` | 512M / 128M / 128M |
-| `fyn-backend-1` / `-postgres-1` | 1G / 512M |
+| `fyn-backend-1` / `fyn-postgres-1` | 1G / 512M |
 | **total** | **2.5G of 3.7G** |
 
 ## Files
