@@ -442,8 +442,8 @@ def test_category_count_uses_authenticated_runtime_taxonomy_tool(db, monkeypatch
     response = handle_chat(db, user, conversation, "How many categories are there?")
 
     assert response.message == (
-        "You have 11 expense categories: Bills, Education, Entertainment, Food, Health, Housing, Other, "
-        "Personal care, Shopping, Transport, Travel."
+        "You have 10 expense categories: Bills, Education, Entertainment, Food, Health, Housing, Other, "
+        "Personal care, Shopping, Travel."
     )
     assert response.citations[0].entity_type == "runtime_tool"
     assert response.citations[0].label == "Read User Expense Taxonomy result"
@@ -763,7 +763,7 @@ def test_sql_mode_never_replaces_rejected_evidence_with_legacy_analysis(
     conversation = get_or_create_conversation(db, user)
     activity = []
     question = (
-        "Compare my Food and Transport spending from May through August 19, "
+        "Compare my Food and Travel spending from May through August 19, "
         "group it by month, identify the largest merchants, and compare it "
         "with the previous three-month average."
     )
@@ -771,7 +771,7 @@ def test_sql_mode_never_replaces_rejected_evidence_with_legacy_analysis(
         conversation_service,
         "run_operator",
         lambda *args, **kwargs: OperatorResult(
-            reply="Food was ₹12,440 and Transport was ₹17,540."
+            reply="Food was ₹12,440 and Travel was ₹17,540."
         ),
     )
 
@@ -1656,7 +1656,7 @@ def test_known_complex_comparison_uses_validated_offline_fallback_after_agent_fa
     handle_chat(db, user, conversation, "Spent ₹100 on a cab today")
     activity = []
     response = handle_chat(db, user, conversation, "Compare food and transport this month. Which is larger and by how much?", activity.append)
-    assert response.message.startswith("Food is larger at ₹300, compared with ₹100 for Transport; the difference is ₹200.")
+    assert response.message.startswith("Food is larger at ₹300, compared with ₹100 for Travel; the difference is ₹200.")
     assert response.widgets == []
     assert "| Food | ₹300 |" in response.message
     assert any(event.get("badge") == "Saved" for event in activity)
@@ -1672,14 +1672,14 @@ def test_llm_classifier_routes_to_grounded_tool_without_using_template_keywords(
         conversation_service,
         "run_operator",
         lambda *args, **kwargs: _operator_proposal("search_transactions", _search_inputs(
-            QueryInterpretation(metric="spending_summary", category_slug="transport", start_date=date.today(), end_date=date.today()),
+            QueryInterpretation(metric="spending_summary", category_slug="travel", start_date=date.today(), end_date=date.today()),
         )),
     )
 
     response = handle_chat(db, user, conversation, "What went on moving around today?")
 
     assert response.widgets == []
-    assert "**Transport spending · Today**" in response.message
+    assert "**Travel spending · Today**" in response.message
     assert "₹400" in response.message
 
 
@@ -2171,7 +2171,7 @@ def test_explicit_merchant_correction_is_learned_and_overrides_inference(db):
     assert response.widgets[0].data["subcategory"] == "Events"
 
 
-def test_travelling_query_filters_transport_spending(db):
+def test_travelling_query_filters_travel_spending(db):
     user = default_user(db)
     conversation = get_or_create_conversation(db, user)
     handle_chat(db, user, conversation, "Spent ₹1,000 on a cab today")
@@ -2182,7 +2182,7 @@ def test_travelling_query_filters_transport_spending(db):
 
     assert response.widgets == []
     assert "₹1,500" in response.message
-    assert "| Cab |" in response.message and "| Fuel |" in response.message
+    assert "| Local transport |" in response.message and "| Other |" in response.message
 
 
 def test_category_breakdown_follow_up_uses_current_month_without_unnecessary_questions(db, monkeypatch):

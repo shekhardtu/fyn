@@ -74,7 +74,7 @@ def test_migration_chain_is_linear_with_a_single_head():
 
     bases = script.get_bases()
     assert len(bases) == 1, f"expected one base revision, found {sorted(bases)}"
-    assert heads == bases == ["0001_baseline"]
+    assert bases == ["0001_baseline"]
 
 
 def test_baseline_is_frozen_instead_of_importing_live_metadata():
@@ -97,14 +97,16 @@ def test_migrations_build_the_schema_the_models_declare(migrated_database):
     assert diff == [], f"migrations and models disagree: {diff}"
 
 
-def test_the_baseline_can_be_rolled_back(migrated_database):
+def test_every_migration_can_be_rolled_back(migrated_database):
+    """The whole chain, not just the newest link.
+
+    A downgrade that only works one step from head hides a broken path the
+    moment a second migration lands on top of it.
+    """
     config = _alembic_config(migrated_database)
-    script = ScriptDirectory.from_config(config)
-    head = script.get_current_head()
-    previous = script.get_revision(head).down_revision
 
     upgrade(config, "head")
-    downgrade(config, previous or "base")
+    downgrade(config, "base")
 
     engine = sa.create_engine(migrated_database)
     try:

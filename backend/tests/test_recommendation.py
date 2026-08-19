@@ -113,25 +113,25 @@ def ledger_for(db, user: User):
 
 
 def test_explicit_transaction_hint_feeds_category_and_subcategory_recommendations(db, user):
-    transport = category(db, "transport")
-    cab = subcategory(db, "transport", "cab")
+    travel = category(db, "travel")
+    local_transport = subcategory(db, "travel", "local_transport")
     db.add(TransactionCategoryHint(
         user_id=user.id,
         merchant_pattern="Blue Cab",
         normalized_pattern="blue cab",
-        category_id=transport.id,
-        subcategory_id=cab.id,
+        category_id=travel.id,
+        subcategory_id=local_transport.id,
     ))
     db.flush()
     draft = make_draft(db, user, raw_text="paid Blue Cab", merchant="Blue Cab")
     ledger = ledger_for(db, user)
 
     category_result = recommend_categories(db, user, draft, expense_categories(db), ledger=ledger, now=NOON)
-    assert category_result.top.id == str(transport.id)
-    assert category_result.top.reasons[0] == "You set Blue Cab → Transport"
+    assert category_result.top.id == str(travel.id)
+    assert category_result.top.reasons[0] == "You set Blue Cab → Travel"
 
-    subcategory_result = recommend_subcategories(db, user, draft, transport, [cab], ledger=ledger, now=NOON)
-    assert subcategory_result.top.id == str(cab.id)
+    subcategory_result = recommend_subcategories(db, user, draft, travel, [local_transport], ledger=ledger, now=NOON)
+    assert subcategory_result.top.id == str(local_transport.id)
 
 
 # --- primitives -------------------------------------------------------------
@@ -361,13 +361,13 @@ def test_display_suppression_cannot_inflate_confidence(db, user):
 
 def test_confidence_gate_fires_on_a_settled_habit(db, user):
     for index in range(12):
-        add_transaction(db, user, category_slug="transport", merchant="Namma Metro", days_ago=index * 2 + 1)
+        add_transaction(db, user, category_slug="travel", merchant="Namma Metro", days_ago=index * 2 + 1)
     draft = make_draft(db, user, merchant="Namma Metro")
 
     result = recommend_categories(db, user, draft, expense_categories(db), ledger=ledger_for(db, user), now=NOON)
 
     assert result.is_confident
-    assert result.top.slug == "transport"
+    assert result.top.slug == "travel"
 
 
 def test_scoring_is_deterministic(db, user):

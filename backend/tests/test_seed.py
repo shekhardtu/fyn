@@ -56,7 +56,7 @@ def test_demo_user_seeding_does_not_install_taxonomy():
         engine.dispose()
 
 
-def test_demo_finances_cover_ten_categories_and_are_idempotent():
+def test_demo_finances_cover_every_demo_category_and_are_idempotent():
     engine, db = empty_db()
     try:
         user = seed_demo_user(db)
@@ -77,7 +77,9 @@ def test_demo_finances_cover_ten_categories_and_are_idempotent():
                 Transaction.transaction_at < end_at,
             )
         ))
-        assert len(current_category_ids) == 10
+        # Derived rather than counted by hand, so merging two roots into one
+        # does not leave a number here that quietly means nothing.
+        assert len(current_category_ids) == len(DEMO_CATEGORY_SLUGS)
 
         for slug in DEMO_CATEGORY_SLUGS:
             category = db.scalar(select(Category).where(Category.slug == slug))

@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.models import Category, TaxonomyScope, User
+from app.taxonomy_catalog import DEFAULT_TAXONOMY, NON_EXPENSE_CATEGORY_SLUGS
 from app.seed import DEFAULT_USER_EMAIL
 from app.services import agents
 from app.services.agent_tools import bind_existing_tool
@@ -87,8 +88,10 @@ def test_taxonomy_tool_reads_only_the_authenticated_users_visible_categories(db)
     )
     result = taxonomy_tool.entrypoint()
 
-    # Eleven system expense categories plus the signed-in user's own row.
-    assert len(result) == 12
+    # Every system expense category plus the signed-in user's own row. Derived
+    # rather than counted, so changing the catalog does not leave a number here
+    # that has quietly stopped meaning what it says.
+    assert len(result) == len(DEFAULT_TAXONOMY) - len(NON_EXPENSE_CATEGORY_SLUGS) + 1
     assert "Own category" in {item["name"] for item in result}
     assert "Other category" not in {item["name"] for item in result}
     assert result == _agent_taxonomy(db, user)

@@ -20,7 +20,7 @@ WINDOW = {"start_date": date(2026, 8, 1), "end_date": date(2026, 8, 31)}
 BUDGET_HEADERS = ["Category", "Budget Amount"]
 BUDGET_ROWS = [
     ["Food", "1000.00"],
-    ["Transport", "500.00"],
+    ["Travel", "500.00"],
     ["Rent", "20000.00"],
 ]
 
@@ -30,7 +30,7 @@ def occurred(day: date):
 
 
 def seed_native(db, user):
-    """Canonical August spend: Food 900.00, Shopping 2000.00, Transport 100.00.
+    """Canonical August spend: Food 900.00, Shopping 2000.00, Travel 100.00.
 
     Idempotent, because a test may take both source fixtures at once.
     """
@@ -38,7 +38,7 @@ def seed_native(db, user):
         return user
     categories = {
         category.slug: category
-        for category in db.scalars(select(Category).where(Category.slug.in_(["food", "transport", "shopping"])))
+        for category in db.scalars(select(Category).where(Category.slug.in_(["food", "travel", "shopping"])))
     }
     db.add_all([
         # Two Blue Tokai expenses, stored the way a bank statement writes them.
@@ -49,7 +49,7 @@ def seed_native(db, user):
                     category_id=categories["food"].id, merchant_name="BLUE TOKAI  ",
                     transaction_at=occurred(date(2026, 8, 3))),
         Transaction(user_id=user.id, transaction_type="expense", amount_minor=10_000, currency="INR",
-                    category_id=categories["transport"].id, merchant_name="Metro card",
+                    category_id=categories["travel"].id, merchant_name="Metro card",
                     transaction_at=occurred(date(2026, 8, 2))),
         Transaction(user_id=user.id, transaction_type="expense", amount_minor=200_000, currency="INR",
                     category_id=categories["shopping"].id, merchant_name="Zudio",
@@ -119,7 +119,7 @@ def test_category_spend_joins_sheet_budgets_on_exact_keys(db, budgets):
     assert result["rows"] == [
         {"key": "food", "native_key": "Food", "source_key": "Food",
          "native_value_minor": 90_000, "source_value_minor": 100_000},
-        {"key": "transport", "native_key": "Transport", "source_key": "Transport",
+        {"key": "travel", "native_key": "Travel", "source_key": "Travel",
          "native_value_minor": 10_000, "source_value_minor": 50_000},
     ]
     assert result["row_count"] == 2
@@ -166,7 +166,7 @@ def test_native_filters_narrow_only_the_native_side(db, budgets):
     )
     assert [row["key"] for row in result["rows"]] == ["food"]
     assert result["unmatched_native"] == 0
-    assert result["unmatched_source"] == 2  # Transport and Rent keep no partner
+    assert result["unmatched_source"] == 2  # Travel and Rent keep no partner
 
 
 def test_a_non_money_native_metric_keeps_a_plain_value_key(db, budgets):

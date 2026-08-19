@@ -97,7 +97,7 @@ def test_template_is_shared_while_bindings_and_saved_tools_remain_user_scoped(db
     )
 
     second_proposal = _proposal(date(2026, 8, 15))
-    second_proposal.plan.queries[0].filters[0].value = "transport"
+    second_proposal.plan.queries[0].filters[0].value = "travel"
     second = execute_analysis_template(
         db, user.id, uuid4(), date(2026, 8, 16), second_proposal
     )
@@ -111,14 +111,14 @@ def test_template_is_shared_while_bindings_and_saved_tools_remain_user_scoped(db
     assert "2026-08-16" not in serialized_template
     assert "2026-08-15" not in serialized_template
     assert "food" not in serialized_template
-    assert "transport" not in serialized_template
+    assert "travel" not in serialized_template
     assert second.template.plan_template["queries"][0]["start_date"] == {
         "$parameter": "query_1.start_date"
     }
     binding_trace = next(
         item for item in second.run.trace if item["stage"] == "parameter_binding"
     )
-    assert binding_trace["values"]["query_1.filter_1.value"] == "transport"
+    assert binding_trace["values"]["query_1.filter_1.value"] == "travel"
     assert binding_trace["values"]["query_1.end_date"] == "2026-08-15"
     assert second.run.parameters == binding_trace["values"]
 
@@ -398,16 +398,16 @@ def test_template_without_current_semantic_registry_is_not_reused(db):
 def test_generated_comparison_is_calculated_by_the_harness(db):
     user = default_user(db)
     food = db.scalar(select(Category).where(Category.slug == "food"))
-    transport = db.scalar(select(Category).where(Category.slug == "transport"))
+    transport = db.scalar(select(Category).where(Category.slug == "travel"))
     db.add_all([
         Transaction(user_id=user.id, transaction_type="expense", amount_minor=30_000, currency="INR", category_id=food.id, transaction_at=occurred(date.today())),
         Transaction(user_id=user.id, transaction_type="expense", amount_minor=10_000, currency="INR", category_id=transport.id, transaction_at=occurred(date.today())),
     ])
     db.flush()
     proposal = AnalysisToolProposal(
-        name="Compare food and transport",
-        description="Compare total recorded food and transport expenses.",
-        intent_signature="compare food transport spending",
+        name="Compare food and travel",
+        description="Compare total recorded food and travel expenses.",
+        intent_signature="compare food travel spending",
         plan=AnalysisPlan(
             objective="diagnostic",
             analysis_type="semantic_query",
@@ -416,12 +416,12 @@ def test_generated_comparison_is_calculated_by_the_harness(db):
                 name="Category comparison",
                 metric="gross_spend",
                 dimensions=["category"],
-                filters=[FinanceFilter(field="category", operator="in", value=["food", "transport"])],
+                filters=[FinanceFilter(field="category", operator="in", value=["food", "travel"])],
                 start_date=date.today().replace(day=1),
                 end_date=date.today(),
             )],
             transforms=[AnalysisTransform(
-                name="Food versus transport",
+                name="Food versus travel",
                 operation="compare_totals",
                 query_name="Category comparison",
                 dimension="category",
@@ -429,16 +429,16 @@ def test_generated_comparison_is_calculated_by_the_harness(db):
         ),
     )
     generated = execute_analysis_template(db, user.id, uuid4(), date.today(), proposal)
-    assert generated.result.message.startswith("Food is larger at ₹300, compared with ₹100 for Transport; the difference is ₹200.")
+    assert generated.result.message.startswith("Food is larger at ₹300, compared with ₹100 for Travel; the difference is ₹200.")
     # The comparison table renders as grounded markdown rows.
     assert "| Food | ₹300 |" in generated.result.message
-    assert "| Transport | ₹100 |" in generated.result.message
+    assert "| Travel | ₹100 |" in generated.result.message
 
 
 def test_ranked_exclusion_preserves_limit_and_complete_query_lineage(db):
     user = default_user(db)
     food = db.scalar(select(Category).where(Category.slug == "food"))
-    transport = db.scalar(select(Category).where(Category.slug == "transport"))
+    transport = db.scalar(select(Category).where(Category.slug == "travel"))
     db.add_all([
         Transaction(user_id=user.id, transaction_type="expense", amount_minor=30_000, currency="INR", category_id=food.id, transaction_at=occurred(date.today())),
         Transaction(user_id=user.id, transaction_type="expense", amount_minor=20_000, currency="INR", category_id=transport.id, transaction_at=occurred(date.today())),
@@ -469,8 +469,8 @@ def test_ranked_exclusion_preserves_limit_and_complete_query_lineage(db):
     generated = execute_analysis_template(db, user.id, uuid4(), date.today(), proposal)
 
     rows = generated.result.query_results[0]["rows"]
-    assert rows == [{"category": "Transport", "value": 20_000}]
-    assert "| Transport | ₹200 |" in generated.result.message
+    assert rows == [{"category": "Travel", "value": 20_000}]
+    assert "| Travel | ₹200 |" in generated.result.message
     lineage = generated.result.citations[0].query
     assert lineage["dimensions"] == ["category"]
     assert lineage["filters"] == [{"field": "category", "operator": "neq", "value": "food"}]
@@ -592,7 +592,7 @@ def test_recommendation_requires_and_returns_user_planning_context(db):
 def test_change_drivers_are_computed_from_two_periods(db):
     user = default_user(db)
     food = db.scalar(select(Category).where(Category.slug == "food"))
-    transport = db.scalar(select(Category).where(Category.slug == "transport"))
+    transport = db.scalar(select(Category).where(Category.slug == "travel"))
     previous = (date.today().replace(day=1) - timedelta(days=1)).replace(day=10)
     db.add_all([
         Transaction(user_id=user.id, transaction_type="expense", amount_minor=10_000, currency="INR", category_id=food.id, transaction_at=occurred(previous)),
@@ -636,7 +636,7 @@ def test_tool_repair_corrects_relative_month_window_and_driver_axes(db):
     wrong_end = date.today().replace(day=1) - timedelta(days=1)
     proposal = AnalysisToolProposal(
         name="Compare last three months change drivers",
-        description="Compare food and transport over the last three months and find change drivers.",
+        description="Compare food and travel over the last three months and find change drivers.",
         intent_signature="compare last three months change drivers",
         plan=AnalysisPlan(
             objective="diagnostic",

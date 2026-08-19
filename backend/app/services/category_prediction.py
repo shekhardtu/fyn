@@ -15,7 +15,7 @@ class CategoryScore:
 
 BASE_PRIORS = {
     DefaultCategorySlug.FOOD: 0.30,
-    DefaultCategorySlug.TRANSPORT: 0.24,
+    DefaultCategorySlug.TRAVEL: 0.24,
     DefaultCategorySlug.SHOPPING: 0.18,
     DefaultCategorySlug.BILLS: 0.14,
     DefaultCategorySlug.ENTERTAINMENT: 0.12,
@@ -48,9 +48,9 @@ def score_static_signals(
             scores[DefaultCategorySlug.FOOD].score += 0.22
             scores[DefaultCategorySlug.FOOD].reasons.insert(0, "Typical meal time")
     if 7 <= local_hour <= 10 or 17 <= local_hour <= 20:
-        if DefaultCategorySlug.TRANSPORT in scores:
-            scores[DefaultCategorySlug.TRANSPORT].score += 0.18
-            scores[DefaultCategorySlug.TRANSPORT].reasons.insert(0, "Typical commute time")
+        if DefaultCategorySlug.TRAVEL in scores:
+            scores[DefaultCategorySlug.TRAVEL].score += 0.18
+            scores[DefaultCategorySlug.TRAVEL].reasons.insert(0, "Typical commute time")
     if 20 <= local_hour <= 23 and DefaultCategorySlug.ENTERTAINMENT in scores:
         scores[DefaultCategorySlug.ENTERTAINMENT].score += 0.10
         scores[DefaultCategorySlug.ENTERTAINMENT].reasons.insert(0, "Evening purchase time")
@@ -58,7 +58,7 @@ def score_static_signals(
     if amount_minor is not None:
         rupees = amount_minor / 100
         if rupees <= 500:
-            for slug, boost in ((DefaultCategorySlug.FOOD, 0.16), (DefaultCategorySlug.TRANSPORT, 0.12)):
+            for slug, boost in ((DefaultCategorySlug.FOOD, 0.16), (DefaultCategorySlug.TRAVEL, 0.12)):
                 if slug in scores:
                     scores[slug].score += boost
                     scores[slug].reasons.insert(0, "Common for this amount")

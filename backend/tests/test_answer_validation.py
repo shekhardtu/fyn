@@ -52,7 +52,7 @@ def test_typed_evidence_converts_minor_units_and_declared_percentage_rounding():
 
 def test_complex_comparison_contract_requires_evidence_and_answer_coverage():
     question = (
-        "Compare my Food and Transport spending from May through August 19, "
+        "Compare my Food and Travel spending from May through August 19, "
         "group it by month, identify the largest merchants, and compare it "
         "with the previous three-month average."
     )
@@ -68,7 +68,7 @@ def test_complex_comparison_contract_requires_evidence_and_answer_coverage():
         "largest_merchant": "Fresh Foods",
         "merchant_amount_minor": 500_000,
     }, {
-        "category": "Transport",
+        "category": "Travel",
         "may_minor": 900_000,
         "june_minor": 950_000,
         "july_minor": 1_000_000,
@@ -80,11 +80,11 @@ def test_complex_comparison_contract_requires_evidence_and_answer_coverage():
     }])]
     evidence = validate_evidence("", grounding)
     complete = (
-        "Transport has the larger increase.\n\n"
+        "Travel has the larger increase.\n\n"
         "| Category | May | June | July | August 1–19 | Previous average | Difference | Top merchant |\n"
         "|---|---:|---:|---:|---:|---:|---:|---|\n"
         "| Food | ₹7,000 | ₹7,200 | ₹7,600 | ₹12,440 | ₹7,266.67 | ₹5,173.33 | Fresh Foods |\n"
-        "| Transport | ₹9,000 | ₹9,500 | ₹10,000 | ₹17,540 | ₹9,500 | ₹8,040 | City Cabs |\n\n"
+        "| Travel | ₹9,000 | ₹9,500 | ₹10,000 | ₹17,540 | ₹9,500 | ₹8,040 | City Cabs |\n\n"
         "The previous average compares August through day 19 with the same elapsed days in May, June, and July."
     )
 
@@ -103,7 +103,7 @@ def test_complex_comparison_contract_requires_evidence_and_answer_coverage():
 
 def test_complex_comparison_contract_reports_query_gaps_before_prose_gaps():
     question = (
-        "Compare Food and Transport from May through August 19, group by month, "
+        "Compare Food and Travel from May through August 19, group by month, "
         "identify the largest merchants, and compare with the previous three-month average."
     )
     contract = compile_answer_contract(question)

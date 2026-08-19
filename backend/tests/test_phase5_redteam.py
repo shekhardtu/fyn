@@ -49,11 +49,11 @@ def occurred(day: date):
     return from_local_parts(day, None, "Asia/Kolkata")
 
 
-def seed_native(db, user, merchants=(("BLUE TOKAI  ", "food", 45_000), ("Metro card", "transport", 10_000))):
+def seed_native(db, user, merchants=(("BLUE TOKAI  ", "food", 45_000), ("Metro card", "travel", 10_000))):
     """A small canonical ledger for one user, in that user's own tenant."""
     categories = {
         category.slug: category
-        for category in db.scalars(select(Category).where(Category.slug.in_(["food", "transport", "shopping"])))
+        for category in db.scalars(select(Category).where(Category.slug.in_(["food", "travel", "shopping"])))
     }
     db.add_all([
         Transaction(
@@ -571,7 +571,7 @@ def test_resolving_one_tenant_never_deletes_anothers_links(db):
     theirs = User(email=f"redteam-{uuid4().hex}@example.com", display_name="Stranger")
     db.add(theirs)
     db.flush()
-    seed_native(db, theirs, merchants=(("Metro card", "transport", 100),))
+    seed_native(db, theirs, merchants=(("Metro card", "travel", 100),))
     resolve_merchants(db, theirs)
     their_rows = {(row.alias, row.canonical) for row in db.scalars(
         select(EntityLink).where(EntityLink.user_id == theirs.id)

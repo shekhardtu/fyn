@@ -5,7 +5,6 @@ from .domain import TransactionType, ValueEnum
 
 class DefaultCategorySlug(ValueEnum):
     FOOD = "food"
-    TRANSPORT = "transport"
     SHOPPING = "shopping"
     ENTERTAINMENT = "entertainment"
     BILLS = "bills"
@@ -50,13 +49,16 @@ def category_slug_matches_transaction_type(
 
 DEFAULT_TAXONOMY = {
     DefaultCategorySlug.FOOD: ("Food", "utensils", [("groceries", "Groceries"), ("dining", "Dining"), ("delivery", "Delivery"), ("coffee", "Coffee"), ("ice_cream", "Ice cream"), OTHER_SUBCATEGORY]),
-    DefaultCategorySlug.TRANSPORT: ("Transport", "car", [("cab", "Cab"), ("fuel", "Fuel"), ("public_transit", "Public transit"), ("flights", "Flights"), ("parking", "Parking"), ("tolls", "Tolls"), OTHER_SUBCATEGORY]),
     DefaultCategorySlug.SHOPPING: ("Shopping", "shopping-bag", [("clothing", "Clothing"), ("electronics", "Electronics"), ("household", "Household"), ("gifts", "Gifts"), ("beauty", "Beauty"), ("books", "Books"), OTHER_SUBCATEGORY]),
     DefaultCategorySlug.ENTERTAINMENT: ("Entertainment", "sparkles", [("movies", "Movies"), ("events", "Events"), ("games", "Games"), ("music", "Music"), ("hobbies", "Hobbies"), ("streaming", "Streaming"), OTHER_SUBCATEGORY]),
     DefaultCategorySlug.BILLS: ("Bills", "receipt", [("utilities", "Utilities"), ("internet", "Internet"), ("phone", "Phone"), ("subscriptions", "Subscriptions"), ("insurance", "Insurance"), ("maintenance", "Maintenance"), OTHER_SUBCATEGORY]),
     DefaultCategorySlug.HEALTH: ("Health", "heart-pulse", [("doctor", "Doctor"), ("pharmacy", "Pharmacy"), ("fitness", "Fitness"), ("dental", "Dental"), ("therapy", "Therapy"), ("diagnostics", "Diagnostics"), OTHER_SUBCATEGORY]),
     DefaultCategorySlug.HOUSING: ("Housing", "house", [("rent", "Rent"), ("maintenance", "Maintenance"), ("repairs", "Repairs"), ("furnishings", "Furnishings"), ("domestic_help", "Domestic help"), ("appliances", "Appliances"), OTHER_SUBCATEGORY]),
     DefaultCategorySlug.EDUCATION: ("Education", "graduation-cap", [("courses", "Courses"), ("tuition", "Tuition"), ("books", "Books"), ("certifications", "Certifications"), ("school_fees", "School fees"), ("workshops", "Workshops"), OTHER_SUBCATEGORY]),
+    # Replaced the former Transport root outright rather than absorbing its
+    # subcategories: getting somewhere is one activity whether it is a commute
+    # or a holiday, and the split had "flights" under both. Anyone who wants
+    # Fuel or Tolls back can add them — custom categories exist for exactly this.
     DefaultCategorySlug.TRAVEL: ("Travel", "plane", [("accommodation", "Accommodation"), ("flights", "Flights"), ("trains", "Trains"), ("local_transport", "Local transport"), ("activities", "Activities"), ("visa", "Visa and documents"), OTHER_SUBCATEGORY]),
     DefaultCategorySlug.PERSONAL_CARE: ("Personal care", "sparkles", [("salon", "Salon"), ("grooming", "Grooming"), ("skincare", "Skincare"), ("wellness", "Wellness"), ("laundry", "Laundry"), OTHER_SUBCATEGORY]),
     DefaultCategorySlug.INCOME: ("Income", "wallet", [("salary", "Salary"), ("freelance", "Freelance"), ("interest", "Interest"), OTHER_SUBCATEGORY]),

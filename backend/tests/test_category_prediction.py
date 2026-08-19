@@ -24,8 +24,8 @@ def test_small_mealtime_amount_ranks_food_first_with_reasons(db):
 def test_description_signal_outranks_time_prior(db):
     scores = score_static_signals(expense_categories(db), "₹800 for travelling", 80_000, local_hour=13)
 
-    assert ranked_slugs(scores)[0] == "transport"
-    assert scores["transport"].reasons[0] == "Matched your description"
+    assert ranked_slugs(scores)[0] == "travel"
+    assert scores["travel"].reasons[0] == "Matched your description"
 
 
 def test_prior_distribution_is_normalised_and_carries_its_reasons(db):

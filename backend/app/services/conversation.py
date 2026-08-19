@@ -3276,9 +3276,14 @@ def _compile_known_analysis(db: Session, user: User, text: str) -> CopilotDecisi
         intent = "monthly spending change drivers"
     elif "compare" in lowered or "which is larger" in lowered or "which was larger" in lowered:
         aliases = {
-            "travelling": DefaultCategorySlug.TRANSPORT,
-            "traveling": DefaultCategorySlug.TRANSPORT,
-            "travel": DefaultCategorySlug.TRANSPORT,
+            "travelling": DefaultCategorySlug.TRAVEL,
+            "traveling": DefaultCategorySlug.TRAVEL,
+            "travel": DefaultCategorySlug.TRAVEL,
+            # Transport was a category until it was replaced by Travel, and
+            # people go on asking for it by the word they have always used.
+            # The label changed; what someone means by it did not.
+            "transport": DefaultCategorySlug.TRAVEL,
+            "commute": DefaultCategorySlug.TRAVEL,
             "restaurant": DefaultCategorySlug.FOOD,
             "restaurants": DefaultCategorySlug.FOOD,
         }

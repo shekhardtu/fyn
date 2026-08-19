@@ -322,7 +322,7 @@ def test_a_single_income_record_produces_no_cadence_trait(db):
 def test_category_baselines_average_three_complete_months_only(db):
     user = default_user(db)
     food = db.scalar(select(Category).where(Category.slug == "food"))
-    transport = db.scalar(select(Category).where(Category.slug == "transport"))
+    transport = db.scalar(select(Category).where(Category.slug == "travel"))
     for month in (5, 6, 7):
         _expense(db, user, amount=30_000, at=_at(2026, month, 10), category=food)
     _expense(db, user, amount=15_000, at=_at(2026, 6, 12), category=transport)
@@ -340,7 +340,7 @@ def test_category_baselines_average_three_complete_months_only(db):
     assert baselines["currency"] == "INR"
     assert baselines["categories"] == [
         {"slug": "food", "name": "Food", "mean_minor": 30_000},
-        {"slug": "transport", "name": "Transport", "mean_minor": 5_000},
+        {"slug": "travel", "name": "Travel", "mean_minor": 5_000},
     ]
     # Spend without a category is reported, not silently dropped.
     assert baselines["uncategorized_mean_minor"] == 1_000

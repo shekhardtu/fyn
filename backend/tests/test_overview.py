@@ -33,14 +33,14 @@ def test_overview_groups_expenses_by_category_and_subcategory(db):
     food = db.scalar(select(Category).where(Category.slug == "food"))
     delivery = db.scalar(select(Subcategory).where(Subcategory.category_id == food.id, Subcategory.slug == "delivery"))
     groceries = db.scalar(select(Subcategory).where(Subcategory.category_id == food.id, Subcategory.slug == "groceries"))
-    transport = db.scalar(select(Category).where(Category.slug == "transport"))
-    cab = db.scalar(select(Subcategory).where(Subcategory.category_id == transport.id, Subcategory.slug == "cab"))
+    travel = db.scalar(select(Category).where(Category.slug == "travel"))
+    local_transport = db.scalar(select(Subcategory).where(Subcategory.category_id == travel.id, Subcategory.slug == "local_transport"))
 
     db.add_all([
         _transaction(user, amount=8_200_000, kind="income", at="2026-08-01T09:00:00", category=None),
         _transaction(user, amount=700_000, kind="expense", at="2026-08-04T09:00:00", category=food, subcategory=delivery),
         _transaction(user, amount=440_000, kind="expense", at="2026-08-05T09:00:00", category=food, subcategory=groceries),
-        _transaction(user, amount=620_000, kind="expense", at="2026-08-06T09:00:00", category=transport, subcategory=cab),
+        _transaction(user, amount=620_000, kind="expense", at="2026-08-06T09:00:00", category=travel, subcategory=local_transport),
         _transaction(user, amount=100_000, kind="expense", at="2026-08-07T09:00:00", category=None),
         _transaction(user, amount=999_999, kind="expense", at="2026-08-08T09:00:00", category=food, subcategory=delivery, deleted=True),
         _transaction(user, amount=1_400_000, kind="expense", at="2026-07-08T09:00:00", category=food, subcategory=delivery),
@@ -67,7 +67,7 @@ def test_overview_groups_expenses_by_category_and_subcategory(db):
         "change_minor": 460_000,
         "change_percent": 32.9,
     }
-    assert [category["id"] for category in result["categories"]] == ["food", "transport", "uncategorized"]
+    assert [category["id"] for category in result["categories"]] == ["food", "travel", "uncategorized"]
     assert result["categories"][0] == {
         "id": "food",
         "label": "Food",

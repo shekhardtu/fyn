@@ -42,7 +42,7 @@ LINEAGE = {
 
 ROWS = [
     {"category": "Food", "value_minor": 30_000},
-    {"category": "Transport", "value_minor": 10_000},
+    {"category": "Travel", "value_minor": 10_000},
 ]
 
 
@@ -147,7 +147,7 @@ def test_dataset_id_normalizes_free_query_names():
 def _seed_category_spending(db) -> None:
     user = default_user(db)
     food = db.scalar(select(Category).where(Category.slug == "food"))
-    transport = db.scalar(select(Category).where(Category.slug == "transport"))
+    transport = db.scalar(select(Category).where(Category.slug == "travel"))
     db.add_all([
         Transaction(user_id=user.id, transaction_type="expense", amount_minor=30_000, currency="INR", category_id=food.id, transaction_at=occurred(date.today())),
         Transaction(user_id=user.id, transaction_type="expense", amount_minor=10_000, currency="INR", category_id=transport.id, transaction_at=occurred(date.today())),

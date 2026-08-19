@@ -308,7 +308,7 @@ def test_governed_time_grouping_zero_fills_bounded_additive_series(db):
 def test_negative_category_filters_are_governed_and_preserve_uncategorized_rows(db):
     user = default_user(db)
     food = db.scalar(select(Category).where(Category.slug == "food"))
-    transport = db.scalar(select(Category).where(Category.slug == "transport"))
+    transport = db.scalar(select(Category).where(Category.slug == "travel"))
     db.add_all([
         Transaction(user_id=user.id, transaction_type="expense", amount_minor=30_000, currency="INR", category_id=food.id, transaction_at=occurred(date(2026, 8, 10))),
         Transaction(user_id=user.id, transaction_type="expense", amount_minor=20_000, currency="INR", category_id=transport.id, transaction_at=occurred(date(2026, 8, 10))),
@@ -322,13 +322,13 @@ def test_negative_category_filters_are_governed_and_preserve_uncategorized_rows(
         filters=[FinanceFilter(field="category", operator="neq", value="food")],
     ))
     assert result["rows"] == [
-        {"category": "Transport", "value": 20_000},
+        {"category": "Travel", "value": 20_000},
         {"category": "Uncategorized", "value": 10_000},
     ]
 
     result = execute_finance_query(db, user.id, _query(
         "gross_spend",
         dimensions=["category"],
-        filters=[FinanceFilter(field="category", operator="not_in", value=["food", "transport"])],
+        filters=[FinanceFilter(field="category", operator="not_in", value=["food", "travel"])],
     ))
     assert result["rows"] == [{"category": "Uncategorized", "value": 10_000}]

@@ -25,8 +25,8 @@ def test_money_page_endpoints_share_taxonomy_and_transaction_truth(db):
     user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
     food = db.scalar(select(Category).where(Category.slug == "food"))
     delivery = db.scalar(select(Subcategory).where(Subcategory.category_id == food.id, Subcategory.slug == "delivery"))
-    transport = db.scalar(select(Category).where(Category.slug == "transport"))
-    cab = db.scalar(select(Subcategory).where(Subcategory.category_id == transport.id, Subcategory.slug == "cab"))
+    travel = db.scalar(select(Category).where(Category.slug == "travel"))
+    local_transport = db.scalar(select(Subcategory).where(Subcategory.category_id == travel.id, Subcategory.slug == "local_transport"))
     transaction = Transaction(
         user_id=user.id,
         transaction_type="expense",
@@ -74,15 +74,15 @@ def test_money_page_endpoints_share_taxonomy_and_transaction_truth(db):
             "merchant": "Uber",
             "transactionAt": "2026-08-13T10:00:00Z",
             "transactionType": "expense",
-            "categoryId": str(transport.id),
-            "subcategoryId": str(cab.id),
+            "categoryId": str(travel.id),
+            "subcategoryId": str(local_transport.id),
             "spendNature": "essential",
             "location": "Bengaluru",
         })
         assert updated.status_code == 200
         assert updated.json()["amountMinor"] == 72_500
-        assert updated.json()["category"] == "Transport"
-        assert updated.json()["subcategory"] == "Cab"
+        assert updated.json()["category"] == "Travel"
+        assert updated.json()["subcategory"] == "Local transport"
         assert updated.json()["location"] == "Bengaluru"
 
         created = client.post("/api/transactions", json={
@@ -90,14 +90,14 @@ def test_money_page_endpoints_share_taxonomy_and_transaction_truth(db):
             "merchant": "Namma Metro",
             "transactionAt": "2026-08-13T11:00:00Z",
             "transactionType": "expense",
-            "categoryId": str(transport.id),
+            "categoryId": str(travel.id),
             "subcategoryId": None,
             "spendNature": "essential",
             "location": "Bengaluru",
         })
         assert created.status_code == 201
         assert created.json()["merchant"] == "Namma Metro"
-        assert created.json()["category"] == "Transport"
+        assert created.json()["category"] == "Travel"
         created_id = UUID(created.json()["id"])
 
         searched = client.get("/api/transactions", params={"q": "metro", "transaction_type": "expense"})
@@ -110,8 +110,8 @@ def test_money_page_endpoints_share_taxonomy_and_transaction_truth(db):
 
     db.refresh(transaction)
     assert transaction.merchant_name == "Uber"
-    assert transaction.category_id == transport.id
-    assert transaction.subcategory_id == cab.id
+    assert transaction.category_id == travel.id
+    assert transaction.subcategory_id == local_transport.id
     assert db.scalar(select(func.count()).select_from(TransactionFieldValue).where(TransactionFieldValue.transaction_id == transaction.id)) == 8
     assert db.scalar(select(func.count()).select_from(TransactionFieldValue).where(TransactionFieldValue.transaction_id == created_id)) == 8
     assert set(db.scalars(select(TransactionFieldValue.origin).where(TransactionFieldValue.transaction_id == created_id))) == {"manual_entry"}

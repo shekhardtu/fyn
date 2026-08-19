@@ -21,13 +21,10 @@ DEMO_EXPENSES = (
     ("food", "coffee", "Blue Tokai", 78_000),
     ("food", "ice_cream", "Naturals", 54_000),
     ("food", "other", "Office snacks", 62_000),
-    ("transport", "cab", "Uber", 185_000),
-    ("transport", "fuel", "IndianOil", 360_000),
-    ("transport", "public_transit", "Namma Metro", 62_000),
-    ("transport", "flights", "IndiGo", 980_000),
-    ("transport", "parking", "Park+", 45_000),
-    ("transport", "tolls", "FASTag", 70_000),
-    ("transport", "other", "Auto rides", 52_000),
+    ("travel", "local_transport", "Uber", 185_000),
+    ("travel", "local_transport", "Namma Metro", 62_000),
+    ("travel", "flights", "IndiGo", 980_000),
+    ("travel", "other", "Auto rides", 52_000),
     ("shopping", "clothing", "Uniqlo", 349_000),
     ("shopping", "electronics", "Croma", 699_000),
     ("shopping", "household", "IKEA", 228_000),
@@ -86,7 +83,7 @@ DEMO_EXPENSES = (
 )
 
 DEMO_CATEGORY_SLUGS = frozenset(item[0] for item in DEMO_EXPENSES)
-ESSENTIAL_CATEGORIES = frozenset({"food", "transport", "bills", "health", "housing", "education"})
+ESSENTIAL_CATEGORIES = frozenset({"food", "travel", "bills", "health", "housing", "education"})
 PREVIOUS_MONTH_FACTORS = (86, 93, 101, 89, 96)
 TWO_MONTHS_AGO_FACTORS = (82, 97, 88, 104, 91)
 DEMO_MONTH_FACTORS = {
@@ -197,7 +194,11 @@ def seed_demo_finances(db: Session, user: User, *, today: date | None = None) ->
         for index, (category_slug, subcategory_slug, merchant, current_amount) in enumerate(DEMO_EXPENSES):
             amount_minor = current_amount * factors[index % len(factors)] // 100
             add_transaction(
-                key=f"{DEMO_MARKER}:{month:%Y-%m}:expense:{category_slug}:{subcategory_slug}",
+                # The merchant is part of the key because one subcategory can carry
+                # several of them — travel/flights holds a domestic and an
+                # international airline. Keying on the path alone made the second
+                # row overwrite the first and silently shrink the demo month.
+                key=f"{DEMO_MARKER}:{month:%Y-%m}:expense:{category_slug}:{subcategory_slug}:{merchant}",
                 kind=TransactionType.EXPENSE,
                 amount_minor=amount_minor,
                 occurred_at=_at(month, index, user.timezone, through_day=through_day),
