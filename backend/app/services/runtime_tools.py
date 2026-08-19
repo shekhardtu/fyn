@@ -9,7 +9,7 @@ from typing import Callable, get_args, Literal
 from sqlalchemy.orm import Session
 
 from ..models import User
-from . import analytics, calculators, taxonomy
+from . import calculators, grounding_tools, taxonomy
 from .agent_tools import bind_existing_tool, contract_for
 
 
@@ -46,7 +46,7 @@ class RuntimeToolSpec:
 
 
 _DEPENDENCY_NAMES = frozenset(get_args(Dependency))
-_RUNTIME_TOOL_MODULES = (taxonomy, analytics, calculators)
+_RUNTIME_TOOL_MODULES = (taxonomy, grounding_tools, calculators)
 
 
 def _annotated_functions(module: ModuleType) -> tuple[Callable, ...]:
@@ -81,3 +81,30 @@ def build_runtime_tools(db: Session, user: User, today: date) -> list:
 def runtime_tool_contract(name: str):
     spec = next((item for item in RUNTIME_TOOL_REGISTRY if item.name == name), None)
     return contract_for(spec.function) if spec else None
+
+
+def capability_notes() -> list[str]:
+    """One-line answerability notes for suggestion grounding.
+
+    Derived from the same registry the Operator binds, so a suggested question
+    can never reference a capability the product does not have.
+    """
+    notes = [
+        f"{contract.name}: {contract.description}"
+        for contract in (contract_for(spec.function) for spec in RUNTIME_TOOL_REGISTRY)
+        if contract
+    ]
+    notes.append(
+        "Governed workflows: record or edit transactions, category and subcategory changes, "
+        "budgets and goals, transaction lists, charts and dashboards over recorded transactions."
+    )
+    # Analytical reads are not runtime tools — they execute through the template
+    # pool and the governed harness — so the registry cannot describe them and
+    # this note must, or the suggester would rule out questions fyn can answer.
+    notes.append(
+        "Governed analyses: spending totals and breakdowns by category, subcategory, merchant, "
+        "account or month for any period; month-over-month and period comparisons; income, "
+        "expenses and net cash position; recurring expenses and subscriptions; change drivers "
+        "and affordability checks."
+    )
+    return notes

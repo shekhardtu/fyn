@@ -1,0 +1,56 @@
+# edge — the box's single TLS terminator and host router.
+#
+# Owns :80/:443 and nothing else. It knows no application logic: every route
+# lives in a per-app file under sites/, dropped there by that app's own deploy.
+#
+# Boundary contract for anything that wants a public hostname:
+#   1. Join the external `edge` network with an explicit alias `<app>-<role>`.
+#      Aliases are namespaced by hand because Compose would otherwise expose a
+#      bare service name ("web", "api") onto a network shared by every app.
+#   2. Put exactly ONE container on `edge` — the app's own front door. Databases
+#      and workers stay on the app's private default network, unreachable from
+#      here and from every neighbour.
+#   3. Own exactly one file: sites/<app>.caddy. Never edit another app's.
+#   4. Reload with `caddy validate` first, then `caddy reload`. Never restart:
+#      a restart drops every app's connections, and an unvalidated config that
+#      fails to parse would take the whole box's ingress down.
+
+name: edge
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    # Caddy is a proxy, not a workload. A cap this low also means a runaway
+    # here cannot starve the applications behind it.
+    mem_limit: 192m
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    env_file:
+      - .env
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./sites:/etc/caddy/sites:ro
+      # The certificate store for every hostname on the box. Migrated from
+      # jitraa_caddy-data during the edge split so Let's Encrypt was not
+      # re-issued against its rate limits.
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - edge
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+
+networks:
+  edge:
+    name: edge
+    external: true
+
+volumes:
+  caddy-data:
+  caddy-config:

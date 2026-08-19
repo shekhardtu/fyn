@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Message, Widget } from "@/lib/protocol";
-import { activeWidgetId, applyWidgetUpdates, isLegacyAnalysisLifecycleWidget } from "@/lib/widget-state";
+import { activeWidgetId, adoptUserMessageIdentity, applyWidgetUpdates, completedWidgetIds, reconcileUsedWidgetIds, shouldAdoptServerTranscript, transcriptRevision } from "@/lib/widget-state";
 
 function widget(id: string, actionable = true): Widget {
   return {
@@ -13,7 +13,8 @@ function widget(id: string, actionable = true): Widget {
 }
 
 function message(id: string, role: Message["role"], widgets: Widget[]): Message {
-  return { id, role, content: "", widgets, citations: [], created_at: new Date().toISOString() };
+  const deliveredAt = new Date().toISOString();
+  return { id, role, content: "", widgets, citations: [], created_at: deliveredAt, delivered_at: deliveredAt };
 }
 
 describe("activeWidgetId", () => {
@@ -40,16 +41,81 @@ describe("activeWidgetId", () => {
     expect(activeWidgetId([message("a1", "assistant", [widget("action"), trace])])).toBe("action");
   });
 
-  it("recognizes historical analysis lifecycle cards for compatibility hiding", () => {
-    const lifecycle: Widget = {
-      id: "generated-tool-old",
-      type: "insight_card",
+  it("keeps a HITL card active when related questions are appended after it", () => {
+    const related: Widget = {
+      id: "related",
+      type: "related_questions",
       version: 1,
-      data: { eyebrow: "Validated analysis capability", title: "old_tool" },
+      data: { questions: ["Review this budget"] },
       actions: [],
     };
-    expect(isLegacyAnalysisLifecycleWidget(lifecycle)).toBe(true);
-    expect(activeWidgetId([message("a1", "assistant", [widget("action"), lifecycle])])).toBe("action");
+    expect(activeWidgetId([message("a1", "assistant", [widget("budget"), related])])).toBe("budget");
+  });
+});
+
+describe("completedWidgetIds", () => {
+  it("lets a newer pending legacy widget recover when an older card reused its id", () => {
+    const saved = widget("budget-resource");
+    saved.data.lifecycle = "completed";
+    const editor = widget("budget-resource");
+    editor.data.lifecycle = "pending";
+
+    expect(completedWidgetIds([
+      message("saved", "assistant", [saved]),
+      message("editor", "assistant", [editor]),
+    ])).not.toContain("budget-resource");
+  });
+
+  it("unlocks a newly emitted pending interaction even if it repeats a used legacy id", () => {
+    const next = widget("budget-resource");
+
+    expect(reconcileUsedWidgetIds(
+      new Set(["older-widget"]),
+      "budget-resource",
+      [next],
+    )).toEqual(new Set(["older-widget"]));
+  });
+
+  it("keeps a completed response locked", () => {
+    const receipt = widget("budget-resource");
+    receipt.data.lifecycle = "completed";
+
+    expect(reconcileUsedWidgetIds(
+      new Set(),
+      "budget-resource",
+      [receipt],
+    )).toEqual(new Set(["budget-resource"]));
+  });
+});
+
+describe("adoptUserMessageIdentity", () => {
+  const persistedId = "3f7256bb-4c1d-4a08-9f7e-2f65a1c0d9ab";
+
+  it("retires the optimistic bubble id with the persisted one", () => {
+    const updated = adoptUserMessageIdentity([
+      message("assistant-1", "assistant", []),
+      message("optimistic-1755350000000", "user", []),
+    ], persistedId);
+    expect(updated.map((item) => item.id)).toEqual(["assistant-1", persistedId]);
+  });
+
+  it("retires an upload bubble the same way", () => {
+    const updated = adoptUserMessageIdentity([message("upload-1755350000000", "user", [])], persistedId);
+    expect(updated[0].id).toBe(persistedId);
+  });
+
+  it("leaves the transcript alone when the newest user turn is already persisted", () => {
+    const messages = [
+      message("optimistic-1755340000000", "user", []),
+      message(persistedId, "user", []),
+    ];
+    expect(adoptUserMessageIdentity(messages, "6de0a1b2-8f3c-4d5e-9a7b-1c2d3e4f5a6b")).toBe(messages);
+  });
+
+  it("leaves the transcript alone when the persisted id is absent or already present", () => {
+    const messages = [message(persistedId, "user", [])];
+    expect(adoptUserMessageIdentity(messages, null)).toBe(messages);
+    expect(adoptUserMessageIdentity(messages, persistedId)).toBe(messages);
   });
 });
 
@@ -67,5 +133,45 @@ describe("applyWidgetUpdates", () => {
     expect(updated[0].id).toBe("assistant-1");
     expect(updated[0].widgets[0].data).toMatchObject({ name: "Flights", lifecycle: "completed" });
     expect(updated[0].widgets[0].actions).toEqual([]);
+  });
+});
+
+describe("server transcript adoption", () => {
+  it("adopts a persisted related-question widget added to a cached message", () => {
+    const cached = [message("assistant-1", "assistant", [widget("trace", false)])];
+    const related: Widget = {
+      id: "related-assistant-1",
+      type: "related_questions",
+      version: 1,
+      data: { questions: ["Which August 2026 categories cost the most?"] },
+      actions: [],
+    };
+    const refreshed = [{ ...cached[0], widgets: [...cached[0].widgets, related] }];
+
+    expect(shouldAdoptServerTranscript({
+      messages: cached,
+      seededRevision: transcriptRevision(cached),
+      serverRevision: transcriptRevision(refreshed),
+      activeRunId: null,
+      pendingWidget: null,
+      uploading: false,
+    })).toBe(true);
+  });
+
+  it("does not overwrite optimistic or in-flight transcript state", () => {
+    const cached = [message("assistant-1", "assistant", [])];
+    const refreshedRevision = transcriptRevision([...cached, message("assistant-2", "assistant", [])]);
+    const base = {
+      seededRevision: transcriptRevision(cached),
+      serverRevision: refreshedRevision,
+      activeRunId: null,
+      pendingWidget: null,
+      uploading: false,
+    };
+
+    expect(shouldAdoptServerTranscript({ ...base, messages: [message("optimistic-1", "user", [])] })).toBe(false);
+    expect(shouldAdoptServerTranscript({ ...base, messages: cached, activeRunId: "run-1" })).toBe(false);
+    expect(shouldAdoptServerTranscript({ ...base, messages: cached, pendingWidget: "widget-1" })).toBe(false);
+    expect(shouldAdoptServerTranscript({ ...base, messages: cached, uploading: true })).toBe(false);
   });
 });

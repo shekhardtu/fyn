@@ -29,3 +29,4 @@ def test_conversation_messages_are_loaded_and_serialized_oldest_first(db):
     assert [message.content for message in loaded.messages] == ["First", "Second"]
     serialized = ConversationOut.model_validate(loaded)
     assert [message.content for message in serialized.messages] == ["First", "Second"]
+    assert all(message.delivered_at is not None for message in serialized.messages)

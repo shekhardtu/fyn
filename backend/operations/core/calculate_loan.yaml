@@ -1,0 +1,12 @@
+apiVersion: fyn.ai/v1
+kind: Operation
+metadata: {id: calculate_loan, version: 1, title: Loan calculation, namespace: finance, owner: engineering, enabled: true}
+discovery: {description: Open the deterministic loan calculator, aliases: [loan prepayment, EMI], examples: [Calculate loan prepayment savings], negativeExamples: [], modelSelectable: false}
+eligibility: {requiredPermissions: [], expectedEffect: none, access: compute}
+input: {schema: {type: object, additionalProperties: false, properties: {}}}
+instructions: {selection: Use for deterministic loan scenarios.}
+routing: {strategy: decision, bindings: {}}
+execution: {steps: [{id: execute, uses: calculator.loan@1}], label: Opening deterministic loan calculator, metric: loan, validation: deterministic}
+approval: {minimum: never}
+presentation: {success: {title: Loan calculator ready, message: The loan calculator is ready.}, failure: {title: Calculator unavailable, message: The loan calculation could not be prepared.}}
+tests: [{name: loan route, request: Calculate loan prepayment savings, expectedEffect: none, expectedApproval: never}]

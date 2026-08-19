@@ -14,6 +14,14 @@ ARG VITE_GOOGLE_CLIENT_ID=
 ENV VITE_API_URL=$VITE_API_URL
 ENV VITE_GOOGLE_CLIENT_ID=$VITE_GOOGLE_CLIENT_ID
 
+# Caps the Vite build's heap. On a small shared host the bundler is the largest
+# memory consumer on the box, and an uncapped Node heap grows until the kernel
+# OOM killer picks a victim — which may be a neighbouring application, not this
+# build. BuildKit ignores `docker build --memory`, so the ceiling has to be set
+# inside the build. Empty by default: local builds stay unconstrained.
+ARG NODE_OPTIONS=
+ENV NODE_OPTIONS=$NODE_OPTIONS
+
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY . .
 RUN npm run build

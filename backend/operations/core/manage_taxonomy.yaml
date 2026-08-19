@@ -1,0 +1,26 @@
+apiVersion: fyn.ai/v1
+kind: Operation
+metadata: {id: manage_taxonomy, version: 1, title: Manage categories, namespace: finance, owner: engineering, enabled: true}
+discovery: {description: Protected fallback for creating or managing user-owned categories and subcategories, aliases: [core taxonomy fallback], examples: [Prepare a protected taxonomy change], negativeExamples: [Show my categories], modelSelectable: false}
+eligibility: {requiredPermissions: [taxonomy.write], expectedEffect: mutation, access: workflow}
+input:
+  schema:
+    type: object
+    additionalProperties: false
+    required: [operation]
+    properties:
+      operation: {type: string, enum: [create_category, create_subcategory, create_taxonomy_path]}
+      name: {type: string, minLength: 1, maxLength: 80}
+      parent_category: {type: string, minLength: 1, maxLength: 80}
+      subcategories: {type: array, maxItems: 10, items: {type: string, minLength: 1, maxLength: 80}}
+instructions: {selection: Use for category and subcategory mutations.}
+routing: {strategy: decision, bindings: {taxonomy: "${input}"}}
+execution: {steps: [{id: execute, uses: taxonomy.change@1}], label: Preparing a governed taxonomy change, validation: model}
+approval: {minimum: required}
+presentation: {success: {title: Categories updated, message: The approved taxonomy change was completed.}, failure: {title: Categories unchanged, message: No taxonomy change was made.}}
+tests:
+  - name: taxonomy route
+    request: Prepare a protected taxonomy change
+    expectedInputs: {operation: create_taxonomy_path, name: Browser Test, subcategories: [Checks]}
+    expectedEffect: mutation
+    expectedApproval: required

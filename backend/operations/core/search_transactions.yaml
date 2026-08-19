@@ -1,0 +1,38 @@
+apiVersion: fyn.ai/v1
+kind: Operation
+metadata: {id: search_transactions, version: 1, title: Search transactions, namespace: finance, owner: engineering, enabled: true}
+discovery: {description: Summarize canonical user transactions over a filter scope, aliases: [spending total, filtered summary], examples: [How much did I spend on housing in August], negativeExamples: [Add an expense, Show my last five expenses]}
+eligibility: {requiredPermissions: [transactions.read], expectedEffect: none, access: read}
+input:
+  schema:
+    type: object
+    additionalProperties: false
+    properties:
+      metric: {type: string, maxLength: 100}
+      result_mode: {type: string, enum: [summary]}
+      operation: {type: string, enum: [total, count, average, breakdown, rank, compare, recurring]}
+      group_by: {type: string, enum: [none, category, subcategory, merchant, account, transaction_type, tag, spend_nature, location, currency, status, month, date]}
+      sort_direction: {type: string, enum: [asc, desc]}
+      transaction_type: {type: string, enum: [expense, income, refund, transfer, adjustment]}
+      merchant: {type: string, maxLength: 160}
+      category_slug: {type: string, maxLength: 120}
+      subcategory_slug: {type: string, maxLength: 120}
+      account: {type: string, maxLength: 120}
+      tag: {type: string, maxLength: 80}
+      min_amount_minor: {type: integer, minimum: 0}
+      max_amount_minor: {type: integer, minimum: 0}
+      start_date: {type: string, format: date}
+      end_date: {type: string, format: date}
+      limit: {type: integer, minimum: 1, maximum: 100}
+      use_active_scope: {type: boolean}
+instructions: {selection: "Use for filtered totals and grouped breakdowns. Listing individual records belongs to the transaction_list tool, not to this operation."}
+routing: {strategy: decision, bindings: {query: "${input}"}}
+execution: {steps: [{id: execute, uses: transaction.search@1}], label: Searching canonical transactions, validation: deterministic}
+approval: {minimum: never}
+presentation: {success: {title: Summary ready, message: The transaction summary is ready.}, failure: {title: Summary unavailable, message: The transaction summary could not be completed.}}
+tests:
+  - name: transaction summary route
+    request: How much did I spend on housing in August
+    expectedInputs: {result_mode: summary, operation: total, transaction_type: expense, category_slug: housing}
+    expectedEffect: none
+    expectedApproval: never

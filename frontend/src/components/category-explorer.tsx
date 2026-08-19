@@ -54,7 +54,7 @@ export function CategoryExplorer({
 
     <div className="grid gap-px lg:grid-cols-[0.9fr_1.1fr]">
       <div className="bg-surface p-2 sm:p-3">
-        <div className="space-y-1" aria-label="Expense categories">
+        <div role="group" className="space-y-1" aria-label="Expense categories">
           {categories.map((category) => {
             const active = category.id === selected.id;
             return <button
@@ -89,7 +89,7 @@ export function CategoryExplorer({
           <span className="rounded-md border border-line bg-surface px-2 py-1 text-meta font-medium text-ink-muted">{selected.count} transaction{selected.count === 1 ? "" : "s"}</span>
         </div>
 
-        <div className="mt-6 space-y-4" aria-label={`${selected.label} subcategories`}>
+        <div role="group" className="mt-6 space-y-4" aria-label={`${selected.label} subcategories`}>
           {selected.subcategories.map((subcategory) => <div key={subcategory.id}>
             <div className="flex items-baseline justify-between gap-4">
               <div className="min-w-0">

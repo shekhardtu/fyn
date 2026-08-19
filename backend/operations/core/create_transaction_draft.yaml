@@ -1,0 +1,94 @@
+apiVersion: fyn.ai/v1
+kind: Operation
+metadata:
+  {
+    id: create_transaction_draft,
+    version: 1,
+    title: Record transaction,
+    namespace: finance,
+    owner: engineering,
+    enabled: true,
+  }
+discovery:
+  {
+    description: Prepare and commit a user transaction through its governed draft,
+    aliases: [record expense, add income],
+    examples: [Record ₹500 spent at Cafe Coffee Day],
+    negativeExamples: [Show my expenses],
+  }
+eligibility:
+  {
+    requiredPermissions: [transactions.write],
+    expectedEffect: mutation,
+    access: write,
+  }
+input:
+  schema:
+    type: object
+    additionalProperties: false
+    properties:
+      transaction_type:
+        {
+          type: string,
+          enum:
+            [
+              expense,
+              income,
+              transfer,
+              investment,
+              loan_payment,
+              refund,
+              reimbursement,
+              cash_withdrawal,
+              cash_deposit,
+              unknown,
+            ],
+        }
+      amount_minor: { type: integer, minimum: 1 }
+      currency: { type: string, minLength: 3, maxLength: 3 }
+      merchant: { type: string, maxLength: 160 }
+      source_account: { type: string, maxLength: 120 }
+      destination_account: { type: string, maxLength: 120 }
+      transaction_date: { type: string, format: date }
+      category_slug: { type: string, maxLength: 120 }
+      subcategory_slug: { type: string, maxLength: 120 }
+      tags: { type: array, maxItems: 8, items: { type: string, maxLength: 80 } }
+      spend_nature:
+        {
+          type: string,
+          enum: [essential, discretionary, potentially_avoidable, unknown],
+        }
+      explicit_fields:
+        { type: array, maxItems: 20, items: { type: string, maxLength: 80 } }
+instructions: { selection: Use when the user wants a financial event recorded. }
+routing: { strategy: decision, bindings: { transaction: "${input}" } }
+execution:
+  {
+    steps: [{ id: execute, uses: transaction.record@1 }],
+    label: Extracting and validating transaction,
+    validation: model,
+  }
+approval: { minimum: conditional }
+presentation:
+  {
+    success:
+      { title: Transaction recorded, message: The transaction was recorded. },
+    failure:
+      {
+        title: Transaction not recorded,
+        message: No transaction was recorded.,
+      },
+  }
+tests:
+  - name: transaction route
+    request: Record ₹500 spent at Cafe Coffee Day
+    expectedInputs:
+      {
+        transaction_type: expense,
+        amount_minor: 50000,
+        currency: INR,
+        merchant: Cafe Coffee Day,
+        explicit_fields: [transaction_type, amount_minor, currency, merchant],
+      }
+    expectedEffect: mutation
+    expectedApproval: conditional

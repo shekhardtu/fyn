@@ -18,7 +18,7 @@ async function expectGroundedResultOrSafeFallback(response: Locator, expectedCon
     return false;
   }
 
-  // The live model may fail routing or evidence validation. That is a supported
+  // The live model may fail decision selection or evidence validation. That is a supported
   // governed outcome: the UI must show the explicit safe fallback and recover
   // instead of inventing a financial answer or leaving the composer blocked.
   await expect(response).toContainText(/couldn(?:'|’)t|could not|please (?:ask|restate)/i);
@@ -58,11 +58,10 @@ test("agent activity streams the selected path with individual and cumulative ti
   await finished.last().click();
   await expect(page.getByText("Execution trace").last()).toBeVisible();
   await expect(page.getByRole("list", { name: "Complete execution trace" }).last()).toBeVisible();
-  const selectedTool = page.getByText(/unified_read_agent|search_transactions|get_spending_summary|calculate_affordability/);
+  const selectedTool = page.getByText(/operator|search_transactions|get_spending_summary|calculate_affordability/);
   await expect(selectedTool.last()).toBeVisible();
-  // The unified read path can answer directly or hand off to the governed
-  // router. A named tool and measured stages are stable; the exact route is a
-  // model/runtime decision.
+  // Operator can answer directly or hand off to a governed capability. A named
+  // stage and measured timings are stable; the exact capability is a model/runtime decision.
   await expect(page.getByText(/(?:<1|\d+(?:\.\d+)?) (?:ms|s) step/).last()).toBeVisible();
   await expect(page.getByText(/(?:<1|\d+(?:\.\d+)?) (?:ms|s) total elapsed/).last()).toBeVisible();
   await page.reload();
@@ -165,9 +164,13 @@ test("CSV attachment is staged, confirmed, imported, and persistent", async ({ p
 
 test("privacy settings expose least-privilege controls and export", async ({ page }) => {
   await page.goto(sharedThreadUrl());
+  // The rail's gear opens the settings page on the agent section; privacy
+  // lives one tab over.
   await page.getByRole("button", { name: "Settings", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Privacy & data" })).toBeVisible();
-  const location = page.getByRole("switch");
+  await expect(page).toHaveURL(/\/settings\/agent$/);
+  await page.getByRole("navigation", { name: "Settings sections" }).getByRole("link", { name: "Settings", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Privacy", exact: true })).toBeVisible();
+  const location = page.getByRole("switch", { name: "Location enrichment" });
   if (await location.getAttribute("aria-checked") === "true") await location.click();
   await expect(location).toHaveAttribute("aria-checked", "false");
   await location.click();
@@ -322,21 +325,15 @@ test("mobile layout keeps the composer and privacy controls usable", async ({ pa
   await expect(page.getByRole("button", { name: "Send message" })).toBeVisible();
   await page.getByRole("button", { name: "Open navigation" }).click();
   await expect(page.getByRole("complementary")).toBeVisible();
+  // Settings is a page now, and it takes the rail over rather than opening a
+  // drawer of its own.
   await page.getByRole("button", { name: "Settings", exact: true }).click();
-  // The panel is a modal drawer: it traps focus and closes on Escape, so it
-  // announces itself as a dialog rather than a plain region.
-  const settings = page.getByRole("dialog", { name: "Privacy & data" });
-  await expect(settings).toBeVisible();
-  // The drawer slides in, and `toBeVisible` resolves the moment it starts. A
-  // box measured mid-transform comes back off the compositor's float maths —
-  // 390.00003 rather than 390 — so the assertion below was testing floating
-  // point rather than layout. Wait for the entrance to settle, then measure.
-  await settings.evaluate((panel) => Promise.all(panel.getAnimations().map((animation) => animation.finished)));
-  const box = await settings.boundingBox();
-  expect(box?.width).toBeLessThanOrEqual(390);
+  await expect(page).toHaveURL(/\/settings\/agent$/);
+  await page.getByRole("button", { name: "Open navigation" }).click();
+  await page.getByRole("navigation", { name: "Settings sections" }).getByRole("link", { name: "Settings", exact: true }).click();
   await expect(page.getByLabel("Deletion confirmation")).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(settings).toBeHidden();
+  const documentWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+  expect(documentWidth).toBeLessThanOrEqual(390);
 });
 
 test.skip("history pagination requires creating disposable threads and is disabled by the fixed-thread policy", async () => {});

@@ -1,0 +1,12 @@
+apiVersion: fyn.ai/v1
+kind: Operation
+metadata: {id: get_biggest_expenses, version: 1, title: Biggest expenses, namespace: finance, owner: engineering, enabled: true}
+discovery: {description: Find the largest governed expenses, aliases: [top expenses], examples: [What are my biggest expenses], negativeExamples: [], modelSelectable: false}
+eligibility: {requiredPermissions: [transactions.read], expectedEffect: none, access: read}
+input: {schema: {type: object, additionalProperties: false, properties: {}}}
+instructions: {selection: Use for ranked expense results.}
+routing: {strategy: decision, bindings: {}}
+execution: {steps: [{id: execute, uses: finance.query@1}], label: Finding biggest expenses, metric: biggest_expenses, validation: deterministic}
+approval: {minimum: never}
+presentation: {success: {title: Expenses ready, message: The largest expenses are ready.}, failure: {title: Expenses unavailable, message: The ranking could not be completed.}}
+tests: [{name: biggest expenses route, request: What are my biggest expenses, expectedEffect: none, expectedApproval: never}]

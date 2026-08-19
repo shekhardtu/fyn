@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from ..database import Base
@@ -17,12 +17,16 @@ from ..models import (
     AgentEvent,
     AgentInterrupt,
     AgentRun,
-    AnalysisTool,
     AnalysisToolRun,
+    AnalysisToolTemplate,
     AuditLog,
     Budget,
     Category,
     Conversation,
+    Dashboard,
+    DashboardTile,
+    DataSource,
+    EntityLink,
     FinancialInsight,
     FinancialObservation,
     Goal,
@@ -41,6 +45,9 @@ from ..models import (
     ReconciliationDecision,
     RecurringTransaction,
     SavedAnalysis,
+    SourceAnnotation,
+    SourceManifest,
+    SourceRecord,
     Subcategory,
     Subscription,
     Tag,
@@ -53,7 +60,9 @@ from ..models import (
     User,
     UserIdentity,
     UserPreference,
+    UserAnalysisTool,
     UserSession,
+    UserTrait,
 )
 from .user_memory import clear_user_memories, export_user_memories
 
@@ -72,6 +81,10 @@ class OwnedDataSpec:
     # file. A session digest or a one-time-code hash is security material for
     # protecting the account, not a record of anything the account holder did.
     exportable: bool = True
+    # Columns whose values are connection/credential material stored alongside
+    # otherwise-exportable rows (for example DataSource.config holding an
+    # external database url). They are dropped from the export entirely.
+    redacted_columns: tuple[str, ...] = ()
 
     @property
     def key(self) -> str:
@@ -95,6 +108,8 @@ OWNED_USER_DATA: tuple[OwnedDataSpec, ...] = (
     OwnedDataSpec(AgentRun),
     OwnedDataSpec(AnalysisToolRun),
     OwnedDataSpec(AIAction),
+    OwnedDataSpec(DashboardTile),
+    OwnedDataSpec(Dashboard),
     OwnedDataSpec(Subscription),
     OwnedDataSpec(RecurringTransaction),
     OwnedDataSpec(LoanScenario),
@@ -105,13 +120,22 @@ OWNED_USER_DATA: tuple[OwnedDataSpec, ...] = (
     OwnedDataSpec(TransactionCategoryHint),
     OwnedDataSpec(ReconciliationCandidate),
     OwnedDataSpec(Import),
+    OwnedDataSpec(SourceRecord),
+    OwnedDataSpec(SourceAnnotation),
+    # Deleted before DataSource: source_id is SET NULL, but this tuple doubles
+    # as the explicit order for databases that do not enforce every ON DELETE.
+    OwnedDataSpec(EntityLink),
+    # config may hold an external connection url with embedded credentials —
+    # security material for reaching the source, not a record of user activity.
+    OwnedDataSpec(DataSource, redacted_columns=("config",)),
     OwnedDataSpec(TransactionDraft),
     OwnedDataSpec(Transaction),
     OwnedDataSpec(FinancialObservation, export_key="observations"),
-    OwnedDataSpec(AnalysisTool),
+    OwnedDataSpec(UserAnalysisTool),
     OwnedDataSpec(SavedAnalysis),
     OwnedDataSpec(FinancialInsight),
     OwnedDataSpec(UserPreference, export_key="preferences"),
+    OwnedDataSpec(UserTrait),
     OwnedDataSpec(InvestmentValuationSnapshot),
     OwnedDataSpec(InvestmentHolding),
     OwnedDataSpec(AccountBalanceSnapshot),
@@ -140,6 +164,7 @@ DEPENDENT_USER_DATA: tuple[DependentDataSpec, ...] = (
     DependentDataSpec(TransactionSource, Transaction, "transaction_id"),
     DependentDataSpec(Message, Conversation, "conversation_id"),
     DependentDataSpec(MerchantAlias, Merchant, "merchant_id"),
+    DependentDataSpec(SourceManifest, DataSource, "data_source_id"),
 )
 
 
@@ -175,7 +200,7 @@ def _json_value(value: Any) -> Any:
     return value
 
 
-def serialize_rows(rows: list[Any]) -> list[dict]:
+def serialize_rows(rows: list[Any], *, redacted_columns: tuple[str, ...] = ()) -> list[dict]:
     serialized: list[dict] = []
     for row in rows:
         mapper = row.__mapper__
@@ -189,6 +214,7 @@ def serialize_rows(rows: list[Any]) -> list[dict]:
                     getattr(row, mapper.get_property_by_column(column).key)
                 )
                 for column in row.__table__.columns
+                if column.key not in redacted_columns
             }
         )
     return serialized
@@ -209,7 +235,9 @@ def export_user_data(db: Session, user: User) -> dict[str, Any]:
     for spec in OWNED_USER_DATA:
         if not spec.exportable:
             continue
-        payload[spec.key] = serialize_rows(owned[spec.model])
+        payload[spec.key] = serialize_rows(
+            owned[spec.model], redacted_columns=spec.redacted_columns
+        )
     for spec in DEPENDENT_USER_DATA:
         parent_ids = [item.id for item in owned[spec.parent_model]]
         rows = list(db.scalars(
@@ -234,6 +262,14 @@ def delete_user_data(db: Session, user: User) -> int:
         db.execute(delete(spec.model).where(
             getattr(spec.model, spec.owner_column) == user.id
         ))
+    # Templates are shared, value-free infrastructure. Keep the reusable
+    # definition but erase the optional creator audit link before deleting the
+    # account, including on SQLite where SET NULL may not be enforced.
+    db.execute(
+        update(AnalysisToolTemplate)
+        .where(AnalysisToolTemplate.created_by_user_id == user.id)
+        .values(created_by_user_id=None)
+    )
     db.delete(user)
     db.commit()
     return deleted_memories

@@ -1,0 +1,50 @@
+apiVersion: fyn.ai/v1
+kind: Operation
+metadata:
+  {
+    id: conversation,
+    version: 1,
+    title: Conversation,
+    namespace: system,
+    owner: engineering,
+    enabled: true,
+  }
+discovery:
+  {
+    description: Answer ordinary conversation grounded by approved tools,
+    aliases: [chat],
+    examples: [Hello],
+    negativeExamples: [],
+    modelSelectable: false,
+  }
+eligibility:
+  { requiredPermissions: [], expectedEffect: none, access: conversation }
+input: { schema: { type: object, additionalProperties: false, properties: {} } }
+instructions:
+  { selection: Use for ordinary conversation that needs no governed workflow. }
+routing: { strategy: protocol, bindings: {} }
+execution:
+  {
+    steps: [{ id: execute, uses: agent.respond@1 }],
+    label: Writing contextual response,
+    validation: deterministic,
+  }
+approval: { minimum: never }
+presentation:
+  {
+    success: { title: Response ready, message: Response ready. },
+    failure:
+      {
+        title: Response unavailable,
+        message: The response could not be completed.,
+      },
+  }
+tests:
+  [
+    {
+      name: conversation route,
+      request: Hello,
+      expectedEffect: none,
+      expectedApproval: never,
+    },
+  ]

@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -34,13 +35,13 @@ from ag_ui.core import (
     ToolCallResultEvent,
     ToolCallStartEvent,
 )
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..config import get_settings
 from ..domain import AgentInterruptStatus, AgentRunStatus, DraftState, ExecutionStatus, WidgetActionId
-from ..event_time import now_utc
-from ..models import AgentEvent, AgentInterrupt, AgentRun, Conversation, Message, TransactionDraft, User
+from ..event_time import local_date, now_utc
+from ..models import AIAction, AgentEvent, AgentInterrupt, AgentRun, Conversation, Message, TransactionDraft, User
 from ..schemas import (
     ACTION_PAYLOAD_MODELS,
     ActionRequest,
@@ -49,6 +50,13 @@ from ..schemas import (
     Widget,
     WidgetLifecycle,
     WidgetType,
+    WidgetUpdate,
+)
+from .agents import suggest_related_questions
+from .agent_run_metrics import (
+    agent_metric_snapshot,
+    begin_agent_metric_collection,
+    end_agent_metric_collection,
 )
 from .conversation import (
     handle_action,
@@ -59,13 +67,42 @@ from .conversation import (
     prepare_widget_cancellation,
     resolve_widget_action,
 )
+from .runtime_tools import capability_notes
+from .continuations import (
+    CancelContinuation,
+    ClarificationContinuationEnvelope,
+    GovernedQueryContinuation,
+    LegacyPromptContinuation,
+)
 
 
 FYN_RESPONSE_EVENT = "fyn.response.v1"
 FYN_ACTIVITY_TYPE = "fyn.agent_activity.v1"
 FYN_ACTION_TOOL = "fyn.widget_action"
+POSTPROCESS_RECOVERY_PHASE = "postprocess_pending"
 
-ACTIVE_RUN_STATUSES = frozenset({AgentRunStatus.QUEUED.value, AgentRunStatus.RUNNING.value})
+# Bytes of serialized payload a persisted trace step may keep. The complete
+# payload always survives in agent_events; the widget is a bounded view of it.
+STEP_PAYLOAD_LIMIT = 6_000
+
+
+class DetailedRunErrorEvent(RunErrorEvent):
+    """RUN_ERROR with the actual exception detail kept durably.
+
+    ``message`` stays user-facing; ``detail`` preserves what actually raised so
+    a failed run can be diagnosed from the database alone, without the uvicorn
+    terminal that happened to be open at the time.
+    """
+
+    detail: str | None = None
+
+ACTIVE_RUN_STATUSES = frozenset(
+    {
+        AgentRunStatus.QUEUED.value,
+        AgentRunStatus.RECOVERING.value,
+        AgentRunStatus.RUNNING.value,
+    }
+)
 TERMINAL_RUN_STATUSES = frozenset(
     {
         AgentRunStatus.INTERRUPTED.value,
@@ -84,8 +121,36 @@ def _one_line_reasoning(value: str, limit: int = 320) -> str:
     return normalized[: limit - 1].rstrip() + "…"
 
 
+def _bounded_step_payload(value: Any) -> Any:
+    """Bound one step's stored input/output; agent_events keeps the original."""
+    if value is None:
+        return None
+    try:
+        serialized = json.dumps(value, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        serialized = str(value)
+    if len(serialized) <= STEP_PAYLOAD_LIMIT:
+        return value
+    return serialized[:STEP_PAYLOAD_LIMIT] + f"… [truncated {len(serialized) - STEP_PAYLOAD_LIMIT} chars; full payload in agent_events]"
+
+
+def _activity_failure_summary(steps: list[dict[str, Any]]) -> str:
+    """Return the exact persisted reason for the last failed stage."""
+    for step in reversed(steps):
+        if step.get("status") != ExecutionStatus.FAILED.value:
+            continue
+        if step.get("detail"):
+            return _one_line_reasoning(str(step["detail"]))
+        if step.get("label"):
+            return _one_line_reasoning(str(step["label"]))
+    return ""
+
+
 def _activity_reasoning_summary(steps: list[dict[str, Any]]) -> str:
     """Choose the decision behind a run, never a transport lifecycle label."""
+    failure = _activity_failure_summary(steps)
+    if failure:
+        return failure
     for step in reversed(steps):
         if step.get("id") == "classification" and step.get("detail"):
             return _one_line_reasoning(str(step["detail"]))
@@ -96,6 +161,53 @@ def _activity_reasoning_summary(steps: list[dict[str, Any]]) -> str:
         if step.get("id") != "request" and step.get("label"):
             return _one_line_reasoning(str(step["label"]))
     return "Preparing a contextual answer"
+
+
+def _model_pass_count(steps: list[dict[str, Any]]) -> int:
+    """Count provider invocations, not orchestration lifecycle stages."""
+    stage_ids = [str(step.get("stageId") or step.get("id") or "") for step in steps]
+    has_explicit_model_events = any(stage.startswith("model_pass_") for stage in stage_ids)
+    count = 0
+    for step, stage in zip(steps, stage_ids):
+        tool = str(step.get("tool") or "")
+        if stage == "operator" and tool == "operator":
+            count += 1
+        elif stage.startswith("model_pass_"):
+            count += 1
+        elif stage in {"validator", "repair_validation", "revalidation"} and (
+            tool == "validator" or tool.startswith("gpt-")
+        ):
+            count += 1
+        elif not has_explicit_model_events and stage == "operator_repair" and (
+            tool == "operator" or tool.startswith("gpt-")
+        ):
+            count += 1
+    return count
+
+
+def _merge_metric_snapshots(base: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
+    """Join pre-restart and resumed model-pass evidence without estimates."""
+    passes = [*(base.get("passes") or []), *(extra.get("passes") or [])]
+    costs = [item.get("costUsd") for item in passes if item.get("costUsd") is not None]
+    durations = [item.get("durationMs") for item in passes if item.get("durationMs") is not None]
+    first_token = base.get("firstModelTimeToFirstTokenMs")
+    if first_token is None:
+        first_token = extra.get("firstModelTimeToFirstTokenMs")
+    return {
+        "source": "agno_run_output",
+        "modelPasses": len(passes),
+        "inputTokens": sum(int(item.get("inputTokens") or 0) for item in passes),
+        "outputTokens": sum(int(item.get("outputTokens") or 0) for item in passes),
+        "totalTokens": sum(int(item.get("totalTokens") or 0) for item in passes),
+        "cacheReadTokens": sum(int(item.get("cacheReadTokens") or 0) for item in passes),
+        "cacheWriteTokens": sum(int(item.get("cacheWriteTokens") or 0) for item in passes),
+        "reasoningTokens": sum(int(item.get("reasoningTokens") or 0) for item in passes),
+        "modelDurationMs": round(sum(float(value) for value in durations), 1) if durations else None,
+        "firstModelTimeToFirstTokenMs": first_token,
+        "costUsd": round(sum(float(value) for value in costs), 10) if passes and len(costs) == len(passes) else None,
+        "costCoverage": round(len(costs) / len(passes), 4) if passes else 0.0,
+        "passes": passes,
+    }
 
 
 def _record_activity_event(
@@ -157,6 +269,13 @@ def _record_activity_event(
             traced["resultTool"] = finished_tool
         elif started_tool and not finished_tool:
             traced["tool"] = started_tool
+        # The running event owns the exact stage input; the terminal event owns
+        # its output. Preserve both when the live row is replaced so replay has
+        # the same complete I/O boundary that was visible during execution.
+        if traced.get("input") is None and previous.get("input") is not None:
+            traced["input"] = previous["input"]
+        if traced.get("output") is None and previous.get("output") is not None:
+            traced["output"] = previous["output"]
     activities[trace_id] = traced
     return traced
 
@@ -232,6 +351,10 @@ class DurableEventPublisher:
         self._publish_live = publish_live
         self._final_message_id: UUID | None = None
         self._delivery_mode: str | None = None
+        self._task_status: str | None = None
+        self._failure_stage: str | None = None
+        self._task_error_code: str | None = None
+        self._metrics: dict[str, Any] | None = None
 
     @property
     def supports_incremental_flush(self) -> bool:
@@ -255,6 +378,21 @@ class DurableEventPublisher:
     def bind_delivery_mode(self, delivery_mode: str) -> None:
         self._delivery_mode = delivery_mode
 
+    def bind_task_outcome(
+        self,
+        task_status: str,
+        *,
+        failure_stage: str | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        self._task_status = task_status
+        self._failure_stage = failure_stage
+        self._task_error_code = error_code
+
+    def bind_metrics(self, metrics: dict[str, Any]) -> None:
+        """Attach the complete Agno usage aggregate before terminal commit."""
+        self._metrics = json.loads(json.dumps(metrics, default=str))
+
     def _commit(self, terminal_status: AgentRunStatus | None = None, *, error_code: str | None = None) -> None:
         if not self._pending:
             if terminal_status is not None:
@@ -264,6 +402,8 @@ class DurableEventPublisher:
                     self._user_id,
                     terminal_status,
                     error_code=error_code,
+                    task_status=self._task_status,
+                    failure_stage=self._failure_stage,
                 )
             return
         committed = list(self._pending)
@@ -287,6 +427,13 @@ class DurableEventPublisher:
                 run.final_message_id = self._final_message_id
             if self._delivery_mode is not None:
                 run.delivery_mode = self._delivery_mode
+            if self._task_status is not None:
+                run.task_status = self._task_status
+                run.failure_stage = self._failure_stage
+                if self._task_error_code is not None:
+                    run.error_code = self._task_error_code
+            if self._metrics is not None:
+                run.metrics = self._metrics
             if run.first_response_at is None:
                 first_response = next(
                     (
@@ -306,7 +453,26 @@ class DurableEventPublisher:
             if terminal_status is not None:
                 run.status = terminal_status.value
                 run.finished_at = now_utc()
-                run.error_code = error_code
+                run.recovery_phase = None
+                run.recovery_payload = {}
+                run.recovery_claimed_at = None
+                if self._task_error_code is None:
+                    run.error_code = error_code
+                if self._task_status is None:
+                    run.task_status = (
+                        "needs_input"
+                        if terminal_status is AgentRunStatus.INTERRUPTED
+                        else "succeeded"
+                        if terminal_status is AgentRunStatus.SUCCEEDED
+                        else "cancelled"
+                        if terminal_status is AgentRunStatus.CANCELLED
+                        else "failed"
+                    )
+                    run.failure_stage = (
+                        None
+                        if terminal_status in {AgentRunStatus.SUCCEEDED, AgentRunStatus.INTERRUPTED}
+                        else "transport"
+                    )
             db.commit()
         del self._pending[: len(committed)]
         for sequence, payload in committed:
@@ -451,16 +617,38 @@ def _update_run(
     status: AgentRunStatus,
     *,
     error_code: str | None = None,
+    task_status: str | None = None,
+    failure_stage: str | None = None,
 ) -> None:
     with session_factory() as db:
         run = _owned_run(db, run_id, user_id)
         now = now_utc()
         run.status = status.value
         if status is AgentRunStatus.RUNNING:
-            run.started_at = now
+            # A restarted post-processing phase belongs to the original run;
+            # preserve its first start so duration remains truthful.
+            if run.started_at is None:
+                run.started_at = now
         if status.value in TERMINAL_RUN_STATUSES:
             run.finished_at = now
+            run.recovery_phase = None
+            run.recovery_payload = {}
+            run.recovery_claimed_at = None
         run.error_code = error_code
+        if task_status is not None:
+            run.task_status = task_status
+            run.failure_stage = failure_stage
+        elif status.value in TERMINAL_RUN_STATUSES:
+            run.task_status = (
+                "needs_input"
+                if status is AgentRunStatus.INTERRUPTED
+                else "succeeded"
+                if status is AgentRunStatus.SUCCEEDED
+                else "cancelled"
+                if status is AgentRunStatus.CANCELLED
+                else "failed"
+            )
+            run.failure_stage = None if status in {AgentRunStatus.SUCCEEDED, AgentRunStatus.INTERRUPTED} else "transport"
         db.commit()
 
 
@@ -505,11 +693,11 @@ def execute_widget_action(
     )
 
 
-def _cancelled_interrupt_response(
+def _cancel_interrupt_widget(
     db: Session,
     conversation: Conversation,
     interrupt: AgentInterrupt,
-) -> AgentResponse:
+) -> WidgetUpdate | None:
     origin = prepare_widget_cancellation(db, conversation, interrupt.widget_id)
     if origin:
         widget = origin[2]
@@ -525,14 +713,73 @@ def _cancelled_interrupt_response(
             )) if draft_uuid else None
             if draft and draft.state != DraftState.COMMITTED.value:
                 draft.state = DraftState.CANCELLED.value
-    response = persist_agent_response(db, conversation, "No changes were made.", commit=False)
-    update = resolve_widget_action(
+    return resolve_widget_action(
         db,
         origin,
         lifecycle=WidgetLifecycle.CANCELLED,
         action="cancel_interrupt",
         payload={},
     )
+
+
+def supersede_open_interrupts(
+    db: Session,
+    user: User,
+    conversation: Conversation,
+    *,
+    superseded_by: str,
+) -> list[WidgetUpdate]:
+    """Retire stale HITL state when a newer explicit user action takes over.
+
+    Uploads and widgets persisted outside an AG-UI run can legitimately become
+    the newest turn. Leaving an older interrupt open in that situation makes
+    the new card visible while the protocol continues to gate on the old one.
+    Supersession closes both halves of that state together: the interrupt and
+    its persisted widget. It performs no domain action and commits only with
+    the caller's replacement turn.
+    """
+    interrupts = list(
+        db.scalars(
+            select(AgentInterrupt)
+            .join(AgentRun, AgentRun.id == AgentInterrupt.run_id)
+            .where(
+                AgentRun.user_id == user.id,
+                AgentRun.conversation_id == conversation.id,
+                AgentInterrupt.status == AgentInterruptStatus.OPEN.value,
+            )
+            .order_by(AgentInterrupt.created_at, AgentInterrupt.id)
+        )
+    )
+    updates: list[WidgetUpdate] = []
+    for interrupt in interrupts:
+        try:
+            update = _cancel_interrupt_widget(db, conversation, interrupt)
+        except ValueError:
+            # An orphaned or already-retired widget must not leave the thread
+            # permanently gated. The interrupt remains the protocol authority,
+            # so it is still safe to close it without authorizing domain work.
+            update = None
+        if update:
+            updates.append(update)
+        interrupt.status = AgentInterruptStatus.CANCELLED.value
+        interrupt.response_payload = None
+        interrupt.metadata_payload = {
+            **(interrupt.metadata_payload or {}),
+            "supersession": {
+                "by": superseded_by,
+                "at": now_utc().isoformat(),
+            },
+        }
+    return updates
+
+
+def _cancelled_interrupt_response(
+    db: Session,
+    conversation: Conversation,
+    interrupt: AgentInterrupt,
+) -> AgentResponse:
+    update = _cancel_interrupt_widget(db, conversation, interrupt)
+    response = persist_agent_response(db, conversation, "No changes were made.", commit=False)
     if update:
         response.widget_updates.append(update)
     return response
@@ -695,37 +942,84 @@ def _resume_response(
         continuation = interrupt.metadata_payload.get("continuation")
         if not isinstance(continuation, dict):
             raise ProtocolRunError("The clarification continuation is unavailable.", "invalid_resume")
-        if selected.get("clarificationId") != continuation.get("clarificationId"):
-            raise ProtocolRunError("The clarification response targets a different request.", "invalid_resume")
         option_id = str(selected.get("optionId") or "")
-        options = continuation.get("options")
-        if not isinstance(options, dict):
-            raise ProtocolRunError("The clarification choices are unavailable.", "invalid_resume")
-        if option_id == "custom":
-            custom_text = str(selected.get("customText") or "").strip()
-            if not continuation.get("allowCustom") or not custom_text:
-                raise ProtocolRunError("Enter the clarification you want fyn AI to use.", "invalid_resume_payload")
-            selected_label = "Customer-provided clarification"
-            resolution = custom_text
+        transition_payload = None
+        transition_cancels = False
+        schema_version = continuation.get("schemaVersion")
+        if schema_version == 3:
+            try:
+                envelope = ClarificationContinuationEnvelope.model_validate(continuation)
+            except ValueError as error:
+                raise ProtocolRunError("The clarification continuation is invalid.", "invalid_resume") from error
+            if selected.get("clarificationId") != str(envelope.clarification_id):
+                raise ProtocolRunError("The clarification response targets a different request.", "invalid_resume")
+            if option_id == "custom":
+                custom_text = str(selected.get("customText") or "").strip()
+                if not envelope.allow_custom or not custom_text:
+                    raise ProtocolRunError("Enter the clarification you want fyn AI to use.", "invalid_resume_payload")
+                transition = LegacyPromptContinuation(
+                    label="Customer-provided clarification",
+                    resolution=custom_text,
+                )
+            else:
+                transition = envelope.options.get(option_id)
+                if transition is None:
+                    raise ProtocolRunError("Choose one of the available clarification options.", "invalid_resume_payload")
+            selected_label = transition.label
+            resolution = transition.resolution if isinstance(transition, LegacyPromptContinuation) else ""
+            resolved_intent = (
+                transition.intent.model_dump(mode="json")
+                if isinstance(transition, GovernedQueryContinuation)
+                else None
+            )
+            transition_payload = transition.model_dump(mode="json")
+            transition_cancels = isinstance(transition, CancelContinuation)
+            source_message_id = envelope.source_message_id
+            original_request = envelope.original_request
+            clarification_depth = envelope.clarification_depth
+            clarification_fingerprint = envelope.clarification_fingerprint
         else:
-            option = options.get(option_id)
-            if not isinstance(option, dict):
-                raise ProtocolRunError("Choose one of the available clarification options.", "invalid_resume_payload")
-            selected_label = str(option.get("label") or option_id)
-            resolution = str(option.get("resolution") or "").strip()
-            if not resolution:
-                raise ProtocolRunError("The selected clarification has no continuation.", "invalid_resume")
-        try:
-            source_message_id = UUID(str(continuation.get("sourceMessageId")))
-        except ValueError as error:
-            raise ProtocolRunError("The original request is unavailable.", "invalid_resume") from error
+            # Version 2 remains readable so an interrupt opened before this
+            # deployment can still be completed safely.
+            if selected.get("clarificationId") != continuation.get("clarificationId"):
+                raise ProtocolRunError("The clarification response targets a different request.", "invalid_resume")
+            options = continuation.get("options")
+            if not isinstance(options, dict):
+                raise ProtocolRunError("The clarification choices are unavailable.", "invalid_resume")
+            option = None
+            if option_id == "custom":
+                custom_text = str(selected.get("customText") or "").strip()
+                if not continuation.get("allowCustom") or not custom_text:
+                    raise ProtocolRunError("Enter the clarification you want fyn AI to use.", "invalid_resume_payload")
+                selected_label = "Customer-provided clarification"
+                resolution = custom_text
+                resolved_intent = None
+            else:
+                option = options.get(option_id)
+                if not isinstance(option, dict):
+                    raise ProtocolRunError("Choose one of the available clarification options.", "invalid_resume_payload")
+                selected_label = str(option.get("label") or option_id)
+                resolution = str(option.get("resolution") or "").strip()
+                if not resolution:
+                    raise ProtocolRunError("The selected clarification has no continuation.", "invalid_resume")
+                resolved_intent = option.get("resolvedIntent")
+                if resolved_intent is not None and not isinstance(resolved_intent, dict):
+                    raise ProtocolRunError("The selected clarification intent is invalid.", "invalid_resume")
+            try:
+                source_message_id = UUID(str(continuation.get("sourceMessageId")))
+            except ValueError as error:
+                raise ProtocolRunError("The original request is unavailable.", "invalid_resume") from error
+            original_request = str(continuation.get("originalRequest") or "")
+            transition_cancels = option_id != "custom" and _clarification_option_cancels(option_id, option)
+            clarification_depth = 0
+            clarification_fingerprint = None
         origin = prepare_widget_action(
             db,
             conversation,
             interrupt.widget_id,
             WidgetActionId.RESOLVE_CLARIFICATION.value,
         )
-        if option_id != "custom" and _clarification_option_cancels(option_id, option):
+        if transition_cancels:
             response = persist_agent_response(
                 db,
                 conversation,
@@ -738,9 +1032,16 @@ def _resume_response(
                 db,
                 user,
                 conversation,
-                original_request=str(continuation.get("originalRequest") or ""),
+                original_request=original_request,
                 selected_label=selected_label,
                 resolution=resolution,
+                transition=transition_payload,
+                resolved_intent=resolved_intent,
+                previous_clarification={
+                    **origin[2].data,
+                    "fingerprint": clarification_fingerprint,
+                },
+                clarification_depth=clarification_depth,
                 source_message_id=source_message_id,
                 activity_callback=activity_callback,
                 text_delta_callback=text_delta_callback,
@@ -898,6 +1199,7 @@ def _attach_activity_trace(
     response: AgentResponse,
     activities: dict[str, dict[str, Any]],
     reasoning_trace: str = "",
+    metrics: dict[str, Any] | None = None,
 ) -> AgentResponse:
     """Retain the completed live AG-UI trace on the assistant message.
 
@@ -905,13 +1207,36 @@ def _attach_activity_trace(
     widget is the same information at rest, rendered by the existing Fyn card
     system when a thread is opened after the run has completed.
     """
+    widget_id = f"agent-activity-{response.message_id}"
+    existing = next((widget for widget in response.widgets if widget.id == widget_id), None)
+    if existing is not None:
+        return response
+    message = db.get(Message, response.message_id)
+    stored = next(
+        (item for item in (message.widgets if message else []) if item.get("id") == widget_id),
+        None,
+    )
+    if stored is not None:
+        response.widgets.append(Widget.model_validate(stored))
+        return response
     terminal_ms = max(
         (float(step.get("cumulativeMs", 0)) for step in activities.values()),
         default=0,
     )
+    settings = get_settings()
     steps: list[dict[str, Any]] = []
     for raw_step in activities.values():
         step = dict(raw_step)
+        # Step payloads are debug material. Production never renders them, so
+        # it never stores them; development keeps a bounded view and the full
+        # payload stays queryable in agent_events either way.
+        if settings.environment == "production":
+            step.pop("input", None)
+            step.pop("output", None)
+        else:
+            for key in ("input", "output"):
+                if key in step:
+                    step[key] = _bounded_step_payload(step[key])
         if step.get("status") == ExecutionStatus.RUNNING.value:
             started_ms = float(step.get("cumulativeMs", 0))
             step.update(
@@ -932,33 +1257,58 @@ def _attach_activity_trace(
         (float(step.get("cumulativeMs", 0)) for step in steps),
         default=0,
     )
-    settings = get_settings()
-    used_unified = any(
-        str(step.get("tool", "")) == "unified_read_agent"
+    used_operator = any(
+        str(step.get("tool", "")) == "operator"
+        or str(step.get("stageId", step.get("id", "")))
+        in {"operator", "model_pass_operator_decision"}
         for step in steps
     )
-    used_agno = used_unified or any(
-        str(step.get("tool", "")).startswith("agno_")
-        or str(step.get("label", "")).startswith("Agno")
+    used_agent_pipeline = used_operator or any(
+        str(step.get("tool", "")) == "validator"
+        or str(step.get("stageId", step.get("id", ""))).startswith("model_pass_")
         for step in steps
     )
-    used_analysis = any(
-        str(step.get("tool", "")) in {"analysis_harness", "agno_reroute"}
+    used_planner = any(
+        str(step.get("tool", "")) in {"planner", "analysis_harness"}
+        or str(step.get("stageId", step.get("id", "")))
+        in {"planner", "model_pass_planner", "operator_repair", "model_pass_operator_repair"}
         for step in steps
     )
-    model_path = settings.router_model if used_unified and not used_analysis else (
-        f"{settings.router_model} → "
-        f"{settings.analysis_model + ' → ' if used_analysis else ''}"
-        f"{settings.validator_model}"
+    used_validator = any(
+        str(step.get("stageId", step.get("id", "")))
+        in {"validator", "repair_validation", "revalidation"}
+        for step in steps
     )
-    summary = _one_line_reasoning(reasoning_trace) or _activity_reasoning_summary(steps)
+    model_path = " → ".join(
+        model
+        for model, used in (
+            (settings.operator_model, used_operator),
+            (settings.planner_model, used_planner),
+            (settings.validator_model, used_validator),
+        )
+        if used
+    )
+    # A failed database-backed stage is more authoritative than an earlier
+    # model reasoning summary. Otherwise a validator/planner success sentence
+    # can hide the exact deterministic check that rejected the run.
+    summary = (
+        _activity_failure_summary(steps)
+        or _one_line_reasoning(reasoning_trace)
+        or _activity_reasoning_summary(steps)
+    )
     widget_data: dict[str, Any] = {
-        "title": "AG-UI agent run",
-        "engine": "Agno harness" if used_agno else "Deterministic domain",
-        "model": model_path if used_agno else "no model call",
+        "title": "Governed agent run",
+        "engine": "Governed agent pipeline" if used_agent_pipeline else "Deterministic domain",
+        "model": model_path if used_agent_pipeline and model_path else "no model call",
         "summary": summary,
         "debugTrace": settings.environment != "production",
         "steps": steps,
+        "modelPassCount": (
+            int(metrics.get("modelPasses", 0))
+            if metrics is not None
+            else _model_pass_count(steps)
+        ),
+        "metrics": metrics,
         "totalMs": total_ms,
         "live": False,
     }
@@ -967,7 +1317,7 @@ def _attach_activity_trace(
         # inspection even though the transcript deliberately renders one line.
         widget_data["reasoningTrace"] = reasoning_trace
     widget = Widget(
-        id=f"agent-activity-{response.message_id}",
+        id=widget_id,
         type=WidgetType.AGENT_ACTIVITY,
         data=widget_data,
     )
@@ -977,6 +1327,255 @@ def _attach_activity_trace(
         message.widgets = [*message.widgets, widget.model_dump(mode="json")]
         db.commit()
     return response
+
+
+def _attach_related_questions(
+    db: Session,
+    response: AgentResponse,
+    user: User,
+    conversation: Conversation,
+    question: str,
+) -> AgentResponse:
+    """Offer tap-to-post follow-ups after a completed assistant answer.
+
+    Generated by a dedicated fast pass once the answer is settled, so it can
+    reference the finished Q&A; suggestions are optional garnish, so any
+    failure here leaves the answer untouched. Capability grounding comes from
+    the runtime tool registry — the same source the Operator reads — so a
+    tapped suggestion is always a question the system can actually answer.
+    Failed governed tasks are included deliberately: their suggestions are the
+    recovery path that helps the user ask a narrower, answerable question.
+    """
+    # A pending HITL card is already the next question. Generating optional
+    # follow-up suggestions here delays delivery (and the suggestions are
+    # disabled until the card resolves anyway), so release the interaction as
+    # soon as its deterministic response is ready.
+    if not response.message.strip() or response.pending_action is not None:
+        return response
+    widget_id = f"related-questions-{response.message_id}"
+    if any(
+        widget.type == WidgetType.RELATED_QUESTIONS or widget.id == widget_id
+        for widget in response.widgets
+    ):
+        # The turn already answered with suggestions (an explicit ask for
+        # question ideas); generating a second garnish set would be noise.
+        return response
+    message = db.get(Message, response.message_id)
+    stored = next(
+        (
+            item
+            for item in (message.widgets if message else [])
+            if item.get("type") == WidgetType.RELATED_QUESTIONS.value or item.get("id") == widget_id
+        ),
+        None,
+    )
+    if stored is not None:
+        response.widgets.append(Widget.model_validate(stored))
+        return response
+    if response.task_status == "failed":
+        # A failed answer contains little useful grounding for a model pass and
+        # often causes the Suggester to return an empty set. Recovery questions
+        # are therefore deterministic, cheap, and guaranteed answerable by the
+        # governed transaction surface. This also avoids adding model traffic
+        # when the main task already failed.
+        today = local_date(now_utc(), user.timezone)
+        current_month = today.strftime("%B %Y")
+        previous_month = (today.replace(day=1) - timedelta(days=1)).strftime("%B %Y")
+        questions = [
+            f"Which {current_month} categories cost the most?",
+            f"Which {current_month} expenses were discretionary?",
+            f"How did {current_month} spending compare with {previous_month}?",
+        ]
+    else:
+        try:
+            rows = list(
+                db.scalars(
+                    select(Message)
+                    .where(Message.conversation_id == conversation.id)
+                    .order_by(Message.created_at.desc(), Message.id.desc())
+                    .limit(8)
+                )
+            )
+            recent_turns = [
+                {"role": row.role, "content": row.content}
+                for row in reversed(rows)
+                if row.content.strip()
+            ]
+            questions = suggest_related_questions(
+                question,
+                response.message,
+                recent_turns,
+                capability_notes(),
+                local_date(now_utc(), user.timezone),
+                user.timezone,
+            )
+        except Exception as error:
+            # Suggestions stay optional, but their failures stay diagnosable: a
+            # silent swallow here is the same blind spot this codebase has been
+            # paying down all day.
+            db.add(AIAction(
+                user_id=user.id,
+                conversation_id=conversation.id,
+                action_type="suggester",
+                payload_redacted={"errorType": type(error).__name__, "message": str(error)[:300]},
+                status=ExecutionStatus.FAILED,
+            ))
+            db.commit()
+            return response
+    if not questions:
+        return response
+    widget = Widget(
+        id=widget_id,
+        type=WidgetType.RELATED_QUESTIONS,
+        data={"questions": questions},
+    )
+    response.widgets.append(widget)
+    message = db.get(Message, response.message_id)
+    if message:
+        message.widgets = [*message.widgets, widget.model_dump(mode="json")]
+        db.commit()
+    return response
+
+
+def _checkpoint_postprocessing(
+    db: Session,
+    run: AgentRun,
+    response: AgentResponse,
+) -> None:
+    """Mark the only restart-safe boundary in a conversational run.
+
+    The canonical answer has committed before this function is called. The
+    remaining work may enrich that answer and emit protocol completion, but it
+    may never repeat the financial operation that produced it.
+    """
+    if not response.message.strip() or response.pending_action is not None:
+        return
+    run.final_message_id = response.message_id
+    run.task_status = response.task_status
+    run.failure_stage = response.failure_stage
+    run.error_code = response.error_code
+    run.metrics = agent_metric_snapshot()
+    run.recovery_phase = POSTPROCESS_RECOVERY_PHASE
+    run.recovery_payload = {
+        "schemaVersion": 1,
+        "userMessageId": str(response.user_message_id) if response.user_message_id else None,
+        "widgetUpdates": [
+            update.model_dump(mode="json", by_alias=True)
+            for update in response.widget_updates
+        ],
+    }
+    db.commit()
+
+
+def _checkpointed_response(db: Session, run: AgentRun) -> AgentResponse:
+    if run.recovery_phase != POSTPROCESS_RECOVERY_PHASE or run.final_message_id is None:
+        raise ValueError("The run has no resumable post-processing checkpoint")
+    message = db.scalar(
+        select(Message).where(
+            Message.id == run.final_message_id,
+            Message.conversation_id == run.conversation_id,
+        )
+    )
+    if message is None or message.role != "assistant" or not message.content.strip():
+        raise ValueError("The checkpointed assistant message is unavailable")
+    payload = run.recovery_payload or {}
+    raw_user_message_id = payload.get("userMessageId")
+    return AgentResponse(
+        message=message.content,
+        widgets=[Widget.model_validate(item) for item in (message.widgets or [])],
+        widgetUpdates=payload.get("widgetUpdates") or [],
+        citations=message.citations or [],
+        conversation_id=run.conversation_id,
+        message_id=message.id,
+        user_message_id=UUID(str(raw_user_message_id)) if raw_user_message_id else None,
+        delivered_at=message.delivered_at,
+        task_status=run.task_status if run.task_status != "pending" else "succeeded",
+        failure_stage=run.failure_stage,
+        error_code=run.error_code,
+    )
+
+
+def _checkpointed_activity(
+    db: Session,
+    run_id: UUID,
+) -> tuple[dict[str, dict[str, Any]], str]:
+    """Rebuild the latest activity rows from the durable AG-UI event log."""
+    activities: dict[str, dict[str, Any]] = {}
+    reasoning: list[str] = []
+    events = db.scalars(
+        select(AgentEvent)
+        .where(
+            AgentEvent.run_id == run_id,
+            AgentEvent.event_type.in_({"ACTIVITY_SNAPSHOT", "REASONING_MESSAGE_CONTENT"}),
+        )
+        .order_by(AgentEvent.sequence)
+    )
+    for event in events:
+        if event.event_type == "REASONING_MESSAGE_CONTENT":
+            reasoning.append(str(event.payload.get("delta") or ""))
+            continue
+        content = dict(event.payload.get("content") or {})
+        activity_id = str(content.get("id") or "").strip()
+        if not activity_id:
+            continue
+        # These are run-level live aggregates, not fields on the stored step.
+        content.pop("failureSummary", None)
+        content.pop("modelPassCount", None)
+        activities[activity_id] = content
+    return activities, "".join(reasoning)
+
+
+def _checkpointed_text_stream(
+    db: Session,
+    run_id: UUID,
+) -> tuple[UUID | None, str]:
+    message_id: UUID | None = None
+    parts: list[str] = []
+    events = db.scalars(
+        select(AgentEvent)
+        .where(
+            AgentEvent.run_id == run_id,
+            AgentEvent.event_type.in_({"TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT"}),
+        )
+        .order_by(AgentEvent.sequence)
+    )
+    for event in events:
+        raw_message_id = event.payload.get("messageId")
+        if event.event_type == "TEXT_MESSAGE_START" and raw_message_id:
+            current = UUID(str(raw_message_id))
+            if message_id is not None and current != message_id:
+                raise ValueError("A recovered run contains multiple assistant message streams")
+            message_id = current
+        elif event.event_type == "TEXT_MESSAGE_CONTENT":
+            if raw_message_id and message_id is None:
+                message_id = UUID(str(raw_message_id))
+            parts.append(str(event.payload.get("delta") or ""))
+    return message_id, "".join(parts)
+
+
+def _bind_resume_parent_run(db: Session, run: AgentRun) -> None:
+    """Derive continuation lineage from server-owned interrupt identities."""
+    if run.parent_run_id is not None or run.input_payload.get("kind") != "resume":
+        return
+    raw_ids = [entry.get("interruptId") for entry in run.input_payload.get("entries") or []]
+    try:
+        interrupt_ids = {UUID(str(value)) for value in raw_ids if value}
+    except ValueError:
+        return
+    if not interrupt_ids:
+        return
+    parent_ids = set(db.scalars(
+        select(AgentInterrupt.run_id)
+        .join(AgentRun, AgentRun.id == AgentInterrupt.run_id)
+        .where(
+            AgentInterrupt.id.in_(interrupt_ids),
+            AgentRun.user_id == run.user_id,
+            AgentRun.conversation_id == run.conversation_id,
+        )
+    ))
+    if len(parent_ids) == 1:
+        run.parent_run_id = parent_ids.pop()
+        db.commit()
 
 
 def _messages_snapshot(
@@ -1022,6 +1621,11 @@ def _emit_response(
     streamed_text: str = "",
 ) -> bool:
     publisher.bind_final_message(response.message_id)
+    publisher.bind_task_outcome(
+        response.task_status,
+        failure_stage=response.failure_stage,
+        error_code=response.error_code,
+    )
     message_id = str(response.message_id)
     if streamed_message_id is not None:
         if streamed_message_id != response.message_id or streamed_text != response.message:
@@ -1093,7 +1697,7 @@ def _emit_response(
             RunFinishedEvent(
                 thread_id=str(run.conversation_id),
                 run_id=str(run.id),
-                result={"messageId": message_id},
+                result={"messageId": message_id, "taskStatus": response.task_status},
                 outcome=RunFinishedInterruptOutcome(interrupts=[interrupt]),
                 timestamp=timestamp_ms(),
             )
@@ -1105,6 +1709,7 @@ def _emit_response(
             delta=[
                 {"op": "replace", "path": "/fyn/phase", "value": "succeeded"},
                 {"op": "add", "path": "/fyn/messageId", "value": message_id},
+                {"op": "add", "path": "/fyn/taskStatus", "value": response.task_status},
                 {"op": "replace", "path": "/fyn/interruptIds", "value": []},
             ],
             timestamp=timestamp_ms(),
@@ -1114,12 +1719,73 @@ def _emit_response(
         RunFinishedEvent(
             thread_id=str(run.conversation_id),
             run_id=str(run.id),
-            result={"messageId": message_id},
+            result={"messageId": message_id, "taskStatus": response.task_status},
             outcome=RunFinishedSuccessOutcome(),
             timestamp=timestamp_ms(),
         )
     )
     return False
+
+
+def _resume_postprocessing(
+    session_factory: sessionmaker[Session],
+    run_id: UUID,
+    user_id: UUID,
+    publisher: DurableEventPublisher,
+) -> bool:
+    """Finish a committed answer without replaying its governed operation."""
+    _update_run(session_factory, run_id, user_id, AgentRunStatus.RUNNING)
+    with session_factory() as db:
+        run = _owned_run(db, run_id, user_id)
+        user = db.scalar(select(User).where(User.id == user_id))
+        if user is None:
+            raise ValueError("User not found")
+        conversation = _owned_conversation(db, run.conversation_id, user_id)
+        response = _checkpointed_response(db, run)
+        if publisher.cancellation_requested():
+            raise RunCancelled
+        if not bool((run.recovery_payload or {}).get("skipSuggestions")):
+            response = _attach_related_questions(
+                db,
+                response,
+                user,
+                conversation,
+                str(run.input_payload.get("text") or ""),
+            )
+        activities, reasoning_trace = _checkpointed_activity(db, run.id)
+        response = _attach_activity_trace(
+            db,
+            response,
+            activities,
+            reasoning_trace,
+            _merge_metric_snapshots(run.metrics or {}, agent_metric_snapshot()),
+        )
+
+        streamed_message_id, streamed_text = _checkpointed_text_stream(db, run.id)
+        if streamed_message_id is not None:
+            if streamed_message_id != response.message_id:
+                raise ValueError("Recovered text belongs to a different assistant message")
+            if not response.message.startswith(streamed_text):
+                raise ValueError("Recovered assistant text does not match the canonical reply")
+            remainder = response.message[len(streamed_text):]
+            if remainder:
+                publisher.emit(
+                    TextMessageContentEvent(
+                        message_id=str(response.message_id),
+                        delta=remainder,
+                        timestamp=timestamp_ms(),
+                    )
+                )
+                streamed_text += remainder
+            publisher.bind_delivery_mode("model_delta")
+        return _emit_response(
+            db,
+            run,
+            response,
+            publisher,
+            streamed_message_id,
+            streamed_text,
+        )
 
 
 def execute_run(
@@ -1129,11 +1795,36 @@ def execute_run(
     publisher: DurableEventPublisher,
 ) -> None:
     """Execute one persisted run. The caller may detach without stopping it."""
+    metric_token = begin_agent_metric_collection()
+    recovery_metrics: dict[str, Any] | None = None
+
+    def finish(status: AgentRunStatus, *, error_code: str | None = None) -> None:
+        metrics = agent_metric_snapshot()
+        if recovery_metrics:
+            metrics = _merge_metric_snapshots(recovery_metrics, metrics)
+        publisher.bind_metrics(metrics)
+        publisher.finish(status, error_code=error_code)
+
     try:
+        with session_factory() as recovery_db:
+            recovery_run = _owned_run(recovery_db, run_id, user_id)
+            recovery_phase = recovery_run.recovery_phase
+            if recovery_phase == POSTPROCESS_RECOVERY_PHASE:
+                recovery_metrics = dict(recovery_run.metrics or {})
+        if recovery_phase == POSTPROCESS_RECOVERY_PHASE:
+            interrupted = _resume_postprocessing(
+                session_factory,
+                run_id,
+                user_id,
+                publisher,
+            )
+            finish(AgentRunStatus.INTERRUPTED if interrupted else AgentRunStatus.SUCCEEDED)
+            return
         _wait_for_blocker(session_factory, run_id, user_id)
         _update_run(session_factory, run_id, user_id, AgentRunStatus.RUNNING)
         with session_factory() as start_db:
             start_run = _owned_run(start_db, run_id, user_id)
+            _bind_resume_parent_run(start_db, start_run)
             publisher.emit(
                 RunStartedEvent(
                     thread_id=str(start_run.conversation_id),
@@ -1187,11 +1878,20 @@ def execute_run(
                     and publisher.cancellation_requested()
                 ):
                     raise RunCancelled
+                # The wire copy carries the run-level aggregates so the live
+                # card renders server-authored values; the recorded step stays
+                # clean because the terminal widget stores them once, at top
+                # level, when the trace is attached at rest.
+                recorded_steps = list(activities.values())
                 publisher.emit(
                     ActivitySnapshotEvent(
                         message_id=f"{run.id}-activity-{traced_event['id']}",
                         activity_type=FYN_ACTIVITY_TYPE,
-                        content=traced_event,
+                        content={
+                            **traced_event,
+                            "failureSummary": _activity_failure_summary(recorded_steps) or None,
+                            "modelPassCount": _model_pass_count(recorded_steps),
+                        },
                         replace=True,
                         timestamp=timestamp_ms(),
                     )
@@ -1277,20 +1977,34 @@ def execute_run(
                     on_text_delta,
                     on_reasoning_delta,
                 )
+                # The reasoning channel stays empty unless the provider actually
+                # emitted reasoning; the widget summary falls back to the
+                # activity trace on its own without faking a thought stream.
                 reasoning_trace = "".join(reasoning_parts)
-                if not reasoning_trace:
-                    fallback_summary = _activity_reasoning_summary(list(activities.values()))
-                    on_reasoning_delta(fallback_summary)
-                    reasoning_trace = fallback_summary
                 close_reasoning()
+                _checkpoint_postprocessing(db, run, response)
+                response = _attach_related_questions(
+                    db,
+                    response,
+                    user,
+                    conversation,
+                    str(command["text"]),
+                )
                 response = _attach_activity_trace(
                     db,
                     response,
                     activities,
                     reasoning_trace,
+                    agent_metric_snapshot(),
                 )
             elif kind == "action":
                 response = _action_response(db, user, conversation, dict(command["action"]))
+                superseded_updates = [
+                    WidgetUpdate.model_validate(item)
+                    for item in command.get("supersededWidgetUpdates") or []
+                ]
+                if superseded_updates:
+                    response.widget_updates = [*superseded_updates, *response.widget_updates]
             elif kind == "resume":
                 response, resumed_interrupts = _resume_response(
                     db,
@@ -1314,6 +2028,7 @@ def execute_run(
                         response,
                         activities,
                         reasoning_trace,
+                        agent_metric_snapshot(),
                     )
             elif kind == "protocol_error":
                 raise ProtocolRunError(
@@ -1349,70 +2064,155 @@ def execute_run(
                 "".join(streamed_parts),
             )
 
-        publisher.finish(AgentRunStatus.INTERRUPTED if interrupted else AgentRunStatus.SUCCEEDED)
+        finish(AgentRunStatus.INTERRUPTED if interrupted else AgentRunStatus.SUCCEEDED)
     except RunCancelled:
         publisher.emit(RunErrorEvent(message="This run was stopped.", code="cancelled", timestamp=timestamp_ms()))
-        publisher.finish(AgentRunStatus.CANCELLED, error_code="cancelled")
+        finish(AgentRunStatus.CANCELLED, error_code="cancelled")
     except ProtocolRunError as error:
         publisher.emit(RunErrorEvent(message=str(error), code=error.code, timestamp=timestamp_ms()))
-        publisher.finish(AgentRunStatus.FAILED, error_code=error.code)
+        finish(AgentRunStatus.FAILED, error_code=error.code)
     except Exception as error:
         publisher.emit(
-            RunErrorEvent(
+            DetailedRunErrorEvent(
                 message="fyn AI could not complete this request.",
                 code=type(error).__name__,
+                detail=_one_line_reasoning(f"{type(error).__name__}: {error}", limit=2000),
                 timestamp=timestamp_ms(),
             )
         )
-        publisher.finish(AgentRunStatus.FAILED, error_code=type(error).__name__)
+        finish(AgentRunStatus.FAILED, error_code=type(error).__name__)
+    finally:
+        end_agent_metric_collection(metric_token)
 
 
-def recover_agent_runs(
+@dataclass(frozen=True)
+class AgentRecoveryWork:
+    """One row claimed by the fixed-size startup recovery pool."""
+
+    run_id: UUID | None
+    user_id: UUID | None
+    last_sequence: int = 0
+
+    @property
+    def executable(self) -> bool:
+        return self.run_id is not None and self.user_id is not None
+
+
+def agent_recovery_backlog_exists(
     session_factory: sessionmaker[Session],
-) -> list[tuple[UUID, UUID, int]]:
-    """Repair runs left active by a process exit and return safe queued work.
-
-    A queued run has not begun its governed command and is safe to start again.
-    A running command may already have crossed a financial side-effect boundary,
-    so it is never replayed blindly; it receives one durable terminal RunError.
-    """
-    queued: list[tuple[UUID, UUID, int]] = []
+    *,
+    created_before: datetime,
+) -> bool:
+    """Whether pre-startup work remains, including an unexpired lease."""
     with session_factory() as db:
-        active = list(
-            db.scalars(
-                select(AgentRun)
-                .where(AgentRun.status.in_(ACTIVE_RUN_STATUSES))
-                .order_by(AgentRun.created_at, AgentRun.id)
+        return db.scalar(
+            select(AgentRun.id)
+            .where(
+                AgentRun.created_at <= created_before,
+                AgentRun.status.in_(ACTIVE_RUN_STATUSES),
             )
+            .limit(1)
+        ) is not None
+
+
+def renew_agent_recovery_claim(
+    session_factory: sessionmaker[Session],
+    run_id: UUID,
+    user_id: UUID,
+) -> bool:
+    """Refresh a recovery lease while its bounded worker is still alive."""
+    with session_factory() as db:
+        run = db.scalar(
+            select(AgentRun).where(AgentRun.id == run_id, AgentRun.user_id == user_id)
         )
-        for run in active:
-            if run.status == AgentRunStatus.QUEUED.value:
-                queued.append((run.id, run.user_id, run.last_sequence))
-                continue
-            last_event = db.scalar(
-                select(AgentEvent)
-                .where(AgentEvent.run_id == run.id)
-                .order_by(AgentEvent.sequence.desc())
+        if run is None or run.status not in {
+            AgentRunStatus.RECOVERING.value,
+            AgentRunStatus.RUNNING.value,
+        }:
+            return False
+        run.recovery_claimed_at = now_utc()
+        db.commit()
+        return True
+
+
+def claim_agent_recovery_work(
+    session_factory: sessionmaker[Session],
+    *,
+    created_before: datetime,
+    claim_ttl_seconds: int,
+    max_postprocess_attempts: int,
+) -> AgentRecoveryWork | None:
+    """Claim one pre-startup run without materializing the whole backlog.
+
+    PostgreSQL's ``SKIP LOCKED`` lets multiple app workers share this queue.
+    A claimed row has a lease; a process exit makes it eligible again only
+    after that lease expires. Unsafe running work is terminalized one row at a
+    time and returned as non-executable work so callers can apply backpressure.
+    """
+    now = now_utc()
+    lease_before = now - timedelta(seconds=claim_ttl_seconds)
+    with session_factory() as db:
+        run = None
+        for status in (
+            AgentRunStatus.RUNNING.value,
+            AgentRunStatus.RECOVERING.value,
+            AgentRunStatus.QUEUED.value,
+        ):
+            conditions = [
+                AgentRun.created_at <= created_before,
+                AgentRun.status == status,
+            ]
+            if status != AgentRunStatus.QUEUED.value:
+                conditions.append(or_(
+                    AgentRun.recovery_claimed_at.is_(None),
+                    AgentRun.recovery_claimed_at <= lease_before,
+                ))
+            run = db.scalar(
+                select(AgentRun)
+                .where(*conditions)
+                .order_by(AgentRun.created_at, AgentRun.id)
                 .limit(1)
+                .with_for_update(skip_locked=True)
             )
-            if last_event and last_event.event_type == "RUN_FINISHED":
+            if run is not None:
+                break
+        if run is None:
+            return None
+
+        last_event = db.scalar(
+            select(AgentEvent)
+            .where(AgentEvent.run_id == run.id)
+            .order_by(AgentEvent.sequence.desc())
+            .limit(1)
+        )
+        if last_event and last_event.event_type in {"RUN_FINISHED", "RUN_ERROR"}:
+            if last_event.event_type == "RUN_FINISHED":
                 outcome = last_event.payload.get("outcome") or {}
                 run.status = (
                     AgentRunStatus.INTERRUPTED.value
                     if outcome.get("type") == "interrupt"
                     else AgentRunStatus.SUCCEEDED.value
                 )
-                run.finished_at = now_utc()
-                continue
-            if last_event and last_event.event_type == "RUN_ERROR":
+                run.error_code = None
+            else:
                 run.status = (
                     AgentRunStatus.CANCELLED.value
                     if last_event.payload.get("code") == "cancelled"
                     else AgentRunStatus.FAILED.value
                 )
-                run.finished_at = now_utc()
                 run.error_code = str(last_event.payload.get("code") or "recovered_error")
-                continue
+            run.finished_at = now
+            run.recovery_phase = None
+            run.recovery_payload = {}
+            run.recovery_claimed_at = None
+            db.commit()
+            return AgentRecoveryWork(None, None)
+
+        resumable = (
+            run.recovery_phase == POSTPROCESS_RECOVERY_PHASE
+            and run.final_message_id is not None
+        )
+        if run.status == AgentRunStatus.RUNNING.value and not resumable:
             sequence = run.last_sequence + 1
             payload = event_payload(
                 RunErrorEvent(
@@ -1431,9 +2231,58 @@ def recover_agent_runs(
             )
             run.last_sequence = sequence
             run.status = AgentRunStatus.FAILED.value
-            run.finished_at = now_utc()
+            run.task_status = "failed"
+            run.failure_stage = "transport"
+            run.finished_at = now
             run.error_code = "server_restart"
+            run.recovery_phase = None
+            run.recovery_payload = {}
+            run.recovery_claimed_at = None
+            db.commit()
+            return AgentRecoveryWork(None, None)
+
+        if resumable:
+            payload = dict(run.recovery_payload or {})
+            if run.recovery_attempts >= max_postprocess_attempts:
+                # Suggestions are optional. Repeated process exits eventually
+                # finish the already-committed answer without another model
+                # request instead of forming an immortal retry loop.
+                payload["skipSuggestions"] = True
+            run.recovery_payload = payload
+            run.recovery_attempts += 1
+        run.status = AgentRunStatus.RECOVERING.value
+        run.recovery_claimed_at = now
         db.commit()
+        return AgentRecoveryWork(run.id, run.user_id, run.last_sequence)
+
+
+def recover_agent_runs(
+    session_factory: sessionmaker[Session],
+    *,
+    limit: int | None = None,
+    created_before: datetime | None = None,
+) -> list[tuple[UUID, UUID, int]]:
+    """Compatibility batch API backed by the bounded recovery queue.
+
+    The application uses fixed workers and claims one row at a time. Tests and
+    maintenance callers may request a small batch without ever loading every
+    active run into memory.
+    """
+    settings = get_settings()
+    maximum = limit if limit is not None else settings.agent_recovery_max_concurrency
+    cutoff = created_before or now_utc()
+    queued: list[tuple[UUID, UUID, int]] = []
+    for _ in range(max(maximum, 0)):
+        work = claim_agent_recovery_work(
+            session_factory,
+            created_before=cutoff,
+            claim_ttl_seconds=settings.agent_recovery_claim_ttl_seconds,
+            max_postprocess_attempts=settings.agent_recovery_max_postprocess_attempts,
+        )
+        if work is None:
+            break
+        if work.executable:
+            queued.append((work.run_id, work.user_id, work.last_sequence))
     return queued
 
 

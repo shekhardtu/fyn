@@ -1,26 +1,15 @@
-import { CalendarDays, Check, ChevronDown, CircleEllipsis, Info, Landmark, Loader2, LoaderCircle, PencilLine, Plus, ReceiptText, RotateCcw, Search, Target, Trash2, TrendingUp, TriangleAlert, Utensils, WalletCards, X } from "lucide-react";
+import { CalendarDays, Check, ChevronDown, CircleEllipsis, Info, Landmark, Loader2, PencilLine, Plus, ReceiptText, Search, Target, Trash2, TriangleAlert, Utensils, WalletCards, X } from "lucide-react";
 import { FormEvent, memo, useEffect, useId, useMemo, useRef, useState, type ComponentType } from "react";
-import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from "recharts";
-import type { TopLevelSpec } from "vega-lite";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { Progress } from "@/components/ui/progress";
-import { DataTableView } from "@/components/widget-library/data-table";
-import { formatCount, formatDay, formatDimension, formatDuration, formatInstant, formatMoney, formatTransactionClassification, parseAmountToMinor, parseNumber, timestampInputToUtc, timestampInputValue } from "@/lib/format";
-import { dataChartDataSchema, dataTableDataSchema, dataVisualizationDataSchema, editableTransactionTypes, widgetActionIds, widgetActions, widgetTypeIds, type DataChartData, type DataTableData, type DataVisualizationData, type Widget, type WidgetActionId } from "@/lib/protocol";
+import { ChartView } from "@/components/widget-library/chart";
+import { formatDimension, formatDuration, formatInstant, formatMoney, formatTransactionClassification, parseAmountToMinor, parseNumber, timestampInputToUtc, timestampInputValue } from "@/lib/format";
+import { dataChartDataSchema, editableTransactionTypes, widgetActionIds, widgetTypeIds, type AgentRunMetrics, type Widget, type WidgetActionId } from "@/lib/protocol";
 import { cn } from "@/lib/utils";
-import { environment } from "@/config/environment";
-import { useTablesWide, WIDE_TABLE_BREAKOUT } from "@/lib/wide-tables";
 
 type Primitive = string | number | boolean | null | undefined;
 type Data = Record<string, unknown>;
-
-/** Chart series read left to right in the same order as the legend beside them. */
-const palette = ["#4340e0", "#0891b2", "#b45309", "#7c3aed", "#155e75", "#64748b", "#a16207", "#db2777"];
-
-/** Chart furniture. Recharts and Vega take colours as props rather than as
- *  CSS, so the tokens are mirrored here and nowhere else. */
-const chartInk = { label: "#6c727c", title: "#3c4048", grid: "#e5e7ec", domain: "#d0d4dc" };
 
 export { formatMoney };
 
@@ -40,10 +29,16 @@ function plainTranscript(value: unknown) {
     .replace(/`([^`]+)`/g, "$1")
     .trim();
 }
-function options(data: Data) { return Array.isArray(data.options) ? data.options as Array<Record<string, Primitive>> : []; }
-function isWidgetActionId(value: unknown): value is WidgetActionId {
-  return typeof value === "string" && (widgetActions as readonly string[]).includes(value);
+function tracePayload(value: unknown) {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
+function options(data: Data) { return Array.isArray(data.options) ? data.options as Array<Record<string, Primitive>> : []; }
 function completionValues(widget: Widget): Data {
   const completion = widget.data.completion;
   if (!completion || typeof completion !== "object") return {};
@@ -161,6 +156,9 @@ export type WidgetProps = {
    *  did not yet declare its own cancellation action. */
   onCancel?: () => void;
   onAction: (widgetId: string, action: WidgetActionId, payload: Record<string, unknown>, options?: { markUsed?: boolean }) => void;
+  /** Posts text as a new user message through the composer's own guards.
+   *  Used by suggestion widgets; absent in read-only render contexts. */
+  onPostPrompt?: (text: string) => void;
 };
 
 /** Action buttons render their own progress so the click has an obvious effect. */
@@ -259,7 +257,7 @@ function Clarification({ widget, onAction, onCancel, disabled, pending }: Widget
       })}
     </div>
     {widget.data.allowCustom && customAction ? <div className="border-t border-line">
-      <button type="button" aria-expanded={customOpen} disabled={disabled || pending} onClick={() => setCustomOpen((open) => !open)} className="hitl-disclosure">
+      <button type="button" data-inline-disclosure="true" aria-expanded={customOpen} disabled={disabled || pending} onClick={() => setCustomOpen((open) => !open)} className="hitl-disclosure">
         <PencilLine size={14} />{str(widget.data.customLabel, "Something else")}<ChevronDown size={14} className={cn("ml-auto transition-transform duration-[var(--m-state)]", customOpen && "rotate-180")} />
       </button>
       {customOpen ? <form onSubmit={submitCustom} className="hitl-reveal flex flex-col gap-2 border-t border-line-soft p-3 sm:flex-row">
@@ -347,7 +345,7 @@ function Selector({ widget, onAction, disabled, pending }: WidgetProps) {
       })}
     </div> : list.length || accountSelector ? null : <EmptyNote>Nothing to choose from yet.</EmptyNote>}
     {accountSelector ? <div className={cn(list.length && "border-t border-line")}>
-      {list.length ? <button type="button" aria-expanded={accountOpen} disabled={disabled || pending} onClick={() => setAccountOpen((open) => !open)} className="hitl-disclosure"><PencilLine size={14} />Use another account<ChevronDown size={14} className={cn("ml-auto transition-transform duration-[var(--m-state)]", accountOpen && "rotate-180")} /></button> : null}
+      {list.length ? <button type="button" data-inline-disclosure="true" aria-expanded={accountOpen} disabled={disabled || pending} onClick={() => setAccountOpen((open) => !open)} className="hitl-disclosure"><PencilLine size={14} />Use another account<ChevronDown size={14} className={cn("ml-auto transition-transform duration-[var(--m-state)]", accountOpen && "rotate-180")} /></button> : null}
       {accountOpen ? <form onSubmit={submitAccount} className="hitl-reveal flex flex-col items-stretch gap-2 p-3 sm:flex-row">
         <input autoFocus={!disabled} value={accountName} disabled={disabled || pending} maxLength={120} onChange={(event) => setAccountName(event.target.value)} className={inputClass} placeholder="Account name" aria-label="Account name" />
         <Button type="submit" size="lg" disabled={disabled || pending || !accountName.trim()} className="h-[var(--h-field)] px-4">{pending && selectedId === "custom-account" ? <Loader2 size={14} className="animate-spin" /> : null}Continue</Button>
@@ -421,12 +419,15 @@ function CategorySelector({ widget, onAction, disabled, pending }: WidgetProps) 
 
 function TaxonomyEditor({ widget, onAction, disabled, pending }: WidgetProps) {
   const [name, setName] = useState(str(widget.data.name));
+  const initialSubcategories = Array.isArray(widget.data.subcategories) ? widget.data.subcategories.map(String) : [];
+  const [subcategories, setSubcategories] = useState(initialSubcategories.join(", "));
   const [submittedAction, markSubmitted] = usePendingAction(pending);
   const operation = str(widget.data.operation);
   const isSubcategory = operation === widgetActionIds.create_subcategory;
+  const isTaxonomyPath = operation === widgetActionIds.create_taxonomy_path;
   const lifecycle = str(widget.data.lifecycle, "pending");
   const resolved = lifecycle === "completed" || lifecycle === "cancelled";
-  const submitAction = isSubcategory ? widgetActionIds.create_subcategory : widgetActionIds.create_category;
+  const submitAction = isTaxonomyPath ? widgetActionIds.create_taxonomy_path : isSubcategory ? widgetActionIds.create_subcategory : widgetActionIds.create_category;
   const declaredAction = widget.actions[0];
   const basePayload = declaredAction?.payload ?? {};
   const navigationActions = ensureDraftCancel(
@@ -436,16 +437,22 @@ function TaxonomyEditor({ widget, onAction, disabled, pending }: WidgetProps) {
   );
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (name.trim()) {
+    const childNames = subcategories.split(",").map((item) => item.trim()).filter(Boolean);
+    if (name.trim() && (!isTaxonomyPath || childNames.length)) {
       markSubmitted(declaredAction?.id ?? "create");
-      onAction(widget.id, submitAction, { ...basePayload, name: name.trim() });
+      onAction(widget.id, submitAction, {
+        ...basePayload,
+        name: name.trim(),
+        ...(isTaxonomyPath ? { subcategories: childNames } : {}),
+      });
     }
   }
   return <Card className="hitl-card"><form onSubmit={submit} className="space-y-3 p-3">
     <label className="block"><FieldLabel hint={isSubcategory && widget.data.parentCategory ? `under ${str(widget.data.parentCategory)}` : undefined}>{isSubcategory ? "Subcategory name" : "Category name"}</FieldLabel><input autoFocus={!disabled && !resolved} disabled={disabled || pending || resolved} aria-label={isSubcategory ? "New subcategory name" : "New category name"} value={name} onChange={(event) => setName(event.target.value)} placeholder={isSubcategory ? "e.g. Materials" : "e.g. Pets"} maxLength={80} className={inputClass} /></label>
+    {isTaxonomyPath ? <label className="block"><FieldLabel hint="comma separated">Subcategories</FieldLabel><input disabled={disabled || pending || resolved} aria-label="New subcategory names" value={subcategories} onChange={(event) => setSubcategories(event.target.value)} placeholder="e.g. Vet, Food, Grooming" className={inputClass} /></label> : null}
     {!resolved ? <HitlActions className="-mx-3 -mb-3 border-t border-line">
       {orderedActions(navigationActions).map((action) => <ActionButton key={action.id} action={action} pending={pending && submittedAction === action.id} disabled={disabled || pending} onClick={() => { markSubmitted(action.id); onAction(widget.id, action.action, action.payload); }} />)}
-      <Button type="submit" disabled={disabled || pending || !name.trim()}>{pending && submittedAction === (declaredAction?.id ?? "create") ? <Loader2 className="animate-spin" /> : <Plus />} {isSubcategory ? "Add subcategory" : "Add category"}</Button>
+      <Button type="submit" disabled={disabled || pending || !name.trim() || (isTaxonomyPath && !subcategories.trim())}>{pending && submittedAction === (declaredAction?.id ?? "create") ? <Loader2 className="animate-spin" /> : <Plus />} {isTaxonomyPath ? "Add category and subcategories" : isSubcategory ? "Add subcategory" : "Add category"}</Button>
     </HitlActions> : null}
   </form></Card>;
 }
@@ -506,6 +513,64 @@ function TransactionPreview({ widget, onAction, disabled, pending }: WidgetProps
       <Money value={widget.data.amountMinor} currency={str(widget.data.currency, "INR")} className="shrink-0 font-semibold text-ink" />
     </div>
     {widget.actions.length ? <ActionRow widget={widget} disabled={disabled} pending={pending} onAction={onAction} icons={{ [widgetActionIds.edit_saved_transaction]: <PencilLine size={14} />, [widgetActionIds.request_remove_transaction]: <Trash2 size={14} /> }} /> : null}
+  </Card>;
+}
+
+function OperationForm({ widget, onAction, disabled, pending }: WidgetProps) {
+  const schema = widget.data.inputSchema && typeof widget.data.inputSchema === "object" ? widget.data.inputSchema as Data : {};
+  const properties = schema.properties && typeof schema.properties === "object" ? schema.properties as Record<string, Data> : {};
+  const required = new Set(Array.isArray(schema.required) ? schema.required.map(String) : []);
+  const initial = widget.data.inputs && typeof widget.data.inputs === "object" ? widget.data.inputs as Data : {};
+  const [values, setValues] = useState<Data>(initial);
+  const submitAction = widget.actions.find((action) => action.action === widgetActionIds.submit_operation);
+  const navigation = widget.actions.filter((action) => action.action !== widgetActionIds.submit_operation);
+  const [submitted, markSubmitted] = usePendingAction(pending);
+  const missing = [...required].filter((key) => values[key] === undefined || values[key] === "" || (Array.isArray(values[key]) && !(values[key] as unknown[]).length));
+
+  function update(key: string, value: unknown) {
+    setValues((current) => ({ ...current, [key]: value }));
+  }
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!submitAction || missing.length) return;
+    const normalized = Object.fromEntries(Object.entries(values).map(([key, value]) => {
+      const field = properties[key] ?? {};
+      if (field.type === "array" && typeof value === "string") return [key, value.split(",").map((item) => item.trim()).filter(Boolean)];
+      if ((field.type === "integer" || field.type === "number") && typeof value === "string") return [key, field.type === "integer" ? Number.parseInt(value, 10) : Number(value)];
+      return [key, value];
+    }));
+    markSubmitted(submitAction.id);
+    onAction(widget.id, submitAction.action, { ...submitAction.payload, inputs: normalized });
+  }
+
+  return <Card className="hitl-card">
+    <CardHeader title={str(widget.data.title)} body={str(widget.data.body) || undefined} />
+    <form onSubmit={submit} className="space-y-3 p-3">
+      {Object.entries(properties).map(([key, field]) => {
+        const label = str(field.title, formatEnumLabel(key));
+        const value = values[key];
+        const choices = Array.isArray(field.enum) ? field.enum.map(String) : [];
+        if (field.type === "boolean") return <label key={key} className="flex items-center gap-2 text-note text-ink-body"><input type="checkbox" checked={value === true} disabled={disabled || pending} onChange={(event) => update(key, event.target.checked)} />{label}</label>;
+        if (choices.length) return <label key={key} className="block"><FieldLabel>{label}</FieldLabel><select aria-label={label} required={required.has(key)} disabled={disabled || pending} value={str(value)} onChange={(event) => update(key, event.target.value)} className={inputClass}><option value="">Choose…</option>{choices.map((choice) => <option key={choice} value={choice}>{formatEnumLabel(choice)}</option>)}</select></label>;
+        const type = field.format === "date" ? "date" : field.format === "date-time" ? "datetime-local" : field.type === "integer" || field.type === "number" ? "number" : "text";
+        const shown = Array.isArray(value) ? value.join(", ") : value == null ? "" : String(value);
+        return <label key={key} className="block"><FieldLabel hint={field.type === "array" ? "comma separated" : undefined}>{label}</FieldLabel><input aria-label={label} required={required.has(key)} disabled={disabled || pending} type={type} value={shown} min={typeof field.minimum === "number" ? field.minimum : undefined} max={typeof field.maximum === "number" ? field.maximum : undefined} minLength={typeof field.minLength === "number" ? field.minLength : undefined} maxLength={typeof field.maxLength === "number" ? field.maxLength : undefined} onChange={(event) => update(key, event.target.value)} className={inputClass} /></label>;
+      })}
+      <HitlActions className="-mx-3 -mb-3 border-t border-line">
+        {orderedActions(navigation).map((action) => <ActionButton key={action.id} action={action} pending={pending && submitted === action.id} disabled={disabled || pending} onClick={() => { markSubmitted(action.id); onAction(widget.id, action.action, action.payload); }} />)}
+        {submitAction ? <Button type="submit" disabled={disabled || pending || Boolean(missing.length)}>{pending && submitted === submitAction.id ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} {submitAction.label}</Button> : null}
+      </HitlActions>
+    </form>
+  </Card>;
+}
+
+function OperationApproval({ widget, onAction, disabled, pending }: WidgetProps) {
+  const inputs = widget.data.inputs && typeof widget.data.inputs === "object" ? widget.data.inputs as Data : {};
+  return <Card className="hitl-card">
+    <CardHeader eyebrow={str(widget.data.effect) === "mutation" ? "Will change your data" : "Review"} title={str(widget.data.title)} body={str(widget.data.body) || str(widget.data.summary)} tone={str(widget.data.effect) === "mutation" ? "caution" : "neutral"} />
+    {Object.keys(inputs).length ? <dl className="divide-y divide-line px-3.5">{Object.entries(inputs).map(([key, value]) => <div key={key} className="flex gap-4 py-2.5 text-note"><dt className="text-ink-muted">{formatEnumLabel(key)}</dt><dd className="ml-auto text-right font-medium text-ink-body">{Array.isArray(value) ? value.join(", ") : String(value)}</dd></div>)}</dl> : null}
+    <ActionRow widget={widget} disabled={disabled} pending={pending} onAction={onAction} icons={{ [widgetActionIds.approve_operation]: <Check size={14} /> }} />
   </Card>;
 }
 
@@ -603,361 +668,23 @@ function TransactionEdit({ widget, onAction, disabled, pending }: WidgetProps) {
 
 /** Charts are decoration for anyone who can't see them; the same numbers are
  *  always present as text, so the legend is the accessible source of truth. */
-function FinancialSummary({ widget }: WidgetProps) {
-  const currency = str(widget.data.currency, "INR");
-  const scopePath = Array.isArray(widget.data.scopePath) ? widget.data.scopePath.map((item) => str(item)).filter(Boolean) : [];
-  const description = str(widget.data.description);
-  const breakdown = Array.isArray(widget.data.breakdown) ? widget.data.breakdown as Data[] : [];
-  const chartData = breakdown.map((item) => ({ name: str(item.label), value: num(item.amount_minor) })).filter((item) => item.value > 0);
-  const total = chartData.reduce((sum, item) => sum + item.value, 0);
-  const leading = chartData.slice(0, 6);
-  const rest = chartData.slice(6);
-  const restTotal = rest.reduce((sum, item) => sum + item.value, 0);
-  const count = num(widget.data.count);
-  return <Card>
-    <div className="px-4 pt-4">
-      <p className="text-meta font-semibold tracking-[0.08em] text-ink-muted uppercase">{str(widget.data.period)}</p>
-      <h3 className="mt-2 font-heading text-body font-medium text-ink-body">{str(widget.data.title)}</h3>
-      {scopePath.length ? <p aria-label={`Category path: ${scopePath.join(" to ")}`} className="mt-1 text-note font-medium text-secondary">{scopePath.join(" → ")}</p> : null}
-      <p className="money mt-1 text-display font-semibold text-ink">{formatMoney(widget.data.amountMinor, currency)}</p>
-      <p className="text-note text-ink-muted">{count} recorded transaction{count === 1 ? "" : "s"}</p>
-      {description ? <p className="mt-3 max-w-2xl text-note leading-5 text-ink-muted">{description}</p> : null}
-    </div>
-    {chartData.length ? <div className="p-4">
-      <ul className="space-y-3">
-        {leading.map((item, index) => <li key={item.name} className="flex items-center gap-2 text-note"><span className="size-2 shrink-0 rounded-full" style={{ background: palette[index % palette.length] }} /><span className="min-w-0 truncate text-ink-muted">{item.name}</span><Money value={item.value} currency={currency} className="ml-auto shrink-0 font-medium text-ink" /></li>)}
-        {rest.length ? <li className="flex items-center gap-2 text-note"><span className="size-2 shrink-0 rounded-full bg-line-strong" /><span className="text-ink-muted">{rest.length} more {rest.length === 1 ? "category" : "categories"}</span><Money value={restTotal} currency={currency} className="ml-auto shrink-0 font-medium text-ink" /></li> : null}
-        {total ? <li className="flex items-center gap-2 border-t border-line pt-2 text-note"><span className="font-medium text-ink-body">Total</span><Money value={total} currency={currency} className="ml-auto font-semibold text-ink" /></li> : null}
-      </ul>
-    </div> : count || num(widget.data.amountMinor)
-      // A backend that answers an unscoped total sends no breakdown at all;
-      // the header already tells the whole story, so only a real zero earns
-      // the empty-state copy.
-      ? <div aria-hidden className="pb-4" />
-      : <p className="mx-5 my-4 rounded-2xl border border-dashed border-line py-6 text-center text-control text-ink-muted">No spending recorded in this period yet.</p>}
-  </Card>;
-}
-
-type VisualEncoding = DataVisualizationData["views"][number]["encoding"];
-
-function visualFields(encoding: VisualEncoding) {
-  return [encoding.x, encoding.y, encoding.color, encoding.size, encoding.theta, encoding.row, encoding.column, ...encoding.tooltip]
-    .filter((item): item is NonNullable<typeof item> => Boolean(item));
-}
-
-function vegaEncoding(encoding: VisualEncoding) {
-  const fieldDefinition = (item: NonNullable<typeof encoding.x>) => ({
-    field: item.field,
-    type: item.type,
-    title: item.title ?? undefined,
-    sort: item.sort ?? undefined,
-    // Vega uses d3-format. Currency is the `$` token and its actual symbol is
-    // supplied by formatLocale below; a literal `₹` inside the specifier is
-    // invalid and aborts the complete Vega render pipeline.
-    ...(item.valueType === "money_minor" ? { format: "$,.2f" } : {}),
-    ...(item.valueType === "percentage" ? { format: ".1%" } : {}),
-  });
-  return Object.fromEntries([
-    ...(["x", "y", "color", "size", "theta", "row", "column"] as const)
-      .filter((channel) => encoding[channel])
-      .map((channel) => [channel, fieldDefinition(encoding[channel]!)]),
-    ...(encoding.tooltip.length ? [["tooltip", encoding.tooltip.map(fieldDefinition)]] : []),
-  ]);
-}
-
-function visualValue(value: unknown, encoding: NonNullable<VisualEncoding["x"]>) {
-  const amount = num(value);
-  if (encoding.valueType === "money_minor") return formatMoney(amount);
-  if (encoding.valueType === "percentage") return `${(amount / 100).toFixed(1)}%`;
-  return formatCount(amount, amount % 1 ? 2 : 0);
-}
-
-function chartGuide(view: DataVisualizationData["views"][number], rows: Array<Record<string, unknown>>) {
-  const dimension = view.encoding.x ?? view.encoding.color;
-  const measure = view.encoding.y ?? view.encoding.theta ?? view.encoding.color;
-  const explanation = view.mark === "arc"
-    ? `Segments represent ${dimension?.title ?? dimension?.field ?? "groups"}; their size represents ${measure?.title ?? measure?.field ?? "value"}.`
-    : `${dimension?.title ?? dimension?.field ?? "Groups"} is plotted against ${measure?.title ?? measure?.field ?? "value"}.`;
-  return <p className="mt-2 text-meta leading-4 text-ink-muted"><span className="font-medium text-ink-body">How to read this:</span> {explanation} Hover or focus the chart for exact values. {rows.length} data point{rows.length === 1 ? "" : "s"} included.</p>;
-}
-
-function visualChannels(view: DataVisualizationData["views"][number]) {
-  const { x, y, color, theta } = view.encoding;
-  return { x, y, color, theta };
-}
-
-function seriesData(view: DataVisualizationData["views"][number], rows: Array<Record<string, unknown>>) {
-  const { x, y, color } = visualChannels(view);
-  if (!x || !y || !color) return { rows, keys: y ? [y.field] : [] };
-  const keys = [...new Set(rows.map((row) => str(row[color.field])).filter(Boolean))];
-  const byDimension = new Map<string, Record<string, unknown>>();
-  rows.forEach((row) => {
-    const rawDimension = row[x.field];
-    const id = String(rawDimension ?? "");
-    const target = byDimension.get(id) ?? { [x.field]: rawDimension };
-    target[str(row[color.field])] = row[y.field];
-    byDimension.set(id, target);
-  });
-  return { rows: [...byDimension.values()], keys };
-}
-
-function RechartsView({ view, rows }: { view: DataVisualizationData["views"][number]; rows: Array<Record<string, unknown>> }) {
-  const { x, y, color, theta } = visualChannels(view);
-  const prepared = useMemo(() => seriesData(view, rows), [view, rows]);
-  const height = Math.max(220, view.height);
-  const tooltipFormatter = (value: unknown, name: unknown) => [y ? visualValue(value, y) : String(value ?? ""), String(name ?? "Value")];
-  const yTick = (value: unknown) => y ? visualValue(value, y) : String(value ?? "");
-
-  if (view.mark === "arc" && color && theta) {
-    const moneyEncoding = view.encoding.tooltip.find((item) => item.valueType === "money_minor");
-    const totalMinor = moneyEncoding ? rows.reduce((sum, row) => sum + num(row[moneyEncoding.field]), 0) : null;
-    const donutHeight = Math.min(height, 300);
-    return <div className="chart-donut-container">
-    <div className="chart-donut-layout">
-      <div style={{ height: donutHeight }} className="chart-reveal chart-donut-plot relative w-full min-w-0" role="img" aria-label={`${view.title}. ${rows.length} plotted data points.`}>
-        <ResponsiveContainer width="100%" height="100%" minWidth={0}>
-          <PieChart accessibilityLayer>
-            <Pie data={rows} dataKey={theta.field} nameKey={color.field} innerRadius="48%" outerRadius="78%" paddingAngle={1.5} isAnimationActive={false}>
-              {rows.map((row, index) => <Cell key={`${str(row[color.field])}-${index}`} fill={palette[index % palette.length]} />)}
-            </Pie>
-            <Tooltip formatter={(value, name) => [visualValue(value, theta), String(name)]} />
-          </PieChart>
-        </ResponsiveContainer>
-        {totalMinor !== null ? <div className="pointer-events-none absolute inset-0 grid place-items-center text-center" aria-hidden="true"><div><p className="text-meta font-semibold tracking-[0.08em] text-ink-muted uppercase">Total</p><p className="money mt-1 text-title font-semibold text-secondary">{formatMoney(totalMinor)}</p></div></div> : null}
-      </div>
-      <ul className="chart-donut-legend" aria-label={`${color.title ?? color.field} legend`}>
-        {rows.map((row, index) => <li key={`${str(row[color.field])}-${index}`} className="chart-donut-legend-item flex min-w-0 items-center gap-2 text-note">
-          <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: palette[index % palette.length] }} aria-hidden="true" />
-          <span className="min-w-0 flex-1 truncate text-ink-muted">{formatDimension(row[color.field])}</span>
-          <span className="shrink-0 font-medium tabular-nums text-ink-body">{visualValue(row[theta.field], theta)}</span>
-        </li>)}
-      </ul>
-    </div>
-    {chartGuide(view, rows)}
-  </div>;
-  }
-
-  if (!x || !y) return <div role="alert" className="rounded-xl border border-dashed border-danger-line px-4 py-6 text-center text-note text-danger-ink">This visual is missing a validated axis. The underlying data was not discarded.</div>;
-  const common = <>
-    <CartesianGrid stroke={chartInk.grid} vertical={false} />
-    <XAxis dataKey={x.field} tick={{ fill: chartInk.label, fontSize: 11 }} axisLine={{ stroke: chartInk.domain }} tickLine={false} />
-    <YAxis tickFormatter={yTick} tick={{ fill: chartInk.label, fontSize: 11 }} axisLine={false} tickLine={false} width={82} />
-    <Tooltip formatter={tooltipFormatter} />
-    {prepared.keys.length > 1 ? <Legend iconType="circle" /> : null}
-  </>;
-  const series = prepared.keys.length ? prepared.keys : [y.field];
-  let chart: React.ReactNode;
-  if (view.mark === "bar" || view.mark === "tick") chart = <BarChart data={prepared.rows} accessibilityLayer>{common}{series.map((key, index) => <Bar key={key} dataKey={key} name={key} fill={palette[index % palette.length]} isAnimationActive={false} />)}</BarChart>;
-  else if (view.mark === "area") chart = <AreaChart data={prepared.rows} accessibilityLayer>{common}{series.map((key, index) => <Area key={key} type="monotone" dataKey={key} name={key} stroke={palette[index % palette.length]} fill={palette[index % palette.length]} fillOpacity={0.14} isAnimationActive={false} />)}</AreaChart>;
-  else if (view.mark === "point") chart = <ScatterChart accessibilityLayer>{common}<Scatter data={prepared.rows} dataKey={y.field} fill={palette[0]} isAnimationActive={false} /></ScatterChart>;
-  else chart = <LineChart data={prepared.rows} accessibilityLayer>{common}{series.map((key, index) => <Line key={key} type="monotone" dataKey={key} name={key} stroke={palette[index % palette.length]} strokeWidth={2} dot={rows.length <= 24} isAnimationActive={false} connectNulls />)}</LineChart>;
-  return <div>
-    <div style={{ height }} className="chart-reveal w-full min-w-0" role="img" aria-label={`${view.title}. ${rows.length} plotted data points.`}><ResponsiveContainer width="100%" height="100%" minWidth={0}>{chart}</ResponsiveContainer></div>
-    {chartGuide(view, rows)}
-  </div>;
-}
-
-function VegaView({ view, rows }: { view: DataVisualizationData["views"][number]; rows: Array<Record<string, unknown>> }) {
-  const target = useRef<HTMLDivElement>(null);
-  const [containerWidth, setContainerWidth] = useState(0);
-  const [status, setStatus] = useState<"loading" | "ready" | "failed">("loading");
-  const [retry, setRetry] = useState(0);
-  // Serialising the whole dataset is the price of keying the embed on the
-  // contract rather than on object identity. It is paid when the contract
-  // changes, not on every render of the conversation around it.
-  const payload = useMemo(() => JSON.stringify({ view, rows }), [view, rows]);
-  useEffect(() => {
-    const parent = target.current?.parentElement;
-    if (!parent) return;
-    const measure = () => setContainerWidth(Math.max(240, Math.floor(parent.getBoundingClientRect().width || 640)));
-    measure();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(parent);
-    return () => observer.disconnect();
-  }, [payload]);
-  useEffect(() => {
-    if (!target.current || !containerWidth) return;
-    let active = true;
-    let finalized: (() => void) | undefined;
-    setStatus("loading");
-    const moneyFields = new Set(visualFields(view.encoding).filter((item) => item.valueType === "money_minor").map((item) => item.field));
-    const percentageFields = new Set(visualFields(view.encoding).filter((item) => item.valueType === "percentage").map((item) => item.field));
-    const values = rows.map((row) => Object.fromEntries(Object.entries(row).map(([key, value]) => [
-      key,
-      moneyFields.has(key) && typeof value === "number"
-        ? value / 100
-        : percentageFields.has(key) && typeof value === "number"
-          ? value / 10_000
-          : value,
-    ])));
-    const mark = view.mark === "arc"
-      ? { type: "arc" as const, innerRadius: 54, outerRadius: 92, tooltip: true }
-      : { type: view.mark, tooltip: true };
-    const spec: TopLevelSpec = {
-      $schema: "https://vega.github.io/schema/vega-lite/v6.json",
-      data: { values },
-      mark,
-      // A measured numeric width works for ordinary, layered and faceted
-      // views. It also avoids a zero-width first render while a virtualized
-      // conversation column is settling.
-      width: Math.max(240, containerWidth - 2),
-      height: view.height,
-      encoding: vegaEncoding(view.encoding),
-      config: {
-        background: "transparent",
-        view: { stroke: null },
-        axis: { labelColor: chartInk.label, titleColor: chartInk.title, gridColor: chartInk.grid, domainColor: chartInk.domain },
-        legend: { labelColor: chartInk.label, titleColor: chartInk.title },
-        range: { category: palette },
-      },
-    } as TopLevelSpec;
-    const node = target.current;
-    node.replaceChildren();
-    void import("vega-embed").then(async ({ default: embed }) => {
-      if (!active) return;
-      const result = await embed(node, spec, {
-        actions: false,
-        renderer: "svg",
-        formatLocale: {
-          decimal: ".",
-          thousands: ",",
-          grouping: [3, 2],
-          currency: ["₹", ""],
-        },
-      });
-      if (!active) {
-        result.finalize();
-        return;
-      }
-      finalized = () => result.finalize();
-      setStatus("ready");
-    }).catch((error: unknown) => {
-      if (!active) return;
-      node.replaceChildren();
-      setStatus("failed");
-      console.error("Governed chart renderer failed", error);
-    });
-    return () => {
-      active = false;
-      finalized?.();
-      node.replaceChildren();
-    };
-  // payload is the complete validated declarative contract for this view.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [payload, containerWidth, retry]);
-  const dimension = view.encoding.x ?? view.encoding.color;
-  const measure = view.encoding.y ?? view.encoding.theta ?? view.encoding.color;
-  const chartHelp = view.mark === "arc"
-    ? `Segments represent ${dimension?.title ?? dimension?.field ?? "groups"}; their size represents ${measure?.title ?? measure?.field ?? "value"}.`
-    : `${dimension?.title ?? dimension?.field ?? "Groups"} is plotted against ${measure?.title ?? measure?.field ?? "value"}.`;
-  return <div className="min-w-0">
-    <div className="relative min-h-[220px]">
-      <div key={`${payload}-${retry}`} ref={target} role="img" className={cn("min-w-0 [&_.vega-embed]:w-full [&_.vega-embed>svg]:max-w-full", status === "ready" ? "chart-reveal" : "opacity-0")} aria-label={`${view.title}. ${rows.length} plotted data points.`} />
-      {status === "loading" ? <div role="status" className="absolute inset-0 grid place-items-center rounded-xl bg-surface-sunken text-note text-ink-muted"><span className="flex items-center gap-2"><LoaderCircle className="animate-spin" />Preparing {rows.length} data point{rows.length === 1 ? "" : "s"}…</span></div> : null}
-      {status === "failed" ? <div role="alert" className="absolute inset-0 grid place-items-center rounded-xl border border-dashed border-danger-line bg-danger-tint px-4 text-center"><div><p className="text-control font-medium text-danger-ink">The chart renderer hit a problem.</p><p className="mt-1 text-note leading-5 text-ink-muted">The validated data is still available. Retry the visual or use the description below.</p><Button type="button" variant="outline" size="sm" onClick={() => setRetry((value) => value + 1)} className="mt-3 h-9 rounded-lg"><RotateCcw size={14} />Retry chart</Button></div></div> : null}
-    </div>
-    <p className="mt-2 text-meta leading-4 text-ink-muted"><span className="font-medium text-ink-body">How to read this:</span> {chartHelp} Hover or focus the chart for exact values. {rows.length} data point{rows.length === 1 ? "" : "s"} included.</p>
-  </div>;
-}
-
-function GovernedVisualization({ data }: { data: DataVisualizationData }) {
-  const columns = data.layout.columns === 3 ? "lg:grid-cols-3" : data.layout.columns === 2 ? "lg:grid-cols-2" : "grid-cols-1";
-  const singleView = data.views.length === 1 ? data.views[0] : null;
-  const headerTitle = singleView?.title ?? data.title;
-  const headerBody = singleView?.description ?? data.body ?? undefined;
-  return <Card>
-    <CardHeader eyebrow="Governed analysis" title={headerTitle} body={headerBody} />
-    <div className={cn("grid", columns, singleView ? "p-4" : "gap-3 p-4")}>
-      {data.views.map((view) => {
-        const rows = data.datasets[view.dataset] ?? [];
-        return <section key={view.id} className={cn("min-w-0", !singleView && "rounded-2xl border border-line bg-surface-sunken p-3")}>
-          {!singleView ? <h4 className="text-control font-semibold text-ink">{view.title}</h4> : null}
-          {!singleView && view.description ? <p className="mt-1 text-meta leading-4 text-ink-muted">{view.description}</p> : null}
-          {rows.length ? <div className={cn("min-w-0 overflow-x-auto", !singleView && "mt-3")}>{view.mark === "rect" ? <VegaView view={view} rows={rows} /> : <RechartsView view={view} rows={rows} />}</div> : <EmptyNote>{data.emptyMessage}</EmptyNote>}
-        </section>;
-      })}
-    </div>
-  </Card>;
-}
-
-/** Validation is keyed on the payload, not on the render: the contract cannot
- *  change without `widget.data` changing, and re-checking a hundred rows on
- *  every keystroke elsewhere in the app buys nothing. Holding the parsed result
- *  also keeps its identity stable, which is what lets the views below memoise. */
-function DataVisualization({ widget }: WidgetProps) {
-  const parsed = useMemo(() => dataVisualizationDataSchema.safeParse(widget.data), [widget.data]);
-  return parsed.success
-    ? <GovernedVisualization data={parsed.data} />
-    : <Card><EmptyNote>This visualization could not be rendered because its governed contract is invalid.</EmptyNote></Card>;
-}
-
-/** Compatibility adapter for persisted version-1 chart widgets. New agent
- * runs emit the generic multi-view visualization grammar above. */
-function legacyChartToVisualization(chart: DataChartData): DataVisualizationData {
-  const primary = chart.series[0];
-  const fieldType = (kind: DataChartData["xAxis"]["type"]) => kind === "date" || kind === "datetime" ? "temporal" as const : kind === "number" ? "quantitative" as const : "nominal" as const;
-  const x = { field: chart.xAxis.key, type: fieldType(chart.xAxis.type), title: chart.xAxis.label, valueType: chart.xAxis.type === "datetime" ? "datetime" as const : "category" as const, sort: null };
-  const value = { field: primary.key, type: "quantitative" as const, title: primary.label, valueType: primary.valueType === "money" ? "money_minor" as const : primary.valueType, sort: null };
-  const color = primary.groupKey ? { field: primary.groupKey, type: "nominal" as const, title: "Series", valueType: "category" as const, sort: null } : undefined;
-  const mark = chart.chartType === "pie" ? "arc" as const : chart.chartType === "heatmap" ? "rect" as const : chart.chartType;
-  const yDimension = chart.yAxis ? { field: chart.yAxis.key, type: fieldType(chart.yAxis.type), title: chart.yAxis.label, valueType: chart.yAxis.type === "datetime" ? "datetime" as const : "category" as const, sort: null } : undefined;
-  const emptyChannels = { x: null, y: null, color: null, size: null, theta: null, row: null, column: null };
-  const encoding: VisualEncoding = mark === "arc"
-    ? { ...emptyChannels, theta: value, color: x, tooltip: [x, value] }
-    : mark === "rect"
-      ? { ...emptyChannels, x, y: yDimension ?? null, color: value, row: color ?? null, tooltip: [x, ...(yDimension ? [yDimension] : []), value, ...(color ? [color] : [])] }
-      : { ...emptyChannels, x, y: value, color: color ?? null, tooltip: [x, value, ...(color ? [color] : [])] };
-  return {
-    title: chart.title, body: chart.body, datasets: { legacy: chart.rows },
-    views: [{ id: "legacy-view", title: chart.title, description: chart.body, dataset: "legacy", mark, encoding, height: 320 }],
-    layout: { columns: 1 }, queryResults: null, emptyMessage: chart.emptyMessage,
-  };
-}
-
-function DataChart({ widget }: WidgetProps) {
-  const converted = useMemo(() => {
-    const parsed = dataChartDataSchema.safeParse(widget.data);
-    return parsed.success ? legacyChartToVisualization(parsed.data) : null;
-  }, [widget.data]);
-  return converted
-    ? <GovernedVisualization data={converted} />
-    : <Card><EmptyNote>This chart could not be rendered because its data contract is invalid.</EmptyNote></Card>;
-}
-
-function Scenario({ widget }: WidgetProps) {
-  const currency = str(widget.data.currency, "INR");
-  const affordable = Boolean(widget.data.affordable_now);
-  const available = num(widget.data.available_after_reserve_minor);
-  const purchase = num(widget.data.purchase_minor);
-  const progress = Math.max(0, Math.min(100, purchase ? available / purchase * 100 : 0));
-  return <Card>
-    <div className="px-4 py-4">
-      <div className="flex items-center gap-3">
-        <span className={cn("grid size-11 shrink-0 place-items-center rounded-2xl", affordable ? "bg-secondary-tint text-secondary" : "bg-danger-tint text-danger")}>{affordable ? <Check size={20} /> : <TrendingUp size={20} />}</span>
-        <div className="min-w-0"><h3 className="font-heading text-body font-semibold text-ink">{str(widget.data.title)}</h3><p className="text-note text-ink-muted">{affordable ? "Affordable with your reserve intact" : "Build a little more room first"}</p></div>
-      </div>
-      <div className="mt-4 space-y-2">
-        <div className="flex justify-between text-note text-ink-muted"><span>Available after reserve</span><Money value={available} currency={currency} className="font-medium text-ink-body" /></div>
-        <Progress value={progress} aria-label="Share of the purchase you can cover" className="h-2 bg-line [&_[data-slot=progress-indicator]]:bg-secondary" />
-        <div className="flex justify-between text-meta text-ink-muted"><span>{str(widget.data.rule)}</span><span>Goal <Money value={purchase} currency={currency} /></span></div>
-      </div>
-    </div>
-    {str(widget.data.dataQuality) ? <p className="border-t border-line bg-surface-sunken px-4 py-3 text-meta text-ink-muted">{str(widget.data.dataQuality)}</p> : null}
-  </Card>;
-}
-
 function ProgressCard({ widget, onAction, onCancel, disabled, pending }: WidgetProps) {
   const isGoal = widget.type === widgetTypeIds.goal_progress;
   const currency = str(widget.data.currency, "INR");
   const current = num(isGoal ? widget.data.currentMinor : widget.data.spentMinor);
   const total = num(isGoal ? widget.data.targetMinor : widget.data.amountMinor);
+  const saveBudget = !isGoal ? widget.actions.find((action) => action.action === widgetActionIds.save_budget) : undefined;
+  const navigationActions = saveBudget ? widget.actions.filter((action) => action.id !== saveBudget.id) : [];
+  const initialAmount = String(total / 100).replace(/\.0+$/, "");
+  const [amount, setAmount] = useState(initialAmount);
+  const [amountError, setAmountError] = useState<string | null>(null);
+  const [submitted, markSubmitted] = usePendingAction(pending);
   const ratio = total ? current / total * 100 : 0;
   const progress = Math.max(0, Math.min(100, ratio));
   // Spending past a budget is the one thing this card exists to warn about.
   const over = !isGoal && current > total && total > 0;
   const remainder = over ? current - total : num(widget.data.remainingMinor);
-  return <Card className={cn("hitl-card", over && "border-danger-line")}>
+  const summary = <>
     <div className="p-3">
       <div className="flex items-center gap-3">
         <span className={cn("grid size-9 shrink-0 place-items-center rounded-lg", over ? "bg-danger-tint text-danger" : "bg-secondary-tint text-secondary")}>{isGoal ? <Target size={17} /> : over ? <TriangleAlert size={17} /> : <WalletCards size={17} />}</span>
@@ -973,8 +700,34 @@ function ProgressCard({ widget, onAction, onCancel, disabled, pending }: WidgetP
         <p className="mt-2 text-right text-note text-ink-muted">Target <Money value={total} currency={currency} className="font-semibold text-ink" /></p>
       </div>
     </div>
+  </>;
+  if (!saveBudget) return <Card className={cn("hitl-card", over && "border-danger-line")}>
+    {summary}
     <ActionRow widget={widget} disabled={disabled} pending={pending} onAction={onAction} onCancel={onCancel} />
   </Card>;
+
+  const submitBudget = (event: FormEvent) => {
+    event.preventDefault();
+    const amountMinor = parseAmountToMinor(amount);
+    if (!amountMinor || amountMinor <= 0) {
+      setAmountError("Enter a monthly amount greater than zero.");
+      return;
+    }
+    setAmountError(null);
+    markSubmitted(saveBudget.id);
+    onAction(widget.id, saveBudget.action, { ...saveBudget.payload, amountMinor });
+  };
+
+  return <Card className={cn("hitl-card", over && "border-danger-line")}><form onSubmit={submitBudget} noValidate>
+    {summary}
+    <div className="border-t border-line px-3 py-3">
+      <label className="block"><FieldLabel>Monthly limit</FieldLabel><input autoFocus={!disabled} disabled={disabled || pending} aria-label="Monthly budget amount" aria-invalid={Boolean(amountError)} inputMode="decimal" value={amount} onChange={(event) => { setAmount(event.target.value); if (amountError) setAmountError(null); }} className={cn(inputClass, amountError && invalidClass)} />{amountError ? <FieldError>{amountError}</FieldError> : null}</label>
+    </div>
+    <HitlActions className="border-t border-line">
+      {orderedActions(navigationActions).map((action) => <ActionButton key={action.id} action={action} pending={pending && submitted === action.id} disabled={disabled || pending} onClick={() => { markSubmitted(action.id); onAction(widget.id, action.action, action.payload); }} />)}
+      <Button type="submit" disabled={disabled || pending || !amount.trim()}>{pending && submitted === saveBudget.id ? <Loader2 className="animate-spin" /> : null}{saveBudget.label}</Button>
+    </HitlActions>
+  </form></Card>;
 }
 
 function ImportReview({ widget, onAction, onCancel, disabled, pending }: WidgetProps) {
@@ -994,7 +747,7 @@ function ImportReview({ widget, onAction, onCancel, disabled, pending }: WidgetP
     <div className="border-b border-line px-3.5 py-3">
       <p className={cn("text-meta font-semibold tracking-[0.08em] uppercase", complete ? "text-secondary" : "text-ink-muted")}>{complete ? "Import complete" : "Statement review"}</p>
       <h3 className="mt-1 truncate font-heading text-body font-semibold text-ink" title={str(widget.data.title)}>{str(widget.data.title)}</h3>
-      <p className="mt-0.5 text-note leading-4 text-ink-muted">{replay ? "Already imported—nothing was duplicated." : complete ? `${ready} recorded${review ? ` · ${review} need review` : ""}.` : `${total} row${total === 1 ? "" : "s"} ready to review before import.`}</p>
+      <p className="mt-0.5 text-note leading-4 text-ink-muted">{replay ? (complete ? "Already imported—nothing was duplicated." : "This statement is already staged—nothing was duplicated.") : complete ? `${ready} recorded${review ? ` · ${review} need review` : ""}.` : `${total} row${total === 1 ? "" : "s"} ready to review before import.`}</p>
     </div>
     {total > 0 ? <dl className="grid grid-cols-2 gap-1.5 p-2.5 sm:grid-cols-4">{tiles.map(([label, value]) => <div key={label} className={cn("rounded-lg px-2.5 py-2", label === "Duplicates" && !complete ? "bg-surface-sunken/60" : "bg-surface-sunken")}>
       <dt className="text-meta font-semibold tracking-wide text-ink-muted uppercase">{label}</dt>
@@ -1154,31 +907,10 @@ function ReconciliationReview({ widget, onAction, disabled, pending }: WidgetPro
   </Card>;
 }
 
-function TransactionList({ widget, onAction, disabled, pending }: WidgetProps) {
-  const transactions = Array.isArray(widget.data.transactions) ? widget.data.transactions as Data[] : [];
-  return <Card>
-    <CardHeader title={str(widget.data.title)} body={str(widget.data.body) || undefined} />
-    {transactions.length ? <ul className="divide-y divide-line">{transactions.map((transaction, index) => {
-      const actions = Array.isArray(transaction.actions) ? transaction.actions as Data[] : [];
-      const amount = transaction.amountMinor;
-      // Saved analyses and other non-monetary rows arrive with a zero amount and
-      // a status; showing "₹0" there would be a lie about money.
-      const showAmount = num(amount) !== 0;
-      const status = str(transaction.status);
-      return <li key={str(transaction.id, String(index))} className="flex flex-wrap items-center gap-3 px-3.5 py-3">
-        <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-surface-sunken text-secondary"><ReceiptText /></span>
-        <div className="min-w-0 flex-1"><p className="truncate text-control font-medium text-ink">{str(transaction.merchant, "Recorded item")}</p><p className="truncate text-note text-ink-muted">{[formatInstant(transaction.transactionAt), status].filter(Boolean).join(" · ")}</p></div>
-        {showAmount ? <Money value={amount} currency={str(transaction.currency, "INR")} className="shrink-0 text-control font-semibold text-ink" /> : null}
-        {actions.map((action, actionIndex) => { const actionId = action.action; if (!isWidgetActionId(actionId)) return null; const removing = actionId.includes("remove"); return <Button key={str(action.id, String(actionIndex))} type="button" size="sm" variant="outline" disabled={disabled || pending} onClick={() => onAction(widget.id, actionId, (action.payload ?? {}) as Record<string, unknown>)} className={cn("basis-full sm:basis-auto", removing && "border-danger-line text-danger-ink hover:bg-danger-tint")}>{removing ? <Trash2 size={14} /> : <PencilLine size={14} />}{str(action.label, "Review")}</Button>; })}
-      </li>;
-    })}</ul> : <EmptyNote>Nothing here yet. Record a few transactions and this list fills itself in.</EmptyNote>}
-  </Card>;
-}
-
-function DynamicDataTable({ widget, onAction, disabled, pending }: WidgetProps) {
-  const parsed = useMemo(() => dataTableDataSchema.safeParse(widget.data), [widget.data]);
-  if (!parsed.success) return <Card><CardHeader title="This data view could not be rendered" body="The widget payload did not match the registered table contract." /></Card>;
-  return <DataTableView data={parsed.data} disabled={disabled} pending={pending} onAction={(action, payload) => onAction(widget.id, action, payload)} />;
+function ChartWidget({ widget, disabled, pending }: WidgetProps) {
+  const parsed = useMemo(() => dataChartDataSchema.safeParse(widget.data), [widget.data]);
+  if (!parsed.success) return <Card><CardHeader title="This chart could not be rendered" body="The widget payload did not match the registered chart contract." /></Card>;
+  return <ChartView data={parsed.data} disabled={disabled} pending={pending} />;
 }
 
 /** A note, not a card.
@@ -1196,7 +928,7 @@ function DynamicDataTable({ widget, onAction, disabled, pending }: WidgetProps) 
  *  The eyebrow is dropped in both. It defaulted to "Copilot insight" directly
  *  beneath a byline already reading COPILOT, and where the model chose its own
  *  it was decoration ("START NATURALLY") rather than information. */
-function Insight({ widget }: WidgetProps) {
+function Insight({ widget, onAction, disabled, pending }: WidgetProps) {
   const tone = str(widget.data.tone);
   const caution = tone === "caution" || /won’t|won't|need|missing|can’t|can't/i.test(str(widget.data.title));
   const title = str(widget.data.title);
@@ -1209,6 +941,7 @@ function Insight({ widget }: WidgetProps) {
   if (!caution) return <div className="widget-enter max-w-[62ch]">
     {title ? <p className="text-control font-medium text-ink-body">{title}</p> : null}
     {body ? <p className={cn("text-control font-medium leading-6 text-ink", title && "mt-0.5")}>{body}</p> : null}
+    {widget.actions.length ? <ActionRow widget={widget} disabled={disabled} pending={pending} onAction={onAction} /> : null}
   </div>;
 
   return <div className="widget-enter flex max-w-[62ch] gap-2 border-l-2 border-danger-line pl-3">
@@ -1218,70 +951,6 @@ function Insight({ widget }: WidgetProps) {
       {body ? <p className={cn("text-control leading-6 text-ink-body", title && "mt-0.5")}>{body}</p> : null}
     </div>
   </div>;
-}
-
-function AnalysisTable({ widget }: WidgetProps) {
-  const [fullWidth] = useTablesWide();
-  const currency = str(widget.data.currency, "INR");
-  const queryResults = Array.isArray(widget.data.queryResults) ? widget.data.queryResults as Data[] : [];
-  const transforms = Array.isArray(widget.data.transforms) ? widget.data.transforms as Data[] : [];
-  const context = widget.data.context && typeof widget.data.context === "object" ? widget.data.context as Record<string, unknown> : {};
-  const allocationRows = Array.isArray(widget.data.rows) ? widget.data.rows as Data[] : [];
-  const columns = Array.isArray(widget.data.columns) ? widget.data.columns.map(String) : [];
-  const budgetRoom = Array.isArray(widget.data.budgetRoom) ? widget.data.budgetRoom as Data[] : [];
-  const roomLabels = new Set(budgetRoom.map((item) => str(item.label)));
-  const empty = !queryResults.length && !transforms.length && !allocationRows.length && !Object.keys(context).length;
-
-  return <Card className={cn(fullWidth && WIDE_TABLE_BREAKOUT)}>
-    <CardHeader eyebrow="Governed analysis" title={str(widget.data.title)} body={str(widget.data.body) || undefined} />
-    {budgetRoom.length ? <div className="border-b border-line p-4">
-      <p className="mb-2 text-meta font-semibold tracking-[0.08em] text-secondary uppercase">Below the limits you set</p>
-      <ul className="flex flex-wrap gap-2">{budgetRoom.map((item, index) => <li key={str(item.label, String(index))} className="rounded-full bg-surface-sunken px-3 py-2 text-note text-ink-body">{str(item.label)} · <Money value={item.room_minor} currency={currency} className="font-semibold text-money-in" /> unspent</li>)}</ul>
-    </div> : null}
-    {transforms.length ? <div className="grid gap-2 border-b border-line p-4 sm:grid-cols-2">{transforms.map((transform, index) => { const values = Array.isArray(transform.values) ? transform.values as Data[] : []; return <div key={`${str(transform.name)}-${index}`} className="rounded-2xl bg-secondary-tint p-3">
-      <p className="text-meta font-semibold tracking-[0.08em] text-secondary uppercase">{str(transform.operation).replaceAll("_", " ")}</p>
-      <p className="mt-1 text-note font-semibold text-ink-body">{str(transform.name)}</p>
-      {values.slice(0, 3).map((value, valueIndex) => <div key={str(value.label, String(valueIndex))} className="mt-2 flex gap-3 text-meta text-ink-muted"><span className="min-w-0 truncate">{formatDimension(value.label)}</span><span className="money ml-auto shrink-0 font-semibold text-ink-body">{str(transform.metric) === "transaction_count" ? formatCount(num(value.value)) : formatMoney(value.value, currency)}</span></div>)}
-    </div>; })}</div> : null}
-    {Object.keys(context).length ? <div className="grid gap-2 border-b border-line p-4 sm:grid-cols-2">{Object.entries(context).map(([source, rawRows]) => { const rows = Array.isArray(rawRows) ? rawRows as Data[] : []; return <div key={source} className="rounded-2xl border border-line p-3">
-      <p className="text-meta font-semibold tracking-[0.08em] text-ink-muted uppercase">{source.replaceAll("_", " ")}</p>
-      {rows.slice(0, 5).map((row, index) => <div key={str(row.id, String(index))} className="mt-2 flex items-center gap-2 text-meta text-ink-muted"><span className="min-w-0 truncate">{str(row.name, str(row.merchant, "Recorded item"))}</span>{row.remainingMinor != null ? <span className="ml-auto shrink-0"><Money value={row.remainingMinor} currency={str(row.currency, currency)} className="font-semibold text-ink-body" /> remaining</span> : row.balanceMinor != null ? <Money value={row.balanceMinor} currency={str(row.currency, currency)} className="ml-auto shrink-0 font-semibold text-ink-body" /> : row.principalMinor != null ? <Money value={row.principalMinor} currency={str(row.currency, currency)} className="ml-auto shrink-0 font-semibold text-ink-body" /> : null}</div>)}
-      {!rows.length ? <p className="mt-2 text-meta text-ink-muted">No saved records</p> : null}
-    </div>; })}</div> : null}
-    {queryResults.map((result, resultIndex) => {
-      const rows = Array.isArray(result.rows) ? result.rows as Data[] : [];
-      const isCount = str(result.metric) === "transaction_count";
-      const dimensionKeys = rows.reduce<string[]>((keys, row) => {
-        Object.keys(row).filter((key) => key !== "value" && !keys.includes(key)).forEach((key) => keys.push(key));
-        return keys;
-      }, []);
-      const table: DataTableData = {
-        title: str(result.name),
-        body: null,
-        columns: [
-          ...dimensionKeys.map((key, index) => ({ key, label: key.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()), type: "text" as const, align: "left" as const, priority: index === 0 ? "primary" as const : "secondary" as const, currencyKey: null, secondaryKeys: [] })),
-          { key: "value", label: isCount ? "Transactions" : "Amount", type: isCount ? "number" : "money", align: "right", priority: "primary", currencyKey: isCount ? null : "currency", secondaryKeys: [] },
-        ],
-        rows: rows.map((row, index) => ({ ...row, _rowId: `${resultIndex}-${index}`, currency })),
-        rowIdKey: "_rowId",
-        rowActions: [],
-        capabilitiesKey: "_capabilities",
-        emptyMessage: "Nothing you’ve recorded matched this query.",
-      };
-      return <div key={`${str(result.name)}-${resultIndex}`} className="border-b border-line p-4 last:border-b-0">
-        <div className="mb-3 flex flex-wrap items-end gap-3 gap-1"><p className="text-control font-semibold text-ink-body">{str(result.name)}</p><p className="text-meta text-ink-muted">{formatDay(result.start)} → {formatDay(result.end)}</p></div>
-        <DataTableView data={table} embedded parentManagesWidth />
-      </div>;
-    })}
-    {allocationRows.length ? <div className="overflow-x-auto p-4"><table className="w-full min-w-[520px] text-left text-note">
-      <thead><tr className="text-ink-muted"><th scope="col" className="pb-2 font-medium">Category</th>{columns.map((column) => <th key={column} scope="col" className="pb-2 text-right font-medium">{column}</th>)}</tr></thead>
-      <tbody className="divide-y divide-line">{allocationRows.map((row, index) => { const months = (row.months ?? {}) as Data; const highlighted = roomLabels.has(str(row.label)); return <tr key={str(row.id, String(index))} className={highlighted ? "bg-secondary-tint" : undefined}>
-        <td className="py-3 font-medium text-ink-body">{str(row.label)}{highlighted ? <span className="ml-2 text-meta font-semibold text-secondary uppercase">room</span> : null}</td>
-        {columns.map((column) => <td key={column} className="money py-3 text-right text-ink-muted">{formatMoney(months[column], currency)}</td>)}
-      </tr>; })}</tbody>
-    </table></div> : null}
-    {empty ? <EmptyNote>This analysis ran but returned no rows. Record more transactions in this period and ask again.</EmptyNote> : null}
-  </Card>;
 }
 
 function AvoidableExpenses({ widget, onAction, disabled, pending }: WidgetProps) {
@@ -1328,63 +997,77 @@ function AvoidableExpenses({ widget, onAction, disabled, pending }: WidgetProps)
   </Card>;
 }
 
-function LoanStrategy({ widget }: WidgetProps) {
-  const loans = Array.isArray(widget.data.loans) ? widget.data.loans as Data[] : [];
-  return <Card>
-    <CardHeader eyebrow="Deterministic scenarios" title={str(widget.data.title)} body={str(widget.data.body) || undefined} />
-    {loans.length ? loans.map((loan, index) => {
-      const currency = str(loan.currency, "INR");
-      const scenarios = Array.isArray(loan.options) ? loan.options as Data[] : [];
-      return <div key={str(loan.loanId, String(index))} className="p-4">
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="min-w-0"><p className="text-control font-semibold text-ink-body">{str(loan.name)}</p><p className="text-meta text-ink-muted">{[str(loan.lender), `${num(loan.annualRatePercent)}%`, `${num(loan.tenureMonths)} months`].filter(Boolean).join(" · ")}</p></div>
-          <Money value={loan.principalMinor} currency={currency} className="ml-auto text-control font-semibold text-ink" />
-        </div>
-        <div className="mt-3 grid gap-2 sm:grid-cols-2">{scenarios.map((scenario, scenarioIndex) => { const shorter = (scenario.shorter_tenure ?? {}) as Data; const lower = (scenario.lower_emi ?? {}) as Data; return <div key={scenarioIndex} className="rounded-2xl bg-surface-sunken p-3">
-          <p className="text-meta font-semibold text-ink-muted uppercase">Prepay <Money value={scenario.prepayment_minor} currency={currency} /></p>
-          <p className="mt-2 text-note leading-5 text-ink-body">Shorter tenure: save <Money value={shorter.interest_saved_minor} currency={currency} className="font-semibold" /> and {num(shorter.months_saved)} months</p>
-          <p className="mt-1 text-note leading-5 text-ink-body">Lower EMI: save <Money value={lower.interest_saved_minor} currency={currency} className="font-semibold" /> interest</p>
-        </div>; })}</div>
-      </div>;
-    }) : <EmptyNote>No active loans are saved yet.</EmptyNote>}
-  </Card>;
+function TracePayloadDisclosure({ label, payload }: { label: string; payload: string }) {
+  const [open, setOpen] = useState(false);
+  const contentId = useId();
+  function collapseFromTranscript() {
+    const selection = typeof window === "undefined" ? null : window.getSelection();
+    if (selection && !selection.isCollapsed) return;
+    setOpen(false);
+  }
+  return <div>
+    <button
+      type="button"
+      data-inline-disclosure="true"
+      aria-expanded={open}
+      aria-controls={contentId}
+      onClick={() => setOpen((current) => !current)}
+      className="flex items-center gap-0.5 font-semibold text-ink-body"
+    >
+      <ChevronDown size={12} className={cn("shrink-0 transition-transform duration-[var(--m-state)] motion-reduce:transition-none", !open && "-rotate-90")} />
+      <span>{label}</span>
+    </button>
+    <div className={cn(
+      "grid transition-[grid-template-rows,opacity] duration-[var(--m-enter)] ease-out motion-reduce:transition-none",
+      open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
+    )}>
+      <div id={contentId} aria-hidden={!open} className="overflow-hidden">
+        <pre
+          onClick={collapseFromTranscript}
+          title="Click to collapse; drag to select text"
+          className="cursor-text select-text whitespace-pre-wrap break-words pt-1 pl-3 font-mono text-[11px] leading-4 text-ink-muted"
+        >{payload}</pre>
+      </div>
+    </div>
+  </div>;
 }
 
-/** A reasoning trace stays quiet as one line in the transcript, but unlike the
- *  old lifecycle block it expands into the actual provider-emitted thinking
- *  text rather than request/tool telemetry. */
 function AgentActivity({ widget }: WidgetProps) {
   const steps = Array.isArray(widget.data.steps) ? widget.data.steps as Data[] : [];
   const total = num(widget.data.totalMs);
   const live = widget.data.live === true;
-  // The persisted flag is authoritative in deployed builds. Local development
-  // also upgrades older stored traces that predate the flag but already retain
-  // their tool metadata.
-  const debugTrace = widget.data.debugTrace === true || environment.isDevelopment;
-  const broke = steps.some((step) => str(step.status) === "failed" || (!live && str(step.status) === "running"));
-  const decision = [...steps].reverse().find((step) => (str(step.stageId) || str(step.id)) === "classification" && str(step.detail));
-  const latest = steps.at(-1);
-  const transcript = str(widget.data.reasoningTrace)
-    || str(widget.data.summary)
-    || str(decision?.detail)
-    || str(latest?.detail)
-    || str(latest?.label)
+  const debugTrace = widget.data.debugTrace === true;
+  const broke = steps.some((step) => str(step.status) === "failed");
+  // `summary`, `modelPassCount` and `debugTrace` are server-authored: stored
+  // widgets carry the terminal values (migration 0027 upgraded older traces),
+  // and the live card assembles them from streamed run aggregates. A failure
+  // line keeps its exact characters — identifiers like query_presence read as
+  // markdown to plainLine.
+  const summary = (broke ? str(widget.data.summary).replace(/\s+/g, " ").trim() : plainLine(widget.data.summary))
     || "Preparing a contextual answer";
-  const summary = plainLine(widget.data.summary) || plainLine(transcript) || "Preparing a contextual answer";
-  const expandedTranscript = plainTranscript(transcript) || summary;
-  const modelPasses = steps.filter((step) => {
-    const id = str(step.stageId) || str(step.id);
-    const tool = str(step.tool);
-    if (id === "classification" && tool === "unified_read_agent") return true;
-    if (id === "response_synthesis" && /^gpt-/i.test(tool)) return true;
-    return ["router", "validator", "reroute", "revalidation", "reasoning"].includes(id)
-      && (tool.startsWith("agno_") || /^gpt-/i.test(tool));
-  });
-  const routeLabel = modelPasses.length === 0
-    ? "Deterministic route"
-    : modelPasses.length === 1
-      ? "Single-pass route"
-      : `${modelPasses.length}-pass route`;
+  const expandedTranscript = broke
+    ? summary
+    : plainTranscript(str(widget.data.reasoningTrace)) || summary;
+  const storedPassCount = widget.data.modelPassCount;
+  const modelPassCount = typeof storedPassCount === "number" && Number.isFinite(storedPassCount)
+    ? Math.max(0, Math.trunc(storedPassCount))
+    : 0;
+  const routeLabel = modelPassCount === 0
+    ? "Deterministic"
+    : modelPassCount === 1
+      ? "Single model pass"
+      : `${modelPassCount} model passes`;
+  const metrics = widget.data.metrics as AgentRunMetrics | null | undefined;
+  const metricSummary = metrics && metrics.modelPasses > 0
+    ? [
+        `${metrics.totalTokens.toLocaleString()} tokens (${metrics.inputTokens.toLocaleString()} in / ${metrics.outputTokens.toLocaleString()} out)`,
+        metrics.modelDurationMs !== null ? `${formatDuration(metrics.modelDurationMs)} model time` : null,
+        metrics.firstModelTimeToFirstTokenMs !== null ? `${formatDuration(metrics.firstModelTimeToFirstTokenMs)} first model token` : null,
+        metrics.costUsd !== null
+          ? `$${metrics.costUsd.toFixed(6)} provider cost`
+          : `provider cost unavailable (${Math.round(metrics.costCoverage * 100)}% coverage)`,
+      ].filter(Boolean).join(" · ")
+    : "";
   const trace = steps.map((step) => {
     const label = (plainLine(step.label) || plainLine(step.id)).replace(/[.!?]+$/, "");
     const detail = plainLine(step.detail).replace(/[.!?]+$/, "");
@@ -1394,12 +1077,14 @@ function AgentActivity({ widget }: WidgetProps) {
     const duration = formatDuration(step.durationMs);
     const cumulative = formatDuration(step.cumulativeMs);
     const status = str(step.status);
-    return { label, detail, stage, tool, resultTool, duration, cumulative, status };
+    const input = tracePayload(step.input);
+    const output = tracePayload(step.output);
+    return { label, detail, stage, tool, resultTool, duration, cumulative, status, input, output };
   });
   const [open, setOpen] = useState(false);
   const detailsId = useId();
   const activityLabel = broke
-    ? `Agent run failed: ${routeLabel}`
+    ? `Agent run failed: ${summary} ${routeLabel}`
     : live
       ? `Agent run in progress: ${routeLabel}`
       : `Agent run complete: ${routeLabel}${total > 0 ? `, ${formatDuration(total)}` : ""}`;
@@ -1408,30 +1093,32 @@ function AgentActivity({ widget }: WidgetProps) {
     <button
       type="button"
       onClick={() => setOpen((current) => !current)}
+      data-inline-disclosure="true"
       aria-label={activityLabel}
       aria-expanded={open}
       aria-controls={detailsId}
       className={cn("flex min-h-8 w-full min-w-0 items-center gap-2 rounded-lg px-2 text-left text-meta font-medium leading-5 transition-colors hover:bg-surface-sunken", broke ? "text-danger-ink" : "text-ink-muted")}
     >
       {broke ? <TriangleAlert size={14} className="shrink-0" /> : null}
-      <span className="min-w-0 flex-1 truncate">{broke ? "This run hit a problem" : summary}</span>
+      <span className={cn("min-w-0 flex-1", broke ? "break-words" : "truncate")}>{summary}</span>
       <span className="shrink-0 font-normal text-ink-muted/80">{routeLabel}</span>
       {total > 0 ? <span className="money ml-auto shrink-0 font-normal text-ink-muted/80">{formatDuration(total)}</span> : null}
-      <ChevronDown size={14} className={cn("shrink-0 transition-transform duration-300 motion-reduce:transition-none", open && "rotate-180")} />
+      <ChevronDown size={14} className={cn("shrink-0 transition-transform duration-[var(--m-enter)] motion-reduce:transition-none", open && "rotate-180")} />
     </button>
     <div
       className={cn(
-        "grid transition-[grid-template-rows,opacity] duration-300 ease-out motion-reduce:transition-none",
+        "grid transition-[grid-template-rows,opacity] duration-[var(--m-enter)] ease-out motion-reduce:transition-none",
         open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
       )}
     >
       <div id={detailsId} data-testid="agent-activity-details" aria-hidden={!open} className="overflow-hidden">
         <div className="px-2 pb-2 pt-1 text-meta leading-5 text-ink-muted">
-          <p className="whitespace-pre-wrap">{expandedTranscript}</p>
+          <p className="whitespace-pre-wrap break-words">{expandedTranscript}</p>
           <div className="mt-3 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
             <span className="font-semibold text-ink-body">Execution trace</span>
             <span>{routeLabel}</span>
           </div>
+          {metricSummary ? <p className="mt-1 money" data-testid="agent-run-metrics">Agno metrics · {metricSummary}</p> : null}
           {trace.length ? <ol className="mt-2 space-y-2.5" aria-label="Complete execution trace">
             {trace.map((step, index) => <li key={`${step.stage}-${index}`} className="grid grid-cols-[1.25rem_minmax(0,1fr)] gap-x-1.5">
               <span className="money text-ink-muted/70">{index + 1}.</span>
@@ -1443,6 +1130,10 @@ function AgentActivity({ widget }: WidgetProps) {
                   {step.tool ? <>{step.stage ? <span> · </span> : null}<span className="text-ink-muted/80">Tool</span> <span className="font-mono text-secondary">{step.tool}</span></> : null}
                   {step.resultTool ? <>{step.stage || step.tool ? <span> · </span> : null}<span className="text-ink-muted/80">Output</span> <span className="font-mono text-secondary">{step.resultTool}</span></> : null}
                 </p> : null}
+                {debugTrace && (step.input || step.output) ? <div className="mt-1 space-y-1">
+                  {step.input ? <TracePayloadDisclosure label="Input" payload={step.input} /> : null}
+                  {step.output ? <TracePayloadDisclosure label="Output" payload={step.output} /> : null}
+                </div> : null}
                 <p>
                   {step.status === "running" ? <span className="font-medium text-ink-body">Running</span> : step.status === "failed" ? <><span className="font-medium text-danger-ink">Failed after <span className="money">{step.duration}</span></span></> : <><span className="money font-medium text-ink-body">{step.duration}</span> step</>}
                   <span> · </span><span className="money font-medium text-ink-body">{step.cumulative}</span> total elapsed
@@ -1453,6 +1144,35 @@ function AgentActivity({ widget }: WidgetProps) {
         </div>
       </div>
     </div>
+  </div>;
+}
+
+function RelatedQuestions({ widget, onPostPrompt }: WidgetProps) {
+  const questions = Array.isArray(widget.data.questions) ? widget.data.questions.map(String).filter(Boolean) : [];
+  // Deliberately not bound to the active-widget interrupt gating: a suggestion
+  // is always tappable, and sendPrompt's own guards ignore taps mid-run.
+  if (!questions.length || !onPostPrompt) return null;
+  const bandId = `${widget.id}-band`;
+  // The same form the blank thread opens with: quiet ruled rows with the
+  // ledger tick, not a cloud of pills. A follow-up and a starter are one
+  // affordance — a line you could write next — so they wear one shape, and a
+  // reader who learned "Try" already knows how to read "Ask next".
+  return <div className="next-entries max-w-[62ch]" role="group" aria-labelledby={bandId}>
+    <p id={bandId} className="leaf-band mb-1">Ask next</p>
+    {questions.map((question, index) => <button
+      key={question}
+      type="button"
+      // Posting a question is valid long after this turn's decision is made,
+      // so the row opts out of the widget-readonly button retirement the
+      // same way persistent table controls do.
+      data-readonly-keep="true"
+      onClick={() => onPostPrompt(question)}
+      // Staggered rather than one shared reveal: the rows are separate offers,
+      // and landing all at once alongside the finished answer is what made
+      // them feel like a jolt at the end of the turn.
+      style={{ animationDelay: `${index * 50}ms` }}
+      className="next-entry"
+    ><span aria-hidden className="ledger-mark" />{question}</button>)}
   </div>;
 }
 
@@ -1479,22 +1199,18 @@ export const widgetRegistry: Partial<Record<Widget["type"], ComponentType<Widget
   confirmation_card: Confirmation,
   transaction_preview: TransactionPreview,
   transaction_edit: TransactionEdit,
-  financial_summary: FinancialSummary,
-  data_chart: DataChart,
-  data_visualization: DataVisualization,
-  analysis_table: AnalysisTable,
   avoidable_expenses: AvoidableExpenses,
-  scenario_analysis: Scenario,
   budget_progress: ProgressCard,
   goal_progress: ProgressCard,
   import_review: ImportReview,
   loan_calculator: LoanCalculator,
-  loan_strategy: LoanStrategy,
   investment_projection: InvestmentProjection,
   reconciliation_review: ReconciliationReview,
-  data_table: DynamicDataTable,
-  transaction_list: TransactionList,
+  data_chart: ChartWidget,
   insight_card: Insight,
+  related_questions: RelatedQuestions,
+  operation_form: OperationForm,
+  operation_approval: OperationApproval,
 });
 
 /** Decisions collapse once they are recorded. Keeping a disabled form or a
@@ -1510,12 +1226,12 @@ const compactResolvedWidgets = new Set<Widget["type"]>([
   widgetTypeIds.confirmation_card,
   widgetTypeIds.transaction_preview,
   widgetTypeIds.transaction_edit,
-  widgetTypeIds.transaction_list,
-  widgetTypeIds.data_table,
   widgetTypeIds.budget_progress,
   widgetTypeIds.goal_progress,
   widgetTypeIds.reconciliation_review,
   widgetTypeIds.import_review,
+  widgetTypeIds.operation_form,
+  widgetTypeIds.operation_approval,
 ]);
 
 function completedChoice(widget: Widget) {
@@ -1538,8 +1254,13 @@ function completionSummary(widget: Widget) {
   const action = str(completion.action);
   const choice = completedChoice(widget);
   const selectionActions = new Set<string>([widgetActionIds.select_category, widgetActionIds.select_subcategory, widgetActionIds.select_account, widgetActionIds.select_transaction_type, widgetActionIds.resolve_clarification]);
-  const creationActions = new Set<string>([widgetActionIds.create_category, widgetActionIds.create_subcategory]);
+  const creationActions = new Set<string>([widgetActionIds.create_category, widgetActionIds.create_subcategory, widgetActionIds.create_taxonomy_path]);
   if (selectionActions.has(action)) return { status: "Selected", detail: choice };
+  if (action === widgetActionIds.create_taxonomy_path) {
+    const values = completionValues(widget);
+    const children = Array.isArray(values.subcategories) ? values.subcategories.map(String) : [];
+    return { status: "Added", detail: [choice, children.join(", ")].filter(Boolean).join(" → ") };
+  }
   if (creationActions.has(action)) return { status: "Added", detail: choice };
   if (action === widgetActionIds.commit_transaction) return { status: "Saved", detail: "" };
   if (action === widgetActionIds.update_saved_transaction || action === widgetActionIds.update_transaction_draft) return { status: "Updated", detail: "" };
@@ -1548,6 +1269,9 @@ function completionSummary(widget: Widget) {
   if (action === widgetActionIds.merge_reconciliation) return { status: "Merged", detail: "" };
   if (action === widgetActionIds.separate_reconciliation) return { status: "Kept separate", detail: "" };
   if (action === widgetActionIds.commit_import) return { status: "Imported", detail: "" };
+  if (action === widgetActionIds.edit_budget) return { status: "Editing budget", detail: "" };
+  if (action === widgetActionIds.request_delete_budget) return { status: "Reviewing deletion", detail: "" };
+  if (action === widgetActionIds.delete_budget) return { status: "Budget deleted", detail: "" };
   if (action === widgetActionIds.save_budget) return { status: "Budget saved", detail: "" };
   if (action === widgetActionIds.save_goal) return { status: "Goal saved", detail: "" };
   if (action === widgetActionIds.contribute_goal) return { status: "Contribution saved", detail: "" };

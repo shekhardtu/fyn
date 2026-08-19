@@ -75,12 +75,16 @@ describe("session-carrying requests", () => {
       period: { start: "2026-08-01", end: "2026-08-13", previousStart: "2026-07-01", previousEnd: "2026-07-13", label: "August 2026", isCurrent: true },
       summary: { currency: "INR", incomeMinor: 0, spentMinor: 0, netMinor: 0, expenseCount: 0, previousSpentMinor: 0, changeMinor: 0, changePercent: null },
       categories: [],
+      trend: [],
+      recentTransactions: [],
+      accounts: [],
     }));
 
-    await loadOverview("2026-08");
+    const overview = await loadOverview("2026-08");
 
     expect(fetchMock.mock.calls[0][0]).toContain("/api/overview?month=2026-08-01");
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ credentials: "include" });
+    expect(overview.budgets).toEqual([]);
   });
 
   it("sends the identifier as typed, leaving normalisation to the server", async () => {

@@ -1,0 +1,54 @@
+apiVersion: fyn.ai/v1
+kind: Operation
+metadata: {id: request_clarification, version: 1, title: Request clarification, namespace: system, owner: engineering, enabled: true}
+discovery: {description: Ask for a decision only when the request explicitly contains two materially different choices or conflicting supplied values, aliases: [clarify explicit ambiguity], examples: [Compare calendar month with last month but ask whether last month means the prior calendar month or the last 30 days], negativeExamples: [Review my last three months expense pattern, Show rows and a category summary]}
+eligibility: {requiredPermissions: [], expectedEffect: draft, access: workflow}
+input:
+  schema:
+    type: object
+    additionalProperties: false
+    required: [clarification]
+    properties:
+      clarification:
+        type: object
+        additionalProperties: false
+        required: [question, reason, options]
+        properties:
+          question: {type: string, minLength: 3, maxLength: 500}
+          reason: {type: string, minLength: 3, maxLength: 500}
+          conflict_fields: {type: array, maxItems: 8, items: {type: string, maxLength: 80}}
+          allow_custom: {type: boolean}
+          custom_label: {type: string, maxLength: 100}
+          options:
+            type: array
+            maxItems: 6
+            minItems: 2
+            items:
+              type: object
+              additionalProperties: false
+              required: [id, label, resolution]
+              properties:
+                id: {type: string, minLength: 1, maxLength: 64}
+                label: {type: string, minLength: 1, maxLength: 100}
+                description: {type: string, maxLength: 240}
+                resolution: {type: string, minLength: 3, maxLength: 500}
+                disposition: {type: string, enum: [continue, cancel]}
+instructions: {selection: "Use only for an explicit material conflict or two genuinely plausible supplied interpretations. Do not use merely because an otherwise valid read or analysis omits a period, filter, grouping, or optional preference; the selected operation owns safe defaults and missing-input collection."}
+routing: {strategy: decision, bindings: {clarification: "${input.clarification}"}}
+execution: {steps: [{id: execute, uses: agent.clarify@1}], label: Preparing an interactive clarification, validation: deterministic}
+approval: {minimum: never}
+presentation: {success: {title: Clarification ready, message: Clarification ready.}, failure: {title: Clarification unavailable, message: The clarification could not be prepared.}}
+tests:
+  - name: clarification route
+    request: Compare calendar month with last month, but ask whether last month means the prior calendar month or the last 30 days
+    expectedInputs:
+      clarification:
+        question: Which period should I use?
+        reason: The requested period is ambiguous.
+        conflict_fields: [period]
+        allow_custom: true
+        options:
+          - {id: this_month, label: This month, resolution: Use the current month.}
+          - {id: last_month, label: Last month, resolution: Use the previous month.}
+    expectedEffect: draft
+    expectedApproval: never

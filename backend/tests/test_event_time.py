@@ -21,6 +21,9 @@ def test_persisted_instants_are_timezone_aware_and_calendar_dates_are_explicit()
     # These represent user-facing calendar concepts, not instants. Any new
     # DATE must be deliberately reviewed and added here.
     assert calendar_dates == {
+        # The user-local day an analysis run answered for: the anchor that
+        # deterministic replay re-derives relative date windows against.
+        "analysis_tool_runs.run_date",
         "goals.target_date",
         "recurring_transactions.next_expected_date",
     }

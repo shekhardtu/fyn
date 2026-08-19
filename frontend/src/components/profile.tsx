@@ -1,13 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Check, CheckCircle2, Loader2, LogOut, Mail, Plus, Smartphone, Trash2, TriangleAlert } from "lucide-react";
+import { Check, Loader2, LogOut, Mail, Plus, Smartphone, Trash2, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { appPaths } from "@/routing/paths";
 import { CHANNEL_COPY, CodeExchange } from "@/components/sign-in";
+import { NotLiveStamp, SettingsGroup, settingsProblem, settingsSaved } from "@/components/settings-parts";
 import { Button } from "@/components/ui/button";
 import { getProfile, isUnauthorized, removeIdentity, signOut, startLinkCode, verifyLinkCode, type OtpChannel, type Profile } from "@/lib/api";
 import type { IdentityOut } from "@/lib/protocol";
-import { cn } from "@/lib/utils";
 
 const PROVIDER_COPY: Record<IdentityOut["provider"], { label: string; icon: ReactNode }> = {
   phone: { label: "Phone number", icon: <Smartphone /> },
@@ -25,21 +25,9 @@ function GoogleMark() {
 }
 
 function formatDate(value: string) {
-  return new Date(value).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
-}
-
-function Notice({ tone, children }: { tone: "error" | "success"; children: ReactNode }) {
-  const error = tone === "error";
-  return <p
-    role={error ? "alert" : "status"}
-    className={cn(
-      "flex items-start gap-2 rounded-lg border px-4 py-3 text-note leading-5",
-      error ? "border-danger-line bg-danger-tint text-danger-ink" : "border-secondary-line bg-secondary-tint text-secondary-hover",
-    )}
-  >
-    {error ? <TriangleAlert className="mt-0.5 shrink-0" /> : <CheckCircle2 className="mt-0.5 shrink-0" />}
-    <span className="min-w-0">{children}</span>
-  </p>;
+  // en-IN like every other date in the product; the browser locale would
+  // print this one page differently from the ledger it sits beside.
+  return new Date(value).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
 }
 
 /** Why a linked method cannot be removed, or null when it can be.
@@ -56,8 +44,7 @@ export function ProfilePanel() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [linking, setLinking] = useState<OtpChannel | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [problem, setProblem] = useState<string | null>(null);
+  const [confirmingRemoval, setConfirmingRemoval] = useState<string | null>(null);
 
   const profile = useQuery({ queryKey: ["profile"], queryFn: getProfile, retry: false });
 
@@ -70,65 +57,68 @@ export function ProfilePanel() {
   const leaveSession = useMutation({
     mutationFn: signOut,
     onSuccess: leave,
-    onError: (cause: Error) => setProblem(cause.message),
+    onError: (cause: Error) => settingsProblem(cause.message),
   });
 
   const unlink = useMutation({
     mutationFn: removeIdentity,
-    onMutate: () => { setProblem(null); setNotice(null); },
     onSuccess: (updated) => {
       queryClient.setQueryData(["profile"], updated);
-      setNotice("That sign-in method was removed.");
+      settingsSaved("That sign-in method was removed.");
     },
-    onError: (cause: Error) => setProblem(cause.message),
+    onError: (cause: Error) => settingsProblem(cause.message),
   });
 
   if (profile.isError) {
     if (signedOut) return null;
-    return <main className="grid min-h-dvh place-items-center bg-ground p-6">
+    return <div className="grid place-items-center py-10">
       <div role="alert" className="max-w-sm rounded-xl border border-danger-line bg-surface p-6 text-center">
         <span className="mx-auto grid size-11 place-items-center rounded-lg bg-danger-tint text-danger"><TriangleAlert size={20} /></span>
         <h1 className="mt-4 font-heading text-title font-semibold text-ink">We couldn’t load your profile</h1>
         <p className="mt-2 text-control leading-6 text-ink-muted">{profile.error.message}</p>
         <Button type="button" onClick={() => profile.refetch()} size="lg" className="mt-4">Try again</Button>
       </div>
-    </main>;
+    </div>;
   }
 
-  if (!profile.data) return <main className="grid min-h-dvh place-items-center bg-ground"><Loader2 size={20} className="animate-spin text-ink-muted" aria-label="Loading your profile" /></main>;
+  if (!profile.data) return <div className="grid place-items-center py-16"><Loader2 size={20} className="animate-spin text-ink-muted" aria-label="Loading your profile" /></div>;
 
   const account = profile.data;
   const blocked = removalBlock(account);
   const has = (provider: IdentityOut["provider"]) => account.identities.some((item) => item.provider === provider);
   const googleOwnsEmail = account.identities.some((item) => item.provider === "email" && item.source === "google");
 
-  return <main className="min-h-dvh bg-ground px-4 py-8">
-    <div className="mx-auto w-full max-w-lg">
-      <button type="button" onClick={() => navigate(appPaths.home)} className="inline-flex items-center gap-2 text-control font-medium text-ink-muted hover:text-ink-body">
-        <ArrowLeft size={14} /> Back to your workspace
-      </button>
-
-      <header className="mt-4 flex items-center gap-3">
-        <span className="ledger-stamp shrink-0">{account.displayName.slice(0, 1)}</span>
-        <div className="min-w-0">
-          <h1 className="truncate font-heading text-title font-semibold tracking-[-0.015em] text-ink">{account.displayName}</h1>
-          <p className="ledger-meta mt-1 truncate">{account.currency} · {account.timezone}</p>
-        </div>
-      </header>
-
-      <div className="mt-6 space-y-3">
-        {problem ? <Notice tone="error">{problem}</Notice> : null}
-        {notice ? <Notice tone="success">{notice}</Notice> : null}
+  return <div>
+    <header className="mb-7 flex items-center gap-3">
+      <span className="ledger-stamp shrink-0">{account.displayName.slice(0, 1)}</span>
+      <div className="min-w-0">
+        <h2 className="truncate font-heading text-title font-semibold tracking-[-0.015em] text-ink">{account.displayName}</h2>
+        <p className="ledger-meta mt-1 truncate">{account.currency} · {account.timezone}</p>
       </div>
+    </header>
 
-      <section className="mt-6 rounded-xl border border-line bg-surface p-4 sm:p-6">
-        <h2 className="font-heading text-base font-semibold text-ink">How you sign in</h2>
-        <p className="mt-1 text-note leading-5 text-ink-muted">
-          Link a phone number and an email address to the same account and either one will
-          get you in. Each belongs to one account only.
-        </p>
+    <SettingsGroup
+      title="Your details"
+      stamp={<NotLiveStamp />}
+      description="What every amount and timestamp in the ledger is rendered against. Editing them here isn’t wired up yet — they still come from how you signed up."
+    >
+      <dl className="divide-y divide-line overflow-hidden rounded-lg border border-line bg-surface">
+        {[
+          { term: "Display name", value: account.displayName },
+          { term: "Currency", value: account.currency },
+          { term: "Time zone", value: account.timezone },
+        ].map((detail) => <div key={detail.term} className="flex items-center justify-between gap-4 px-4 py-3">
+          <dt className="text-control font-medium text-ink-muted">{detail.term}</dt>
+          <dd className="min-w-0 truncate text-control font-semibold text-ink-body">{detail.value}</dd>
+        </div>)}
+      </dl>
+    </SettingsGroup>
 
-        <ul className="mt-4 divide-y divide-line rounded-lg border border-line">
+    <SettingsGroup
+      title="How you sign in"
+      description="Link a phone number and an email address to the same account and either one will get you in. Each belongs to one account only."
+    >
+      <ul className="divide-y divide-line overflow-hidden rounded-lg border border-line bg-surface">
           {account.identities.map((identity) => <li key={identity.id} className="flex items-center gap-3 px-4 py-4">
             <span aria-hidden className="grid size-9 shrink-0 place-items-center rounded-xl bg-secondary-tint text-secondary">{PROVIDER_COPY[identity.provider].icon}</span>
             <div className="min-w-0 flex-1">
@@ -138,32 +128,42 @@ export function ProfilePanel() {
                 {PROVIDER_COPY[identity.provider].label} · verified {formatDate(identity.verifiedAt)}
               </p>
             </div>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-lg"
-              aria-label={`Remove ${PROVIDER_COPY[identity.provider].label.toLowerCase()} ${identity.value}`}
-              title={blocked ?? "Remove this sign-in method"}
-              disabled={Boolean(blocked) || unlink.isPending}
-              onClick={() => unlink.mutate(identity.id)}
-              className="shrink-0 rounded-xl text-ink-muted hover:text-danger"
-            >
-              {unlink.isPending && unlink.variables === identity.id ? <Loader2 className="animate-spin" /> : <Trash2 />}
-            </Button>
+            {confirmingRemoval === identity.id
+              // Removing a way in can't be undone from here, so it gets a real
+              // question in place — not a modal, and never a bare trash click.
+              ? <div className="flex shrink-0 items-center gap-1">
+                <Button type="button" variant="destructive" size="sm" disabled={unlink.isPending} onClick={() => { setConfirmingRemoval(null); unlink.mutate(identity.id); }}>
+                  {unlink.isPending && unlink.variables === identity.id ? <Loader2 className="animate-spin" /> : <Trash2 />} Remove
+                </Button>
+                <Button type="button" variant="ghost" size="sm" disabled={unlink.isPending} onClick={() => setConfirmingRemoval(null)}>Keep</Button>
+              </div>
+              : <Button
+                type="button"
+                variant="ghost"
+                size="icon-lg"
+                aria-label={`Remove ${PROVIDER_COPY[identity.provider].label.toLowerCase()} ${identity.value}`}
+                title={blocked ?? "Remove this sign-in method"}
+                disabled={Boolean(blocked) || unlink.isPending}
+                onClick={() => setConfirmingRemoval(identity.id)}
+                className="shrink-0 rounded-xl text-ink-muted hover:text-danger"
+              >
+                {unlink.isPending && unlink.variables === identity.id ? <Loader2 className="animate-spin" /> : <Trash2 />}
+              </Button>}
           </li>)}
         </ul>
 
-        {blocked ? <p className="mt-2 text-note leading-5 text-ink-muted">{blocked}</p> : null}
+      {blocked ? <p className="mt-2 text-note leading-5 text-ink-muted">{blocked}</p> : null}
 
-        <div className="mt-4 space-y-3">
-          {(["phone", "email"] as const).map((channel) => {
+      <div className="mt-4 space-y-3">
+        {(["phone", "email"] as const).map((channel) => {
             const linked = has(channel);
             // A Google-issued address is managed at Google, so the only honest
             // thing to offer here is an explanation, not a disabled button.
             const managed = channel === "email" && googleOwnsEmail;
+            const article = channel === "email" ? "an" : "a";
             if (linking === channel) {
               return <div key={channel} className="rounded-lg border border-secondary-line bg-secondary-tint/30 p-4">
-                <p className="mb-3 text-control font-semibold text-ink-body">{linked ? `Change your ${CHANNEL_COPY[channel].noun}` : `Add a ${CHANNEL_COPY[channel].noun}`}</p>
+                <p className="mb-3 text-control font-semibold text-ink-body">{linked ? `Change your ${CHANNEL_COPY[channel].noun}` : `Add ${article} ${CHANNEL_COPY[channel].noun}`}</p>
                 <CodeExchange
                   channel={channel}
                   autoFocus
@@ -176,7 +176,7 @@ export function ProfilePanel() {
                     // The rail shows the account, so it has to hear about this too.
                     void queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
                     setLinking(null);
-                    setNotice(linked ? `Your ${CHANNEL_COPY[channel].noun} was updated.` : `Your ${CHANNEL_COPY[channel].noun} is linked. You can sign in with it now.`);
+                    settingsSaved(linked ? `Your ${CHANNEL_COPY[channel].noun} was updated.` : `Your ${CHANNEL_COPY[channel].noun} is linked. You can sign in with it now.`);
                   }}
                 />
               </div>;
@@ -191,31 +191,33 @@ export function ProfilePanel() {
               key={channel}
               type="button"
               variant="outline"
-              onClick={() => { setLinking(channel); setNotice(null); setProblem(null); }}
+              onClick={() => setLinking(channel)}
               className="h-11 w-full justify-start rounded-xl px-4"
             >
-              <Plus />{linked ? `Change your ${CHANNEL_COPY[channel].noun}` : `Add a ${CHANNEL_COPY[channel].noun}`}
+              <Plus />{linked ? `Change your ${CHANNEL_COPY[channel].noun}` : `Add ${article} ${CHANNEL_COPY[channel].noun}`}
             </Button>;
-          })}
-        </div>
-      </section>
+        })}
+      </div>
 
       <p className="mt-4 text-note leading-5 text-ink-muted">
         If a phone number or email address is already linked to another account, it can’t be
         added here. Sign in to that account and delete it first — deleting an account releases
         its phone number and email address.
       </p>
+    </SettingsGroup>
 
+    <SettingsGroup title="This device" description="Signing out leaves your records exactly where they are.">
       <Button
         type="button"
         variant="outline"
+        size="lg"
         disabled={leaveSession.isPending}
         onClick={() => leaveSession.mutate()}
-        className="mt-6 h-11 w-full rounded-xl"
+        className="w-full sm:w-auto"
       >
         {leaveSession.isPending ? <Loader2 className="animate-spin" /> : <LogOut />}
         Sign out
       </Button>
-    </div>
-  </main>;
+    </SettingsGroup>
+  </div>;
 }

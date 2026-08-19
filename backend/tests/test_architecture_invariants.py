@@ -7,9 +7,13 @@ from pathlib import Path
 from app import models
 from app.config import DEFAULT_CURRENCY
 from app.database import Base
-from app.services import agents, analytics, calculators, taxonomy
+from app.services import agents, calculators, grounding_tools, taxonomy
+from app.services import conversation
 from app.services.agent_tools import contract_for
 from app.services.runtime_tools import RUNTIME_TOOL_REGISTRY
+from app.operations.catalog import OperationCatalogManager
+from app.operations.primitives import primitive_catalog
+from app.operations.tools import build_operation_proposal_tool
 from app.schemas import WidgetType
 from app.validation import DATA_FIELD_KEY_PATTERN, DATA_RESOURCE_ID_PATTERN, SEMANTIC_IDENTIFIER_PATTERN
 
@@ -46,7 +50,7 @@ def test_standard_storage_policies_are_declared_by_mixins():
 
 
 def test_every_annotated_domain_tool_is_discovered_without_a_second_function_list():
-    modules = (taxonomy, analytics, calculators)
+    modules = (taxonomy, grounding_tools, calculators)
     annotated = {
         value
         for module in modules
@@ -242,3 +246,67 @@ def test_widget_construction_uses_the_canonical_type_enum():
                     f"{path.relative_to(app_root)}:{node.lineno}:{type_keyword.value.value}"
                 )
     assert violations == []
+
+
+def _strict_object_problems(schema: object, path: str = "input") -> list[str]:
+    if not isinstance(schema, dict):
+        return []
+    problems: list[str] = []
+    if schema.get("type") == "object":
+        properties = schema.get("properties", {})
+        if schema.get("additionalProperties") is not False:
+            problems.append(f"{path}: object is open")
+        if set(schema.get("required", [])) != set(properties):
+            problems.append(f"{path}: not every property is required")
+        for name, child in properties.items():
+            problems += _strict_object_problems(child, f"{path}.{name}")
+    if schema.get("type") == "array":
+        problems += _strict_object_problems(schema.get("items"), f"{path}[]")
+    for index, child in enumerate(schema.get("anyOf", [])):
+        problems += _strict_object_problems(child, f"{path}.anyOf[{index}]")
+    return problems
+
+
+def test_every_model_selectable_operation_compiles_to_a_closed_strict_tool():
+    operations_root = Path(__file__).parents[1] / "operations"
+    managed_root = Path(__file__).parents[1] / "managed-operations"
+    snapshot = OperationCatalogManager(operations_root, managed_root).load(initial=True)
+    failures: dict[str, list[str]] = {}
+    for operation in snapshot.operations.values():
+        if not operation.enabled or not operation.definition.discovery.model_selectable:
+            continue
+        tool = build_operation_proposal_tool(operation)
+        problems = _strict_object_problems(tool.parameters)
+        if tool.strict is not True:
+            problems.append("tool strict flag is not true")
+        if problems:
+            failures[operation.id] = problems
+    assert failures == {}
+
+
+def test_protected_primitive_runtime_wiring_is_registry_owned():
+    runtime = conversation._ConversationPrimitiveRuntime
+    missing = {
+        item.reference: item.runtime_method
+        for item in primitive_catalog()
+        if not item.ops_authorable
+        and not callable(getattr(runtime, str(item.runtime_method), None))
+    }
+    assert missing == {}
+
+
+def test_legacy_operation_routing_seams_do_not_return():
+    app_root = Path(__file__).parents[1] / "app"
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in app_root.rglob("*.py")
+    )
+    forbidden = {
+        "GOVERNED_HANDOFF_TOOL",
+        "_handoff_to_governed_workflow",
+        "_exact_core_operation_decision",
+        "managed_operation_decision",
+        "runtime_handlers",
+        "strict=False",
+    }
+    assert {value for value in forbidden if value in source} == set()

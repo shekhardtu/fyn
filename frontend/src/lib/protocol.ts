@@ -13,10 +13,11 @@ import {
   editableTransactionTypes,
   editableTransactionTypeIds,
   type AgentResponse,
+  type AgentSettingsOut,
   type AgentActivityEvent,
   type AgentInterruptOut,
+  type AgentRunMetrics,
   type AgentRunOut,
-  type AgentThreadMetricsOut,
   type AgentThreadStateOut,
   type AuthStatusOut,
   type Bootstrap,
@@ -27,10 +28,6 @@ import {
   type ConversationCreatedOut,
   type ConversationSummary,
   type DataChartData,
-  type DataTableColumn,
-  type DataTableData,
-  type DataTableRowAction,
-  type DataVisualizationData,
   type IdentityOut,
   type ImportResult,
   type Message,
@@ -41,8 +38,6 @@ import {
   type TransactionListItemOut,
   type TransactionCategoryHintOut,
   type TransactionUpdateIn,
-  type VisualEncodingContract,
-  type VisualFieldEncoding,
   type Widget,
   type WidgetAction,
   type WidgetActionId,
@@ -63,20 +58,34 @@ export const widgetActionSchema = generatedSchema<WidgetAction>("WidgetAction");
 export function parseActionPayload(action: WidgetActionId, payload: Record<string, unknown>) {
   return actionPayloadSchemas[action].parse(payload) as Record<string, unknown>;
 }
-export const dataTableColumnSchema = generatedSchema<DataTableColumn>("DataTableColumn");
-export const dataTableRowActionSchema = generatedSchema<DataTableRowAction>("DataTableRowAction");
-export const dataTableDataSchema = generatedSchema<DataTableData>("DataTableData");
+export const dataChartDataSchema = generatedSchema<DataChartData>("DataChartData");
 
-const generatedDataChartSchema = generatedSchema<DataChartData>("DataChartData");
-export const dataChartDataSchema = generatedDataChartSchema.superRefine((chart, context) => {
-  if (chart.chartType === "heatmap" && !chart.yAxis) {
-    context.addIssue({ code: "custom", message: "Heatmaps require a y-axis dimension", path: ["yAxis"] });
-  }
+/** Dashboards are a REST surface rather than a widget lane, so their envelope
+ *  is written here against the fixed API contract; the tile's chart itself
+ *  re-uses the generated data_chart widget schema, so a tile can only carry
+ *  what a conversation could have rendered. */
+export const dashboardSummarySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  tileCount: z.number().int().nonnegative(),
 });
-
-export const visualFieldEncodingSchema = generatedSchema<VisualFieldEncoding>("VisualFieldEncoding");
-export const visualEncodingSchema = generatedSchema<VisualEncodingContract>("VisualEncodingContract");
-export const dataVisualizationDataSchema = generatedSchema<DataVisualizationData>("DataVisualizationData");
+export const dashboardListSchema = z.object({ dashboards: dashboardSummarySchema.array() });
+export const dashboardTileSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  position: z.number().int(),
+  executedAt: z.string(),
+  chart: dataChartDataSchema.nullable(),
+  error: z.object({ code: z.string(), detail: z.string() }).nullable(),
+});
+export const dashboardDetailSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  tiles: dashboardTileSchema.array(),
+});
+export type DashboardSummary = z.infer<typeof dashboardSummarySchema>;
+export type DashboardTile = z.infer<typeof dashboardTileSchema>;
+export type DashboardDetail = z.infer<typeof dashboardDetailSchema>;
 
 const generatedWidgetSchema = generatedSchema<Widget>("Widget");
 
@@ -107,6 +116,7 @@ export const transactionCategoryHintSchema = generatedSchema<TransactionCategory
 export const transactionListSchema = generatedSchema<TransactionListItemOut>("TransactionListItemOut").array();
 export const transactionListItemSchema = generatedSchema<TransactionListItemOut>("TransactionListItemOut");
 export const privacyStatusSchema = generatedSchema<PrivacyStatusOut>("PrivacyStatusOut");
+export const agentSettingsSchema = generatedSchema<AgentSettingsOut>("AgentSettingsOut");
 export const agentResponseSchema = generatedSchema<AgentResponse>("AgentResponse").superRefine((response, context) => {
   response.widgets.forEach((widget, index) => {
     if (!widgetSchema.safeParse(widget).success) {
@@ -120,14 +130,14 @@ export const otpSentSchema = generatedSchema<OtpSentOut>("OtpSentOut");
 export const importResultSchema = generatedSchema<ImportResult>("ImportResultOut");
 export const agentActivityEventSchema = generatedSchema<AgentActivityEvent>("AgentActivityEvent");
 export const agentThreadStateSchema = generatedSchema<AgentThreadStateOut>("AgentThreadStateOut");
-export const agentThreadMetricsSchema = generatedSchema<AgentThreadMetricsOut>("AgentThreadMetricsOut");
 
 export type {
   AgentResponse,
+  AgentSettingsOut,
   AgentActivityEvent,
   AgentInterruptOut,
+  AgentRunMetrics,
   AgentRunOut,
-  AgentThreadMetricsOut,
   AgentThreadStateOut,
   AuthStatusOut,
   Bootstrap,
@@ -137,10 +147,6 @@ export type {
   ConversationCreatedOut,
   ConversationSummary,
   DataChartData,
-  DataTableColumn,
-  DataTableData,
-  DataTableRowAction,
-  DataVisualizationData,
   IdentityOut,
   ImportResult,
   Message,

@@ -5,11 +5,11 @@ from fastapi import FastAPI, HTTPException, Response
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app.api import create_observation, current_user, delete_data, export_data, privacy_status, revoke_source, router, set_location_preference
+from app.api import agent_settings, create_observation, current_user, delete_data, export_data, privacy_status, revoke_source, router, set_location_preference, update_agent_settings
 from app.config import SESSION_COOKIE_NAME
 from app.database import get_db
 from app.models import Category, Merchant, TaxonomyScope, Transaction, User, UserPreference
-from app.schemas import DataDeletionIn, LocationPreferenceIn, ObservationIn
+from app.schemas import AgentSettingsIn, DataDeletionIn, LocationPreferenceIn, ObservationIn
 from app.seed import DEFAULT_USER_EMAIL, default_user
 from app.services.conversation import get_or_create_conversation, handle_action, handle_chat
 from app.services.user_data import DEPENDENT_USER_DATA, OWNED_USER_DATA, validate_user_data_registry
@@ -30,6 +30,33 @@ def test_privacy_preferences_and_source_revocation_are_enforced(db):
     with pytest.raises(HTTPException) as error:
         create_observation(observation, db, user)
     assert error.value.status_code == 403
+
+
+def test_agent_settings_default_and_are_user_owned(db):
+    user = default_user(db)
+    other = User(email="other@example.com", display_name="Other")
+    db.add(other)
+    db.flush()
+
+    assert agent_settings(db, user).answer_validation_mode == "full"
+    assert agent_settings(db, user).answer_style == "explained"
+    assert agent_settings(db, other).answer_validation_mode == "full"
+    assert agent_settings(db, other).answer_style == "explained"
+
+    updated = update_agent_settings(
+        AgentSettingsIn(answerValidationMode="off"), db, user
+    )
+
+    assert updated.answer_validation_mode == "off"
+    assert updated.answer_style == "explained"
+    assert agent_settings(db, user).answer_validation_mode == "off"
+    assert agent_settings(db, other).answer_validation_mode == "full"
+
+    updated = update_agent_settings(AgentSettingsIn(answerStyle="concise"), db, user)
+
+    assert updated.answer_validation_mode == "off"
+    assert updated.answer_style == "concise"
+    assert agent_settings(db, other).answer_style == "explained"
 
 
 def test_export_contains_complete_registered_financial_state(db, monkeypatch):
@@ -107,6 +134,31 @@ def test_privacy_routes_answer_over_http_in_the_shape_the_client_reads(db):
         assert status.status_code == 200, status.text
         assert status.json()["locationEnabled"] is False
         assert status.json()["sources"]["sms"] is True
+
+        agent = client.get("/api/agent-settings")
+        assert agent.status_code == 200, agent.text
+        assert agent.json() == {
+            "answerValidationMode": "full",
+            "answerStyle": "explained",
+        }
+
+        updated_agent = client.patch(
+            "/api/agent-settings", json={"answerValidationMode": "evidence_only"}
+        )
+        assert updated_agent.status_code == 200, updated_agent.text
+        assert updated_agent.json() == {
+            "answerValidationMode": "evidence_only",
+            "answerStyle": "explained",
+        }
+
+        updated_style = client.patch(
+            "/api/agent-settings", json={"answerStyle": "concise"}
+        )
+        assert updated_style.status_code == 200, updated_style.text
+        assert updated_style.json() == {
+            "answerValidationMode": "evidence_only",
+            "answerStyle": "concise",
+        }
 
         location = client.patch("/api/privacy/location", json={"enabled": True})
         assert location.status_code == 200, location.text

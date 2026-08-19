@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
+from typing import Literal
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -69,40 +72,71 @@ class Settings(BaseSettings):
     postmark_message_stream: str = "outbound"
     otp_email_subject: str = "Your fyn AI sign-in code"
     google_client_id: str | None = None
-    # The native apps sign in against their own OAuth clients, so the ID token
-    # they present carries a different audience from the browser's. Listing the
-    # extra client IDs here is what lets one account be reached from all three
-    # surfaces; without it every native Google sign-in fails the audience check.
-    google_ios_client_id: str | None = None
-    google_android_client_id: str | None = None
-    router_model: str = "gpt-5.6-luna"
-    transaction_model: str = "gpt-5.6-luna"
-    analysis_model: str = "gpt-5.6-terra"
+    operator_model: str = "gpt-5.6-luna"
+    # Complex SQL analysis gets a quality-first reasoning budget while routine
+    # conversational turns keep the lower-latency operator baseline.
+    operator_analysis_reasoning_effort: Literal["low", "medium", "high", "xhigh"] = "high"
+    planner_model: str = "gpt-5.6-terra"
     validator_model: str = "gpt-5.6-luna"
-    reconciliation_model: str = "gpt-5.6-luna"
+    reconciler_model: str = "gpt-5.6-luna"
+    suggester_model: str = "gpt-5.6-luna"
     embedding_model: str = "text-embedding-3-small"
     primary_agent_enabled: bool = True
-    unified_read_agent_enabled: bool = True
+    # Mounts run_governed_sql on the agent loop: model-authored SELECTs behind
+    # the sqlglot gate and database row-level security (blueprint phase 2).
+    sql_lane_enabled: bool = True
+    # SQL is the primary native-ledger analysis language. ``hybrid`` retains
+    # the legacy AnalysisPlan/template grammar as an authoring option; ``sql``
+    # gives the Operator the full tenant-governed schema and one arbitrary
+    # read-only SELECT surface instead of a finite transform vocabulary.
+    analysis_query_mode: Literal["sql", "hybrid"] = "sql"
+    # Kill switches for the foreign-source lanes: a leaking connector or a
+    # bad join can be closed by configuration instead of a deploy.
+    external_source_lane_enabled: bool = True
+    federation_lane_enabled: bool = True
+    # Mounts run_python_analysis: model-authored Python over datasets the
+    # governed lanes already returned, inside the bounded sandbox. Code
+    # execution earns its own switch, closable without a deploy.
+    python_lane_enabled: bool = True
+    # Comma-separated hosts an external database source may name. Empty keeps
+    # local development usable; a deployment sets it to state its answer.
+    external_source_hosts: str = ""
     location_enrichment_enabled: bool = False
+    # Files are the sole source of operation definitions. Core definitions are
+    # shipped with the API; managed definitions may come from a shared volume.
+    operations_core_dir: str = str(Path(__file__).resolve().parents[1] / "operations")
+    operations_managed_dir: str | None = str(Path(__file__).resolve().parents[1] / "managed-operations")
+    operations_watch_enabled: bool = True
+    operation_candidate_limit: int = 12
+    operation_watch_debounce_ms: int = 500
+    # Startup recovery is deliberately a small worker pool. A large backlog
+    # therefore increases drain time, not process count, memory use, or model
+    # request concurrency.
+    agent_recovery_max_concurrency: int = Field(default=4, ge=1, le=32)
+    agent_recovery_claim_ttl_seconds: int = Field(default=300, ge=30, le=3600)
+    agent_recovery_max_postprocess_attempts: int = Field(default=2, ge=0, le=10)
+    agent_recovery_min_interval_ms: int = Field(default=50, ge=0, le=5000)
+    agent_recovery_idle_poll_seconds: int = Field(default=5, ge=1, le=60)
     default_currency: str = DEFAULT_CURRENCY
     default_timezone: str = DEFAULT_TIMEZONE
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    @field_validator("operations_managed_dir", mode="before")
+    @classmethod
+    def empty_managed_operation_dir(cls, value):
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
 
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
     @property
-    def google_audiences(self) -> list[str]:
-        """Every OAuth client whose ID tokens this installation will accept.
-
-        Google issues a token whose `aud` is the client that asked for it, so
-        the browser, the iOS app and the Android app each present a different
-        one for the same person. Order matters only for cost: the web client is
-        checked first because it is the one most sign-ins come from.
-        """
-        candidates = (self.google_client_id, self.google_ios_client_id, self.google_android_client_id)
-        return list(dict.fromkeys(value.strip() for value in candidates if value and value.strip()))
+    def google_audience(self) -> str | None:
+        """The OAuth client whose ID tokens this installation will accept."""
+        return (self.google_client_id or "").strip() or None
 
     @property
     def sms_sender_name(self) -> str:

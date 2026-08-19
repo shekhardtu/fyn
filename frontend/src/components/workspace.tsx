@@ -1,28 +1,41 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Activity, ArrowDown, Check, CheckCircle2, Copy, Download, FileText, LayoutDashboard, Loader2, MapPin, MessageSquareText, Paperclip, ReceiptText, RotateCcw, SendHorizontal, Settings, ShieldCheck, Sparkles, Square, SquarePen, Tags, Trash2, TriangleAlert, X } from "lucide-react";
+import { Activity, ArrowDown, Check, CheckCircle2, ChartColumn, Copy, FileText, LayoutDashboard, Loader2, MessageSquareText, Paperclip, ReceiptText, RotateCcw, SendHorizontal, Settings, ShieldCheck, Sparkles, Square, SquarePen, Tags, Trash2, TriangleAlert, X } from "lucide-react";
 import { createContext, FormEvent, memo, RefObject, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { useLocation, useMatch, useNavigate } from "react-router";
+import { SETTINGS_TOAST_PROBLEM, SETTINGS_TOAST_SAVED, SettingsRailIndex } from "@/components/settings-parts";
 import { Button } from "@/components/ui/button";
 import { DocumentTitle } from "@/components/document-title";
 import { SiteHeader, useAutoHideSiteHeader } from "@/components/ui/site-header";
+import { Scratchpad } from "@/components/scratchpad";
 import { Textarea } from "@/components/ui/textarea";
-import { Toast, ToastAction, ToastContent, ToastDescription, ToastPortal, ToastProvider, ToastTitle, ToastViewport, toast, useToastManager } from "@/components/ui/toast";
+import { Toast, ToastAction, ToastClose, ToastContent, ToastDescription, ToastPortal, ToastProvider, ToastTitle, ToastViewport, toast, UNDO_WINDOW_MS, useToastManager } from "@/components/ui/toast";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { WidgetRenderer } from "@/components/widget-renderer";
 import { MarkdownMessage } from "@/components/widget-library/markdown-message";
+import { DayDivider, localDayKey } from "@/components/day-divider";
+import { MessageDeliveryTime } from "@/components/message-delivery-time";
+import { MessageIdentifier } from "@/components/message-identifier";
 import { environment } from "@/config/environment";
-import { bootstrap, cancelAgentRun, createConversation, deleteAllData, deleteConversation, downloadDataExport, flushConversationDeletion, getPrivacyStatus, isUnauthorized, listConversations, loadAgentThreadMetrics, loadAgentThreadState, loadConversation, openInterrupts, reconnectAgentRun, resumeAgentInterrupt, revokeSource, sendAgentAction, sendAgentMessage, setLocationEnabled, uploadCsv, type AgentActivity, type AgentRunPhase, type FynInterrupt } from "@/lib/api";
+import { bootstrap, cancelAgentRun, createConversation, deleteConversation, flushConversationDeletion, isUnauthorized, listConversations, loadAgentThreadState, loadConversation, renameConversation, openInterrupts, reconnectAgentRun, resumeAgentInterrupt, sendAgentAction, sendAgentMessage, uploadCsv, type AgentActivity, type AgentRunPhase, type FynInterrupt } from "@/lib/api";
 import { formatBytes, formatMoney, readComposerEntry } from "@/lib/format";
-import { widgetTypeIds, type AgentResponse, type AgentThreadMetricsOut, type Bootstrap, type ConversationSummary, type Message, type Widget, type WidgetActionId } from "@/lib/protocol";
+import { widgetTypeIds, type AgentResponse, type Bootstrap, type ConversationOut, type ConversationPage, type ConversationSummary, type Message, type Widget, type WidgetActionId } from "@/lib/protocol";
+import { useWorkspaceOverlay } from "@/components/ui/overlay";
+import { useScrollEdges } from "@/lib/scroll-edges";
+import { usePlainKey } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
 import { contractLimits } from "@/lib/generated/contracts";
-import { activeWidgetId, applyWidgetUpdates, isLegacyAnalysisLifecycleWidget } from "@/lib/widget-state";
+import { activeWidgetId, adoptUserMessageIdentity, applyWidgetUpdates, completedWidgetIds, reconcileUsedWidgetIds, shouldAdoptServerTranscript, transcriptRevision } from "@/lib/widget-state";
 import { appPaths, appRoutePatterns } from "@/routing/paths";
 
 const MAX_UPLOAD_BYTES = contractLimits.csvUploadBytes;
 const JUMP_TO_LATEST_VIEWPORT_RATIO = 0.9;
 const SCROLL_SETTLE_MS = 150;
+/** How close to the scroller's physical bottom still counts as "at the end".
+ *  Fractional scroll positions under browser zoom can leave a settled scroll a
+ *  pixel or two short of the exact maximum, and treating that as "the reader
+ *  left" is what used to switch following off after every animation. */
+const AT_END_SLACK_PX = 4;
 
 type Retry =
   | { kind: "chat"; text: string }
@@ -42,74 +55,8 @@ function prefersReducedMotion() {
   return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-function formatLatency(value: number | null) {
-  if (value === null) return "—";
-  if (value < 1_000) return `${Math.round(value)} ms`;
-  return `${(value / 1_000).toFixed(value < 10_000 ? 1 : 0)} s`;
-}
-
-function formatRate(value: number | null) {
-  return value === null ? "—" : `${Math.round(value * 100)}%`;
-}
-
-function AgentMetricsPanel({ metrics, loading, failed }: {
-  metrics?: AgentThreadMetricsOut;
-  loading: boolean;
-  failed: boolean;
-}) {
-  if (loading) return <div className="p-5 text-note text-ink-muted">Loading run measurements…</div>;
-  if (failed || !metrics) return <div className="p-5 text-note text-danger-ink">Run measurements could not be loaded.</div>;
-  const cards = [
-    ["First response · p50", formatLatency(metrics.p50TimeToFirstResponseMs)],
-    ["Total time · average", formatLatency(metrics.averageDurationMs)],
-    ["Evidence integrity", formatRate(metrics.evidencePassRate)],
-    ["Quality heuristic", metrics.averageQualityScore === null ? "—" : `${Math.round(metrics.averageQualityScore)}/100`],
-    ["Grounded when needed", formatRate(metrics.groundingRate)],
-    ["Depth heuristic", metrics.averageDepthScore === null ? "—" : `${Math.round(metrics.averageDepthScore)}/100`],
-    ["Contextual responses", formatRate(metrics.contextualityRate)],
-    ["Total time · p95", formatLatency(metrics.p95DurationMs)],
-  ];
-  return <div>
-    <div className="grid grid-cols-2 gap-px bg-line">
-      {cards.map(([label, value]) => <div key={label} className="bg-surface px-4 py-3">
-        <div className="text-[11px] leading-4 text-ink-muted">{label}</div>
-        <div className="mt-1 text-control font-semibold text-ink-body">{value}</div>
-      </div>)}
-    </div>
-    <div className="border-t border-line px-4 py-3">
-      <div className="flex items-center justify-between text-meta text-ink-muted"><span>Recent runs</span><span>{metrics.sampleSize} sampled</span></div>
-      <div className="mt-2 space-y-2">
-        {metrics.recentRuns.slice(0, 5).map(({ run, evaluation }) => <div key={run.id} className="grid grid-cols-[1fr_auto_auto] items-center gap-3 text-meta">
-          <span className="min-w-0 truncate text-ink-body">{run.deliveryMode === "model_delta" ? "Live model stream" : "Verified final"}</span>
-          <span className="text-ink-muted">{formatLatency(run.timeToFirstResponseMs)}</span>
-          <span className={cn("font-medium", evaluation && (!evaluation.evidencePassed || !evaluation.contextual) ? "text-danger-ink" : "text-secondary")}>{evaluation ? `${evaluation.qualityScore}` : "—"}</span>
-        </div>)}
-        {!metrics.recentRuns.length ? <p className="text-meta text-ink-muted">No agent runs in this thread yet.</p> : null}
-      </div>
-    </div>
-    <p className="border-t border-line bg-canvas px-4 py-3 text-[11px] leading-4 text-ink-muted">Evidence and contextuality are deterministic integrity/repetition checks. Quality and depth are transparent heuristics, not a claim that the model is semantically correct.</p>
-  </div>;
-}
-
 function responseToMessage(response: AgentResponse): Message {
-  return { id: response.message_id, role: "assistant", content: response.message, widgets: response.widgets, citations: response.citations, created_at: new Date().toISOString() };
-}
-
-function completedWidgetIds(messages: Message[]) {
-  const widgetsByDraft = new Map<string, string[]>();
-  const completed = new Set<string>();
-  for (const message of messages) {
-    for (const widget of message.widgets) {
-      if (widget.data.lifecycle === "completed" || widget.data.lifecycle === "cancelled") completed.add(widget.id);
-      const resourceId = typeof widget.data.draftId === "string" ? widget.data.draftId : typeof widget.data.transactionId === "string" ? widget.data.transactionId : null;
-      if (!resourceId) continue;
-      const prior = widgetsByDraft.get(resourceId) ?? [];
-      prior.forEach((id) => completed.add(id));
-      if (widget.type === widgetTypeIds.transaction_preview && widget.actions.length === 0) completed.add(widget.id);
-      widgetsByDraft.set(resourceId, [...prior, widget.id]);
-    }
-  }
-  return completed;
+  return { id: response.message_id, role: "assistant", content: response.message, widgets: response.widgets, citations: response.citations, created_at: response.delivered_at, delivered_at: response.delivered_at };
 }
 
 /** The rail is a drawer below `md` and a docked column above it; the layout,
@@ -137,41 +84,6 @@ function useMediaQuery(query: string) {
     // tab order until it is opened.
     () => false,
   );
-}
-
-/** Marks whether a scroll container has content hidden above or below, so a
- *  cut-off list can say so with a fade instead of ending on a hard edge.
- *
- *  Written to the DOM rather than to state, deliberately. This fires on every
- *  scroll event, and in React state that is a re-render of the whole rail per
- *  frame of scrolling — for two fades whose only job is to be visible or not.
- *  The flags land as data attributes and CSS does the rest, so scrolling the
- *  rail now costs nothing in React at all. */
-function useScrollEdges<T extends HTMLElement>(dependency: unknown) {
-  const ref = useRef<T>(null);
-  useEffect(() => {
-    const node = ref.current;
-    const host = node?.parentElement;
-    if (!node || !host) return;
-    // Held so the attribute is only written when the answer actually changes;
-    // a scroll within the same state is the common case.
-    let top: boolean | null = null;
-    let bottom: boolean | null = null;
-    const update = () => {
-      const nextTop = node.scrollTop > 4;
-      const nextBottom = Math.ceil(node.scrollTop + node.clientHeight) < node.scrollHeight - 4;
-      if (nextTop !== top) { top = nextTop; host.dataset.edgeTop = String(nextTop); }
-      if (nextBottom !== bottom) { bottom = nextBottom; host.dataset.edgeBottom = String(nextBottom); }
-    };
-    update();
-    node.addEventListener("scroll", update, { passive: true });
-    if (typeof ResizeObserver === "undefined") return () => node.removeEventListener("scroll", update);
-    const observer = new ResizeObserver(update);
-    observer.observe(node);
-    if (node.firstElementChild) observer.observe(node.firstElementChild);
-    return () => { node.removeEventListener("scroll", update); observer.disconnect(); };
-  }, [dependency]);
-  return ref;
 }
 
 /** Asks for the next page once the end of the list comes into view, so history
@@ -263,38 +175,71 @@ const RailFooter = memo(function RailFooter({ user, onOpenSettings, onOpenProfil
   </footer>;
 });
 
-const RailEntry = memo(function RailEntry({ conversation, active, entryRef, onSelect, onPrefetch, onDelete }: {
+const RailEntry = memo(function RailEntry({ conversation, active, entryRef, onSelect, onPrefetch, onDelete, onRename }: {
   conversation: ConversationSummary;
   active: boolean;
   entryRef?: RefObject<HTMLButtonElement | null>;
   onSelect: (id: string) => void;
   onPrefetch: (id: string) => void;
   onDelete: (conversation: ConversationSummary) => void;
+  onRename: (id: string, title: string) => void;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(conversation.title);
+  const rowRef = useRef<HTMLButtonElement | null>(null);
+  // Keyboard exits hand focus back to the row; a pointer exit (blur) has
+  // already placed it somewhere else deliberately.
+  const refocusRow = () => requestAnimationFrame(() => rowRef.current?.focus());
+  function commit() {
+    setEditing(false);
+    const title = draft.replace(/\s+/g, " ").trim();
+    if (title && title !== conversation.title) onRename(conversation.id, title);
+  }
   return <div className="ledger-row">
-    <button
-      ref={entryRef}
-      type="button"
-      aria-current={active ? "page" : undefined}
-      onClick={() => onSelect(conversation.id)}
-      onPointerEnter={() => onPrefetch(conversation.id)}
-      onFocus={() => onPrefetch(conversation.id)}
-      className="ledger-entry"
-    >
-      <span aria-hidden className="ledger-mark" />
-      <span className="line-clamp-2">{conversation.title}</span>
-    </button>
+    {editing
+      ? <input
+        autoFocus
+        value={draft}
+        maxLength={160}
+        onChange={(event) => setDraft(event.target.value)}
+        // The old caption arrives selected: typing replaces, arrows amend.
+        onFocus={(event) => event.currentTarget.select()}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") { commit(); refocusRow(); }
+          if (event.key === "Escape") { setEditing(false); refocusRow(); }
+        }}
+        onBlur={commit}
+        aria-label={`Rename conversation: ${conversation.title}`}
+        className="ledger-entry rename-line bg-surface text-ink-body outline-none"
+      />
+      : <button
+        ref={(node) => { rowRef.current = node; if (entryRef) entryRef.current = node; }}
+        type="button"
+        aria-current={active ? "page" : undefined}
+        onClick={() => onSelect(conversation.id)}
+        // Renaming is the double-click, not a control: the title itself is the
+        // affordance, the way it is in the thread header. The chat flow
+        // ("rename this thread to …") remains the spoken and keyboard path.
+        onDoubleClick={() => { setDraft(conversation.title); setEditing(true); }}
+        onPointerEnter={() => onPrefetch(conversation.id)}
+        onFocus={() => onPrefetch(conversation.id)}
+        className="ledger-entry"
+      >
+        <span aria-hidden className="ledger-mark" />
+        <span className="line-clamp-2" title={`${conversation.title}\nDouble-click to rename`}>{conversation.title}</span>
+      </button>}
     <button type="button" onClick={() => onDelete(conversation)} aria-label={`Delete conversation: ${conversation.title}`} className="ledger-strike"><Trash2 size={14} /></button>
   </div>;
 });
 
 const MONEY_PAGES = [
   { label: "Overview", icon: LayoutDashboard, path: "/overview" },
+  { label: "Dashboards", icon: ChartColumn, path: "/dashboards" },
   { label: "Transactions", icon: ReceiptText, path: "/transactions" },
   { label: "Categories", icon: Tags, path: "/categories" },
 ] as const;
 
-const ConversationRail = memo(function ConversationRail({ conversations, activeId, activePage, user, open, docked, switching, loading, loadingMore, hasMore, onClose, onOpenPage, onSelect, onPrefetch, onDelete, onLoadMore, onNew, onOpenSettings, onOpenProfile }: {
+const ConversationRail = memo(function ConversationRail({ conversations, activeId, activePage, user, open, docked, switching, loading, loadingMore, hasMore, settingsOpen, onClose, onOpenPage, onSelect, onPrefetch, onDelete, onRename, onLoadMore, onNew, onLeaveSettings, onOpenSection, onOpenSettings, onOpenProfile }: {
   conversations: ConversationSummary[];
   activeId: string;
   activePage: string | null;
@@ -306,14 +251,20 @@ const ConversationRail = memo(function ConversationRail({ conversations, activeI
   loading: boolean;
   loadingMore: boolean;
   hasMore: boolean;
+  /** Settings borrows the rail: its sections replace the index below the
+   *  header, and the way back out is the first row in their place. */
+  settingsOpen: boolean;
   onClose: () => void;
   onOpenPage: (path: string) => void;
   onSelect: (id: string) => void;
   /** Warms a thread the pointer is heading for, so opening it is a paint. */
   onPrefetch: (id: string) => void;
   onDelete: (conversation: ConversationSummary) => void;
+  onRename: (id: string, title: string) => void;
   onLoadMore: () => void;
   onNew: () => void;
+  onLeaveSettings: () => void;
+  onOpenSection: () => void;
   onOpenSettings: () => void;
   onOpenProfile: () => void;
 }) {
@@ -330,48 +281,51 @@ const ConversationRail = memo(function ConversationRail({ conversations, activeI
   >
     <RailHeader creating={switching} onNew={onNew} onClose={onClose} />
 
-    <nav aria-label="Money pages" className="py-2">
-      <p className="ledger-meta px-3 pt-1 pb-2">Money</p>
-      {MONEY_PAGES.map((item) => {
-        const Icon = item.icon;
-        return <div key={item.label} className="ledger-row">
-          <button
-            type="button"
-            aria-label={item.label}
-            aria-current={activePage === item.path ? "page" : undefined}
-            onClick={() => onOpenPage(item.path)}
-            className="ledger-entry money-entry"
-          >
-            <span aria-hidden className="ledger-mark" />
-            <Icon size={16} className="shrink-0" />
-            <span>{item.label}</span>
-          </button>
-        </div>;
-      })}
-    </nav>
+    {settingsOpen ? <SettingsRailIndex onLeave={onLeaveSettings} onNavigate={onOpenSection} /> : <>
+      <nav aria-label="Money pages" className="py-2">
+        <p className="ledger-meta px-3 pt-1 pb-2">Money</p>
+        {MONEY_PAGES.map((item) => {
+          const Icon = item.icon;
+          return <div key={item.label} className="ledger-row">
+            <button
+              type="button"
+              aria-label={item.label}
+              aria-current={activePage === item.path ? "page" : undefined}
+              onClick={() => onOpenPage(item.path)}
+              className="ledger-entry money-entry"
+            >
+              <span aria-hidden className="ledger-mark" />
+              <Icon size={16} className="shrink-0" />
+              <span>{item.label}</span>
+            </button>
+          </div>;
+        })}
+      </nav>
 
-    <div className="rail-body flex min-h-0 flex-col">
-      <p className="chat-index-label shrink-0">Recent chats</p>
-      <div ref={listRef} className="panel-scroll min-h-0 flex-1 overflow-y-auto">
-        {loading
-          ? <div role="status" aria-label="Loading your conversations" className="space-y-3 px-4 pt-6">{[0, 1, 2, 3].map((row) => <div key={row} className="h-3 animate-pulse rounded-full bg-line" style={{ width: `${88 - row * 13}%` }} />)}</div>
-          : conversations.length === 0
-            ? <div className="pt-8 px-3"><p className="text-control font-medium text-ink-body">No conversations yet</p><p className="mt-1 text-note leading-5 text-ink-muted">Start one and it appears here.</p></div>
-            : <nav aria-label="Conversation history" className="relative pb-3">
-              {conversations.map((conversation) => <RailEntry
-                key={conversation.id}
-                conversation={conversation}
-                active={conversation.id === activeId}
-                entryRef={conversation.id === activeId ? activeRef : undefined}
-                onSelect={onSelect}
-                onPrefetch={onPrefetch}
-                onDelete={onDelete}
-              />)}
-              <div ref={endRef} aria-hidden className="h-px" />
-              {loadingMore ? <p role="status" className="ledger-meta py-4 px-3">Loading earlier</p> : null}
-            </nav>}
+      <div className="rail-body flex min-h-0 flex-col">
+        <p className="chat-index-label shrink-0">Recent chats</p>
+        <div ref={listRef} className="panel-scroll min-h-0 flex-1 overflow-y-auto">
+          {loading
+            ? <div role="status" aria-label="Loading your conversations" className="space-y-3 px-4 pt-6">{[0, 1, 2, 3].map((row) => <div key={row} className="h-3 animate-pulse rounded-full bg-line" style={{ width: `${88 - row * 13}%` }} />)}</div>
+            : conversations.length === 0
+              ? <div className="pt-8 px-3"><p className="text-control font-medium text-ink-body">No conversations yet</p><p className="mt-1 text-note leading-5 text-ink-muted">Start one and it appears here.</p></div>
+              : <nav aria-label="Conversation history" className="relative pb-3">
+                {conversations.map((conversation) => <RailEntry
+                  key={conversation.id}
+                  conversation={conversation}
+                  active={conversation.id === activeId}
+                  entryRef={conversation.id === activeId ? activeRef : undefined}
+                  onSelect={onSelect}
+                  onPrefetch={onPrefetch}
+                  onDelete={onDelete}
+                  onRename={onRename}
+                />)}
+                <div ref={endRef} aria-hidden className="h-px" />
+                {loadingMore ? <p role="status" className="ledger-meta py-4 px-3">Loading earlier</p> : null}
+              </nav>}
+        </div>
       </div>
-    </div>
+    </>}
 
     <RailFooter user={user} onOpenSettings={onOpenSettings} onOpenProfile={onOpenProfile} />
   </aside>;
@@ -411,17 +365,28 @@ function AssistantByline({ thinking = false, live = false }: { thinking?: boolea
   </div>;
 }
 
+/** One in-flight run as the stream has described it so far. `failureSummary`
+ *  and `modelPassCount` are server-authored aggregates carried by every
+ *  activity event — the client renders them, it never re-derives them. */
+interface LiveAgentRun {
+  steps: AgentActivity[];
+  failureSummary: string | null;
+  modelPassCount: number;
+}
+
+const idleAgentRun: LiveAgentRun = { steps: [], failureSummary: null, modelPassCount: 0 };
+
 /** The reply forming in place: same byline and same run card the finished message
  *  will carry, in the same spot, so landing the answer collapses the run and
  *  fills in the prose rather than moving anything. */
-function AgentActivityIndicator({ activities, reasoningSummary }: { activities: AgentActivity[]; reasoningSummary: string }) {
+function AgentActivityIndicator({ run, reasoningSummary }: { run: LiveAgentRun; reasoningSummary: string }) {
   // Rebuilt only when a step actually streams in. A fresh object every render
   // would be a fresh `widget` prop, and the run card would re-render along with
   // whatever else moved on the page.
   const widget: Widget = useMemo(() => {
-    const latest = activities.at(-1);
+    const latest = run.steps.at(-1);
     const fallback = latest?.detail || latest?.label || "Preparing a contextual answer";
-    const summary = (reasoningSummary || fallback).replace(/\s+/g, " ").trim().slice(0, 320);
+    const summary = (run.failureSummary || reasoningSummary || fallback).replace(/\s+/g, " ").trim().slice(0, 320);
     return {
       id: "live-agent-activity",
       type: widgetTypeIds.agent_activity,
@@ -433,16 +398,17 @@ function AgentActivityIndicator({ activities, reasoningSummary }: { activities: 
         summary,
         reasoningTrace: reasoningSummary || null,
         debugTrace: environment.isDevelopment,
-        steps: activities,
+        steps: run.steps,
+        modelPassCount: run.modelPassCount,
         // Folded rather than spread: `Math.max(...array)` passes every element as
         // an argument, which throws once a run is long enough. Runs are short, so
         // this is insurance rather than a fix.
-        totalMs: activities.reduce((longest, activity) => Math.max(longest, activity.cumulativeMs), 0),
+        totalMs: run.steps.reduce((longest, activity) => Math.max(longest, activity.cumulativeMs), 0),
         live: true,
       },
       actions: [],
     };
-  }, [activities, reasoningSummary]);
+  }, [run, reasoningSummary]);
   return <div className="max-w-[680px]">
     <AssistantByline thinking live />
     <div className="pl-0 sm:pl-8"><WidgetRenderer widget={widget} disabled onAction={noAction} /></div>
@@ -463,41 +429,8 @@ function ThreadSkeleton() {
   </div>;
 }
 
-/** Keeps Tab inside an open overlay, closes it on Escape, and hands focus back
- *  to whatever opened it. */
-export function useWorkspaceOverlay(open: boolean, onClose: () => void) {
-  const ref = useRef<HTMLElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const opener = document.activeElement as HTMLElement | null;
-    const node = ref.current;
-    const focusable = () => Array.from(node?.querySelectorAll<HTMLElement>('a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])') ?? []).filter((element) => element.offsetParent !== null);
-    focusable()[0]?.focus();
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") { event.preventDefault(); onClose(); return; }
-      if (event.key !== "Tab") return;
-      const items = focusable();
-      if (!items.length) return;
-      const first = items[0];
-      const last = items[items.length - 1];
-      if (event.shiftKey && (document.activeElement === first || !node?.contains(document.activeElement))) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    }
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      // Whatever opened this may have gone inert behind it — on mobile the rail
-      // closes as the drawer opens — so fall back to a control still on screen.
-      const reachable = opener?.isConnected && !opener.closest("[inert]") ? opener : document.querySelector<HTMLElement>("header button");
-      reachable?.focus?.();
-    };
-  }, [open, onClose]);
-  return ref;
-}
+export { useWorkspaceOverlay };
 
-/** How long a deleted thread can still be brought back. Long enough to read the
- *  title and reconsider, short enough that "deleted" stays true. */
-const UNDO_WINDOW_MS = 7000;
 
 /** Delete asks nothing and takes effect at once; the toast is where it can be
  *  taken back. Each deleted entry lifts out of the rail as its own slip and is
@@ -510,7 +443,22 @@ const UNDO_WINDOW_MS = 7000;
  *  leaving, and the thread being erased are the same event. */
 function UndoToastList() {
   const { toasts } = useToastManager();
-  return toasts.map((slip) => <Toast
+  return toasts.map((slip) => slip.type === SETTINGS_TOAST_SAVED || slip.type === SETTINGS_TOAST_PROBLEM
+    // Settings reports through the same stack, but a standing instruction that
+    // changed is not an entry that was struck: no undo window, no ruled-out
+    // line, just what changed and whether it took.
+    ? <Toast key={slip.id} toast={slip} className="rounded-lg border-line bg-surface shadow-[var(--shadow-overlay)]">
+      {/* Right padding clears the close, so a message long enough to wrap
+          runs under nothing. */}
+      <ToastContent className="pr-10">
+        {slip.type === SETTINGS_TOAST_PROBLEM
+          ? <TriangleAlert size={16} className="shrink-0 text-danger" />
+          : <CheckCircle2 size={16} className="shrink-0 text-secondary" />}
+        <ToastTitle className="min-w-0 text-control leading-[1.35] font-medium text-ink-body" />
+        <ToastClose className="absolute top-2 right-2" />
+      </ToastContent>
+    </Toast>
+    : <Toast
     key={slip.id}
     toast={slip}
     style={{ "--undo-window": `${UNDO_WINDOW_MS}ms` } as CSSProperties}
@@ -527,98 +475,6 @@ function UndoToastList() {
       </ToastDescription>
     </ToastContent>
   </Toast>);
-}
-
-/** Mounted only while open, so a drawer reopened later is never still armed to
- *  delete everything or mid-way through a revoke confirmation. */
-function PrivacyDrawer({ onClose, onDeleted }: { onClose: () => void; onDeleted: () => void }) {
-  const queryClient = useQueryClient();
-  const [deleteConfirmation, setDeleteConfirmation] = useState("");
-  const [confirmingRevoke, setConfirmingRevoke] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [problem, setProblem] = useState<string | null>(null);
-  const [busyControl, setBusyControl] = useState<string | null>(null);
-  const panelRef = useWorkspaceOverlay(true, onClose);
-  const privacy = useQuery({ queryKey: ["privacy"], queryFn: getPrivacyStatus });
-
-  const run = useMutation({
-    mutationFn: async ({ kind, value }: { kind: "location" | "revoke" | "export" | "delete"; value?: string | boolean }) => {
-      if (kind === "location") return setLocationEnabled(Boolean(value));
-      if (kind === "revoke") return revokeSource(String(value));
-      if (kind === "export") return downloadDataExport();
-      return deleteAllData();
-    },
-    onMutate: ({ kind, value }) => { setProblem(null); setNotice(null); setBusyControl(kind === "revoke" ? `revoke:${value}` : kind); },
-    onSuccess: async (result, variables) => {
-      setBusyControl(null);
-      if (variables.kind === "delete") { onDeleted(); return; }
-      if (variables.kind === "export") setNotice(`Saved ${typeof result === "string" ? result : "your export"} to your downloads.`);
-      if (variables.kind === "revoke") { setConfirmingRevoke(null); setNotice(`${String(variables.value).toUpperCase()} can no longer add transactions.`); }
-      await queryClient.invalidateQueries({ queryKey: ["privacy"] });
-    },
-    onError: (cause: Error) => { setBusyControl(null); setProblem(cause.message); },
-  });
-
-  const locationEnabled = privacy.data?.locationEnabled ?? false;
-  const sources = Object.entries(privacy.data?.sources ?? {});
-
-  return <>
-    <button type="button" tabIndex={-1} aria-hidden onClick={onClose} className="scrim-fade fixed inset-0 z-40 bg-ink/25 backdrop-blur-[2px]" />
-    <section ref={panelRef} role="dialog" aria-modal="true" aria-labelledby="privacy-title" className="drawer-right fixed inset-y-0 right-0 z-50 flex w-full max-w-md flex-col border-l border-line bg-surface shadow-[var(--shadow-overlay)]">
-      <div className="flex shrink-0 items-center border-b border-line px-4 pt-[max(1.25rem,env(safe-area-inset-top))] pb-4 sm:px-6">
-        <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-secondary-tint text-secondary"><ShieldCheck size={20} /></span>
-        <div className="ml-3 min-w-0"><h2 id="privacy-title" className="font-heading text-title font-semibold text-ink">Privacy &amp; data</h2><p className="text-note text-ink-muted">Nothing is collected until you switch it on.</p></div>
-        <Button type="button" variant="ghost" size="icon-lg" aria-label="Close privacy settings" onClick={onClose} className="-mr-1 ml-auto rounded-xl text-ink-muted"><X /></Button>
-      </div>
-
-      <div className="panel-scroll min-h-0 flex-1 space-y-6 overflow-y-auto px-4 pt-6 pb-[max(1.75rem,env(safe-area-inset-bottom))] sm:px-6">
-        {problem ? <p role="alert" className="flex items-start gap-2 rounded-lg border border-danger-line bg-danger-tint px-4 py-3 text-note leading-5 text-danger-ink"><TriangleAlert className="mt-0.5 shrink-0" />{problem}</p> : null}
-        {notice ? <p role="status" className="flex items-start gap-2 rounded-lg border border-secondary-line bg-secondary-tint px-4 py-3 text-note leading-5 text-secondary-hover"><CheckCircle2 className="mt-0.5 shrink-0" />{notice}</p> : null}
-        {privacy.isError ? <p role="alert" className="rounded-lg border border-danger-line bg-danger-tint px-4 py-3 text-note leading-5 text-danger-ink">Your privacy settings couldn’t be loaded, so they’re hidden rather than shown wrong. <button type="button" onClick={() => privacy.refetch()} className="font-semibold underline">Load them again</button></p> : null}
-        {privacy.isLoading ? <div role="status" aria-label="Loading privacy settings" className="space-y-3">{[0, 1, 2].map((row) => <div key={row} className="h-16 animate-pulse rounded-lg bg-line/70" />)}</div> : null}
-
-        {privacy.data ? <>
-          <div className="rounded-lg border border-line p-4">
-            <div className="flex items-center gap-3">
-              <MapPin className="shrink-0 text-secondary" />
-              <div className="min-w-0"><p className="text-control font-semibold text-ink-body">Location enrichment</p><p className="mt-0.5 text-note leading-5 text-ink-muted">Adds the place a transaction happened. Precise location is never stored.</p></div>
-              <button type="button" role="switch" aria-label="Location enrichment" aria-checked={locationEnabled} disabled={run.isPending} onClick={() => run.mutate({ kind: "location", value: !locationEnabled })} className={cn("ml-auto grid h-11 w-14 shrink-0 place-items-center rounded-full disabled:opacity-60", busyControl === "location" && "opacity-70")}>
-                <span className={cn("flex h-6 w-11 items-center rounded-full p-0.5 transition-colors", locationEnabled ? "bg-secondary" : "bg-line-strong")}><span className={cn("block size-5 rounded-full bg-surface ring-1 ring-black/5 transition-transform duration-[110ms] ease-linear", locationEnabled && "translate-x-5")} /></span>
-              </button>
-            </div>
-          </div>
-
-          <div>
-            <p className="mb-2 text-meta font-semibold tracking-[0.08em] text-ink-muted uppercase">Where transactions can come from</p>
-            <div className="divide-y divide-line rounded-lg border border-line">
-              {sources.map(([source, active]) => <div key={source} className="px-4 py-3">
-                <div className="flex items-center gap-3">
-                  <div className="min-w-0 flex-1"><p className="text-control font-medium uppercase text-ink-body">{source}</p><p className="mt-0.5 text-note leading-5 text-ink-muted">{active ? "Allowed to add transactions" : "Revoked — it can no longer add transactions"}</p></div>
-                  {active ? <Button type="button" variant="outline" size="sm" disabled={run.isPending} onClick={() => setConfirmingRevoke(source)}>Revoke</Button> : <span className="shrink-0 text-note font-semibold text-danger-ink">Revoked</span>}
-                </div>
-                {confirmingRevoke === source ? <div className="mt-3 rounded-lg bg-surface-sunken p-3">
-                  <p className="text-note leading-5 text-ink-body">Revoke {source.toUpperCase()}? Transactions already recorded stay; this source just can’t add more.</p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <Button type="button" size="lg" disabled={run.isPending} onClick={() => run.mutate({ kind: "revoke", value: source })} variant="danger">{busyControl === `revoke:${source}` ? <Loader2 size={14} className="animate-spin" /> : null}Revoke {source.toUpperCase()}</Button>
-                    <Button type="button" variant="ghost" size="lg" onClick={() => setConfirmingRevoke(null)} >Keep it on</Button>
-                  </div>
-                </div> : null}
-              </div>)}
-              {!sources.length ? <p className="px-4 py-4 text-note text-ink-muted">No sources are connected yet.</p> : null}
-            </div>
-          </div>
-
-          <Button type="button" variant="outline" disabled={run.isPending} onClick={() => run.mutate({ kind: "export" })} size="lg" className="w-full">{busyControl === "export" ? <Loader2 className="animate-spin" /> : <Download />}{busyControl === "export" ? "Preparing your export…" : "Export my data"}</Button>
-
-          <div className="rounded-lg border border-danger-line bg-danger-tint p-4">
-            <div className="flex gap-3"><Trash2 className="mt-0.5 shrink-0 text-danger" /><div><p className="text-control font-semibold text-danger-ink">Delete all data</p><p className="mt-1 text-note leading-5 text-danger-ink/85">Permanently removes conversations, transactions, observations, goals, budgets, and preferences. This cannot be undone.</p></div></div>
-            <input value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} placeholder="Type DELETE MY DATA" aria-label="Deletion confirmation" className="manual-field manual-field-danger mt-4 h-[var(--h-field)] w-full rounded-lg border border-danger-line bg-surface px-3 text-body text-ink outline-none transition-colors duration-[110ms] ease-linear" />
-            <Button type="button" disabled={deleteConfirmation !== "DELETE MY DATA" || run.isPending} onClick={() => run.mutate({ kind: "delete" })} variant="danger" size="lg" className="mt-2 w-full">{busyControl === "delete" ? <Loader2 className="animate-spin" /> : null}{busyControl === "delete" ? "Deleting everything…" : "Delete permanently"}</Button>
-          </div>
-        </> : null}
-      </div>
-    </section>
-  </>;
 }
 
 /* Four things you can do, one per line and none of them repeated: the
@@ -789,7 +645,7 @@ type WidgetAction = (widgetId: string, action: WidgetActionId, payload: Record<s
  *  backwards. Nothing in a finished turn reads what is being typed, so nothing
  *  in one needs to re-render while it is. The same boundary keeps a streaming
  *  reply from re-rendering the turns above it on every tick. */
-const MessageArticle = memo(function MessageArticle({ message, activeWidget, cancelWidget, usedWidgets, pendingWidget, busy, citationsOpen, onToggleCitations, onAction, onCancelWidget }: {
+const MessageArticle = memo(function MessageArticle({ message, activeWidget, cancelWidget, usedWidgets, pendingWidget, busy, citationsOpen, onToggleCitations, onAction, onCancelWidget, onPostPrompt }: {
   message: Message;
   activeWidget: string | null;
   cancelWidget: string | null;
@@ -799,21 +655,36 @@ const MessageArticle = memo(function MessageArticle({ message, activeWidget, can
   citationsOpen: boolean;
   onToggleCitations: (messageId: string) => void;
   onAction: WidgetAction;
+  onPostPrompt: (text: string) => void;
   onCancelWidget: (widgetId: string) => void;
 }) {
   // The run trace is how the answer was reached, so it reads above the answer —
   // not appended after the widgets it produced, which is the order the backend
   // stores it in.
   const trace = message.widgets.find((widget) => widget.type === widgetTypeIds.agent_activity);
-  const widgets = message.widgets.filter((widget) => widget.id !== trace?.id && !isLegacyAnalysisLifecycleWidget(widget));
+  const widgets = message.widgets.filter((widget) => widget.id !== trace?.id);
   return <article data-message-id={message.id} className={cn("group", message.role === "user" ? "flex justify-end" : "max-w-[680px]")}>
     <div className={cn("min-w-0", message.role === "user" && "max-w-[82%]")}>
       {message.role === "assistant" ? <AssistantByline thinking={Boolean(trace)} /> : null}
       {trace ? <div className="mb-3 pl-0 sm:pl-8"><WidgetRenderer widget={trace} disabled onAction={noAction} /></div> : null}
       {message.content ? message.role === "user"
-        ? <div className="w-fit break-words whitespace-pre-wrap rounded-xl rounded-br-sm bg-secondary px-4 py-3 text-body leading-6 text-on-secondary">{message.content}</div>
+        ? <div className="w-fit max-w-full break-words whitespace-pre-wrap rounded-xl rounded-br-sm bg-secondary px-4 py-3 text-body leading-6 text-on-secondary">{message.content}</div>
         : <div className="break-words pl-8"><MarkdownMessage>{message.content}</MarkdownMessage></div>
       : null}
+      {message.content ? <div className={cn("mt-1.5", message.role === "user" ? "text-right" : "pl-8")}>
+        <div className={cn("flex items-center gap-2 whitespace-nowrap", message.role === "user" && "justify-end")}>
+          {message.delivered_at ? <>
+            <MessageDeliveryTime deliveredAt={message.delivered_at} />
+            <span aria-hidden className="text-meta text-ink-muted/70">·</span>
+          </> : null}
+          <MessageIdentifier messageId={message.id} />
+          {message.citations.length ? <>
+            <span aria-hidden className="text-meta text-ink-muted/70">·</span>
+            <button type="button" data-inline-disclosure="true" aria-expanded={citationsOpen} onClick={() => onToggleCitations(message.id)} className="flex min-h-7 items-center gap-1.5 rounded-lg text-meta font-medium text-ink-muted hover:text-secondary"><FileText size={14} /> {message.citations.length} data source{message.citations.length === 1 ? "" : "s"}</button>
+          </> : null}
+        </div>
+        {message.citations.length && citationsOpen ? <ul className="mt-2 space-y-1 rounded-lg border border-line bg-surface px-4 py-3">{message.citations.map((citation, index) => <li key={index} className="flex gap-2 text-meta leading-5 text-ink-muted"><span aria-hidden className="text-secondary">•</span><span><span className="font-medium text-ink-body">{typeof citation.label === "string" ? citation.label : "Recorded data"}</span>{typeof citation.entity_type === "string" ? ` · ${citation.entity_type.replaceAll("_", " ")}` : ""}</span></li>)}</ul> : null}
+      </div> : null}
       {widgets.length ? <div className="mt-3 space-y-3 pl-0 sm:pl-8">{widgets.map((widget) => {
         const active = widget.id === activeWidget;
         const title = typeof widget.data.title === "string" && widget.data.title.trim() ? widget.data.title : "Follow-up";
@@ -825,13 +696,9 @@ const MessageArticle = memo(function MessageArticle({ message, activeWidget, can
           tabIndex={active ? -1 : undefined}
           className="scroll-mt-4"
         >
-          <WidgetRenderer widget={widget} disabled={!active || usedWidgets.has(widget.id) || busy} pending={pendingWidget === widget.id} onCancel={widget.id === cancelWidget ? () => onCancelWidget(widget.id) : undefined} onAction={onAction} />
+          <WidgetRenderer widget={widget} disabled={!active || usedWidgets.has(widget.id) || busy} pending={pendingWidget === widget.id} onCancel={widget.id === cancelWidget ? () => onCancelWidget(widget.id) : undefined} onAction={onAction} onPostPrompt={onPostPrompt} />
         </div>;
       })}</div> : null}
-      {message.citations.length ? <div className="mt-2 ml-8">
-        <button type="button" aria-expanded={citationsOpen} onClick={() => onToggleCitations(message.id)} className="flex min-h-8 items-center gap-2 rounded-lg text-meta font-medium text-ink-muted hover:text-secondary"><FileText size={14} /> {message.citations.length} data source{message.citations.length === 1 ? "" : "s"}</button>
-        {citationsOpen ? <ul className="mt-2 space-y-1 rounded-lg border border-line bg-surface px-4 py-3">{message.citations.map((citation, index) => <li key={index} className="flex gap-2 text-meta leading-5 text-ink-muted"><span aria-hidden className="text-secondary">•</span><span><span className="font-medium text-ink-body">{typeof citation.label === "string" ? citation.label : "Recorded data"}</span>{typeof citation.entity_type === "string" ? ` · ${citation.entity_type.replaceAll("_", " ")}` : ""}</span></li>)}</ul> : null}
-      </div> : null}
     </div>
   </article>;
 });
@@ -839,15 +706,9 @@ const MessageArticle = memo(function MessageArticle({ message, activeWidget, can
 /** The thread itself, held behind the same boundary and for the same reason.
  *  Every prop it takes is either state that does not move while you type or a
  *  callback held stable by the workspace, so a keystroke stops here. */
-type TranscriptScrollHandle = {
-  isAtEnd: (threshold?: number) => boolean;
-  scrollToEnd: (behavior: ScrollBehavior) => void;
-  scrollToMessage: (messageId: string | undefined, behavior: ScrollBehavior) => void;
-};
-
-const Transcript = memo(function Transcript({ messages, agentActivities, reasoningSummary, streamingText, streaming, busy, usedWidgets, pendingWidget, openCitations, activeWidget, cancelWidget, activeWidgetFocusKey, error, retry, onAction, onCancelWidget, onActiveWidgetFocus, onToggleCitations, onRetry, scrollRef, scrollHandleRef }: {
+const Transcript = memo(function Transcript({ messages, agentRun, reasoningSummary, streamingText, streaming, busy, usedWidgets, pendingWidget, openCitations, activeWidget, cancelWidget, activeWidgetFocusKey, error, retry, followEnd, onAction, onCancelWidget, onActiveWidgetFocus, onToggleCitations, onRetry, onPostPrompt, scrollRef }: {
   messages: Message[];
-  agentActivities: AgentActivity[];
+  agentRun: LiveAgentRun;
   reasoningSummary: string;
   streamingText: string;
   streaming: boolean;
@@ -860,13 +721,14 @@ const Transcript = memo(function Transcript({ messages, agentActivities, reasoni
   activeWidgetFocusKey: string | null;
   error: string | null;
   retry: Retry;
+  followEnd: boolean;
   onAction: WidgetAction;
+  onPostPrompt: (text: string) => void;
   onCancelWidget: (widgetId: string) => void;
   onActiveWidgetFocus: () => void;
   onToggleCitations: (messageId: string) => void;
   onRetry: () => void;
   scrollRef: RefObject<HTMLDivElement | null>;
-  scrollHandleRef: RefObject<TranscriptScrollHandle | null>;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   // The list does not start at the top of the scroller — the column above it is
@@ -895,41 +757,24 @@ const Transcript = memo(function Transcript({ messages, agentActivities, reasoni
     // so every row is measured once it mounts and the estimate stops mattering.
     estimateSize: () => 220,
     getItemKey: (index) => messages[index].id,
-    // Chat is end-anchored: measuring a previously estimated row must preserve
-    // the visible tail, and a new turn should follow only while the reader is
-    // already at the end. These are virtual-list decisions; a DOM selector
-    // cannot make them because its target may not be mounted yet.
-    anchorTo: "end",
-    followOnAppend: true,
+    // End anchoring is a mode, not a permanent property of a chat. It keeps a
+    // live tail stable while the reader follows it, but turns off as soon as
+    // the reader navigates inside a turn (for example, opening trace details).
+    // With start anchoring, a visible row can grow below its clicked control
+    // without the virtualiser competing with the browser over scrollTop.
+    //
+    // Anchoring is all the virtualiser is trusted with. Deliberate follow
+    // scrolls come from the workspace and target the scroller's physical end,
+    // because live-run content — the activity card, the streaming reply, the
+    // column's bottom padding — sits below the virtual rows, and a scroll that
+    // stops at the last row's edge strands all of it under the fold.
+    anchorTo: followEnd ? "end" : "start",
     scrollEndThreshold: 1,
     // Generous, because a row that scrolls in unmeasured resizes the moment it
     // does, and doing that at the edge of the viewport is what reads as jitter.
     overscan: 8,
     scrollMargin,
   });
-
-  useLayoutEffect(() => {
-    const handle: TranscriptScrollHandle = {
-      isAtEnd: (threshold) => virtualizer.isAtEnd(threshold),
-      scrollToEnd: (behavior) => virtualizer.scrollToEnd({ behavior }),
-      scrollToMessage: (messageId, behavior) => {
-        const index = messageId ? messages.findIndex((message) => message.id === messageId) : -1;
-        // The latest persisted turn, a live streaming turn, and a target that
-        // has just been replaced by its server ID all mean the same thing:
-        // follow the physical end. `scrollToEnd` keeps reconciling that target
-        // while unmounted rows exchange estimates for their measured heights.
-        if (index < 0 || index === messages.length - 1) {
-          virtualizer.scrollToEnd({ behavior });
-          return;
-        }
-        virtualizer.scrollToIndex(index, { align: "end", behavior });
-      },
-    };
-    scrollHandleRef.current = handle;
-    return () => {
-      if (scrollHandleRef.current === handle) scrollHandleRef.current = null;
-    };
-  }, [messages, scrollHandleRef, virtualizer]);
 
   const setListRef = useCallback((node: HTMLDivElement | null) => {
     listRef.current = node;
@@ -973,6 +818,21 @@ const Transcript = memo(function Transcript({ messages, agentActivities, reasoni
     return () => cancelAnimationFrame(focusFrame.current);
   }, [activeWidget, activeWidgetFocusKey, messages, onActiveWidgetFocus, scrollRef, virtualizer]);
 
+  // Which rows open a day. A thread is read back long after it was written —
+  // often across several sittings — so the transcript is dated: the first entry
+  // carries its day, and the marker returns only where the calendar day
+  // actually changes. Computed once per transcript rather than per row, because
+  // this component re-renders on every streamed token.
+  const dayMarkers = useMemo(() => {
+    let previous: string | null = null;
+    return messages.map((message) => {
+      const key = localDayKey(message.created_at);
+      const opensDay = key !== null && key !== previous;
+      if (key !== null) previous = key;
+      return opensDay ? message.created_at : null;
+    });
+  }, [messages]);
+
   const rows = virtualizer.getVirtualItems();
   const streamingMessage = useMemo<Message | null>(() => streamingText ? {
     id: "streaming-assistant",
@@ -981,35 +841,46 @@ const Transcript = memo(function Transcript({ messages, agentActivities, reasoni
     widgets: [],
     citations: [],
     created_at: new Date().toISOString(),
+    delivered_at: "",
   } : null, [streamingText]);
   return <div role="log" aria-busy={streaming}>
     <div ref={setListRef} style={{ position: "relative" }}>
-      {rows.map((row) => <div
-        key={row.key}
-        data-index={row.index}
-        ref={virtualizer.measureElement}
-        style={{ position: "absolute", insetInlineStart: 0, top: 0, width: "100%" }}
-      >
-        {/* The rhythm the removed `space-y-6` used to hold. It belongs on the
-            row rather than between rows now, because absolutely positioned
-            siblings have no gap to share. */}
-        <div className="pb-6">
-          <MessageArticle
-            message={messages[row.index]}
-            activeWidget={activeWidget}
-            cancelWidget={cancelWidget}
-            usedWidgets={usedWidgets}
-            pendingWidget={pendingWidget}
-            busy={busy}
-            citationsOpen={openCitations.has(messages[row.index].id)}
-            onToggleCitations={onToggleCitations}
-            onAction={onAction}
-            onCancelWidget={onCancelWidget}
-          />
-        </div>
-      </div>)}
+      {rows.map((row) => {
+        const opensDay = dayMarkers[row.index];
+        return <div
+          key={row.key}
+          data-index={row.index}
+          ref={virtualizer.measureElement}
+          style={{ position: "absolute", insetInlineStart: 0, top: 0, width: "100%" }}
+        >
+          {/* The rhythm the removed `space-y-6` used to hold. It belongs on the
+              row rather than between rows now, because absolutely positioned
+              siblings have no gap to share. */}
+          <div className="pb-6">
+            {opensDay ? <DayDivider
+              isoTime={opensDay}
+              /* The thread's own top padding already sets the first day off; a
+                 later one has a message directly above it and needs the air. */
+              className={cn("mb-5", row.index > 0 && "mt-2")}
+            /> : null}
+            <MessageArticle
+              message={messages[row.index]}
+              activeWidget={activeWidget}
+              cancelWidget={cancelWidget}
+              usedWidgets={usedWidgets}
+              pendingWidget={pendingWidget}
+              busy={busy}
+              citationsOpen={openCitations.has(messages[row.index].id)}
+              onToggleCitations={onToggleCitations}
+              onAction={onAction}
+              onPostPrompt={onPostPrompt}
+              onCancelWidget={onCancelWidget}
+            />
+          </div>
+        </div>;
+      })}
     </div>
-    {streaming ? <div aria-hidden><AgentActivityIndicator activities={agentActivities} reasoningSummary={reasoningSummary} /></div> : null}
+    {streaming ? <div aria-hidden><AgentActivityIndicator run={agentRun} reasoningSummary={reasoningSummary} /></div> : null}
     {streamingMessage ? <div className="pb-6"><MessageArticle
       message={streamingMessage}
       activeWidget={null}
@@ -1020,6 +891,7 @@ const Transcript = memo(function Transcript({ messages, agentActivities, reasoni
       citationsOpen={false}
       onToggleCitations={onToggleCitations}
       onAction={onAction}
+      onPostPrompt={onPostPrompt}
       onCancelWidget={onCancelWidget}
     /></div> : null}
     {busy && !streaming ? <div className="mt-6 flex items-center gap-3 px-1 py-2 text-control text-ink-muted"><span className="grid size-7 place-items-center rounded-full bg-secondary-tint text-secondary"><Sparkles size={14} /></span><span className="flex gap-1" aria-hidden><i className="typing-dot" /><i className="typing-dot" /><i className="typing-dot" /></span><span className="sr-only">Working on it</span></div> : null}
@@ -1032,7 +904,7 @@ const Transcript = memo(function Transcript({ messages, agentActivities, reasoni
  *  A handle keeps those two reachable without lifting the thread's state. */
 type ThreadHandle = { sendPrompt: (text: string) => void; attach: (file: File | undefined) => void };
 
-function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav, switching, dragging, handleRef }: {
+function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav, switching, dragging, handleRef, onRenameTitle }: {
   initialData: Bootstrap;
   loadingThread?: boolean;
   navOpen: boolean;
@@ -1040,9 +912,18 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   switching: boolean;
   dragging: boolean;
   handleRef: RefObject<ThreadHandle | null>;
+  /** Absent while the thread is still loading, so a placeholder title can never
+   *  be committed as the real one. */
+  onRenameTitle?: (title: string) => void;
 }) {
   const queryClient = useQueryClient();
-  const [messages, setMessages] = useState<Message[]>(initialData.active_conversation.messages);
+  const serverMessages = initialData.active_conversation.messages;
+  // React Query can restore a still-fresh transcript from persistent storage
+  // before its background request returns. Compute the server revision only
+  // when that message-array reference changes; hashing the full transcript on
+  // every composer keystroke would make long threads progressively slower.
+  const serverTranscriptRevision = useMemo(() => transcriptRevision(serverMessages), [serverMessages]);
+  const [messages, setMessages] = useState<Message[]>(serverMessages);
   const conversationId = initialData.active_conversation.id;
   const [input, setInput] = useState("");
   const [linkCopied, setLinkCopied] = useState(false);
@@ -1052,14 +933,13 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   const [error, setError] = useState<string | null>(null);
   const [retry, setRetry] = useState<Retry>(null);
   const [connectionLost, setConnectionLost] = useState(false);
-  const [agentActivities, setAgentActivities] = useState<AgentActivity[]>([]);
+  const [agentRun, setAgentRun] = useState<LiveAgentRun>(idleAgentRun);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [runPhase, setRunPhase] = useState<AgentRunPhase | null>(null);
   const [stoppingRun, setStoppingRun] = useState(false);
   const [interrupts, setInterrupts] = useState<FynInterrupt[] | null>(null);
   const [reasoningSummary, setReasoningSummary] = useState("");
   const [streamingText, setStreamingText] = useState("");
-  const [metricsOpen, setMetricsOpen] = useState(false);
   const [openCitations, setOpenCitations] = useState<Set<string>>(new Set());
   const [upload, setUpload] = useState<{ name: string; percent: number } | null>(null);
   const [atBottom, setAtBottom] = useState(true);
@@ -1070,12 +950,6 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     enabled: !loadingThread,
     staleTime: 2_000,
     refetchOnWindowFocus: true,
-  });
-  const agentMetrics = useQuery({
-    queryKey: ["agent-metrics", conversationId],
-    queryFn: () => loadAgentThreadMetrics(conversationId),
-    enabled: !loadingThread && metricsOpen,
-    staleTime: 10_000,
   });
   // Switching threads used to replace this whole component — a `key` on it
   // meant the header, the composer, the scroll container and every widget were
@@ -1088,29 +962,48 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   // same commit, so the previous thread's messages are never painted under the
   // new thread's title.
   //
-  // Two things reset it, and they are not the same thing. A different `id` is a
-  // different conversation and clears everything, the half-typed draft
+  // Three things reset it, and they are not the same thing. A different `id` is
+  // a different conversation and clears everything, the half-typed draft
   // included. The same `id` going from loading to ready is the transcript
-  // arriving for the thread already on screen — that adopts the messages and
-  // deliberately leaves the draft alone, because it was typed into this thread.
-  const [seeded, setSeeded] = useState({ id: conversationId, loading: Boolean(loadingThread) });
-  if (seeded.id !== conversationId || seeded.loading !== Boolean(loadingThread)) {
+  // arriving for the thread already on screen. Finally, an idle same-thread
+  // server revision replaces a restored cache entry; in-flight and optimistic
+  // state block that adoption until the local turn has settled. Both same-thread
+  // cases deliberately leave the draft alone, because it was typed here.
+  const [seeded, setSeeded] = useState({
+    id: conversationId,
+    loading: Boolean(loadingThread),
+    transcriptRevision: serverTranscriptRevision,
+  });
+  const threadChanged = seeded.id !== conversationId;
+  const loadingChanged = seeded.loading !== Boolean(loadingThread);
+  const adoptServerTranscript = shouldAdoptServerTranscript({
+    messages,
+    seededRevision: seeded.transcriptRevision,
+    serverRevision: serverTranscriptRevision,
+    activeRunId,
+    pendingWidget,
+    uploading: upload !== null,
+  });
+  if (threadChanged || loadingChanged || adoptServerTranscript) {
     const changedThread = seeded.id !== conversationId;
-    setSeeded({ id: conversationId, loading: Boolean(loadingThread) });
-    setMessages(initialData.active_conversation.messages);
-    setUsedWidgets(completedWidgetIds(initialData.active_conversation.messages));
+    setSeeded({
+      id: conversationId,
+      loading: Boolean(loadingThread),
+      transcriptRevision: serverTranscriptRevision,
+    });
+    setMessages(serverMessages);
+    setUsedWidgets(completedWidgetIds(serverMessages));
     setPendingWidget(null);
     setError(null);
     setRetry(null);
     setConnectionLost(false);
-    setAgentActivities([]);
+    setAgentRun(idleAgentRun);
     setActiveRunId(null);
     setRunPhase(null);
     setStoppingRun(false);
     setInterrupts(null);
     setReasoningSummary("");
     setStreamingText("");
-    setMetricsOpen(false);
     setOpenCitations(new Set());
     setUpload(null);
     setAtBottom(true);
@@ -1120,11 +1013,13 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   }
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  const transcriptScrollRef = useRef<TranscriptScrollHandle | null>(null);
   const { headerVisible, updateHeaderForScroll, showHeader } = useAutoHideSiteHeader();
   const textRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  // "/" reaches the composer from anywhere in the thread, matching the
+  // search-focus key on the ledger pages.
+  usePlainKey("/", useCallback(() => textRef.current?.focus(), []));
   const jumpToLatestRef = useRef<HTMLDivElement>(null);
   // Scheduled work that can outlive the render that started it, so it is held
   // rather than fired and forgotten.
@@ -1135,6 +1030,13 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   // between an input event and the state/effect commit that removes bottom
   // following.
   const readerScrolled = useRef(false);
+  // A follow scroll this thread started itself, still travelling toward the
+  // end. Its own scroll events must not read as the reader leaving — that
+  // misreading is what used to switch following off one frame into every
+  // animation — and while a smooth glide is in flight, an instant follow must
+  // not land on top of it and snap the movement it exists to smooth.
+  const followScroll = useRef<{ smooth: boolean } | null>(null);
+  const followSettleTimer = useRef<number | undefined>(undefined);
   // Which transcript was last placed on screen; reset when the thread changes.
   const arrivals = useRef<string | null>(null);
   // One controller for everything this thread is currently listening to.
@@ -1153,11 +1055,13 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   useEffect(() => {
     showHeader();
     readerScrolled.current = false;
+    followScroll.current = null;
     const controller = new AbortController();
     inFlight.current = controller;
     return () => {
       window.clearTimeout(copiedTimer.current);
       window.clearTimeout(scrollSettleTimer.current);
+      window.clearTimeout(followSettleTimer.current);
       controller.abort();
       inFlight.current = null;
       // The next thread is a new transcript, so it is placed at its end rather
@@ -1168,7 +1072,10 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
 
   const succeeded = useCallback((response: AgentResponse) => {
     setMessages((current) => {
-      const updated = applyWidgetUpdates(current, response.widgetUpdates);
+      const updated = adoptUserMessageIdentity(
+        applyWidgetUpdates(current, response.widgetUpdates),
+        response.user_message_id,
+      );
       return updated.some((message) => message.id === response.message_id)
         ? updated
         : [...updated, responseToMessage(response)];
@@ -1186,7 +1093,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
       queryClient.invalidateQueries({ queryKey: ["conversations"] }),
       queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] }),
       queryClient.invalidateQueries({ queryKey: ["agent-state", conversationId] }),
-      queryClient.invalidateQueries({ queryKey: ["agent-metrics", conversationId] }),
+      queryClient.invalidateQueries({ queryKey: ["overview"] }),
     ]);
   }, [queryClient, conversationId]);
 
@@ -1217,10 +1124,18 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   }, [availableInterrupts, messages]);
 
   const updateActivity = useCallback((activity: AgentActivity) => {
-    setAgentActivities((current) => {
-      const index = current.findIndex((item) => item.id === activity.id);
-      if (index === -1) return [...current, activity];
-      return current.map((item, itemIndex) => itemIndex === index ? activity : item);
+    setAgentRun((current) => {
+      const index = current.steps.findIndex((item) => item.id === activity.id);
+      const steps = index === -1
+        ? [...current.steps, activity]
+        : current.steps.map((item, itemIndex) => itemIndex === index ? activity : item);
+      return {
+        steps,
+        // Each event restates the run-level aggregates; the newest one is the
+        // current truth, and an event without them changes nothing.
+        failureSummary: activity.failureSummary ?? current.failureSummary,
+        modelPassCount: activity.modelPassCount ?? current.modelPassCount,
+      };
     });
   }, []);
 
@@ -1238,9 +1153,9 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
 
   const chatMutation = useMutation({
     mutationFn: ({ id, text }: { id: string; text: string }) => sendAgentMessage(id, text, agentRunCallbacks, inFlight.current?.signal),
-    onMutate: () => { setAgentActivities([]); setReasoningSummary(""); setStreamingText(""); setAnnouncement("fyn AI is working on your message."); },
+    onMutate: () => { setAgentRun(idleAgentRun); setReasoningSummary(""); setStreamingText(""); setAnnouncement("fyn AI is working on your message."); },
     onSuccess: (result) => {
-      setAgentActivities([]);
+      setAgentRun(idleAgentRun);
       setActiveRunId(null);
       setStoppingRun(false);
       setInterrupts(result.interrupts);
@@ -1249,7 +1164,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     // A message that never reached the server should not look delivered: drop
     // the bubble and put the text back where the user can send it again.
     onError: (cause: Error, variables) => {
-      setAgentActivities([]);
+      setAgentRun(idleAgentRun);
       setActiveRunId(null);
       setStoppingRun(false);
       setMessages((current) => current.filter((message) => !(message.id.startsWith("optimistic-") && message.content === variables.text)));
@@ -1276,7 +1191,11 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
       setInterrupts(result.interrupts);
       // Locking the card belongs to the success path; a failed action has to
       // stay clickable or the user is stuck until a reload.
-      if (variables.markUsed) setUsedWidgets((current) => new Set(current).add(variables.widgetId));
+      setUsedWidgets((current) => reconcileUsedWidgetIds(
+        current,
+        variables.markUsed ? variables.widgetId : null,
+        result.response.widgets,
+      ));
       succeeded(result.response);
     },
     onError: (cause: Error, variables) => {
@@ -1314,7 +1233,13 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     onMutate: (file) => setUpload({ name: file.name, percent: 0 }),
     onSuccess: (result, file) => {
       setUpload(null);
-      setMessages((current) => [...current, { id: `upload-${Date.now()}`, role: "user", content: `Uploaded ${file.name}`, widgets: [], citations: [], created_at: new Date().toISOString() }]);
+      // CSV upload is an explicit change of direction. The API retires any
+      // older interrupt atomically with the preview, so clear the local copy
+      // immediately instead of letting it keep the composer paused until a
+      // thread-state refetch happens to finish.
+      setInterrupts([]);
+      const deliveredAt = new Date().toISOString();
+      setMessages((current) => [...current, { id: `upload-${Date.now()}`, role: "user", content: `Uploaded ${file.name}`, widgets: [], citations: [], created_at: deliveredAt, delivered_at: deliveredAt }]);
       succeeded(result.agentResponse);
     },
     onError: (cause: Error, file) => { setUpload(null); failed(cause, { kind: "upload", file }); },
@@ -1335,18 +1260,18 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     const discovered = agentState.data.activeRun;
     if (!discovered || chatPending || actionPending || interruptPending || activeRunId === discovered.id || reconnectingRun.current === discovered.id) return;
     reconnectingRun.current = discovered.id;
-    setAgentActivities([]);
+    setAgentRun(idleAgentRun);
     setReasoningSummary("");
     reconnectAgentRun(conversationId, discovered.id, agentRunCallbacks, inFlight.current?.signal)
       .then((result) => {
-        setAgentActivities([]);
+        setAgentRun(idleAgentRun);
         setActiveRunId(null);
         setStoppingRun(false);
         setInterrupts(result.interrupts);
         succeeded(result.response);
       })
       .catch((cause: Error) => {
-        setAgentActivities([]);
+        setAgentRun(idleAgentRun);
         setActiveRunId(null);
         setStoppingRun(false);
         if (cause.name !== "AbortError") failed(cause, null);
@@ -1378,6 +1303,8 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   }, []);
   const stopFollowingForHitl = useCallback(() => {
     readerScrolled.current = true;
+    followScroll.current = null;
+    window.clearTimeout(followSettleTimer.current);
     setAtBottom(false);
     updateJumpControl(false);
   }, [updateJumpControl]);
@@ -1419,7 +1346,8 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     readerScrolled.current = false;
     setAtBottom(true);
     updateJumpControl(false);
-    setMessages((current) => [...current, { id: `optimistic-${Date.now()}`, role: "user", content: text, widgets: [], citations: [], created_at: new Date().toISOString() }]);
+    const deliveredAt = new Date().toISOString();
+    setMessages((current) => [...current, { id: `optimistic-${Date.now()}`, role: "user", content: text, widgets: [], citations: [], created_at: deliveredAt, delivered_at: deliveredAt }]);
     startChat({ id: conversationId, text });
   }, [chatPending, actionPending, uploadPending, agentRunning, pausedForInterrupt, startChat, conversationId, updateJumpControl]);
 
@@ -1473,8 +1401,24 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   // So the thread only stops following when the reader actually drives it.
   const takeScrollControl = () => {
     readerScrolled.current = true;
+    // The reader wins over any follow scroll still travelling: their gesture
+    // also cancels the browser's smooth animation, so drop the bookkeeping
+    // with it rather than letting the settle check drag them back down.
+    followScroll.current = null;
+    window.clearTimeout(followSettleTimer.current);
     setAtBottom(false);
   };
+
+  // Opening information inside a turn is reader navigation. Capture that
+  // intent before the disclosure toggles so the same React commit switches the
+  // virtualiser out of end-follow mode and lets the content grow naturally.
+  function stopFollowingForDisclosure(event: ReactMouseEvent<HTMLDivElement>) {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const disclosure = target.closest<HTMLElement>('summary, [data-inline-disclosure="true"]');
+    if (!disclosure || !event.currentTarget.contains(disclosure)) return;
+    takeScrollControl();
+  }
 
   const noteWheelScroll = (event: React.WheelEvent<HTMLDivElement>) => {
     // A downward wheel at the physical end is a no-op and should not turn off
@@ -1487,9 +1431,47 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home") takeScrollControl();
   };
 
+  // Closes the gap a follow scroll leaves when its animation settles short of
+  // the end — the target is captured when the scroll starts, and a streaming
+  // reply or a late chart can grow the thread underneath it before it lands.
+  const followSettle = useCallback(() => {
+    const node = scrollRef.current;
+    if (!node || !followScroll.current || readerScrolled.current) return;
+    if (node.scrollHeight - node.scrollTop - node.clientHeight <= AT_END_SLACK_PX) {
+      followScroll.current = null;
+      return;
+    }
+    followScroll.current = { smooth: false };
+    // The snap always moves the scroller, and its scroll event re-arms this
+    // check from `trackScroll` if the thread has grown yet again.
+    node.scrollTo({ top: node.scrollHeight, behavior: "auto" });
+  }, []);
+
+  // Follow scrolls target the scroller's physical end, not the virtualiser's
+  // last row: the live activity card, the streaming reply, and the column's
+  // bottom padding all sit below the virtual rows, and a scroll that stops at
+  // the last row's edge strands them under the fold — which then read as "the
+  // reader scrolled away" and switched following off for the rest of the run.
+  // The virtualiser still owns end anchoring, so estimates exchanged for
+  // measured heights keep the end pinned between deliberate scrolls.
+  const scrollToEnd = useCallback((behavior: ScrollBehavior) => {
+    const node = scrollRef.current;
+    if (!node) return;
+    // A smooth glide already travelling to the same place must not be snapped
+    // forward by an instant follow; the settle check finishes the remainder.
+    if (behavior !== "smooth" && followScroll.current?.smooth) return;
+    if (node.scrollHeight - node.scrollTop - node.clientHeight > AT_END_SLACK_PX) {
+      followScroll.current = { smooth: behavior === "smooth" };
+      window.clearTimeout(followSettleTimer.current);
+      followSettleTimer.current = window.setTimeout(followSettle, SCROLL_SETTLE_MS);
+    }
+    node.scrollTo({ top: node.scrollHeight, behavior });
+  }, [followSettle]);
+
   function trackScroll(event: React.UIEvent<HTMLDivElement>) {
     const node = event.currentTarget;
     window.clearTimeout(scrollSettleTimer.current);
+    window.clearTimeout(followSettleTimer.current);
     updateHeaderForScroll(node.scrollTop, readerScrolled.current);
     const distanceFromBottom = Math.max(0, node.scrollHeight - node.scrollTop - node.clientHeight);
     const viewportHeight = typeof window === "undefined" ? node.clientHeight : window.innerHeight;
@@ -1502,38 +1484,39 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
       () => updateJumpControl(jumpVisible),
       SCROLL_SETTLE_MS,
     );
-    const reachedEnd = transcriptScrollRef.current?.isAtEnd(1) ?? distanceFromBottom <= 1;
-    // Reader intent has priority over the generous follow zone. Previously a
-    // turn could remain `atBottom` for the first 120px of an upward scroll, so
-    // a row measurement or late chart resize pulled it back toward the dock.
-    if (readerScrolled.current && !reachedEnd) {
-      setAtBottom(false);
-      return;
-    }
-    if (reachedEnd) {
+    if (distanceFromBottom <= AT_END_SLACK_PX) {
+      followScroll.current = null;
       readerScrolled.current = false;
       setAtBottom(true);
       updateJumpControl(false);
       return;
     }
-    // Keep automatic following off until the virtualiser confirms the physical
-    // end. Button visibility is intentionally separate and uses the 90vh gap.
+    // Reader intent has priority over the generous follow zone. Previously a
+    // turn could remain `atBottom` for the first 120px of an upward scroll, so
+    // a row measurement or late chart resize pulled it back toward the dock.
+    if (readerScrolled.current) {
+      setAtBottom(false);
+      return;
+    }
+    if (followScroll.current) {
+      // Our own follow scroll passing by — or ending short because the thread
+      // grew underneath it while it travelled. Either way the reader has not
+      // left, so following stays on and the settle check closes any remainder
+      // once the movement stops.
+      followSettleTimer.current = window.setTimeout(followSettle, SCROLL_SETTLE_MS);
+      return;
+    }
+    // A scroll neither this thread started nor the reader's gestures announced
+    // — dragging the scrollbar is the one input with no event of its own.
+    // Treat it as the reader taking over. Button visibility is intentionally
+    // separate and uses the 90vh gap.
     setAtBottom(false);
   }
 
-  // Let the virtualiser own end placement. It knows which estimates are still
-  // unresolved and reconciles the target as those rows are measured.
-  const scrollToEnd = useCallback((behavior: ScrollBehavior) => {
-    transcriptScrollRef.current?.scrollToEnd(behavior);
-  }, []);
-
-  function jumpToLatest(event: ReactMouseEvent<HTMLButtonElement>) {
+  function jumpToLatest() {
     readerScrolled.current = false;
     updateJumpControl(false);
-    transcriptScrollRef.current?.scrollToMessage(
-      event.currentTarget.dataset.targetMessageId,
-      prefersReducedMotion() ? "auto" : "smooth",
-    );
+    scrollToEnd(prefersReducedMotion() ? "auto" : "smooth");
   }
 
   const toggleCitations = useCallback((messageId: string) => {
@@ -1544,8 +1527,9 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     });
   }, []);
 
-  // A conversation has not started until you have said something — the backend
-  // seeds an assistant greeting, so message count alone never reports blank.
+  // A conversation has not started until you have said something. A fresh
+  // thread is empty, but a resumed one can hold assistant-only rows, so the
+  // opening screen keys off the absence of a question rather than a row count.
   const focusedMode = !loadingThread && !messages.some((message) => message.role === "user");
   // Growing the box pushes the tail of the thread up, and the tail is what you
   // were reading — so the reader is carried with it, but only if they were
@@ -1589,7 +1573,11 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   useLayoutEffect(() => {
     const node = scrollRef.current;
     if (!node || !atBottom) return;
-    const transcript = `${messages.length}:${messages[messages.length - 1]?.id ?? ""}:${agentActivities.length}`;
+    // Only a turn landing earns a glide. Activity ticks and streaming growth
+    // re-run this effect too, but they arrive several times a second — easing
+    // toward each one restarts the animation mid-flight and reads as stutter,
+    // so they follow instantly instead.
+    const transcript = `${messages.length}:${messages[messages.length - 1]?.id ?? ""}`;
     const arrived = arrivals.current !== null && arrivals.current !== transcript;
     arrivals.current = transcript;
     const hitlArrived = Boolean(activeWidgetFocusKey && focusedArrival.current !== activeWidgetFocusKey);
@@ -1598,7 +1586,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     // here as well would win the same layout pass and hide the widget's top.
     if (hitlArrived) return;
     scrollToEnd(arrived && !prefersReducedMotion() ? "smooth" : "auto");
-  }, [messages, agentActivities, activeWidgetFocusKey, atBottom, loadingThread, scrollToEnd]);
+  }, [messages, agentRun, activeWidgetFocusKey, atBottom, loadingThread, scrollToEnd]);
 
   function applyStarter(text: string) {
     setInput(text);
@@ -1613,7 +1601,6 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   }
 
   const title = initialData.active_conversation.title || "Financial check-in";
-  const latestMessageId = streamingText ? "streaming-assistant" : messages.at(-1)?.id;
   const statusLabel = connectionLost
     ? "Can’t reach your financial data"
     : stoppingRun
@@ -1638,6 +1625,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
       <main id="main-content" className="relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-surface">
         <div
           ref={scrollRef}
+          onClickCapture={stopFollowingForDisclosure}
           onScroll={trackScroll}
           onWheel={noteWheelScroll}
           onTouchMove={takeScrollControl}
@@ -1646,13 +1634,13 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
         >
           <SiteHeader
             title={title}
+            onRenameTitle={onRenameTitle}
             subtitle={<><span className={cn("size-1 rounded-full", connectionLost ? "bg-danger" : agentRunning || pausedForInterrupt ? "bg-secondary" : "bg-ink-muted")} />{statusLabel}</>}
             subtitleClassName={cn("mt-0.5 flex items-center gap-2", connectionLost && "font-medium text-danger-ink")}
             hidden={!headerVisible}
             navOpen={navOpen}
             onOpenNav={onOpenNav}
             end={<div className="flex items-center gap-1">
-              <Tooltip><TooltipTrigger render={<Button type="button" variant="ghost" size="icon-lg" onClick={() => setMetricsOpen((open) => !open)} aria-expanded={metricsOpen} aria-label="Agent performance" className={cn("rounded-xl text-ink-muted", metricsOpen && "bg-secondary-tint text-secondary")} />}><LayoutDashboard /></TooltipTrigger><TooltipContent>Agent performance</TooltipContent></Tooltip>
               <Tooltip><TooltipTrigger render={<Button type="button" variant="ghost" size="icon-lg" onClick={copyConversationLink} aria-label={linkCopied ? "Conversation link copied" : "Copy conversation link"} className="rounded-xl text-ink-muted" />}>{linkCopied ? <Check /> : <Copy />}</TooltipTrigger><TooltipContent>{linkCopied ? "Link copied" : "Copy conversation link"}</TooltipContent></Tooltip>
             </div>}
           />
@@ -1665,7 +1653,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
           </div> : <div ref={contentRef} className="mx-auto flex min-h-[calc(100%-3.5rem)] w-full max-w-[var(--column-w)] flex-col px-4 pt-8 pb-10 sm:px-6 sm:pt-12">
             <Transcript
               messages={messages}
-              agentActivities={agentActivities}
+              agentRun={agentRun}
               reasoningSummary={reasoningSummary}
               streamingText={streamingText}
               streaming={agentRunning}
@@ -1678,24 +1666,17 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
               activeWidgetFocusKey={activeWidgetFocusKey}
               error={error}
               retry={retry}
+              followEnd={atBottom}
               onAction={handleWidgetAction}
+              onPostPrompt={sendPrompt}
               onCancelWidget={cancelWidgetInterrupt}
               onActiveWidgetFocus={stopFollowingForHitl}
               onToggleCitations={toggleCitations}
               onRetry={retryLast}
               scrollRef={scrollRef}
-              scrollHandleRef={transcriptScrollRef}
             />
           </div>}
         </div>
-
-        {metricsOpen ? <section aria-label="Agent performance" className="absolute top-16 right-3 z-40 w-[min(24rem,calc(100%-1.5rem))] overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--shadow-overlay)] sm:right-6">
-          <div className="flex items-center justify-between border-b border-line px-4 py-3">
-            <div><h2 className="text-control font-semibold text-ink-body">Agent performance</h2><p className="text-[11px] text-ink-muted">Measured for this thread</p></div>
-            <Button type="button" variant="ghost" size="icon" onClick={() => setMetricsOpen(false)} aria-label="Close agent performance"><X size={16} /></Button>
-          </div>
-          <AgentMetricsPanel metrics={agentMetrics.data} loading={agentMetrics.isLoading} failed={agentMetrics.isError} />
-        </section> : null}
 
         <p aria-live="polite" aria-atomic className="sr-only">{announcement}</p>
 
@@ -1703,7 +1684,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
           {/* Sits just above the composer rather than inside it, so appearing
               cannot change the composer's height and jolt the very scroll
               position it exists to restore. */}
-          <div ref={jumpToLatestRef} data-visible="false" data-scrolling="false" aria-hidden="true" inert style={{ bottom: `calc(var(--dock-h) + 0.75rem)` }} className="jump-to-latest pointer-events-none absolute inset-x-0 z-20 flex justify-center px-3 sm:px-6"><Button type="button" data-target-message-id={latestMessageId} onClick={jumpToLatest} variant="outline" className="pointer-events-auto rounded-full shadow-[var(--shadow-overlay)]"><ArrowDown size={14} /> Jump to latest</Button></div>
+          <div ref={jumpToLatestRef} data-visible="false" data-scrolling="false" aria-hidden="true" inert style={{ bottom: `calc(var(--dock-h) + 0.75rem)` }} className="jump-to-latest pointer-events-none absolute inset-x-0 z-20 flex justify-center px-3 sm:px-6"><Button type="button" onClick={jumpToLatest} variant="outline" className="pointer-events-auto rounded-full shadow-[var(--shadow-overlay)]"><ArrowDown size={14} /> Jump to latest</Button></div>
           <div ref={dockRef} className="entry-dock z-20 shrink-0 px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6 sm:pt-4 sm:pb-4">
             {fallbackInterrupt ? <InterruptFallback interrupt={fallbackInterrupt} busy={interruptPending} onResolve={(response) => resolveInterrupt({ interrupt: fallbackInterrupt, response })} /> : null}
             <Composer variant="docked" value={input} onValueChange={setInput} onSubmit={submit} onStop={stopAgent} textRef={textRef} fileRef={fileRef} onAttach={attach} busy={busy} sending={chatPending} running={agentRunning} stopping={stoppingRun} paused={pausedForInterrupt} disabled={switchingConversation} dragging={dragging} upload={upload} />
@@ -1713,7 +1694,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     </>;
 }
 
-type ShellValue = { navOpen: boolean; openNav: () => void; switching: boolean; dragging: boolean; handleRef: RefObject<ThreadHandle | null>; conversations: ConversationSummary[] };
+type ShellValue = { navOpen: boolean; openNav: () => void; switching: boolean; dragging: boolean; handleRef: RefObject<ThreadHandle | null>; conversations: ConversationSummary[]; renameThread: (id: string, title: string) => void };
 const ShellContext = createContext<ShellValue | null>(null);
 
 export function useWorkspaceShell() {
@@ -1737,7 +1718,6 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
   const initial = useQuery({ queryKey: ["bootstrap"], queryFn: bootstrap });
   const signedOut = useSignInGuard(initial.error);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [switchingFrom, setSwitchingFrom] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [navError, setNavError] = useState<string | null>(null);
@@ -1752,7 +1732,6 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
   const isDesktop = useMediaQuery("(min-width: 768px)");
   const thread = useRef<ThreadHandle | null>(null);
   const switching = switchingFrom === conversationId;
-  const closeSettings = useCallback(() => setSettingsOpen(false), []);
   const openNav = useCallback(() => setSidebarOpen(true), []);
 
   const history = useInfiniteQuery({
@@ -1834,8 +1813,12 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
     setNavError(null);
     navigate(path, { preventScrollReset: true });
   }, [navigate]);
-  const openSettings = useCallback(() => { setSettingsOpen(true); setSidebarOpen(false); }, []);
-  const openProfile = useCallback(() => { setSidebarOpen(false); navigate(appPaths.profile); }, [navigate]);
+  const openSettings = useCallback(() => { setSidebarOpen(false); navigate(appPaths.settingsAgent); }, [navigate]);
+  const openProfile = useCallback(() => { setSidebarOpen(false); navigate(appPaths.settings); }, [navigate]);
+  // Settings borrows the rail; leaving hands it back to the workspace it was
+  // borrowed from rather than to whatever the history stack happens to hold.
+  const leaveSettings = useCallback(() => { setSidebarOpen(false); navigate(appPaths.home); }, [navigate]);
+  const settingsOpen = pathname === appPaths.settings || pathname.startsWith(`${appPaths.settings}/`);
 
   const openThreadId = useRef(conversationId);
   useEffect(() => { openThreadId.current = conversationId; }, [conversationId]);
@@ -1862,6 +1845,28 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
     setSidebarOpen(false);
     navigate(appPaths.conversation(id), { preventScrollReset: true });
   }, [conversationId, navigate]);
+
+  const renameThread = useCallback((id: string, title: string) => {
+    setNavError(null);
+    // The new caption paints immediately everywhere it is read — the rail and
+    // the open thread's header — and the server's answer only ever corrects it.
+    queryClient.setQueryData<InfiniteData<ConversationPage>>(["conversations"], (data) => data && ({
+      ...data,
+      pages: data.pages.map((page) => ({ ...page, items: page.items.map((item) => (item.id === id ? { ...item, title } : item)) })),
+    }));
+    queryClient.setQueryData<ConversationOut>(["conversation", id], (data) => data && ({ ...data, title }));
+    void renameConversation(id, title)
+      .then(() => Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["conversations"] }),
+        queryClient.invalidateQueries({ queryKey: ["conversation", id] }),
+      ]))
+      .catch((cause: unknown) => {
+        // Roll the optimistic caption back to server truth before reporting.
+        void queryClient.invalidateQueries({ queryKey: ["conversations"] });
+        void queryClient.invalidateQueries({ queryKey: ["conversation", id] });
+        setNavError(cause instanceof Error ? cause.message : "The conversation could not be renamed.");
+      });
+  }, [queryClient]);
 
   const deleteThread = useCallback((conversation: ConversationSummary) => {
     setNavError(null);
@@ -1901,21 +1906,21 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
     return () => media.removeEventListener("change", closeWhenDocked);
   }, []);
   useEffect(() => {
-    if (!sidebarOpen && !settingsOpen) return;
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") { setSidebarOpen(false); setSettingsOpen(false); } };
+    if (!sidebarOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") setSidebarOpen(false); };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [sidebarOpen, settingsOpen]);
+  }, [sidebarOpen]);
 
 
   if (signedOut) return <AppSkeleton label="Taking you to sign in…" />;
   if (initial.isError) return <WorkspaceUnreachable onRetry={() => initial.refetch()} retrying={initial.isFetching} />;
 
   return <ToastProvider toastManager={toast} limit={5}>
-    <ShellContext.Provider value={{ navOpen: sidebarOpen, openNav, switching, dragging, handleRef: thread, conversations }}>
+    <ShellContext.Provider value={{ navOpen: sidebarOpen, openNav, switching, dragging, handleRef: thread, conversations, renameThread }}>
     <div className="h-dvh overflow-hidden bg-ground text-ink" onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDragging(true); } }} onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }} onDrop={(event) => { if (!event.dataTransfer.files.length) return; event.preventDefault(); setDragging(false); thread.current?.attach(event.dataTransfer.files[0]); }}>
       <div className="relative mx-auto grid h-full max-w-[1600px] md:grid-cols-[var(--rail-w)_1fr]">
-        <button type="button" tabIndex={-1} aria-hidden onClick={() => setSidebarOpen(false)} className={cn("fixed inset-0 z-30 bg-ink/25 backdrop-blur-[2px] transition-opacity duration-300 md:hidden", sidebarOpen ? "opacity-100" : "pointer-events-none opacity-0")} />
+        <button type="button" tabIndex={-1} aria-hidden onClick={() => setSidebarOpen(false)} className={cn("fixed inset-0 z-30 bg-scrim/25 backdrop-blur-[2px] transition-opacity duration-300 md:hidden", sidebarOpen ? "opacity-100" : "pointer-events-none opacity-0")} />
         <ConversationRail
           conversations={conversations}
           activeId={conversationId}
@@ -1927,13 +1932,17 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
           loading={history.isPending}
           loadingMore={history.isFetchingNextPage}
           hasMore={Boolean(history.hasNextPage)}
+          settingsOpen={settingsOpen}
           onClose={closeNav}
           onOpenPage={openPage}
           onSelect={selectThread}
           onPrefetch={prefetchConversation}
           onDelete={deleteThread}
+          onRename={renameThread}
           onLoadMore={loadMore}
           onNew={newConversation}
+          onLeaveSettings={leaveSettings}
+          onOpenSection={closeNav}
           onOpenSettings={openSettings}
           onOpenProfile={openProfile}
         />
@@ -1942,10 +1951,12 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
             is the page, which renders nothing. */}
         {conversationId ? <ConversationThread conversationId={conversationId} /> : null}
         {children}
+        {/* The identity key deliberately remounts the tab-scoped draft if an
+            auth transition replaces the user without rebuilding this shell. */}
+        {initial.data ? <Scratchpad key={initial.data.user.id} storageScope={initial.data.user.id} /> : null}
         {navError ? <div role="alert" className="fixed inset-x-0 bottom-4 z-50 mx-auto w-fit max-w-[90vw] rounded-lg border border-danger-line bg-danger-tint px-4 py-3 text-note text-danger-ink shadow-[var(--shadow-overlay)]">{navError}</div> : null}
         {/* Deleting everything deletes the account itself, so there is nothing
             left to return to — the session is already void server-side. */}
-        {settingsOpen ? <PrivacyDrawer onClose={closeSettings} onDeleted={() => { queryClient.clear(); navigate(appPaths.login, { replace: true }); }} /> : null}
       </div>
     </div>
     </ShellContext.Provider>
@@ -1954,7 +1965,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
         It rides on the measured dock rather than a matching guess, so the two
         cannot drift apart when the box grows. */}
     <ToastPortal>
-      <ToastViewport className="inset-x-3 bottom-[calc(var(--dock-h)+0.75rem)] mx-auto w-auto max-w-[20rem] md:right-auto md:left-[max(calc(var(--rail-w)+0.75rem),calc(50vw-var(--column-w)/2))] md:mx-0 md:w-full">
+      <ToastViewport>
         <UndoToastList />
       </ToastViewport>
     </ToastPortal>
@@ -1997,6 +2008,7 @@ export function ConversationThread({ conversationId }: { conversationId: string 
     switching={shell.switching}
     dragging={shell.dragging}
     handleRef={shell.handleRef}
+    onRenameTitle={conversation.data ? (title) => shell.renameThread(conversationId, title) : undefined}
   />;
 }
 

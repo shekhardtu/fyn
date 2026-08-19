@@ -215,6 +215,12 @@ function Toaster({
 const createToastManager = ToastPrimitive.createToastManager
 const useToastManager = ToastPrimitive.useToastManager
 
+/** How long a deleted thing can still be brought back. Long enough to read the
+ *  title and reconsider, short enough that "deleted" stays true. Shared by
+ *  every surface that offers an undo slip, so the strike always runs at the
+ *  same speed. */
+export const UNDO_WINDOW_MS = 7000;
+
 export {
   Toaster,
   Toast,

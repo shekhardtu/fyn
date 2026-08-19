@@ -68,6 +68,7 @@ def test_api_enforces_one_identity_boundary_across_user_data(db, monkeypatch):
         # Every conversation-scoped transport has identical not-found behavior.
         foreign_id = str(other_thread.id)
         assert client.get(f"/api/conversations/{foreign_id}").status_code == 404
+        assert client.patch(f"/api/conversations/{foreign_id}", json={"title": "Hijacked"}).status_code == 404
         assert client.delete(f"/api/conversations/{foreign_id}").status_code == 404
         assert client.get(f"/api/agent/threads/{foreign_id}").status_code == 404
         assert client.post("/api/agent", json={

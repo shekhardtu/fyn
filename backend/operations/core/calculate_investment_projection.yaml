@@ -1,0 +1,46 @@
+apiVersion: fyn.ai/v1
+kind: Operation
+metadata:
+  {
+    id: calculate_investment_projection,
+    version: 1,
+    title: Investment projection,
+    namespace: finance,
+    owner: engineering,
+    enabled: true,
+  }
+tests:
+  - name: investment route
+    request: Project my SIP growth
+    expectedEffect: none
+    expectedApproval: never
+discovery:
+  {
+    description: Open the deterministic investment projection calculator,
+    aliases: [SIP projection],
+    examples: [Project my SIP growth],
+    negativeExamples: [],
+    modelSelectable: false,
+  }
+eligibility: { requiredPermissions: [], expectedEffect: none, access: compute }
+input: { schema: { type: object, additionalProperties: false, properties: {} } }
+instructions: { selection: Use for deterministic investment projections. }
+routing: { strategy: decision, bindings: {} }
+execution:
+  {
+    steps: [{ id: execute, uses: calculator.investment@1 }],
+    label: Opening deterministic investment calculator,
+    metric: investment_projection,
+    validation: deterministic,
+  }
+approval: { minimum: never }
+presentation:
+  {
+    success:
+      { title: Projection ready, message: The investment projection is ready. },
+    failure:
+      {
+        title: Projection unavailable,
+        message: The investment projection could not be prepared.,
+      },
+  }

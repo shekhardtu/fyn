@@ -1,6 +1,6 @@
 VENV := ../.venv/bin
 
-.PHONY: dev backend frontend db migrate prod
+.PHONY: dev backend frontend db migrate prod deploy deploy-status deploy-logs deploy-setup
 
 ## Start Postgres, run migrations, then run backend + frontend dev servers.
 dev: db migrate
@@ -27,3 +27,18 @@ migrate:
 ## Full production-style stack in containers.
 prod:
 	docker compose --env-file backend/.env up --build
+
+## Deploy origin/main to the shared Hetzner box. See .claude/skills/deploy.
+## Scope with ARGS:  make deploy ARGS=api   |   make deploy ARGS="web --no-cache"
+deploy:
+	./infra/deploy/deploy.sh $(ARGS)
+
+deploy-status:
+	./infra/deploy/status.sh
+
+## make deploy-logs ARGS="backend 200"
+deploy-logs:
+	./infra/deploy/logs.sh $(ARGS)
+
+deploy-setup:
+	./infra/deploy/setup-server.sh

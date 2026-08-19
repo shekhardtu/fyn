@@ -1,0 +1,17 @@
+apiVersion: fyn.ai/v1
+kind: Operation
+metadata: {id: planning, version: 1, title: Financial planning, namespace: finance, owner: engineering, enabled: true}
+discovery: {description: Run governed budget and goal workflows, aliases: [create budget, update budget, delete budget, savings goal], examples: [Create a 50000 holiday savings goal, Lower my travel budget to 15000, Delete my travel budget], negativeExamples: [Show my goals]}
+eligibility: {requiredPermissions: [planning.write], expectedEffect: mutation, access: workflow}
+input: {schema: {type: object, additionalProperties: false, required: [request], properties: {request: {type: string, minLength: 3, maxLength: 2000}}}}
+instructions: {selection: "Use for creating, updating, or deleting budgets and for creating or contributing to goals."}
+routing: {strategy: decision, bindings: {}}
+execution: {steps: [{id: execute, uses: planning.run@1}], label: Running planning workflow, validation: model}
+approval: {minimum: required}
+presentation: {success: {title: Plan updated, message: The approved planning change was completed.}, failure: {title: Plan unchanged, message: No planning change was made.}}
+tests:
+  - name: planning route
+    request: Create a 50000 holiday savings goal
+    expectedInputs: {request: Create a 50000 holiday savings goal}
+    expectedEffect: mutation
+    expectedApproval: required

@@ -12,22 +12,18 @@
       "confirmation_card",
       "transaction_preview",
       "transaction_edit",
-      "transaction_list",
-      "data_table",
       "data_chart",
-      "data_visualization",
-      "financial_summary",
-      "analysis_table",
       "avoidable_expenses",
       "insight_card",
       "budget_progress",
       "goal_progress",
-      "scenario_analysis",
       "loan_calculator",
-      "loan_strategy",
       "investment_projection",
       "reconciliation_review",
-      "import_review"
+      "import_review",
+      "related_questions",
+      "operation_form",
+      "operation_approval"
     ],
     "widgetActions": [
       "set_spend_nature",
@@ -37,6 +33,7 @@
       "cancel_taxonomy_change",
       "create_category",
       "create_subcategory",
+      "create_taxonomy_path",
       "select_category",
       "select_transaction_type",
       "select_subcategory",
@@ -45,6 +42,9 @@
       "revisit_transaction_step",
       "cancel_transaction_draft",
       "cancel_pending_action",
+      "edit_budget",
+      "request_delete_budget",
+      "delete_budget",
       "save_budget",
       "save_goal",
       "contribute_goal",
@@ -63,7 +63,11 @@
       "cancel_remove_transaction",
       "merge_reconciliation",
       "separate_reconciliation",
-      "resolve_clarification"
+      "resolve_clarification",
+      "rename_conversation",
+      "submit_operation",
+      "approve_operation",
+      "cancel_operation"
     ],
     "editableTransactionTypes": [
       "expense",
@@ -93,6 +97,7 @@
             "cancel_taxonomy_change",
             "create_category",
             "create_subcategory",
+            "create_taxonomy_path",
             "select_category",
             "select_transaction_type",
             "select_subcategory",
@@ -101,6 +106,9 @@
             "revisit_transaction_step",
             "cancel_transaction_draft",
             "cancel_pending_action",
+            "edit_budget",
+            "request_delete_budget",
+            "delete_budget",
             "save_budget",
             "save_goal",
             "contribute_goal",
@@ -119,7 +127,11 @@
             "cancel_remove_transaction",
             "merge_reconciliation",
             "separate_reconciliation",
-            "resolve_clarification"
+            "resolve_clarification",
+            "rename_conversation",
+            "submit_operation",
+            "approve_operation",
+            "cancel_operation"
           ],
           "title": "WidgetActionId",
           "type": "string"
@@ -319,6 +331,32 @@
         "name"
       ],
       "title": "CreateSubcategoryPayload",
+      "type": "object"
+    },
+    "CreateTaxonomyPathPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "subcategories": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 10,
+          "minItems": 1,
+          "title": "Subcategories",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "subcategories"
+      ],
+      "title": "CreateTaxonomyPathPayload",
       "type": "object"
     },
     "SelectCategoryPayload": {
@@ -523,9 +561,37 @@
       "title": "CancelPendingActionPayload",
       "type": "object"
     },
+    "BudgetActionPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "budgetId": {
+          "format": "uuid",
+          "title": "Budgetid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "budgetId"
+      ],
+      "title": "BudgetActionPayload",
+      "type": "object"
+    },
     "SaveBudgetPayload": {
       "additionalProperties": false,
       "properties": {
+        "budgetId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Budgetid"
+        },
         "amountMinor": {
           "exclusiveMinimum": 0,
           "title": "Amountminor",
@@ -975,324 +1041,53 @@
       "title": "ResolveClarificationPayload",
       "type": "object"
     },
-    "DataTableColumn": {
-      "$defs": {
-        "TableColumnAlign": {
-          "enum": [
-            "left",
-            "right"
-          ],
-          "title": "TableColumnAlign",
-          "type": "string"
-        },
-        "TableColumnPriority": {
-          "enum": [
-            "primary",
-            "secondary",
-            "detail"
-          ],
-          "title": "TableColumnPriority",
-          "type": "string"
-        },
-        "TableColumnType": {
-          "enum": [
-            "entity",
-            "text",
-            "money",
-            "date",
-            "datetime",
-            "number",
-            "percentage",
-            "boolean",
-            "status",
-            "tags"
-          ],
-          "title": "TableColumnType",
-          "type": "string"
-        }
-      },
+    "ConversationRenameIn": {
+      "additionalProperties": false,
+      "description": "User-chosen thread title; the bound is the column's own limit.",
       "properties": {
-        "key": {
-          "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$",
-          "title": "Key",
-          "type": "string"
-        },
-        "label": {
-          "maxLength": 80,
+        "title": {
+          "maxLength": 160,
           "minLength": 1,
-          "title": "Label",
+          "title": "Title",
           "type": "string"
-        },
-        "type": {
-          "$ref": "#/$defs/TableColumnType",
-          "default": "text"
-        },
-        "align": {
-          "$ref": "#/$defs/TableColumnAlign",
-          "default": "left"
-        },
-        "priority": {
-          "$ref": "#/$defs/TableColumnPriority",
-          "default": "secondary"
-        },
-        "currencyKey": {
-          "anyOf": [
-            {
-              "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Currencykey"
-        },
-        "secondaryKeys": {
-          "items": {
-            "type": "string"
-          },
-          "maxItems": 4,
-          "title": "Secondarykeys",
-          "type": "array"
         }
       },
       "required": [
-        "key",
-        "label"
+        "title"
       ],
-      "title": "DataTableColumn",
+      "title": "ConversationRenameIn",
       "type": "object"
     },
-    "DataTableRowAction": {
-      "$defs": {
-        "WidgetActionIcon": {
-          "enum": [
-            "edit",
-            "remove",
-            "view",
-            "review",
-            "download",
-            "retry",
-            "open"
-          ],
-          "title": "WidgetActionIcon",
-          "type": "string"
-        },
-        "WidgetActionId": {
-          "description": "Stable command identifiers shared by domain workflows and UI widgets.",
-          "enum": [
-            "set_spend_nature",
-            "start_add_category",
-            "start_add_subcategory",
-            "cancel_add_category",
-            "cancel_taxonomy_change",
-            "create_category",
-            "create_subcategory",
-            "select_category",
-            "select_transaction_type",
-            "select_subcategory",
-            "change_category",
-            "select_account",
-            "revisit_transaction_step",
-            "cancel_transaction_draft",
-            "cancel_pending_action",
-            "save_budget",
-            "save_goal",
-            "contribute_goal",
-            "commit_import",
-            "calculate_loan_scenario",
-            "calculate_investment_scenario",
-            "commit_transaction",
-            "edit_transaction",
-            "cancel_transaction_edit",
-            "update_transaction_draft",
-            "edit_saved_transaction",
-            "cancel_saved_transaction_edit",
-            "update_saved_transaction",
-            "request_remove_transaction",
-            "confirm_remove_transaction",
-            "cancel_remove_transaction",
-            "merge_reconciliation",
-            "separate_reconciliation",
-            "resolve_clarification"
-          ],
-          "title": "WidgetActionId",
-          "type": "string"
-        },
-        "WidgetActionStyle": {
-          "enum": [
-            "primary",
-            "secondary",
-            "danger",
-            "ghost"
-          ],
-          "title": "WidgetActionStyle",
-          "type": "string"
-        }
-      },
+    "OperationActionPayload": {
+      "additionalProperties": false,
       "properties": {
-        "id": {
-          "maxLength": 60,
-          "minLength": 1,
-          "title": "Id",
+        "operationId": {
+          "pattern": "^[a-z][a-z0-9_.-]{1,99}$",
+          "title": "Operationid",
           "type": "string"
         },
-        "label": {
-          "maxLength": 80,
-          "minLength": 1,
-          "title": "Label",
+        "operationVersion": {
+          "minimum": 1,
+          "title": "Operationversion",
+          "type": "integer"
+        },
+        "operationChecksum": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Operationchecksum",
           "type": "string"
         },
-        "action": {
-          "$ref": "#/$defs/WidgetActionId"
-        },
-        "style": {
-          "$ref": "#/$defs/WidgetActionStyle",
-          "default": "secondary"
-        },
-        "resourceKey": {
-          "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$",
-          "title": "Resourcekey",
-          "type": "string"
-        },
-        "payloadKey": {
-          "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$",
-          "title": "Payloadkey",
-          "type": "string"
-        },
-        "icon": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/WidgetActionIcon"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "capability": {
-          "anyOf": [
-            {
-              "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,99}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Capability"
+        "inputs": {
+          "additionalProperties": true,
+          "title": "Inputs",
+          "type": "object"
         }
       },
       "required": [
-        "id",
-        "label",
-        "action",
-        "resourceKey",
-        "payloadKey"
+        "operationId",
+        "operationVersion",
+        "operationChecksum"
       ],
-      "title": "DataTableRowAction",
-      "type": "object"
-    },
-    "DataChartAxis": {
-      "$defs": {
-        "DataChartAxisType": {
-          "enum": [
-            "category",
-            "date",
-            "datetime",
-            "number"
-          ],
-          "title": "DataChartAxisType",
-          "type": "string"
-        }
-      },
-      "properties": {
-        "key": {
-          "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$",
-          "title": "Key",
-          "type": "string"
-        },
-        "label": {
-          "maxLength": 80,
-          "minLength": 1,
-          "title": "Label",
-          "type": "string"
-        },
-        "type": {
-          "$ref": "#/$defs/DataChartAxisType",
-          "default": "category"
-        }
-      },
-      "required": [
-        "key",
-        "label"
-      ],
-      "title": "DataChartAxis",
-      "type": "object"
-    },
-    "DataChartSeries": {
-      "$defs": {
-        "DataChartValueType": {
-          "enum": [
-            "money",
-            "number",
-            "percentage"
-          ],
-          "title": "DataChartValueType",
-          "type": "string"
-        }
-      },
-      "properties": {
-        "key": {
-          "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$",
-          "title": "Key",
-          "type": "string"
-        },
-        "label": {
-          "maxLength": 80,
-          "minLength": 1,
-          "title": "Label",
-          "type": "string"
-        },
-        "valueType": {
-          "$ref": "#/$defs/DataChartValueType",
-          "default": "number"
-        },
-        "currency": {
-          "anyOf": [
-            {
-              "maxLength": 3,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Currency"
-        },
-        "groupKey": {
-          "anyOf": [
-            {
-              "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Groupkey"
-        }
-      },
-      "required": [
-        "key",
-        "label"
-      ],
-      "title": "DataChartSeries",
+      "title": "OperationActionPayload",
       "type": "object"
     },
     "VisualFieldEncoding": {
@@ -1753,17 +1548,32 @@
       "title": "VisualizationView",
       "type": "object"
     },
-    "VisualizationLayout": {
+    "ChartLineage": {
+      "description": "Provenance every rendered chart must carry: which governed origin drew\nit, under which source manifest, and when it executed.",
       "properties": {
-        "columns": {
-          "default": 1,
-          "maximum": 3,
-          "minimum": 1,
-          "title": "Columns",
-          "type": "integer"
+        "origin": {
+          "pattern": "^[a-z][a-z0-9_]{0,39}$",
+          "title": "Origin",
+          "type": "string"
+        },
+        "manifestHash": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Manifesthash",
+          "type": "string"
+        },
+        "executedAt": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Executedat",
+          "type": "string"
         }
       },
-      "title": "VisualizationLayout",
+      "required": [
+        "origin",
+        "manifestHash",
+        "executedAt"
+      ],
+      "title": "ChartLineage",
       "type": "object"
     },
     "ClarificationOptionData": {
@@ -1802,8 +1612,539 @@
       "title": "ClarificationOptionData",
       "type": "object"
     },
+    "AgentModelPassMetrics": {
+      "properties": {
+        "stage": {
+          "title": "Stage",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "inputTokens": {
+          "minimum": 0,
+          "title": "Inputtokens",
+          "type": "integer"
+        },
+        "outputTokens": {
+          "minimum": 0,
+          "title": "Outputtokens",
+          "type": "integer"
+        },
+        "totalTokens": {
+          "minimum": 0,
+          "title": "Totaltokens",
+          "type": "integer"
+        },
+        "cacheReadTokens": {
+          "minimum": 0,
+          "title": "Cachereadtokens",
+          "type": "integer"
+        },
+        "cacheWriteTokens": {
+          "minimum": 0,
+          "title": "Cachewritetokens",
+          "type": "integer"
+        },
+        "reasoningTokens": {
+          "minimum": 0,
+          "title": "Reasoningtokens",
+          "type": "integer"
+        },
+        "durationMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Durationms"
+        },
+        "timeToFirstTokenMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timetofirsttokenms"
+        },
+        "costUsd": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Costusd"
+        }
+      },
+      "required": [
+        "stage",
+        "model",
+        "inputTokens",
+        "outputTokens",
+        "totalTokens",
+        "cacheReadTokens",
+        "cacheWriteTokens",
+        "reasoningTokens"
+      ],
+      "title": "AgentModelPassMetrics",
+      "type": "object"
+    },
+    "AgentRunMetrics": {
+      "$defs": {
+        "AgentModelPassMetrics": {
+          "properties": {
+            "stage": {
+              "title": "Stage",
+              "type": "string"
+            },
+            "model": {
+              "title": "Model",
+              "type": "string"
+            },
+            "provider": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Provider"
+            },
+            "inputTokens": {
+              "minimum": 0,
+              "title": "Inputtokens",
+              "type": "integer"
+            },
+            "outputTokens": {
+              "minimum": 0,
+              "title": "Outputtokens",
+              "type": "integer"
+            },
+            "totalTokens": {
+              "minimum": 0,
+              "title": "Totaltokens",
+              "type": "integer"
+            },
+            "cacheReadTokens": {
+              "minimum": 0,
+              "title": "Cachereadtokens",
+              "type": "integer"
+            },
+            "cacheWriteTokens": {
+              "minimum": 0,
+              "title": "Cachewritetokens",
+              "type": "integer"
+            },
+            "reasoningTokens": {
+              "minimum": 0,
+              "title": "Reasoningtokens",
+              "type": "integer"
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Durationms"
+            },
+            "timeToFirstTokenMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Timetofirsttokenms"
+            },
+            "costUsd": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Costusd"
+            }
+          },
+          "required": [
+            "stage",
+            "model",
+            "inputTokens",
+            "outputTokens",
+            "totalTokens",
+            "cacheReadTokens",
+            "cacheWriteTokens",
+            "reasoningTokens"
+          ],
+          "title": "AgentModelPassMetrics",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "source": {
+          "const": "agno_run_output",
+          "default": "agno_run_output",
+          "title": "Source",
+          "type": "string"
+        },
+        "modelPasses": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Modelpasses",
+          "type": "integer"
+        },
+        "inputTokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Inputtokens",
+          "type": "integer"
+        },
+        "outputTokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Outputtokens",
+          "type": "integer"
+        },
+        "totalTokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Totaltokens",
+          "type": "integer"
+        },
+        "cacheReadTokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Cachereadtokens",
+          "type": "integer"
+        },
+        "cacheWriteTokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Cachewritetokens",
+          "type": "integer"
+        },
+        "reasoningTokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Reasoningtokens",
+          "type": "integer"
+        },
+        "modelDurationMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Modeldurationms"
+        },
+        "firstModelTimeToFirstTokenMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Firstmodeltimetofirsttokenms"
+        },
+        "costUsd": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Costusd"
+        },
+        "costCoverage": {
+          "default": 0,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Costcoverage",
+          "type": "number"
+        },
+        "passes": {
+          "items": {
+            "$ref": "#/$defs/AgentModelPassMetrics"
+          },
+          "title": "Passes",
+          "type": "array"
+        }
+      },
+      "title": "AgentRunMetrics",
+      "type": "object"
+    },
     "AgentActivityData": {
       "$defs": {
+        "AgentModelPassMetrics": {
+          "properties": {
+            "stage": {
+              "title": "Stage",
+              "type": "string"
+            },
+            "model": {
+              "title": "Model",
+              "type": "string"
+            },
+            "provider": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Provider"
+            },
+            "inputTokens": {
+              "minimum": 0,
+              "title": "Inputtokens",
+              "type": "integer"
+            },
+            "outputTokens": {
+              "minimum": 0,
+              "title": "Outputtokens",
+              "type": "integer"
+            },
+            "totalTokens": {
+              "minimum": 0,
+              "title": "Totaltokens",
+              "type": "integer"
+            },
+            "cacheReadTokens": {
+              "minimum": 0,
+              "title": "Cachereadtokens",
+              "type": "integer"
+            },
+            "cacheWriteTokens": {
+              "minimum": 0,
+              "title": "Cachewritetokens",
+              "type": "integer"
+            },
+            "reasoningTokens": {
+              "minimum": 0,
+              "title": "Reasoningtokens",
+              "type": "integer"
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Durationms"
+            },
+            "timeToFirstTokenMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Timetofirsttokenms"
+            },
+            "costUsd": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Costusd"
+            }
+          },
+          "required": [
+            "stage",
+            "model",
+            "inputTokens",
+            "outputTokens",
+            "totalTokens",
+            "cacheReadTokens",
+            "cacheWriteTokens",
+            "reasoningTokens"
+          ],
+          "title": "AgentModelPassMetrics",
+          "type": "object"
+        },
+        "AgentRunMetrics": {
+          "properties": {
+            "source": {
+              "const": "agno_run_output",
+              "default": "agno_run_output",
+              "title": "Source",
+              "type": "string"
+            },
+            "modelPasses": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Modelpasses",
+              "type": "integer"
+            },
+            "inputTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Inputtokens",
+              "type": "integer"
+            },
+            "outputTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Outputtokens",
+              "type": "integer"
+            },
+            "totalTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Totaltokens",
+              "type": "integer"
+            },
+            "cacheReadTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Cachereadtokens",
+              "type": "integer"
+            },
+            "cacheWriteTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Cachewritetokens",
+              "type": "integer"
+            },
+            "reasoningTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Reasoningtokens",
+              "type": "integer"
+            },
+            "modelDurationMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Modeldurationms"
+            },
+            "firstModelTimeToFirstTokenMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Firstmodeltimetofirsttokenms"
+            },
+            "costUsd": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Costusd"
+            },
+            "costCoverage": {
+              "default": 0,
+              "maximum": 1,
+              "minimum": 0,
+              "title": "Costcoverage",
+              "type": "number"
+            },
+            "passes": {
+              "items": {
+                "$ref": "#/$defs/AgentModelPassMetrics"
+              },
+              "title": "Passes",
+              "type": "array"
+            }
+          },
+          "title": "AgentRunMetrics",
+          "type": "object"
+        },
         "WidgetLifecycle": {
           "enum": [
             "pending",
@@ -1881,6 +2222,30 @@
           },
           "title": "Steps",
           "type": "array"
+        },
+        "modelPassCount": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Modelpasscount"
+        },
+        "metrics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentRunMetrics"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "totalMs": {
           "default": 0,
@@ -2372,7 +2737,8 @@
         "operation": {
           "enum": [
             "create_category",
-            "create_subcategory"
+            "create_subcategory",
+            "create_taxonomy_path"
           ],
           "title": "Operation",
           "type": "string"
@@ -2388,6 +2754,14 @@
           ],
           "default": null,
           "title": "Name"
+        },
+        "subcategories": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 10,
+          "title": "Subcategories",
+          "type": "array"
         },
         "parentCategory": {
           "anyOf": [
@@ -2441,6 +2815,14 @@
           ],
           "default": null,
           "title": "Resultid"
+        },
+        "resultIds": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 11,
+          "title": "Resultids",
+          "type": "array"
         }
       },
       "required": [
@@ -3189,638 +3571,36 @@
       "title": "TransactionEditData",
       "type": "object"
     },
-    "TransactionListData": {
-      "$defs": {
-        "WidgetLifecycle": {
-          "enum": [
-            "pending",
-            "completed",
-            "cancelled"
-          ],
-          "title": "WidgetLifecycle",
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "properties": {
-        "lifecycle": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/WidgetLifecycle"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "completion": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Completion"
-        },
-        "title": {
-          "title": "Title",
-          "type": "string"
-        },
-        "body": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Body"
-        },
-        "transactions": {
-          "items": {
-            "additionalProperties": true,
-            "type": "object"
-          },
-          "title": "Transactions",
-          "type": "array"
-        }
-      },
-      "required": [
-        "title"
-      ],
-      "title": "TransactionListData",
-      "type": "object"
-    },
-    "DataTableData": {
-      "$defs": {
-        "DataTableColumn": {
-          "properties": {
-            "key": {
-              "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$",
-              "title": "Key",
-              "type": "string"
-            },
-            "label": {
-              "maxLength": 80,
-              "minLength": 1,
-              "title": "Label",
-              "type": "string"
-            },
-            "type": {
-              "$ref": "#/$defs/TableColumnType",
-              "default": "text"
-            },
-            "align": {
-              "$ref": "#/$defs/TableColumnAlign",
-              "default": "left"
-            },
-            "priority": {
-              "$ref": "#/$defs/TableColumnPriority",
-              "default": "secondary"
-            },
-            "currencyKey": {
-              "anyOf": [
-                {
-                  "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$",
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "title": "Currencykey"
-            },
-            "secondaryKeys": {
-              "items": {
-                "type": "string"
-              },
-              "maxItems": 4,
-              "title": "Secondarykeys",
-              "type": "array"
-            }
-          },
-          "required": [
-            "key",
-            "label"
-          ],
-          "title": "DataTableColumn",
-          "type": "object"
-        },
-        "DataTableRowAction": {
-          "properties": {
-            "id": {
-              "maxLength": 60,
-              "minLength": 1,
-              "title": "Id",
-              "type": "string"
-            },
-            "label": {
-              "maxLength": 80,
-              "minLength": 1,
-              "title": "Label",
-              "type": "string"
-            },
-            "action": {
-              "$ref": "#/$defs/WidgetActionId"
-            },
-            "style": {
-              "$ref": "#/$defs/WidgetActionStyle",
-              "default": "secondary"
-            },
-            "resourceKey": {
-              "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$",
-              "title": "Resourcekey",
-              "type": "string"
-            },
-            "payloadKey": {
-              "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$",
-              "title": "Payloadkey",
-              "type": "string"
-            },
-            "icon": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/WidgetActionIcon"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null
-            },
-            "capability": {
-              "anyOf": [
-                {
-                  "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,99}$",
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "title": "Capability"
-            }
-          },
-          "required": [
-            "id",
-            "label",
-            "action",
-            "resourceKey",
-            "payloadKey"
-          ],
-          "title": "DataTableRowAction",
-          "type": "object"
-        },
-        "TableColumnAlign": {
-          "enum": [
-            "left",
-            "right"
-          ],
-          "title": "TableColumnAlign",
-          "type": "string"
-        },
-        "TableColumnPriority": {
-          "enum": [
-            "primary",
-            "secondary",
-            "detail"
-          ],
-          "title": "TableColumnPriority",
-          "type": "string"
-        },
-        "TableColumnType": {
-          "enum": [
-            "entity",
-            "text",
-            "money",
-            "date",
-            "datetime",
-            "number",
-            "percentage",
-            "boolean",
-            "status",
-            "tags"
-          ],
-          "title": "TableColumnType",
-          "type": "string"
-        },
-        "WidgetActionIcon": {
-          "enum": [
-            "edit",
-            "remove",
-            "view",
-            "review",
-            "download",
-            "retry",
-            "open"
-          ],
-          "title": "WidgetActionIcon",
-          "type": "string"
-        },
-        "WidgetActionId": {
-          "description": "Stable command identifiers shared by domain workflows and UI widgets.",
-          "enum": [
-            "set_spend_nature",
-            "start_add_category",
-            "start_add_subcategory",
-            "cancel_add_category",
-            "cancel_taxonomy_change",
-            "create_category",
-            "create_subcategory",
-            "select_category",
-            "select_transaction_type",
-            "select_subcategory",
-            "change_category",
-            "select_account",
-            "revisit_transaction_step",
-            "cancel_transaction_draft",
-            "cancel_pending_action",
-            "save_budget",
-            "save_goal",
-            "contribute_goal",
-            "commit_import",
-            "calculate_loan_scenario",
-            "calculate_investment_scenario",
-            "commit_transaction",
-            "edit_transaction",
-            "cancel_transaction_edit",
-            "update_transaction_draft",
-            "edit_saved_transaction",
-            "cancel_saved_transaction_edit",
-            "update_saved_transaction",
-            "request_remove_transaction",
-            "confirm_remove_transaction",
-            "cancel_remove_transaction",
-            "merge_reconciliation",
-            "separate_reconciliation",
-            "resolve_clarification"
-          ],
-          "title": "WidgetActionId",
-          "type": "string"
-        },
-        "WidgetActionStyle": {
-          "enum": [
-            "primary",
-            "secondary",
-            "danger",
-            "ghost"
-          ],
-          "title": "WidgetActionStyle",
-          "type": "string"
-        },
-        "WidgetLifecycle": {
-          "enum": [
-            "pending",
-            "completed",
-            "cancelled"
-          ],
-          "title": "WidgetLifecycle",
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "properties": {
-        "lifecycle": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/WidgetLifecycle"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "completion": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Completion"
-        },
-        "title": {
-          "maxLength": 160,
-          "minLength": 1,
-          "title": "Title",
-          "type": "string"
-        },
-        "body": {
-          "anyOf": [
-            {
-              "maxLength": 500,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Body"
-        },
-        "columns": {
-          "items": {
-            "$ref": "#/$defs/DataTableColumn"
-          },
-          "maxItems": 12,
-          "minItems": 1,
-          "title": "Columns",
-          "type": "array"
-        },
-        "rows": {
-          "items": {
-            "additionalProperties": true,
-            "type": "object"
-          },
-          "maxItems": 100,
-          "title": "Rows",
-          "type": "array"
-        },
-        "rowIdKey": {
-          "default": "id",
-          "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$",
-          "title": "Rowidkey",
-          "type": "string"
-        },
-        "rowActions": {
-          "items": {
-            "$ref": "#/$defs/DataTableRowAction"
-          },
-          "maxItems": 6,
-          "title": "Rowactions",
-          "type": "array"
-        },
-        "capabilitiesKey": {
-          "default": "_capabilities",
-          "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$",
-          "title": "Capabilitieskey",
-          "type": "string"
-        },
-        "emptyMessage": {
-          "default": "No matching records.",
-          "maxLength": 240,
-          "title": "Emptymessage",
-          "type": "string"
-        }
-      },
-      "required": [
-        "title",
-        "columns"
-      ],
-      "title": "DataTableData",
-      "type": "object"
-    },
     "DataChartData": {
       "$defs": {
-        "DataChartAxis": {
+        "ChartLineage": {
+          "description": "Provenance every rendered chart must carry: which governed origin drew\nit, under which source manifest, and when it executed.",
           "properties": {
-            "key": {
-              "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$",
-              "title": "Key",
+            "origin": {
+              "pattern": "^[a-z][a-z0-9_]{0,39}$",
+              "title": "Origin",
               "type": "string"
             },
-            "label": {
-              "maxLength": 80,
+            "manifestHash": {
+              "pattern": "^[a-f0-9]{64}$",
+              "title": "Manifesthash",
+              "type": "string"
+            },
+            "executedAt": {
+              "maxLength": 64,
               "minLength": 1,
-              "title": "Label",
+              "title": "Executedat",
               "type": "string"
-            },
-            "type": {
-              "$ref": "#/$defs/DataChartAxisType",
-              "default": "category"
             }
           },
           "required": [
-            "key",
-            "label"
+            "origin",
+            "manifestHash",
+            "executedAt"
           ],
-          "title": "DataChartAxis",
+          "title": "ChartLineage",
           "type": "object"
         },
-        "DataChartAxisType": {
-          "enum": [
-            "category",
-            "date",
-            "datetime",
-            "number"
-          ],
-          "title": "DataChartAxisType",
-          "type": "string"
-        },
-        "DataChartSeries": {
-          "properties": {
-            "key": {
-              "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$",
-              "title": "Key",
-              "type": "string"
-            },
-            "label": {
-              "maxLength": 80,
-              "minLength": 1,
-              "title": "Label",
-              "type": "string"
-            },
-            "valueType": {
-              "$ref": "#/$defs/DataChartValueType",
-              "default": "number"
-            },
-            "currency": {
-              "anyOf": [
-                {
-                  "maxLength": 3,
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "title": "Currency"
-            },
-            "groupKey": {
-              "anyOf": [
-                {
-                  "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$",
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "title": "Groupkey"
-            }
-          },
-          "required": [
-            "key",
-            "label"
-          ],
-          "title": "DataChartSeries",
-          "type": "object"
-        },
-        "DataChartType": {
-          "enum": [
-            "bar",
-            "line",
-            "area",
-            "pie",
-            "heatmap"
-          ],
-          "title": "DataChartType",
-          "type": "string"
-        },
-        "DataChartValueType": {
-          "enum": [
-            "money",
-            "number",
-            "percentage"
-          ],
-          "title": "DataChartValueType",
-          "type": "string"
-        },
-        "WidgetLifecycle": {
-          "enum": [
-            "pending",
-            "completed",
-            "cancelled"
-          ],
-          "title": "WidgetLifecycle",
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "properties": {
-        "lifecycle": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/WidgetLifecycle"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "completion": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Completion"
-        },
-        "title": {
-          "maxLength": 160,
-          "minLength": 1,
-          "title": "Title",
-          "type": "string"
-        },
-        "body": {
-          "anyOf": [
-            {
-              "maxLength": 500,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Body"
-        },
-        "chartType": {
-          "$ref": "#/$defs/DataChartType"
-        },
-        "rows": {
-          "items": {
-            "additionalProperties": true,
-            "type": "object"
-          },
-          "maxItems": 100,
-          "title": "Rows",
-          "type": "array"
-        },
-        "xAxis": {
-          "$ref": "#/$defs/DataChartAxis"
-        },
-        "yAxis": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/DataChartAxis"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "series": {
-          "items": {
-            "$ref": "#/$defs/DataChartSeries"
-          },
-          "maxItems": 8,
-          "minItems": 1,
-          "title": "Series",
-          "type": "array"
-        },
-        "labelKeys": {
-          "items": {
-            "type": "string"
-          },
-          "maxItems": 3,
-          "title": "Labelkeys",
-          "type": "array"
-        },
-        "emptyMessage": {
-          "default": "No data is available for this chart.",
-          "maxLength": 240,
-          "title": "Emptymessage",
-          "type": "string"
-        },
-        "queryResult": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Queryresult"
-        }
-      },
-      "required": [
-        "title",
-        "chartType",
-        "xAxis",
-        "series"
-      ],
-      "title": "DataChartData",
-      "type": "object"
-    },
-    "DataVisualizationData": {
-      "$defs": {
         "VisualEncodingContract": {
           "properties": {
             "x": {
@@ -3981,19 +3761,6 @@
           "title": "VisualFieldEncoding",
           "type": "object"
         },
-        "VisualizationLayout": {
-          "properties": {
-            "columns": {
-              "default": 1,
-              "maximum": 3,
-              "minimum": 1,
-              "title": "Columns",
-              "type": "integer"
-            }
-          },
-          "title": "VisualizationLayout",
-          "type": "object"
-        },
         "VisualizationView": {
           "properties": {
             "id": {
@@ -4070,7 +3837,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "Governed multi-view BI payload with inline, already-authorized data.",
+      "description": "A governed visualization view plus the exact executed rows it binds.\n\nMoney rows stay in minor units (`money_minor` encodings); renderers divide\nby 100 for display — the backend never scales chart values.",
       "properties": {
         "lifecycle": {
           "anyOf": [
@@ -4096,303 +3863,18 @@
           "default": null,
           "title": "Completion"
         },
-        "title": {
-          "maxLength": 160,
-          "minLength": 1,
-          "title": "Title",
-          "type": "string"
-        },
-        "body": {
-          "anyOf": [
-            {
-              "maxLength": 500,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Body"
-        },
-        "datasets": {
-          "additionalProperties": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "title": "Datasets",
-          "type": "object"
-        },
-        "views": {
-          "items": {
-            "$ref": "#/$defs/VisualizationView"
-          },
-          "maxItems": 8,
-          "minItems": 1,
-          "title": "Views",
-          "type": "array"
-        },
-        "layout": {
-          "$ref": "#/$defs/VisualizationLayout"
-        },
-        "queryResults": {
-          "anyOf": [
-            {
-              "additionalProperties": {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Queryresults"
-        },
-        "emptyMessage": {
-          "default": "No data is available for this visualization.",
-          "maxLength": 240,
-          "title": "Emptymessage",
-          "type": "string"
-        }
-      },
-      "required": [
-        "title",
-        "datasets",
-        "views"
-      ],
-      "title": "DataVisualizationData",
-      "type": "object"
-    },
-    "FinancialSummaryData": {
-      "$defs": {
-        "WidgetLifecycle": {
-          "enum": [
-            "pending",
-            "completed",
-            "cancelled"
-          ],
-          "title": "WidgetLifecycle",
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "properties": {
-        "lifecycle": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/WidgetLifecycle"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "completion": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Completion"
-        },
-        "title": {
-          "title": "Title",
-          "type": "string"
-        },
-        "amountMinor": {
-          "title": "Amountminor",
-          "type": "integer"
-        },
-        "currency": {
-          "title": "Currency",
-          "type": "string"
-        },
-        "count": {
-          "default": 0,
-          "title": "Count",
-          "type": "integer"
-        },
-        "period": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Period"
-        },
-        "periodTitle": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Periodtitle"
-        },
-        "scopePath": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Scopepath",
-          "type": "array"
-        },
-        "scopeLabel": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Scopelabel"
-        },
-        "description": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Description"
-        },
-        "breakdown": {
-          "items": {
-            "additionalProperties": true,
-            "type": "object"
-          },
-          "title": "Breakdown",
-          "type": "array"
-        }
-      },
-      "required": [
-        "title",
-        "amountMinor",
-        "currency"
-      ],
-      "title": "FinancialSummaryData",
-      "type": "object"
-    },
-    "AnalysisTableData": {
-      "$defs": {
-        "WidgetLifecycle": {
-          "enum": [
-            "pending",
-            "completed",
-            "cancelled"
-          ],
-          "title": "WidgetLifecycle",
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "properties": {
-        "lifecycle": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/WidgetLifecycle"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "completion": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Completion"
-        },
-        "title": {
-          "title": "Title",
-          "type": "string"
-        },
-        "body": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Body"
-        },
-        "columns": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Columns",
-          "type": "array"
+        "view": {
+          "$ref": "#/$defs/VisualizationView"
         },
         "rows": {
           "items": {
             "additionalProperties": true,
             "type": "object"
           },
+          "maxItems": 250,
+          "minItems": 1,
           "title": "Rows",
           "type": "array"
-        },
-        "budgetRoom": {
-          "items": {
-            "additionalProperties": true,
-            "type": "object"
-          },
-          "title": "Budgetroom",
-          "type": "array"
-        },
-        "queryResults": {
-          "items": {
-            "additionalProperties": true,
-            "type": "object"
-          },
-          "title": "Queryresults",
-          "type": "array"
-        },
-        "transforms": {
-          "items": {
-            "additionalProperties": true,
-            "type": "object"
-          },
-          "title": "Transforms",
-          "type": "array"
-        },
-        "context": {
-          "additionalProperties": true,
-          "title": "Context",
-          "type": "object"
         },
         "currency": {
           "anyOf": [
@@ -4405,12 +3887,17 @@
           ],
           "default": null,
           "title": "Currency"
+        },
+        "lineage": {
+          "$ref": "#/$defs/ChartLineage"
         }
       },
       "required": [
-        "title"
+        "view",
+        "rows",
+        "lineage"
       ],
-      "title": "AnalysisTableData",
+      "title": "DataChartData",
       "type": "object"
     },
     "AvoidableExpensesData": {
@@ -4764,172 +4251,6 @@
       "title": "GoalProgressData",
       "type": "object"
     },
-    "ScenarioAnalysisData": {
-      "$defs": {
-        "WidgetLifecycle": {
-          "enum": [
-            "pending",
-            "completed",
-            "cancelled"
-          ],
-          "title": "WidgetLifecycle",
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "properties": {
-        "lifecycle": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/WidgetLifecycle"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "completion": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Completion"
-        },
-        "title": {
-          "title": "Title",
-          "type": "string"
-        },
-        "currency": {
-          "title": "Currency",
-          "type": "string"
-        },
-        "purchase_minor": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Purchase Minor"
-        },
-        "reserve_required_minor": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Reserve Required Minor"
-        },
-        "available_after_reserve_minor": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Available After Reserve Minor"
-        },
-        "gap_minor": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Gap Minor"
-        },
-        "monthly_surplus_minor": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Monthly Surplus Minor"
-        },
-        "months_to_goal": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Months To Goal"
-        },
-        "affordable_now": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Affordable Now"
-        },
-        "rule": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Rule"
-        },
-        "dataQuality": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Dataquality"
-        }
-      },
-      "required": [
-        "title",
-        "currency"
-      ],
-      "title": "ScenarioAnalysisData",
-      "type": "object"
-    },
     "LoanCalculatorData": {
       "$defs": {
         "WidgetLifecycle": {
@@ -5062,75 +4383,6 @@
         "title"
       ],
       "title": "LoanCalculatorData",
-      "type": "object"
-    },
-    "LoanStrategyData": {
-      "$defs": {
-        "WidgetLifecycle": {
-          "enum": [
-            "pending",
-            "completed",
-            "cancelled"
-          ],
-          "title": "WidgetLifecycle",
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "properties": {
-        "lifecycle": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/WidgetLifecycle"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "completion": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Completion"
-        },
-        "title": {
-          "title": "Title",
-          "type": "string"
-        },
-        "body": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Body"
-        },
-        "loans": {
-          "items": {
-            "additionalProperties": true,
-            "type": "object"
-          },
-          "title": "Loans",
-          "type": "array"
-        }
-      },
-      "required": [
-        "title"
-      ],
-      "title": "LoanStrategyData",
       "type": "object"
     },
     "InvestmentProjectionData": {
@@ -5427,6 +4679,272 @@
       "title": "ImportReviewData",
       "type": "object"
     },
+    "RelatedQuestionsData": {
+      "$defs": {
+        "WidgetLifecycle": {
+          "enum": [
+            "pending",
+            "completed",
+            "cancelled"
+          ],
+          "title": "WidgetLifecycle",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "description": "Follow-up questions the user can post with one tap.\n\nSuggestion text only — clicking posts it as an ordinary user message, so\nthe questions carry no payloads, actions, or claims of their own.",
+      "properties": {
+        "lifecycle": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WidgetLifecycle"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "completion": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completion"
+        },
+        "questions": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "title": "Questions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "questions"
+      ],
+      "title": "RelatedQuestionsData",
+      "type": "object"
+    },
+    "OperationFormData": {
+      "$defs": {
+        "WidgetLifecycle": {
+          "enum": [
+            "pending",
+            "completed",
+            "cancelled"
+          ],
+          "title": "WidgetLifecycle",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "lifecycle": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WidgetLifecycle"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "completion": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completion"
+        },
+        "title": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "body": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Body"
+        },
+        "operationId": {
+          "pattern": "^[a-z][a-z0-9_.-]{1,99}$",
+          "title": "Operationid",
+          "type": "string"
+        },
+        "operationVersion": {
+          "minimum": 1,
+          "title": "Operationversion",
+          "type": "integer"
+        },
+        "operationChecksum": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Operationchecksum",
+          "type": "string"
+        },
+        "inputs": {
+          "additionalProperties": true,
+          "title": "Inputs",
+          "type": "object"
+        },
+        "inputSchema": {
+          "additionalProperties": true,
+          "title": "Inputschema",
+          "type": "object"
+        },
+        "missingFields": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 30,
+          "title": "Missingfields",
+          "type": "array"
+        },
+        "submitLabel": {
+          "default": "Continue",
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Submitlabel",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "operationId",
+        "operationVersion",
+        "operationChecksum",
+        "inputSchema"
+      ],
+      "title": "OperationFormData",
+      "type": "object"
+    },
+    "OperationApprovalData": {
+      "$defs": {
+        "WidgetLifecycle": {
+          "enum": [
+            "pending",
+            "completed",
+            "cancelled"
+          ],
+          "title": "WidgetLifecycle",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "lifecycle": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WidgetLifecycle"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "completion": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completion"
+        },
+        "title": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "body": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Body"
+        },
+        "operationId": {
+          "pattern": "^[a-z][a-z0-9_.-]{1,99}$",
+          "title": "Operationid",
+          "type": "string"
+        },
+        "operationVersion": {
+          "minimum": 1,
+          "title": "Operationversion",
+          "type": "integer"
+        },
+        "operationChecksum": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Operationchecksum",
+          "type": "string"
+        },
+        "inputs": {
+          "additionalProperties": true,
+          "title": "Inputs",
+          "type": "object"
+        },
+        "effect": {
+          "enum": [
+            "draft",
+            "mutation"
+          ],
+          "title": "Effect",
+          "type": "string"
+        },
+        "summary": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "operationId",
+        "operationVersion",
+        "operationChecksum",
+        "effect",
+        "summary"
+      ],
+      "title": "OperationApprovalData",
+      "type": "object"
+    },
     "Widget": {
       "$defs": {
         "WidgetAction": {
@@ -5470,6 +4988,7 @@
             "cancel_taxonomy_change",
             "create_category",
             "create_subcategory",
+            "create_taxonomy_path",
             "select_category",
             "select_transaction_type",
             "select_subcategory",
@@ -5478,6 +4997,9 @@
             "revisit_transaction_step",
             "cancel_transaction_draft",
             "cancel_pending_action",
+            "edit_budget",
+            "request_delete_budget",
+            "delete_budget",
             "save_budget",
             "save_goal",
             "contribute_goal",
@@ -5496,7 +5018,11 @@
             "cancel_remove_transaction",
             "merge_reconciliation",
             "separate_reconciliation",
-            "resolve_clarification"
+            "resolve_clarification",
+            "rename_conversation",
+            "submit_operation",
+            "approve_operation",
+            "cancel_operation"
           ],
           "title": "WidgetActionId",
           "type": "string"
@@ -5523,22 +5049,18 @@
             "confirmation_card",
             "transaction_preview",
             "transaction_edit",
-            "transaction_list",
-            "data_table",
             "data_chart",
-            "data_visualization",
-            "financial_summary",
-            "analysis_table",
             "avoidable_expenses",
             "insight_card",
             "budget_progress",
             "goal_progress",
-            "scenario_analysis",
             "loan_calculator",
-            "loan_strategy",
             "investment_projection",
             "reconciliation_review",
-            "import_review"
+            "import_review",
+            "related_questions",
+            "operation_form",
+            "operation_approval"
           ],
           "title": "WidgetType",
           "type": "string"
@@ -5591,6 +5113,7 @@
             "cancel_taxonomy_change",
             "create_category",
             "create_subcategory",
+            "create_taxonomy_path",
             "select_category",
             "select_transaction_type",
             "select_subcategory",
@@ -5599,6 +5122,9 @@
             "revisit_transaction_step",
             "cancel_transaction_draft",
             "cancel_pending_action",
+            "edit_budget",
+            "request_delete_budget",
+            "delete_budget",
             "save_budget",
             "save_goal",
             "contribute_goal",
@@ -5617,7 +5143,11 @@
             "cancel_remove_transaction",
             "merge_reconciliation",
             "separate_reconciliation",
-            "resolve_clarification"
+            "resolve_clarification",
+            "rename_conversation",
+            "submit_operation",
+            "approve_operation",
+            "cancel_operation"
           ],
           "title": "WidgetActionId",
           "type": "string"
@@ -5753,6 +5283,7 @@
             "cancel_taxonomy_change",
             "create_category",
             "create_subcategory",
+            "create_taxonomy_path",
             "select_category",
             "select_transaction_type",
             "select_subcategory",
@@ -5761,6 +5292,9 @@
             "revisit_transaction_step",
             "cancel_transaction_draft",
             "cancel_pending_action",
+            "edit_budget",
+            "request_delete_budget",
+            "delete_budget",
             "save_budget",
             "save_goal",
             "contribute_goal",
@@ -5779,7 +5313,11 @@
             "cancel_remove_transaction",
             "merge_reconciliation",
             "separate_reconciliation",
-            "resolve_clarification"
+            "resolve_clarification",
+            "rename_conversation",
+            "submit_operation",
+            "approve_operation",
+            "cancel_operation"
           ],
           "title": "WidgetActionId",
           "type": "string"
@@ -5806,22 +5344,18 @@
             "confirmation_card",
             "transaction_preview",
             "transaction_edit",
-            "transaction_list",
-            "data_table",
             "data_chart",
-            "data_visualization",
-            "financial_summary",
-            "analysis_table",
             "avoidable_expenses",
             "insight_card",
             "budget_progress",
             "goal_progress",
-            "scenario_analysis",
             "loan_calculator",
-            "loan_strategy",
             "investment_projection",
             "reconciliation_review",
-            "import_review"
+            "import_review",
+            "related_questions",
+            "operation_form",
+            "operation_approval"
           ],
           "title": "WidgetType",
           "type": "string"
@@ -5975,6 +5509,7 @@
             "cancel_taxonomy_change",
             "create_category",
             "create_subcategory",
+            "create_taxonomy_path",
             "select_category",
             "select_transaction_type",
             "select_subcategory",
@@ -5983,6 +5518,9 @@
             "revisit_transaction_step",
             "cancel_transaction_draft",
             "cancel_pending_action",
+            "edit_budget",
+            "request_delete_budget",
+            "delete_budget",
             "save_budget",
             "save_goal",
             "contribute_goal",
@@ -6001,7 +5539,11 @@
             "cancel_remove_transaction",
             "merge_reconciliation",
             "separate_reconciliation",
-            "resolve_clarification"
+            "resolve_clarification",
+            "rename_conversation",
+            "submit_operation",
+            "approve_operation",
+            "cancel_operation"
           ],
           "title": "WidgetActionId",
           "type": "string"
@@ -6028,22 +5570,18 @@
             "confirmation_card",
             "transaction_preview",
             "transaction_edit",
-            "transaction_list",
-            "data_table",
             "data_chart",
-            "data_visualization",
-            "financial_summary",
-            "analysis_table",
             "avoidable_expenses",
             "insight_card",
             "budget_progress",
             "goal_progress",
-            "scenario_analysis",
             "loan_calculator",
-            "loan_strategy",
             "investment_projection",
             "reconciliation_review",
-            "import_review"
+            "import_review",
+            "related_questions",
+            "operation_form",
+            "operation_approval"
           ],
           "title": "WidgetType",
           "type": "string"
@@ -6114,13 +5652,59 @@
           "format": "uuid",
           "title": "Message Id",
           "type": "string"
+        },
+        "user_message_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "User Message Id"
+        },
+        "delivered_at": {
+          "format": "date-time",
+          "title": "Delivered At",
+          "type": "string"
         }
       },
       "required": [
         "conversation_id",
-        "message_id"
+        "message_id",
+        "delivered_at"
       ],
       "title": "AgentResponse",
+      "type": "object"
+    },
+    "AgentSettingsOut": {
+      "properties": {
+        "answerValidationMode": {
+          "enum": [
+            "full",
+            "evidence_only",
+            "off"
+          ],
+          "title": "Answervalidationmode",
+          "type": "string"
+        },
+        "answerStyle": {
+          "enum": [
+            "explained",
+            "concise"
+          ],
+          "title": "Answerstyle",
+          "type": "string"
+        }
+      },
+      "required": [
+        "answerValidationMode",
+        "answerStyle"
+      ],
+      "title": "AgentSettingsOut",
       "type": "object"
     },
     "AgentInterruptOut": {
@@ -6201,6 +5785,220 @@
       "type": "object"
     },
     "AgentRunOut": {
+      "$defs": {
+        "AgentModelPassMetrics": {
+          "properties": {
+            "stage": {
+              "title": "Stage",
+              "type": "string"
+            },
+            "model": {
+              "title": "Model",
+              "type": "string"
+            },
+            "provider": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Provider"
+            },
+            "inputTokens": {
+              "minimum": 0,
+              "title": "Inputtokens",
+              "type": "integer"
+            },
+            "outputTokens": {
+              "minimum": 0,
+              "title": "Outputtokens",
+              "type": "integer"
+            },
+            "totalTokens": {
+              "minimum": 0,
+              "title": "Totaltokens",
+              "type": "integer"
+            },
+            "cacheReadTokens": {
+              "minimum": 0,
+              "title": "Cachereadtokens",
+              "type": "integer"
+            },
+            "cacheWriteTokens": {
+              "minimum": 0,
+              "title": "Cachewritetokens",
+              "type": "integer"
+            },
+            "reasoningTokens": {
+              "minimum": 0,
+              "title": "Reasoningtokens",
+              "type": "integer"
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Durationms"
+            },
+            "timeToFirstTokenMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Timetofirsttokenms"
+            },
+            "costUsd": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Costusd"
+            }
+          },
+          "required": [
+            "stage",
+            "model",
+            "inputTokens",
+            "outputTokens",
+            "totalTokens",
+            "cacheReadTokens",
+            "cacheWriteTokens",
+            "reasoningTokens"
+          ],
+          "title": "AgentModelPassMetrics",
+          "type": "object"
+        },
+        "AgentRunMetrics": {
+          "properties": {
+            "source": {
+              "const": "agno_run_output",
+              "default": "agno_run_output",
+              "title": "Source",
+              "type": "string"
+            },
+            "modelPasses": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Modelpasses",
+              "type": "integer"
+            },
+            "inputTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Inputtokens",
+              "type": "integer"
+            },
+            "outputTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Outputtokens",
+              "type": "integer"
+            },
+            "totalTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Totaltokens",
+              "type": "integer"
+            },
+            "cacheReadTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Cachereadtokens",
+              "type": "integer"
+            },
+            "cacheWriteTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Cachewritetokens",
+              "type": "integer"
+            },
+            "reasoningTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Reasoningtokens",
+              "type": "integer"
+            },
+            "modelDurationMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Modeldurationms"
+            },
+            "firstModelTimeToFirstTokenMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Firstmodeltimetofirsttokenms"
+            },
+            "costUsd": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Costusd"
+            },
+            "costCoverage": {
+              "default": 0,
+              "maximum": 1,
+              "minimum": 0,
+              "title": "Costcoverage",
+              "type": "number"
+            },
+            "passes": {
+              "items": {
+                "$ref": "#/$defs/AgentModelPassMetrics"
+              },
+              "title": "Passes",
+              "type": "array"
+            }
+          },
+          "title": "AgentRunMetrics",
+          "type": "object"
+        }
+      },
       "properties": {
         "id": {
           "format": "uuid",
@@ -6210,6 +6008,34 @@
         "status": {
           "title": "Status",
           "type": "string"
+        },
+        "taskStatus": {
+          "title": "Taskstatus",
+          "type": "string"
+        },
+        "failureStage": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Failurestage"
+        },
+        "errorCode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Errorcode"
         },
         "lastSequence": {
           "title": "Lastsequence",
@@ -6304,321 +6130,20 @@
           ],
           "default": null,
           "title": "Timetofirstresponsems"
+        },
+        "metrics": {
+          "$ref": "#/$defs/AgentRunMetrics"
         }
       },
       "required": [
         "id",
         "status",
+        "taskStatus",
         "lastSequence",
         "cancelRequested",
         "createdAt"
       ],
       "title": "AgentRunOut",
-      "type": "object"
-    },
-    "AgentRunEvaluationOut": {
-      "properties": {
-        "complete": {
-          "title": "Complete",
-          "type": "boolean"
-        },
-        "evidencePassed": {
-          "title": "Evidencepassed",
-          "type": "boolean"
-        },
-        "contextual": {
-          "title": "Contextual",
-          "type": "boolean"
-        },
-        "grounded": {
-          "title": "Grounded",
-          "type": "boolean"
-        },
-        "groundingRequired": {
-          "title": "Groundingrequired",
-          "type": "boolean"
-        },
-        "depthScore": {
-          "maximum": 100,
-          "minimum": 0,
-          "title": "Depthscore",
-          "type": "integer"
-        },
-        "qualityScore": {
-          "maximum": 100,
-          "minimum": 0,
-          "title": "Qualityscore",
-          "type": "integer"
-        },
-        "responseWords": {
-          "minimum": 0,
-          "title": "Responsewords",
-          "type": "integer"
-        },
-        "citationCount": {
-          "minimum": 0,
-          "title": "Citationcount",
-          "type": "integer"
-        },
-        "widgetCount": {
-          "minimum": 0,
-          "title": "Widgetcount",
-          "type": "integer"
-        },
-        "correctnessBasis": {
-          "enum": [
-            "structured_evidence",
-            "claim_integrity",
-            "unsupported_financial_figure"
-          ],
-          "title": "Correctnessbasis",
-          "type": "string"
-        },
-        "signals": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Signals",
-          "type": "array"
-        }
-      },
-      "required": [
-        "complete",
-        "evidencePassed",
-        "contextual",
-        "grounded",
-        "groundingRequired",
-        "depthScore",
-        "qualityScore",
-        "responseWords",
-        "citationCount",
-        "widgetCount",
-        "correctnessBasis"
-      ],
-      "title": "AgentRunEvaluationOut",
-      "type": "object"
-    },
-    "AgentRunMetricOut": {
-      "$defs": {
-        "AgentRunEvaluationOut": {
-          "properties": {
-            "complete": {
-              "title": "Complete",
-              "type": "boolean"
-            },
-            "evidencePassed": {
-              "title": "Evidencepassed",
-              "type": "boolean"
-            },
-            "contextual": {
-              "title": "Contextual",
-              "type": "boolean"
-            },
-            "grounded": {
-              "title": "Grounded",
-              "type": "boolean"
-            },
-            "groundingRequired": {
-              "title": "Groundingrequired",
-              "type": "boolean"
-            },
-            "depthScore": {
-              "maximum": 100,
-              "minimum": 0,
-              "title": "Depthscore",
-              "type": "integer"
-            },
-            "qualityScore": {
-              "maximum": 100,
-              "minimum": 0,
-              "title": "Qualityscore",
-              "type": "integer"
-            },
-            "responseWords": {
-              "minimum": 0,
-              "title": "Responsewords",
-              "type": "integer"
-            },
-            "citationCount": {
-              "minimum": 0,
-              "title": "Citationcount",
-              "type": "integer"
-            },
-            "widgetCount": {
-              "minimum": 0,
-              "title": "Widgetcount",
-              "type": "integer"
-            },
-            "correctnessBasis": {
-              "enum": [
-                "structured_evidence",
-                "claim_integrity",
-                "unsupported_financial_figure"
-              ],
-              "title": "Correctnessbasis",
-              "type": "string"
-            },
-            "signals": {
-              "items": {
-                "type": "string"
-              },
-              "title": "Signals",
-              "type": "array"
-            }
-          },
-          "required": [
-            "complete",
-            "evidencePassed",
-            "contextual",
-            "grounded",
-            "groundingRequired",
-            "depthScore",
-            "qualityScore",
-            "responseWords",
-            "citationCount",
-            "widgetCount",
-            "correctnessBasis"
-          ],
-          "title": "AgentRunEvaluationOut",
-          "type": "object"
-        },
-        "AgentRunOut": {
-          "properties": {
-            "id": {
-              "format": "uuid",
-              "title": "Id",
-              "type": "string"
-            },
-            "status": {
-              "title": "Status",
-              "type": "string"
-            },
-            "lastSequence": {
-              "title": "Lastsequence",
-              "type": "integer"
-            },
-            "cancelRequested": {
-              "title": "Cancelrequested",
-              "type": "boolean"
-            },
-            "finalMessageId": {
-              "anyOf": [
-                {
-                  "format": "uuid",
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "title": "Finalmessageid"
-            },
-            "deliveryMode": {
-              "default": "verified_final",
-              "title": "Deliverymode",
-              "type": "string"
-            },
-            "createdAt": {
-              "format": "date-time",
-              "title": "Createdat",
-              "type": "string"
-            },
-            "startedAt": {
-              "anyOf": [
-                {
-                  "format": "date-time",
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "title": "Startedat"
-            },
-            "firstResponseAt": {
-              "anyOf": [
-                {
-                  "format": "date-time",
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "title": "Firstresponseat"
-            },
-            "finishedAt": {
-              "anyOf": [
-                {
-                  "format": "date-time",
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "title": "Finishedat"
-            },
-            "durationMs": {
-              "anyOf": [
-                {
-                  "type": "number"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "title": "Durationms"
-            },
-            "timeToFirstResponseMs": {
-              "anyOf": [
-                {
-                  "type": "number"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "title": "Timetofirstresponsems"
-            }
-          },
-          "required": [
-            "id",
-            "status",
-            "lastSequence",
-            "cancelRequested",
-            "createdAt"
-          ],
-          "title": "AgentRunOut",
-          "type": "object"
-        }
-      },
-      "properties": {
-        "run": {
-          "$ref": "#/$defs/AgentRunOut"
-        },
-        "evaluation": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/AgentRunEvaluationOut"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        }
-      },
-      "required": [
-        "run"
-      ],
-      "title": "AgentRunMetricOut",
       "type": "object"
     },
     "AgentThreadStateOut": {
@@ -6700,6 +6225,218 @@
           "title": "AgentInterruptOut",
           "type": "object"
         },
+        "AgentModelPassMetrics": {
+          "properties": {
+            "stage": {
+              "title": "Stage",
+              "type": "string"
+            },
+            "model": {
+              "title": "Model",
+              "type": "string"
+            },
+            "provider": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Provider"
+            },
+            "inputTokens": {
+              "minimum": 0,
+              "title": "Inputtokens",
+              "type": "integer"
+            },
+            "outputTokens": {
+              "minimum": 0,
+              "title": "Outputtokens",
+              "type": "integer"
+            },
+            "totalTokens": {
+              "minimum": 0,
+              "title": "Totaltokens",
+              "type": "integer"
+            },
+            "cacheReadTokens": {
+              "minimum": 0,
+              "title": "Cachereadtokens",
+              "type": "integer"
+            },
+            "cacheWriteTokens": {
+              "minimum": 0,
+              "title": "Cachewritetokens",
+              "type": "integer"
+            },
+            "reasoningTokens": {
+              "minimum": 0,
+              "title": "Reasoningtokens",
+              "type": "integer"
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Durationms"
+            },
+            "timeToFirstTokenMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Timetofirsttokenms"
+            },
+            "costUsd": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Costusd"
+            }
+          },
+          "required": [
+            "stage",
+            "model",
+            "inputTokens",
+            "outputTokens",
+            "totalTokens",
+            "cacheReadTokens",
+            "cacheWriteTokens",
+            "reasoningTokens"
+          ],
+          "title": "AgentModelPassMetrics",
+          "type": "object"
+        },
+        "AgentRunMetrics": {
+          "properties": {
+            "source": {
+              "const": "agno_run_output",
+              "default": "agno_run_output",
+              "title": "Source",
+              "type": "string"
+            },
+            "modelPasses": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Modelpasses",
+              "type": "integer"
+            },
+            "inputTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Inputtokens",
+              "type": "integer"
+            },
+            "outputTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Outputtokens",
+              "type": "integer"
+            },
+            "totalTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Totaltokens",
+              "type": "integer"
+            },
+            "cacheReadTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Cachereadtokens",
+              "type": "integer"
+            },
+            "cacheWriteTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Cachewritetokens",
+              "type": "integer"
+            },
+            "reasoningTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Reasoningtokens",
+              "type": "integer"
+            },
+            "modelDurationMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Modeldurationms"
+            },
+            "firstModelTimeToFirstTokenMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Firstmodeltimetofirsttokenms"
+            },
+            "costUsd": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Costusd"
+            },
+            "costCoverage": {
+              "default": 0,
+              "maximum": 1,
+              "minimum": 0,
+              "title": "Costcoverage",
+              "type": "number"
+            },
+            "passes": {
+              "items": {
+                "$ref": "#/$defs/AgentModelPassMetrics"
+              },
+              "title": "Passes",
+              "type": "array"
+            }
+          },
+          "title": "AgentRunMetrics",
+          "type": "object"
+        },
         "AgentRunOut": {
           "properties": {
             "id": {
@@ -6710,6 +6447,34 @@
             "status": {
               "title": "Status",
               "type": "string"
+            },
+            "taskStatus": {
+              "title": "Taskstatus",
+              "type": "string"
+            },
+            "failureStage": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Failurestage"
+            },
+            "errorCode": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Errorcode"
             },
             "lastSequence": {
               "title": "Lastsequence",
@@ -6804,11 +6569,15 @@
               ],
               "default": null,
               "title": "Timetofirstresponsems"
+            },
+            "metrics": {
+              "$ref": "#/$defs/AgentRunMetrics"
             }
           },
           "required": [
             "id",
             "status",
+            "taskStatus",
             "lastSequence",
             "cancelRequested",
             "createdAt"
@@ -6857,398 +6626,6 @@
         "threadId"
       ],
       "title": "AgentThreadStateOut",
-      "type": "object"
-    },
-    "AgentThreadMetricsOut": {
-      "$defs": {
-        "AgentRunEvaluationOut": {
-          "properties": {
-            "complete": {
-              "title": "Complete",
-              "type": "boolean"
-            },
-            "evidencePassed": {
-              "title": "Evidencepassed",
-              "type": "boolean"
-            },
-            "contextual": {
-              "title": "Contextual",
-              "type": "boolean"
-            },
-            "grounded": {
-              "title": "Grounded",
-              "type": "boolean"
-            },
-            "groundingRequired": {
-              "title": "Groundingrequired",
-              "type": "boolean"
-            },
-            "depthScore": {
-              "maximum": 100,
-              "minimum": 0,
-              "title": "Depthscore",
-              "type": "integer"
-            },
-            "qualityScore": {
-              "maximum": 100,
-              "minimum": 0,
-              "title": "Qualityscore",
-              "type": "integer"
-            },
-            "responseWords": {
-              "minimum": 0,
-              "title": "Responsewords",
-              "type": "integer"
-            },
-            "citationCount": {
-              "minimum": 0,
-              "title": "Citationcount",
-              "type": "integer"
-            },
-            "widgetCount": {
-              "minimum": 0,
-              "title": "Widgetcount",
-              "type": "integer"
-            },
-            "correctnessBasis": {
-              "enum": [
-                "structured_evidence",
-                "claim_integrity",
-                "unsupported_financial_figure"
-              ],
-              "title": "Correctnessbasis",
-              "type": "string"
-            },
-            "signals": {
-              "items": {
-                "type": "string"
-              },
-              "title": "Signals",
-              "type": "array"
-            }
-          },
-          "required": [
-            "complete",
-            "evidencePassed",
-            "contextual",
-            "grounded",
-            "groundingRequired",
-            "depthScore",
-            "qualityScore",
-            "responseWords",
-            "citationCount",
-            "widgetCount",
-            "correctnessBasis"
-          ],
-          "title": "AgentRunEvaluationOut",
-          "type": "object"
-        },
-        "AgentRunMetricOut": {
-          "properties": {
-            "run": {
-              "$ref": "#/$defs/AgentRunOut"
-            },
-            "evaluation": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/AgentRunEvaluationOut"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null
-            }
-          },
-          "required": [
-            "run"
-          ],
-          "title": "AgentRunMetricOut",
-          "type": "object"
-        },
-        "AgentRunOut": {
-          "properties": {
-            "id": {
-              "format": "uuid",
-              "title": "Id",
-              "type": "string"
-            },
-            "status": {
-              "title": "Status",
-              "type": "string"
-            },
-            "lastSequence": {
-              "title": "Lastsequence",
-              "type": "integer"
-            },
-            "cancelRequested": {
-              "title": "Cancelrequested",
-              "type": "boolean"
-            },
-            "finalMessageId": {
-              "anyOf": [
-                {
-                  "format": "uuid",
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "title": "Finalmessageid"
-            },
-            "deliveryMode": {
-              "default": "verified_final",
-              "title": "Deliverymode",
-              "type": "string"
-            },
-            "createdAt": {
-              "format": "date-time",
-              "title": "Createdat",
-              "type": "string"
-            },
-            "startedAt": {
-              "anyOf": [
-                {
-                  "format": "date-time",
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "title": "Startedat"
-            },
-            "firstResponseAt": {
-              "anyOf": [
-                {
-                  "format": "date-time",
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "title": "Firstresponseat"
-            },
-            "finishedAt": {
-              "anyOf": [
-                {
-                  "format": "date-time",
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "title": "Finishedat"
-            },
-            "durationMs": {
-              "anyOf": [
-                {
-                  "type": "number"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "title": "Durationms"
-            },
-            "timeToFirstResponseMs": {
-              "anyOf": [
-                {
-                  "type": "number"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "title": "Timetofirstresponsems"
-            }
-          },
-          "required": [
-            "id",
-            "status",
-            "lastSequence",
-            "cancelRequested",
-            "createdAt"
-          ],
-          "title": "AgentRunOut",
-          "type": "object"
-        }
-      },
-      "properties": {
-        "threadId": {
-          "format": "uuid",
-          "title": "Threadid",
-          "type": "string"
-        },
-        "sampleSize": {
-          "minimum": 0,
-          "title": "Samplesize",
-          "type": "integer"
-        },
-        "completionRate": {
-          "maximum": 1,
-          "minimum": 0,
-          "title": "Completionrate",
-          "type": "number"
-        },
-        "evidencePassRate": {
-          "anyOf": [
-            {
-              "maximum": 1,
-              "minimum": 0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Evidencepassrate"
-        },
-        "contextualityRate": {
-          "anyOf": [
-            {
-              "maximum": 1,
-              "minimum": 0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Contextualityrate"
-        },
-        "groundingRate": {
-          "anyOf": [
-            {
-              "maximum": 1,
-              "minimum": 0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Groundingrate"
-        },
-        "averageQualityScore": {
-          "anyOf": [
-            {
-              "maximum": 100,
-              "minimum": 0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Averagequalityscore"
-        },
-        "averageDepthScore": {
-          "anyOf": [
-            {
-              "maximum": 100,
-              "minimum": 0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Averagedepthscore"
-        },
-        "averageDurationMs": {
-          "anyOf": [
-            {
-              "minimum": 0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Averagedurationms"
-        },
-        "p50DurationMs": {
-          "anyOf": [
-            {
-              "minimum": 0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "P50Durationms"
-        },
-        "p95DurationMs": {
-          "anyOf": [
-            {
-              "minimum": 0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "P95Durationms"
-        },
-        "averageTimeToFirstResponseMs": {
-          "anyOf": [
-            {
-              "minimum": 0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Averagetimetofirstresponsems"
-        },
-        "p50TimeToFirstResponseMs": {
-          "anyOf": [
-            {
-              "minimum": 0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "P50Timetofirstresponsems"
-        },
-        "recentRuns": {
-          "items": {
-            "$ref": "#/$defs/AgentRunMetricOut"
-          },
-          "title": "Recentruns",
-          "type": "array"
-        }
-      },
-      "required": [
-        "threadId",
-        "sampleSize",
-        "completionRate"
-      ],
-      "title": "AgentThreadMetricsOut",
       "type": "object"
     },
     "MessageOut": {
@@ -7360,6 +6737,7 @@
             "cancel_taxonomy_change",
             "create_category",
             "create_subcategory",
+            "create_taxonomy_path",
             "select_category",
             "select_transaction_type",
             "select_subcategory",
@@ -7368,6 +6746,9 @@
             "revisit_transaction_step",
             "cancel_transaction_draft",
             "cancel_pending_action",
+            "edit_budget",
+            "request_delete_budget",
+            "delete_budget",
             "save_budget",
             "save_goal",
             "contribute_goal",
@@ -7386,7 +6767,11 @@
             "cancel_remove_transaction",
             "merge_reconciliation",
             "separate_reconciliation",
-            "resolve_clarification"
+            "resolve_clarification",
+            "rename_conversation",
+            "submit_operation",
+            "approve_operation",
+            "cancel_operation"
           ],
           "title": "WidgetActionId",
           "type": "string"
@@ -7413,22 +6798,18 @@
             "confirmation_card",
             "transaction_preview",
             "transaction_edit",
-            "transaction_list",
-            "data_table",
             "data_chart",
-            "data_visualization",
-            "financial_summary",
-            "analysis_table",
             "avoidable_expenses",
             "insight_card",
             "budget_progress",
             "goal_progress",
-            "scenario_analysis",
             "loan_calculator",
-            "loan_strategy",
             "investment_projection",
             "reconciliation_review",
-            "import_review"
+            "import_review",
+            "related_questions",
+            "operation_form",
+            "operation_approval"
           ],
           "title": "WidgetType",
           "type": "string"
@@ -7466,6 +6847,11 @@
           "format": "date-time",
           "title": "Created At",
           "type": "string"
+        },
+        "delivered_at": {
+          "format": "date-time",
+          "title": "Delivered At",
+          "type": "string"
         }
       },
       "required": [
@@ -7474,7 +6860,8 @@
         "content",
         "widgets",
         "citations",
-        "created_at"
+        "created_at",
+        "delivered_at"
       ],
       "title": "MessageOut",
       "type": "object"
@@ -7544,6 +6931,11 @@
               "format": "date-time",
               "title": "Created At",
               "type": "string"
+            },
+            "delivered_at": {
+              "format": "date-time",
+              "title": "Delivered At",
+              "type": "string"
             }
           },
           "required": [
@@ -7552,7 +6944,8 @@
             "content",
             "widgets",
             "citations",
-            "created_at"
+            "created_at",
+            "delivered_at"
           ],
           "title": "MessageOut",
           "type": "object"
@@ -7634,6 +7027,7 @@
             "cancel_taxonomy_change",
             "create_category",
             "create_subcategory",
+            "create_taxonomy_path",
             "select_category",
             "select_transaction_type",
             "select_subcategory",
@@ -7642,6 +7036,9 @@
             "revisit_transaction_step",
             "cancel_transaction_draft",
             "cancel_pending_action",
+            "edit_budget",
+            "request_delete_budget",
+            "delete_budget",
             "save_budget",
             "save_goal",
             "contribute_goal",
@@ -7660,7 +7057,11 @@
             "cancel_remove_transaction",
             "merge_reconciliation",
             "separate_reconciliation",
-            "resolve_clarification"
+            "resolve_clarification",
+            "rename_conversation",
+            "submit_operation",
+            "approve_operation",
+            "cancel_operation"
           ],
           "title": "WidgetActionId",
           "type": "string"
@@ -7687,22 +7088,18 @@
             "confirmation_card",
             "transaction_preview",
             "transaction_edit",
-            "transaction_list",
-            "data_table",
             "data_chart",
-            "data_visualization",
-            "financial_summary",
-            "analysis_table",
             "avoidable_expenses",
             "insight_card",
             "budget_progress",
             "goal_progress",
-            "scenario_analysis",
             "loan_calculator",
-            "loan_strategy",
             "investment_projection",
             "reconciliation_review",
-            "import_review"
+            "import_review",
+            "related_questions",
+            "operation_form",
+            "operation_approval"
           ],
           "title": "WidgetType",
           "type": "string"
@@ -7981,6 +7378,11 @@
               "format": "date-time",
               "title": "Created At",
               "type": "string"
+            },
+            "delivered_at": {
+              "format": "date-time",
+              "title": "Delivered At",
+              "type": "string"
             }
           },
           "required": [
@@ -7989,7 +7391,8 @@
             "content",
             "widgets",
             "citations",
-            "created_at"
+            "created_at",
+            "delivered_at"
           ],
           "title": "MessageOut",
           "type": "object"
@@ -8071,6 +7474,7 @@
             "cancel_taxonomy_change",
             "create_category",
             "create_subcategory",
+            "create_taxonomy_path",
             "select_category",
             "select_transaction_type",
             "select_subcategory",
@@ -8079,6 +7483,9 @@
             "revisit_transaction_step",
             "cancel_transaction_draft",
             "cancel_pending_action",
+            "edit_budget",
+            "request_delete_budget",
+            "delete_budget",
             "save_budget",
             "save_goal",
             "contribute_goal",
@@ -8097,7 +7504,11 @@
             "cancel_remove_transaction",
             "merge_reconciliation",
             "separate_reconciliation",
-            "resolve_clarification"
+            "resolve_clarification",
+            "rename_conversation",
+            "submit_operation",
+            "approve_operation",
+            "cancel_operation"
           ],
           "title": "WidgetActionId",
           "type": "string"
@@ -8124,22 +7535,18 @@
             "confirmation_card",
             "transaction_preview",
             "transaction_edit",
-            "transaction_list",
-            "data_table",
             "data_chart",
-            "data_visualization",
-            "financial_summary",
-            "analysis_table",
             "avoidable_expenses",
             "insight_card",
             "budget_progress",
             "goal_progress",
-            "scenario_analysis",
             "loan_calculator",
-            "loan_strategy",
             "investment_projection",
             "reconciliation_review",
-            "import_review"
+            "import_review",
+            "related_questions",
+            "operation_form",
+            "operation_approval"
           ],
           "title": "WidgetType",
           "type": "string"
@@ -8368,8 +7775,455 @@
       "title": "OverviewCategoryOut",
       "type": "object"
     },
+    "OverviewTrendPointOut": {
+      "properties": {
+        "day": {
+          "maximum": 31,
+          "minimum": 1,
+          "title": "Day",
+          "type": "integer"
+        },
+        "date": {
+          "format": "date",
+          "title": "Date",
+          "type": "string"
+        },
+        "incomeMinor": {
+          "title": "Incomeminor",
+          "type": "integer"
+        },
+        "spentMinor": {
+          "title": "Spentminor",
+          "type": "integer"
+        },
+        "previousIncomeMinor": {
+          "title": "Previousincomeminor",
+          "type": "integer"
+        },
+        "previousSpentMinor": {
+          "title": "Previousspentminor",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "day",
+        "date",
+        "incomeMinor",
+        "spentMinor",
+        "previousIncomeMinor",
+        "previousSpentMinor"
+      ],
+      "title": "OverviewTrendPointOut",
+      "type": "object"
+    },
+    "OverviewTransactionOut": {
+      "$defs": {
+        "TransactionType": {
+          "enum": [
+            "expense",
+            "income",
+            "transfer",
+            "investment",
+            "loan_payment",
+            "refund",
+            "reimbursement",
+            "cash_withdrawal",
+            "cash_deposit",
+            "unknown"
+          ],
+          "title": "TransactionType",
+          "type": "string"
+        }
+      },
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "transactionType": {
+          "$ref": "#/$defs/TransactionType"
+        },
+        "amountMinor": {
+          "title": "Amountminor",
+          "type": "integer"
+        },
+        "currency": {
+          "maxLength": 3,
+          "minLength": 3,
+          "title": "Currency",
+          "type": "string"
+        },
+        "merchant": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Merchant"
+        },
+        "transactionAt": {
+          "format": "date-time",
+          "title": "Transactionat",
+          "type": "string"
+        },
+        "category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Category"
+        },
+        "account": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Account"
+        }
+      },
+      "required": [
+        "id",
+        "transactionType",
+        "amountMinor",
+        "currency",
+        "transactionAt"
+      ],
+      "title": "OverviewTransactionOut",
+      "type": "object"
+    },
+    "OverviewAccountOut": {
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "accountType": {
+          "title": "Accounttype",
+          "type": "string"
+        },
+        "institution": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Institution"
+        },
+        "mask": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mask"
+        },
+        "balanceMinor": {
+          "title": "Balanceminor",
+          "type": "integer"
+        },
+        "currency": {
+          "maxLength": 3,
+          "minLength": 3,
+          "title": "Currency",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "accountType",
+        "balanceMinor",
+        "currency"
+      ],
+      "title": "OverviewAccountOut",
+      "type": "object"
+    },
+    "OverviewBudgetOut": {
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "categoryId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Categoryid"
+        },
+        "categorySlug": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Categoryslug"
+        },
+        "category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Category"
+        },
+        "amountMinor": {
+          "minimum": 0,
+          "title": "Amountminor",
+          "type": "integer"
+        },
+        "spentMinor": {
+          "minimum": 0,
+          "title": "Spentminor",
+          "type": "integer"
+        },
+        "remainingMinor": {
+          "minimum": 0,
+          "title": "Remainingminor",
+          "type": "integer"
+        },
+        "overMinor": {
+          "minimum": 0,
+          "title": "Overminor",
+          "type": "integer"
+        },
+        "percentUsed": {
+          "minimum": 0,
+          "title": "Percentused",
+          "type": "number"
+        },
+        "currency": {
+          "maxLength": 3,
+          "minLength": 3,
+          "title": "Currency",
+          "type": "string"
+        },
+        "period": {
+          "title": "Period",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "amountMinor",
+        "spentMinor",
+        "remainingMinor",
+        "overMinor",
+        "percentUsed",
+        "currency",
+        "period"
+      ],
+      "title": "OverviewBudgetOut",
+      "type": "object"
+    },
     "OverviewOut": {
       "$defs": {
+        "OverviewAccountOut": {
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "accountType": {
+              "title": "Accounttype",
+              "type": "string"
+            },
+            "institution": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Institution"
+            },
+            "mask": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Mask"
+            },
+            "balanceMinor": {
+              "title": "Balanceminor",
+              "type": "integer"
+            },
+            "currency": {
+              "maxLength": 3,
+              "minLength": 3,
+              "title": "Currency",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "accountType",
+            "balanceMinor",
+            "currency"
+          ],
+          "title": "OverviewAccountOut",
+          "type": "object"
+        },
+        "OverviewBudgetOut": {
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "categoryId": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Categoryid"
+            },
+            "categorySlug": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Categoryslug"
+            },
+            "category": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Category"
+            },
+            "amountMinor": {
+              "minimum": 0,
+              "title": "Amountminor",
+              "type": "integer"
+            },
+            "spentMinor": {
+              "minimum": 0,
+              "title": "Spentminor",
+              "type": "integer"
+            },
+            "remainingMinor": {
+              "minimum": 0,
+              "title": "Remainingminor",
+              "type": "integer"
+            },
+            "overMinor": {
+              "minimum": 0,
+              "title": "Overminor",
+              "type": "integer"
+            },
+            "percentUsed": {
+              "minimum": 0,
+              "title": "Percentused",
+              "type": "number"
+            },
+            "currency": {
+              "maxLength": 3,
+              "minLength": 3,
+              "title": "Currency",
+              "type": "string"
+            },
+            "period": {
+              "title": "Period",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "amountMinor",
+            "spentMinor",
+            "remainingMinor",
+            "overMinor",
+            "percentUsed",
+            "currency",
+            "period"
+          ],
+          "title": "OverviewBudgetOut",
+          "type": "object"
+        },
         "OverviewCategoryOut": {
           "properties": {
             "id": {
@@ -8542,6 +8396,135 @@
           ],
           "title": "OverviewSummaryOut",
           "type": "object"
+        },
+        "OverviewTransactionOut": {
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "transactionType": {
+              "$ref": "#/$defs/TransactionType"
+            },
+            "amountMinor": {
+              "title": "Amountminor",
+              "type": "integer"
+            },
+            "currency": {
+              "maxLength": 3,
+              "minLength": 3,
+              "title": "Currency",
+              "type": "string"
+            },
+            "merchant": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Merchant"
+            },
+            "transactionAt": {
+              "format": "date-time",
+              "title": "Transactionat",
+              "type": "string"
+            },
+            "category": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Category"
+            },
+            "account": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Account"
+            }
+          },
+          "required": [
+            "id",
+            "transactionType",
+            "amountMinor",
+            "currency",
+            "transactionAt"
+          ],
+          "title": "OverviewTransactionOut",
+          "type": "object"
+        },
+        "OverviewTrendPointOut": {
+          "properties": {
+            "day": {
+              "maximum": 31,
+              "minimum": 1,
+              "title": "Day",
+              "type": "integer"
+            },
+            "date": {
+              "format": "date",
+              "title": "Date",
+              "type": "string"
+            },
+            "incomeMinor": {
+              "title": "Incomeminor",
+              "type": "integer"
+            },
+            "spentMinor": {
+              "title": "Spentminor",
+              "type": "integer"
+            },
+            "previousIncomeMinor": {
+              "title": "Previousincomeminor",
+              "type": "integer"
+            },
+            "previousSpentMinor": {
+              "title": "Previousspentminor",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "day",
+            "date",
+            "incomeMinor",
+            "spentMinor",
+            "previousIncomeMinor",
+            "previousSpentMinor"
+          ],
+          "title": "OverviewTrendPointOut",
+          "type": "object"
+        },
+        "TransactionType": {
+          "enum": [
+            "expense",
+            "income",
+            "transfer",
+            "investment",
+            "loan_payment",
+            "refund",
+            "reimbursement",
+            "cash_withdrawal",
+            "cash_deposit",
+            "unknown"
+          ],
+          "title": "TransactionType",
+          "type": "string"
         }
       },
       "properties": {
@@ -8557,12 +8540,44 @@
           },
           "title": "Categories",
           "type": "array"
+        },
+        "budgets": {
+          "items": {
+            "$ref": "#/$defs/OverviewBudgetOut"
+          },
+          "title": "Budgets",
+          "type": "array"
+        },
+        "trend": {
+          "items": {
+            "$ref": "#/$defs/OverviewTrendPointOut"
+          },
+          "title": "Trend",
+          "type": "array"
+        },
+        "recentTransactions": {
+          "items": {
+            "$ref": "#/$defs/OverviewTransactionOut"
+          },
+          "title": "Recenttransactions",
+          "type": "array"
+        },
+        "accounts": {
+          "items": {
+            "$ref": "#/$defs/OverviewAccountOut"
+          },
+          "title": "Accounts",
+          "type": "array"
         }
       },
       "required": [
         "period",
         "summary",
-        "categories"
+        "categories",
+        "budgets",
+        "trend",
+        "recentTransactions",
+        "accounts"
       ],
       "title": "OverviewOut",
       "type": "object"
@@ -9160,11 +9175,30 @@
               "format": "uuid",
               "title": "Message Id",
               "type": "string"
+            },
+            "user_message_id": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "User Message Id"
+            },
+            "delivered_at": {
+              "format": "date-time",
+              "title": "Delivered At",
+              "type": "string"
             }
           },
           "required": [
             "conversation_id",
-            "message_id"
+            "message_id",
+            "delivered_at"
           ],
           "title": "AgentResponse",
           "type": "object"
@@ -9308,6 +9342,7 @@
             "cancel_taxonomy_change",
             "create_category",
             "create_subcategory",
+            "create_taxonomy_path",
             "select_category",
             "select_transaction_type",
             "select_subcategory",
@@ -9316,6 +9351,9 @@
             "revisit_transaction_step",
             "cancel_transaction_draft",
             "cancel_pending_action",
+            "edit_budget",
+            "request_delete_budget",
+            "delete_budget",
             "save_budget",
             "save_goal",
             "contribute_goal",
@@ -9334,7 +9372,11 @@
             "cancel_remove_transaction",
             "merge_reconciliation",
             "separate_reconciliation",
-            "resolve_clarification"
+            "resolve_clarification",
+            "rename_conversation",
+            "submit_operation",
+            "approve_operation",
+            "cancel_operation"
           ],
           "title": "WidgetActionId",
           "type": "string"
@@ -9361,22 +9403,18 @@
             "confirmation_card",
             "transaction_preview",
             "transaction_edit",
-            "transaction_list",
-            "data_table",
             "data_chart",
-            "data_visualization",
-            "financial_summary",
-            "analysis_table",
             "avoidable_expenses",
             "insight_card",
             "budget_progress",
             "goal_progress",
-            "scenario_analysis",
             "loan_calculator",
-            "loan_strategy",
             "investment_projection",
             "reconciliation_review",
-            "import_review"
+            "import_review",
+            "related_questions",
+            "operation_form",
+            "operation_approval"
           ],
           "title": "WidgetType",
           "type": "string"
@@ -9452,33 +9490,28 @@
     },
     "AgentModelSet": {
       "properties": {
-        "router": {
-          "title": "Router",
+        "operator": {
+          "title": "Operator",
           "type": "string"
         },
-        "transaction": {
-          "title": "Transaction",
-          "type": "string"
-        },
-        "analysis": {
-          "title": "Analysis",
+        "planner": {
+          "title": "Planner",
           "type": "string"
         },
         "validator": {
           "title": "Validator",
           "type": "string"
         },
-        "reconciliation": {
-          "title": "Reconciliation",
+        "reconciler": {
+          "title": "Reconciler",
           "type": "string"
         }
       },
       "required": [
-        "router",
-        "transaction",
-        "analysis",
+        "operator",
+        "planner",
         "validator",
-        "reconciliation"
+        "reconciler"
       ],
       "title": "AgentModelSet",
       "type": "object"
@@ -9487,33 +9520,28 @@
       "$defs": {
         "AgentModelSet": {
           "properties": {
-            "router": {
-              "title": "Router",
+            "operator": {
+              "title": "Operator",
               "type": "string"
             },
-            "transaction": {
-              "title": "Transaction",
-              "type": "string"
-            },
-            "analysis": {
-              "title": "Analysis",
+            "planner": {
+              "title": "Planner",
               "type": "string"
             },
             "validator": {
               "title": "Validator",
               "type": "string"
             },
-            "reconciliation": {
-              "title": "Reconciliation",
+            "reconciler": {
+              "title": "Reconciler",
               "type": "string"
             }
           },
           "required": [
-            "router",
-            "transaction",
-            "analysis",
+            "operator",
+            "planner",
             "validator",
-            "reconciliation"
+            "reconciler"
           ],
           "title": "AgentModelSet",
           "type": "object"
@@ -9521,7 +9549,10 @@
       },
       "properties": {
         "status": {
-          "const": "ok",
+          "enum": [
+            "ok",
+            "degraded"
+          ],
           "title": "Status",
           "type": "string"
         },
@@ -9556,13 +9587,19 @@
             }
           ],
           "default": null
+        },
+        "operationCatalog": {
+          "additionalProperties": true,
+          "title": "Operationcatalog",
+          "type": "object"
         }
       },
       "required": [
         "status",
         "time",
         "database",
-        "agent_mode"
+        "agent_mode",
+        "operationCatalog"
       ],
       "title": "HealthOut",
       "type": "object"
@@ -9657,33 +9694,28 @@
         },
         "AgentModelSet": {
           "properties": {
-            "router": {
-              "title": "Router",
+            "operator": {
+              "title": "Operator",
               "type": "string"
             },
-            "transaction": {
-              "title": "Transaction",
-              "type": "string"
-            },
-            "analysis": {
-              "title": "Analysis",
+            "planner": {
+              "title": "Planner",
               "type": "string"
             },
             "validator": {
               "title": "Validator",
               "type": "string"
             },
-            "reconciliation": {
-              "title": "Reconciliation",
+            "reconciler": {
+              "title": "Reconciler",
               "type": "string"
             }
           },
           "required": [
-            "router",
-            "transaction",
-            "analysis",
+            "operator",
+            "planner",
             "validator",
-            "reconciliation"
+            "reconciler"
           ],
           "title": "AgentModelSet",
           "type": "object"
@@ -10487,18 +10519,6 @@
         "googleSignInAvailable": {
           "title": "Googlesigninavailable",
           "type": "boolean"
-        },
-        "sessionToken": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Sessiontoken"
         }
       },
       "required": [
@@ -10780,6 +10800,26 @@
           "default": null,
           "title": "Badge"
         },
+        "input": {
+          "anyOf": [
+            {},
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input"
+        },
+        "output": {
+          "anyOf": [
+            {},
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output"
+        },
         "durationMs": {
           "minimum": 0,
           "title": "Durationms",
@@ -10789,6 +10829,31 @@
           "minimum": 0,
           "title": "Cumulativems",
           "type": "number"
+        },
+        "failureSummary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Failuresummary"
+        },
+        "modelPassCount": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Modelpasscount"
         }
       },
       "required": [
@@ -10813,22 +10878,18 @@
     "confirmation_card": "ConfirmationCardData",
     "transaction_preview": "TransactionPreviewData",
     "transaction_edit": "TransactionEditData",
-    "transaction_list": "TransactionListData",
-    "data_table": "DataTableData",
     "data_chart": "DataChartData",
-    "data_visualization": "DataVisualizationData",
-    "financial_summary": "FinancialSummaryData",
-    "analysis_table": "AnalysisTableData",
     "avoidable_expenses": "AvoidableExpensesData",
     "insight_card": "InsightCardData",
     "budget_progress": "BudgetProgressData",
     "goal_progress": "GoalProgressData",
-    "scenario_analysis": "ScenarioAnalysisData",
     "loan_calculator": "LoanCalculatorData",
-    "loan_strategy": "LoanStrategyData",
     "investment_projection": "InvestmentProjectionData",
     "reconciliation_review": "ReconciliationReviewData",
-    "import_review": "ImportReviewData"
+    "import_review": "ImportReviewData",
+    "related_questions": "RelatedQuestionsData",
+    "operation_form": "OperationFormData",
+    "operation_approval": "OperationApprovalData"
   },
   "actionPayloadModels": {
     "set_spend_nature": "TransactionSpendNaturePayload",
@@ -10838,6 +10899,7 @@
     "cancel_taxonomy_change": "TaxonomyCancelPayload",
     "create_category": "CreateCategoryPayload",
     "create_subcategory": "CreateSubcategoryPayload",
+    "create_taxonomy_path": "CreateTaxonomyPathPayload",
     "select_category": "SelectCategoryPayload",
     "select_transaction_type": "SelectTransactionTypePayload",
     "select_subcategory": "SelectSubcategoryPayload",
@@ -10846,6 +10908,9 @@
     "revisit_transaction_step": "RevisitTransactionStepPayload",
     "cancel_transaction_draft": "DraftActionPayload",
     "cancel_pending_action": "CancelPendingActionPayload",
+    "edit_budget": "BudgetActionPayload",
+    "request_delete_budget": "BudgetActionPayload",
+    "delete_budget": "BudgetActionPayload",
     "save_budget": "SaveBudgetPayload",
     "save_goal": "SaveGoalPayload",
     "contribute_goal": "ContributeGoalPayload",
@@ -10864,7 +10929,11 @@
     "cancel_remove_transaction": "TransactionActionPayload",
     "merge_reconciliation": "ReconciliationActionPayload",
     "separate_reconciliation": "ReconciliationActionPayload",
-    "resolve_clarification": "ResolveClarificationPayload"
+    "resolve_clarification": "ResolveClarificationPayload",
+    "rename_conversation": "ConversationRenameIn",
+    "submit_operation": "OperationActionPayload",
+    "approve_operation": "OperationActionPayload",
+    "cancel_operation": "OperationActionPayload"
   },
-  "schemaHash": "d620a6d8a00bac4facd487eb4530945c6d3efeec3adb6445dd64dc1aef1ffd30"
+  "schemaHash": "db0bea3b92fd6fda1917b2413d1fd21f6a0f80e442dafd879a64d01848f3f655"
 }

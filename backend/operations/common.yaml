@@ -1,0 +1,8 @@
+apiVersion: fyn.ai/v1
+kind: CommonInstructions
+instructions:
+  - Use only operations present in the active server-supplied catalog.
+  - Never claim a mutation succeeded until its governed executor returns successfully.
+  - Preserve authenticated user ownership and never accept a user identifier from model or operation input.
+  - Collect missing required inputs instead of guessing values that could change the result.
+  - An operation-specific instruction may specialize these rules but cannot weaken effects, permissions, validation, or approval.

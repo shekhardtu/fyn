@@ -25,6 +25,18 @@ dependencies = [
   # rotation and audience checks that make the credential mean anything.
   "google-auth>=2.35,<3",
   "requests>=2.32,<3",
+  # Human-authored operation manifests, strict input validation, and runtime
+  # catalog reloads. These are explicit dependencies rather than relying on
+  # uvicorn's optional dependency tree.
+  "PyYAML>=6.0,<7",
+  "jsonschema>=4.23,<5",
+  "watchfiles>=1.0,<2",
+  # Centralized natural-language date resolution with an explicit relative
+  # base and timezone; finance-specific month policies remain in our adapter.
+  "dateparser>=1.2,<2",
+  # AST-level validation of model-authored SQL in the governed lane: parse,
+  # qualify against the source manifest, transpile per dialect. Never regex.
+  "sqlglot>=30,<31",
   "eval-type-backport>=0.2,<1; python_version < '3.10'",
 ]
 

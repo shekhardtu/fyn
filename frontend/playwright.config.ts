@@ -1,4 +1,4 @@
-import { defineConfig } from "@playwright/test";
+import { defineConfig, devices } from "@playwright/test";
 import { STORAGE_STATE } from "./e2e/test-thread";
 
 const APP_URL = process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:3000";
@@ -22,9 +22,18 @@ export default defineConfig({
     { name: "setup", testMatch: /.*\.setup\.ts/ },
     {
       name: "browser",
-      testIgnore: /.*\.setup\.ts/,
+      testIgnore: [/.*\.setup\.ts/, /mobile\.spec\.ts/],
       dependencies: ["setup"],
       use: { storageState: STORAGE_STATE },
+    },
+    // The responsive layout was previously exercised by no test at any phone
+    // size; this project keeps the drawer nav and no-sideways-scroll rules
+    // honest on a real device profile.
+    {
+      name: "mobile",
+      testMatch: /mobile\.spec\.ts/,
+      dependencies: ["setup"],
+      use: { ...devices["Pixel 7"], storageState: STORAGE_STATE },
     },
   ],
 });

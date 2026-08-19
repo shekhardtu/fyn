@@ -1,129 +1,172 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+
 from ..domain import ValueEnum
+from ..operation_types import AccessMode, ConfirmationPolicy, DataEffect, ValidationMode
+from ..operations.catalog import operation_catalog
 
 
-class CapabilityId(ValueEnum):
-    CONVERSATION = "conversation"
-    REQUEST_CLARIFICATION = "request_clarification"
-    CREATE_TRANSACTION_DRAFT = "create_transaction_draft"
-    FIND_TRANSACTIONS_FOR_REMOVAL = "find_transactions_for_removal"
-    MANAGE_TAXONOMY = "manage_taxonomy"
-    SEARCH_TRANSACTIONS = "search_transactions"
-    GET_SPENDING_SUMMARY = "get_spending_summary"
-    GET_MONTHLY_COMPARISON = "get_monthly_comparison"
-    GET_CHANGE_DRIVERS = "get_change_drivers"
-    GET_BIGGEST_EXPENSES = "get_biggest_expenses"
-    GET_RECURRING_EXPENSES = "get_recurring_expenses"
-    CALCULATE_AFFORDABILITY = "calculate_affordability"
-    CALCULATE_LOAN = "calculate_loan"
-    CALCULATE_INVESTMENT_PROJECTION = "calculate_investment_projection"
-    SHOW_RECONCILIATION_REVIEW = "show_reconciliation_review"
-    RUN_ANALYSIS_HARNESS = "run_analysis_harness"
-    RUN_QUERY_BUNDLE = "run_query_bundle"
-    VISUALIZE_COMPUTATION = "visualize_computation"
-    PLANNING = "planning"
-    UNKNOWN = "unknown"
+def _enum_member(operation_id: str) -> str:
+    """Turn a protected file id into a stable Python enum member name."""
+    return re.sub(r"[^A-Z0-9]+", "_", operation_id.upper()).strip("_")
 
 
-class AccessMode(ValueEnum):
-    CONVERSATION = "conversation"
-    READ = "read"
-    COMPUTE = "compute"
-    WRITE = "write"
-    WORKFLOW = "workflow"
-    UNKNOWN = "unknown"
+def _protected_capability_members() -> dict[str, str]:
+    operations = operation_catalog().snapshot().core_operations
+    members = {_enum_member(operation.id): operation.id for operation in operations}
+    if len(members) != len(operations):
+        raise RuntimeError("Protected operation ids must have unique normalized names")
+    return members
 
 
-class ExecutorKind(ValueEnum):
-    CONVERSATION = "conversation"
-    CLARIFICATION = "clarification"
-    DRAFT = "draft"
-    REMOVAL = "removal"
-    TAXONOMY = "taxonomy"
-    QUERY = "query"
-    HARNESS = "harness"
-    BUNDLE = "bundle"
-    COMPUTED_VISUAL = "computed_visual"
-    PLANNING = "planning"
-    UNKNOWN = "unknown"
-
-
-class ValidationMode(ValueEnum):
-    """How much independent semantic review a routed decision needs.
-
-    Typed read and calculator contracts are checked by deterministic domain
-    code. A second model is reserved for mutation intent and generated or
-    coordinated workflows where a plausible-looking route can carry a much
-    larger semantic consequence.
-    """
-
-    DETERMINISTIC = "deterministic"
-    MODEL = "model"
+# This enum is generated from the protected files at process start so Pydantic
+# and model tool schemas retain a closed enum. Its membership is no longer
+# duplicated in source code. Managed operations remain runtime-dynamic through
+# the generic managed-operation capability and never need an enum member.
+CapabilityId = ValueEnum(
+    "CapabilityId",
+    _protected_capability_members(),
+    module=__name__,
+)
 
 
 @dataclass(frozen=True)
 class CapabilitySpec:
     id: CapabilityId
     access: AccessMode
-    executor: ExecutorKind
+    primitive_refs: tuple[str, ...]
     execution_label: str
+    maximum_effect: DataEffect
+    confirmation: ConfirmationPolicy
     metric: str | None = None
     validation: ValidationMode = ValidationMode.DETERMINISTIC
 
     @property
     def is_safe_read(self) -> bool:
-        return self.access in {AccessMode.READ, AccessMode.COMPUTE}
+        return (
+            self.access in {AccessMode.READ, AccessMode.COMPUTE}
+            and self.maximum_effect is DataEffect.NONE
+        )
 
     @property
     def requires_model_validation(self) -> bool:
         return self.validation is ValidationMode.MODEL
 
+    @property
+    def can_mutate(self) -> bool:
+        return self.maximum_effect is DataEffect.MUTATION
 
-CAPABILITY_REGISTRY: tuple[CapabilitySpec, ...] = (
-    CapabilitySpec(CapabilityId.CONVERSATION, AccessMode.CONVERSATION, ExecutorKind.CONVERSATION, "Writing contextual response"),
-    CapabilitySpec(CapabilityId.REQUEST_CLARIFICATION, AccessMode.WORKFLOW, ExecutorKind.CLARIFICATION, "Preparing an interactive clarification"),
-    CapabilitySpec(CapabilityId.CREATE_TRANSACTION_DRAFT, AccessMode.WRITE, ExecutorKind.DRAFT, "Extracting and validating transaction", validation=ValidationMode.MODEL),
-    CapabilitySpec(CapabilityId.FIND_TRANSACTIONS_FOR_REMOVAL, AccessMode.READ, ExecutorKind.REMOVAL, "Finding transactions eligible for removal", validation=ValidationMode.MODEL),
-    CapabilitySpec(CapabilityId.MANAGE_TAXONOMY, AccessMode.WORKFLOW, ExecutorKind.TAXONOMY, "Preparing a governed taxonomy change", validation=ValidationMode.MODEL),
-    CapabilitySpec(CapabilityId.SEARCH_TRANSACTIONS, AccessMode.READ, ExecutorKind.QUERY, "Searching canonical transactions"),
-    CapabilitySpec(CapabilityId.GET_SPENDING_SUMMARY, AccessMode.READ, ExecutorKind.QUERY, "Calculating spending summary"),
-    CapabilitySpec(CapabilityId.GET_MONTHLY_COMPARISON, AccessMode.READ, ExecutorKind.QUERY, "Comparing monthly spending", "monthly_comparison"),
-    CapabilitySpec(CapabilityId.GET_CHANGE_DRIVERS, AccessMode.READ, ExecutorKind.QUERY, "Finding spending change drivers", "change_drivers"),
-    CapabilitySpec(CapabilityId.GET_BIGGEST_EXPENSES, AccessMode.READ, ExecutorKind.QUERY, "Finding biggest expenses", "biggest_expenses"),
-    CapabilitySpec(CapabilityId.GET_RECURRING_EXPENSES, AccessMode.READ, ExecutorKind.QUERY, "Finding recurring expenses", "recurring_expenses"),
-    CapabilitySpec(CapabilityId.CALCULATE_AFFORDABILITY, AccessMode.COMPUTE, ExecutorKind.QUERY, "Calculating affordability", "affordability"),
-    CapabilitySpec(CapabilityId.CALCULATE_LOAN, AccessMode.COMPUTE, ExecutorKind.QUERY, "Opening deterministic loan calculator", "loan"),
-    CapabilitySpec(CapabilityId.CALCULATE_INVESTMENT_PROJECTION, AccessMode.COMPUTE, ExecutorKind.QUERY, "Opening deterministic investment calculator", "investment_projection"),
-    CapabilitySpec(CapabilityId.SHOW_RECONCILIATION_REVIEW, AccessMode.READ, ExecutorKind.QUERY, "Loading reconciliation review", "reconciliation_review"),
-    CapabilitySpec(CapabilityId.RUN_ANALYSIS_HARNESS, AccessMode.READ, ExecutorKind.HARNESS, "Running the governed analysis harness", validation=ValidationMode.MODEL),
-    CapabilitySpec(CapabilityId.RUN_QUERY_BUNDLE, AccessMode.READ, ExecutorKind.BUNDLE, "Running coordinated data views", validation=ValidationMode.MODEL),
-    CapabilitySpec(CapabilityId.VISUALIZE_COMPUTATION, AccessMode.COMPUTE, ExecutorKind.COMPUTED_VISUAL, "Rendering a governed calculation dataset"),
-    CapabilitySpec(CapabilityId.PLANNING, AccessMode.WORKFLOW, ExecutorKind.PLANNING, "Running planning workflow", validation=ValidationMode.MODEL),
-    CapabilitySpec(CapabilityId.UNKNOWN, AccessMode.UNKNOWN, ExecutorKind.UNKNOWN, "Preparing clarification"),
-)
+    def invokes(self, reference: str) -> bool:
+        return reference in self.primitive_refs
 
-_BY_ID = {item.id: item for item in CAPABILITY_REGISTRY}
-_BY_METRIC = {item.metric: item.id for item in CAPABILITY_REGISTRY if item.metric}
 
-if len(_BY_ID) != len(CapabilityId) or set(_BY_ID) != set(CapabilityId):
-    raise RuntimeError("Capability registry must define every capability exactly once")
-if {item.executor for item in CAPABILITY_REGISTRY} != set(ExecutorKind):
-    raise RuntimeError("Capability registry must exercise every executor kind")
+def _spec_from_operation(operation) -> CapabilitySpec:
+    definition = operation.definition
+    return CapabilitySpec(
+        id=CapabilityId(operation.id),
+        access=definition.eligibility.access,
+        primitive_refs=tuple(step.uses for step in definition.execution.steps),
+        execution_label=definition.execution.label,
+        maximum_effect=operation.derived_effect,
+        confirmation=operation.derived_confirmation,
+        metric=definition.execution.metric,
+        validation=definition.execution.validation,
+    )
+
+
+def capability_specs() -> tuple[CapabilitySpec, ...]:
+    """Return live protected capability policy from the active file snapshot."""
+    return tuple(
+        _spec_from_operation(operation)
+        for operation in operation_catalog().snapshot().core_operations
+    )
 
 
 def capability_spec(capability_id: CapabilityId | str) -> CapabilitySpec:
-    return _BY_ID[CapabilityId(capability_id)]
+    operation = operation_catalog().snapshot().operation(str(capability_id))
+    if operation is None or operation.source != "core":
+        raise RuntimeError(f"Protected core operation is missing: {capability_id}")
+    return _spec_from_operation(operation)
 
 
 def capability_for_metric(metric: str | None) -> CapabilityId | None:
-    return _BY_METRIC.get(metric)
+    if metric is None:
+        return None
+    return next((item.id for item in capability_specs() if item.metric == metric), None)
 
 
-def capabilities_for_executor(executor: ExecutorKind) -> frozenset[CapabilityId]:
-    return frozenset(item.id for item in CAPABILITY_REGISTRY if item.executor == executor)
+def capabilities_for_primitives(*references: str) -> frozenset[CapabilityId]:
+    accepted = set(references)
+    return frozenset(
+        item.id for item in capability_specs()
+        if accepted.intersection(item.primitive_refs)
+    )
 
 
-SAFE_READ_CAPABILITIES = frozenset(item.id for item in CAPABILITY_REGISTRY if item.is_safe_read)
-QUERY_CAPABILITIES = capabilities_for_executor(ExecutorKind.QUERY)
+def capability_for_primitive(reference: str) -> CapabilityId:
+    matches = capabilities_for_primitives(reference)
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"Expected one protected capability for {reference}, found {len(matches)}"
+        )
+    return next(iter(matches))
+
+
+def capability_invokes(capability_id: CapabilityId | str, reference: str) -> bool:
+    return capability_spec(capability_id).invokes(reference)
+
+
+def safe_read_capabilities() -> frozenset[CapabilityId]:
+    return frozenset(item.id for item in capability_specs() if item.is_safe_read)
+
+
+def draft_capabilities() -> frozenset[CapabilityId]:
+    return frozenset(
+        item.id for item in capability_specs()
+        if item.maximum_effect is DataEffect.DRAFT
+    )
+
+
+def mutation_capabilities() -> frozenset[CapabilityId]:
+    return frozenset(item.id for item in capability_specs() if item.can_mutate)
+
+
+def query_capabilities() -> frozenset[CapabilityId]:
+    return capabilities_for_primitives(
+        "finance.query@1",
+        "transaction.search@1",
+        "calculator.loan@1",
+        "calculator.investment@1",
+    )
+
+
+def validate_capability_catalog() -> None:
+    specs = capability_specs()
+    if {item.id.value for item in specs} != {
+        operation.id for operation in operation_catalog().snapshot().core_operations
+    }:
+        raise RuntimeError("Capability enum must match protected operation files exactly")
+    if any(not item.primitive_refs for item in specs):
+        raise RuntimeError("Every capability must invoke at least one declared primitive")
+    if any(
+        item.is_safe_read and item.maximum_effect is not DataEffect.NONE
+        for item in specs
+    ):
+        raise RuntimeError("Safe read capabilities cannot have draft or mutation effects")
+    if any(
+        item.maximum_effect is DataEffect.NONE
+        and item.confirmation is not ConfirmationPolicy.NEVER
+        for item in specs
+    ):
+        raise RuntimeError("Effect-free capabilities cannot require confirmation")
+    if any(
+        item.maximum_effect is DataEffect.MUTATION
+        and item.confirmation is ConfirmationPolicy.NEVER
+        for item in specs
+    ):
+        raise RuntimeError("Mutation-capable workflows must declare confirmation")
+
+
+validate_capability_catalog()

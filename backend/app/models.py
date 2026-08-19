@@ -24,7 +24,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .config import DEFAULT_CURRENCY, DEFAULT_TIMEZONE
 from .database import Base
-from .domain import ACTIVE_STATUS, AgentInterruptStatus, AgentRunStatus, AnalysisToolStatus, DraftState, FinancialSourceType, IdentitySource, ImportStatus, ObservationProcessingState, SpendNature, TaxonomyScope, TransactionStatus, TransactionType
+from .domain import ACTIVE_STATUS, AgentInterruptStatus, AgentRunStatus, AnalysisToolStatus, CONVERSATION_TITLE_MAX, DraftState, FinancialSourceType, IdentitySource, ImportStatus, ObservationProcessingState, SpendNature, TaxonomyScope, TransactionStatus, TransactionType
 from .event_time import as_utc, now_utc
 
 
@@ -277,7 +277,7 @@ class MerchantAlias(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class Conversation(UUIDPrimaryKeyMixin, UserOwnedMixin, TimestampMixin, Base):
     __tablename__ = "conversations"
-    title: Mapped[str] = mapped_column(String(160), default="New conversation")
+    title: Mapped[str] = mapped_column(String(CONVERSATION_TITLE_MAX), default="New conversation")
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
     active_analysis_state: Mapped[Optional[dict]] = mapped_column(JSON)
     active_data_scope: Mapped[Optional[dict]] = mapped_column(JSON)
@@ -294,6 +294,14 @@ class Message(UUIDPrimaryKeyMixin, ConversationChildMixin, TimestampMixin, Base)
     content: Mapped[str] = mapped_column(Text, default="")
     widgets: Mapped[list] = mapped_column(JSON, default=list)
     citations: Mapped[list] = mapped_column(JSON, default=list)
+    # Assistant rows are reserved when a turn is admitted so created_at can
+    # preserve transcript order. Delivery is a distinct instant: the point at
+    # which the completed message became available to the client.
+    delivered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=now_utc,
+        server_default=func.now(),
+    )
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
 
 
@@ -315,6 +323,8 @@ class AgentRun(UUIDPrimaryKeyMixin, UserOwnedMixin, ConversationChildMixin, Time
         index=True,
     )
     status: Mapped[str] = mapped_column(String(24), default=AgentRunStatus.QUEUED.value, index=True)
+    task_status: Mapped[str] = mapped_column(String(24), default="pending", index=True)
+    failure_stage: Mapped[Optional[str]] = mapped_column(String(80))
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
     input_payload: Mapped[dict] = mapped_column(JSON, default=dict)
     delivery_mode: Mapped[str] = mapped_column(String(32), default="verified_final")
@@ -322,9 +332,27 @@ class AgentRun(UUIDPrimaryKeyMixin, UserOwnedMixin, ConversationChildMixin, Time
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     first_response_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
     error_code: Mapped[Optional[str]] = mapped_column(String(80))
+    # Only safe, read-only work may install a recovery phase. In particular,
+    # post-answer enrichment can resume without replaying the financial turn
+    # that produced the canonical message.
+    recovery_phase: Mapped[Optional[str]] = mapped_column(String(40), index=True)
+    recovery_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    recovery_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    recovery_claimed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        index=True,
+    )
     __table_args__ = (
         Index("ix_agent_run_thread_status_created", "conversation_id", "status", "created_at"),
+        Index(
+            "ix_agent_run_recovery_queue",
+            "status",
+            "created_at",
+            "id",
+            "recovery_claimed_at",
+        ),
         UniqueConstraint("user_id", "client_message_id", name="uq_agent_run_user_client_message"),
     )
 
@@ -480,45 +508,233 @@ class LoanScenario(UUIDPrimaryKeyMixin, UserOwnedMixin, TimestampMixin, Base):
     result: Mapped[dict] = mapped_column(JSON)
 
 
-class AnalysisTool(UUIDPrimaryKeyMixin, UserOwnedMixin, TimestampMixin, Base):
-    """A generated, declarative, read-only finance analysis capability.
+class AnalysisToolTemplate(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Shared, value-free recipe for a generated read-only analysis.
 
-    Generated tools contain data, not executable Python or arbitrary SQL. The
-    harness validates and compiles their specification through the governed
-    semantic layer before a tool can become active.
+    A template contains only governed structure. Customer filters, dates,
+    timezone, limits, and presentation text are bound on a user-scoped run and
+    must never be persisted here.
     """
 
-    __tablename__ = "analysis_tools"
-    name: Mapped[str] = mapped_column(String(120))
-    description: Mapped[str] = mapped_column(Text)
-    intent_signature: Mapped[str] = mapped_column(String(160), index=True)
-    version: Mapped[int] = mapped_column(Integer, default=1)
+    __tablename__ = "analysis_tool_templates"
+    capability_name: Mapped[str] = mapped_column(String(120))
+    capability_description: Mapped[str] = mapped_column(Text)
+    capability_signature: Mapped[str] = mapped_column(String(240), index=True)
+    template_version: Mapped[str] = mapped_column(String(60))
     status: Mapped[str] = mapped_column(String(24), default=AnalysisToolStatus.DRAFT.value, index=True)
-    specification: Mapped[dict] = mapped_column(JSON)
-    specification_hash: Mapped[str] = mapped_column(String(64), index=True)
+    semantic_registry_version: Mapped[str] = mapped_column(String(60), index=True)
+    source_manifest_hash: Mapped[str] = mapped_column(String(64), index=True)
+    parameter_schema: Mapped[list] = mapped_column(JSON)
+    plan_template: Mapped[dict] = mapped_column(JSON)
+    template_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     validation_report: Mapped[dict] = mapped_column(JSON, default=dict)
     retrieval_embedding: Mapped[Optional[list]] = mapped_column(JSON)
     retrieval_embedding_model: Mapped[Optional[str]] = mapped_column(String(80))
     success_count: Mapped[int] = mapped_column(Integer, default=0)
     failure_count: Mapped[int] = mapped_column(Integer, default=0)
     last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        index=True,
+    )
     __table_args__ = (
-        UniqueConstraint("user_id", "specification_hash", name="uq_analysis_tool_specification"),
-        Index("ix_analysis_tool_discovery", "user_id", "status", "intent_signature"),
+        Index("ix_analysis_template_discovery", "status", "capability_signature"),
+    )
+
+
+class DataSource(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """One connected origin of queryable data.
+
+    The native canonical ledger is a single product-owned row with no owner;
+    every future upload or external connection is a user-owned row. Semantics
+    live in versioned SourceManifest rows, never on the source itself.
+    """
+
+    __tablename__ = "data_sources"
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+    )
+    kind: Mapped[str] = mapped_column(String(40), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    status: Mapped[str] = mapped_column(String(24), default="active", index=True)
+    # Connection material for non-native sources (external_db: url + table
+    # allowlist). The url may embed credentials, so this column must NEVER be
+    # serialized to any client surface — not API responses, manifest documents,
+    # tool descriptions or payloads, logs, or user exports (the export path
+    # redacts it explicitly in user_data.py).
+    config: Mapped[Optional[dict]] = mapped_column(JSON)
+    __table_args__ = (Index("ix_data_source_user_kind", "user_id", "kind"),)
+
+
+class SourceManifest(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """One immutable, versioned semantic description of a data source.
+
+    The document carries provenance-tagged sections (curated, profiled, and
+    later user_stated annotations). A content change always lands as a new
+    version; consumers key on manifest_hash the way templates key on the
+    semantic registry hash.
+    """
+
+    __tablename__ = "source_manifests"
+    data_source_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("data_sources.id", ondelete="CASCADE"),
+        index=True,
+    )
+    version: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(24), default="active", index=True)
+    manifest_hash: Mapped[str] = mapped_column(String(64), index=True)
+    document: Mapped[dict] = mapped_column(JSON)
+    __table_args__ = (
+        UniqueConstraint("data_source_id", "version", name="uq_source_manifest_version"),
+        Index("ix_source_manifest_active", "data_source_id", "status"),
+    )
+
+
+class SourceRecord(UUIDPrimaryKeyMixin, UserOwnedMixin, Base):
+    """One raw row of a user-uploaded spreadsheet data source.
+
+    Rows come from one user's cells, so they are user-owned and never
+    product-global. Each upload replaces the source's rows wholesale; the
+    versioned manifest, not the row set, carries history.
+    """
+
+    __tablename__ = "source_records"
+    data_source_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("data_sources.id", ondelete="CASCADE"),
+        index=True,
+    )
+    row_index: Mapped[int] = mapped_column(Integer)
+    record: Mapped[dict] = mapped_column(JSON, default=dict)
+    __table_args__ = (
+        UniqueConstraint("data_source_id", "row_index", name="uq_source_record_row"),
+    )
+
+
+class SourceAnnotation(UUIDPrimaryKeyMixin, UserOwnedMixin, TimestampMixin, Base):
+    """A user's authoritative statement about one field of a data source.
+
+    ``user_stated`` provenance: annotations survive re-scans and win over
+    inference. One row per (source, field) — a newer statement replaces the
+    row content, so the manifest always carries the user's latest word.
+    """
+
+    __tablename__ = "source_annotations"
+    data_source_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("data_sources.id", ondelete="CASCADE"),
+        index=True,
+    )
+    field: Mapped[str] = mapped_column(String(120))
+    statement: Mapped[str] = mapped_column(Text)
+    # Optional structured half of the statement: when set, this role overrides
+    # the inferred one everywhere deterministic code consumes roles, so a
+    # user's correction actually changes query semantics, not just prose.
+    role: Mapped[Optional[str]] = mapped_column(String(40))
+    __table_args__ = (
+        UniqueConstraint("data_source_id", "field", name="uq_source_annotation_field"),
+    )
+
+
+class EntityLink(UUIDPrimaryKeyMixin, UserOwnedMixin, ConfidenceMixin, TimestampMixin, Base):
+    """One resolved ``alias -> canonical`` spelling for a counterparty.
+
+    Identity resolution unifies the different spellings one user's own data
+    carries for the same merchant across the canonical ledger, uploaded
+    spreadsheets, and connected external databases. Every link is user-owned:
+    a spelling that appears in one person's records is that person's data and
+    never becomes a shared dictionary entry.
+
+    ``confidence`` is inference, never a user statement, so it stays strictly
+    below 1. ``source_id`` is SET NULL: disconnecting a source must not erase
+    an identity the user already relies on.
+    """
+
+    __tablename__ = "entity_links"
+    kind: Mapped[str] = mapped_column(String(20), index=True)
+    canonical: Mapped[str] = mapped_column(String(160), index=True)
+    alias: Mapped[str] = mapped_column(String(160))
+    source_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("data_sources.id", ondelete="SET NULL"),
+        index=True,
+    )
+    __table_args__ = (
+        UniqueConstraint("user_id", "kind", "canonical", "alias", name="uq_entity_link_alias"),
+    )
+
+
+class UserTrait(UUIDPrimaryKeyMixin, UserOwnedMixin, TimestampMixin, Base):
+    """One deterministic customer-data-platform trait derived from canonical data.
+
+    ``computed_at`` and ``freshness_note`` are not decoration: a trait is a
+    summary of data as of a moment, so the stamp travels with the value
+    everywhere the value is read or surfaced. A trait without its stamp would
+    read as current forever.
+    """
+
+    __tablename__ = "user_traits"
+    name: Mapped[str] = mapped_column(String(80), index=True)
+    value: Mapped[dict] = mapped_column(JSON, default=dict)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=now_utc, server_default=func.now()
+    )
+    freshness_note: Mapped[str] = mapped_column(String(200))
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_user_trait_name"),)
+
+
+class UserAnalysisTool(UUIDPrimaryKeyMixin, UserOwnedMixin, TimestampMixin, Base):
+    """A customer's saved view of a shared analysis template."""
+
+    __tablename__ = "user_analysis_tools"
+    template_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("analysis_tool_templates.id", ondelete="CASCADE"),
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(120))
+    description: Mapped[str] = mapped_column(Text)
+    intent_signature: Mapped[str] = mapped_column(String(160), index=True)
+    status: Mapped[str] = mapped_column(String(24), default=AnalysisToolStatus.ACTIVE.value, index=True)
+    success_count: Mapped[int] = mapped_column(Integer, default=0)
+    failure_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        UniqueConstraint("user_id", "template_id", name="uq_user_analysis_tool_template"),
+        Index("ix_user_analysis_tool_discovery", "user_id", "status", "intent_signature"),
     )
 
 
 class AnalysisToolRun(UUIDPrimaryKeyMixin, UserOwnedMixin, TimestampMixin, Base):
-    """Privacy-minimized execution audit for a generated analysis tool."""
+    """User-scoped invocation and readable execution audit."""
 
     __tablename__ = "analysis_tool_runs"
-    tool_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("analysis_tools.id", ondelete="CASCADE"), index=True)
+    template_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("analysis_tool_templates.id", ondelete="SET NULL"),
+        index=True,
+    )
+    user_tool_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("user_analysis_tools.id", ondelete="SET NULL"),
+        index=True,
+    )
     conversation_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("conversations.id", ondelete="SET NULL"), index=True)
     status: Mapped[str] = mapped_column(String(24), index=True)
+    parameters: Mapped[dict] = mapped_column(JSON, default=dict)
     trace: Mapped[list] = mapped_column(JSON, default=list)
     result_hash: Mapped[Optional[str]] = mapped_column(String(64))
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     error_code: Mapped[Optional[str]] = mapped_column(String(80))
+    # The conversation message owns customer prose. A one-way identity avoids
+    # duplicating it here while still enabling exact, user-scoped replay.
+    question_hash: Mapped[Optional[str]] = mapped_column(String(64))
+    run_date: Mapped[Optional[date]] = mapped_column(Date)
+    display_names: Mapped[dict] = mapped_column(JSON, default=dict)
+    __table_args__ = (
+        Index(
+            "ix_analysis_tool_run_replay",
+            "user_id",
+            "question_hash",
+            "status",
+            "created_at",
+        ),
+    )
 
 
 class FinancialObservation(UUIDPrimaryKeyMixin, UserOwnedMixin, TimestampMixin, Base):
@@ -615,6 +831,26 @@ class SavedAnalysis(UUIDPrimaryKeyMixin, UserOwnedMixin, TimestampMixin, Base):
     result: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+class Dashboard(UUIDPrimaryKeyMixin, UserOwnedMixin, TimestampMixin, Base):
+    __tablename__ = "dashboards"
+    name: Mapped[str] = mapped_column(String(120))
+
+
+class DashboardTile(UUIDPrimaryKeyMixin, UserOwnedMixin, TimestampMixin, Base):
+    """One pinned analysis. ``spec`` stores the bound proposal, never a result:
+    every read re-executes it through the governed harness."""
+
+    __tablename__ = "dashboard_tiles"
+    dashboard_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("dashboards.id", ondelete="CASCADE"),
+        index=True,
+    )
+    title: Mapped[str] = mapped_column(String(160))
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    # {"kind": "plan", "proposal": <bound AnalysisToolProposal JSON>}
+    spec: Mapped[dict] = mapped_column(JSON)
+
+
 class UserPreference(UUIDPrimaryKeyMixin, UserOwnedMixin, TimestampMixin, Base):
     __tablename__ = "user_preferences"
     key: Mapped[str] = mapped_column(String(120))
@@ -649,9 +885,24 @@ class Subscription(UUIDPrimaryKeyMixin, UserOwnedMixin, TimestampMixin, Base):
 class FinancialInsight(UUIDPrimaryKeyMixin, UserOwnedMixin, TimestampMixin, Base):
     __tablename__ = "financial_insights"
     insight_type: Mapped[str] = mapped_column(String(60), index=True)
+    # What the claim is about — a category slug, a recurring charge, the income
+    # stream. Restating a claim rewrites its row rather than appending a new one.
+    subject: Mapped[str] = mapped_column(String(160), default="")
     title: Mapped[str] = mapped_column(String(180))
     evidence: Mapped[dict] = mapped_column(JSON, default=dict)
+    # The deterministic parameters that reproduce the claim. Without them a
+    # stored insight can only be believed, never rechecked.
+    recompute_key: Mapped[dict] = mapped_column(JSON, default=dict)
+    # {"manifestHash": ..., "traitsComputedAt": ..., "computedAt": ...}
+    lineage: Mapped[dict] = mapped_column(JSON, default=dict)
+    verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # Stamped when a replay failed to reproduce the claim. A row carrying it is
+    # history, never a current insight.
+    stale_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     dismissed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        UniqueConstraint("user_id", "insight_type", "subject", name="uq_financial_insight_subject"),
+    )
 
 
 class Import(UUIDPrimaryKeyMixin, UserOwnedMixin, TimestampMixin, Base):

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import date
-from types import SimpleNamespace
 
 import pytest
 from agno.models.response import ToolExecution
@@ -12,7 +11,7 @@ from app.models import Category, TaxonomyScope, User
 from app.seed import DEFAULT_USER_EMAIL
 from app.services import agents
 from app.services.agent_tools import bind_existing_tool
-from app.services.agents import CopilotRouteDecision, PresentationIntent
+from agno.run.agent import RunOutput
 from app.services.calculators import loan_amortization_schedule, loan_payment
 from app.services.conversation import _agent_taxonomy, _user_runtime_tools
 from app.services.runtime_tools import RUNTIME_TOOL_REGISTRY
@@ -95,30 +94,29 @@ def test_taxonomy_tool_reads_only_the_authenticated_users_visible_categories(db)
     assert result == _agent_taxonomy(db, user)
 
 
-def test_router_preserves_only_successful_installed_tool_execution_as_grounding(monkeypatch):
-    route = CopilotRouteDecision(
-        route="conversation",
-        reply="You have 11 expense categories.",
-        confidence=0.99,
-        reason="The authenticated taxonomy tool returned eleven categories.",
-    )
+def test_operator_preserves_only_successful_installed_tool_execution_as_grounding(
+    monkeypatch
+):
+    executions = [
+        ToolExecution(
+            tool_name="read_user_expense_taxonomy",
+            tool_args={},
+            result=(
+                "[{'slug': 'food', 'name': 'Food', 'subcategories': []}, "
+                "{'slug': 'other', 'name': 'Other', 'subcategories': []}]"
+            ),
+        ),
+        ToolExecution(tool_name="not_installed", tool_args={}, result="untrusted"),
+    ]
 
     class StubAgent:
-        def run(self, prompt):
-            return SimpleNamespace(
-                content=route,
-                tools=[
-                    ToolExecution(
-                        tool_name="read_user_expense_taxonomy",
-                        tool_args={},
-                        result=(
-                            "[{'slug': 'food', 'name': 'Food', 'subcategories': []}, "
-                            "{'slug': 'other', 'name': 'Other', 'subcategories': []}]"
-                        ),
-                    ),
-                    ToolExecution(tool_name="not_installed", tool_args={}, result="untrusted"),
-                ],
-            )
+        def run(self, *_args, **_kwargs):
+            return iter([
+                RunOutput(
+                    content="You have 11 expense categories.",
+                    tools=executions,
+                ),
+            ])
 
     def read_taxonomy() -> list[dict]:
         return []
@@ -128,9 +126,9 @@ def test_router_preserves_only_successful_installed_tool_execution_as_grounding(
         name="read_user_expense_taxonomy",
         description="Read taxonomy.",
     )
-    monkeypatch.setattr(agents, "build_financial_copilot", lambda *args, **kwargs: StubAgent())
+    monkeypatch.setattr(agents, "build_operator", lambda *args, **kwargs: StubAgent())
 
-    decision = agents.interpret_with_financial_copilot(
+    result = agents.run_operator(
         "How many categories are there?",
         [],
         date(2026, 8, 12),
@@ -139,87 +137,11 @@ def test_router_preserves_only_successful_installed_tool_execution_as_grounding(
         runtime_tools=[runtime_tool],
     )
 
-    assert decision.tool == "conversation"
-    assert [item.name for item in decision.tool_grounding] == ["read_user_expense_taxonomy"]
-    assert decision.tool_grounding[0].arguments == {}
-    assert decision.tool_grounding[0].result.schema_name == "TaxonomyResult"
-    assert len(decision.tool_grounding[0].result.data) == 2
+    assert result.reply == "You have 11 expense categories."
+    assert result.operation is None
+    assert [item.name for item in result.tool_grounding] == ["read_user_expense_taxonomy"]
+    assert result.tool_grounding[0].arguments == {}
+    assert result.tool_grounding[0].result.schema_name == "TaxonomyResult"
+    assert len(result.tool_grounding[0].result.data) == 2
 
 
-def test_router_sends_authenticated_computed_dataset_to_generic_visualizer(monkeypatch):
-    route = CopilotRouteDecision(
-        route="analysis",
-        query={"metric": "loan", "result_mode": "complex_analysis"},
-        presentation=PresentationIntent(
-            mode="chart",
-            unit_of_analysis="installment",
-            x_field="installment",
-            y_fields=["principal_payment_minor"],
-        ),
-        confidence=0.99,
-        reason="Chart the authenticated amortization dataset.",
-    )
-    computed = {
-        "kind": "computed_dataset",
-        "name": "loan_amortization_schedule",
-        "title": "Loan amortization schedule",
-        "description": "A deterministic test schedule.",
-        "currency": "INR",
-        "fields": [
-            {
-                "name": "installment",
-                "label": "Installment",
-                "type": "ordinal",
-                "value_type": "number",
-                "role": "dimension",
-            },
-            {
-                "name": "principal_payment_minor",
-                "label": "Principal paid",
-                "type": "quantitative",
-                "value_type": "money_minor",
-                "role": "measure",
-            },
-        ],
-        "default_dimension": "installment",
-        "default_measures": ["principal_payment_minor"],
-        "rows": [{"installment": 1, "principal_payment_minor": 100}],
-        "summary": {"principal_minor": 1_200_000},
-    }
-
-    class StubAgent:
-        def run(self, prompt):
-            return SimpleNamespace(
-                content=route,
-                tools=[ToolExecution(
-                    tool_name="loan_amortization_schedule",
-                    tool_args={"principal_minor": 1_200_000, "annual_rate_percent": 0, "tenure_months": 12},
-                    result=str(computed),
-                )],
-            )
-
-    runtime_tool = bind_existing_tool(
-        loan_amortization_schedule,
-        name="loan_amortization_schedule",
-        description="Return amortization rows.",
-    )
-    monkeypatch.setattr(agents, "build_financial_copilot", lambda *args, **kwargs: StubAgent())
-    monkeypatch.setattr(
-        agents,
-        "build_analysis_tool_factory",
-        lambda *args, **kwargs: pytest.fail("Computed datasets must not enter the database analysis factory"),
-    )
-
-    decision = agents.interpret_with_financial_copilot(
-        "Chart principal paid after each EMI",
-        [],
-        date(2026, 8, 12),
-        "Asia/Kolkata",
-        [],
-        runtime_tools=[runtime_tool],
-    )
-
-    assert decision.tool == "visualize_computation"
-    assert decision.presentation.x_field == "installment"
-    assert decision.presentation.y_fields == ["principal_payment_minor"]
-    assert decision.tool_grounding[0].name == "loan_amortization_schedule"

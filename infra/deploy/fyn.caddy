@@ -1,0 +1,40 @@
+# fyn's route on the shared edge proxy. Installed by deploy.sh to
+# /opt/edge/sites/fyn.caddy — the only file in that directory fyn owns.
+#
+# This box serves the API only. The SPA is built and hosted elsewhere and calls
+# this origin cross-origin with `credentials: "include"`; the session cookie
+# stays same-site because both hostnames live under the same registrable domain.
+# CORS is the backend's job (CORS_ORIGINS in its .env), not Caddy's.
+#
+# {$FYN_DOMAIN} is substituted at install time so the file on the server is
+# literal and greppable.
+#
+# Deliberately NOT importing `cloudflare_proxied`: this host must stay DNS-only
+# in Cloudflare. Agent runs stream server-sent events, and the orange-cloud
+# proxy buffers and times them out — the same reason api.jitraa.com is grey.
+
+{$FYN_DOMAIN} {
+	import app_defaults
+
+	# Pinned to Let's Encrypt. Caddy's default chain falls back to ZeroSSL,
+	# whose ACME endpoint hung mid-order here (HTTP 502 fetching a nonce, then
+	# silence) and stalled issuance for ~25 minutes. Every other certificate on
+	# this box is Let's Encrypt; keeping one CA also keeps renewals predictable.
+	tls {
+		issuer acme {
+			email {$ACME_EMAIL}
+		}
+	}
+
+	reverse_proxy fyn-backend:8000 {
+		# Caddy stops buffering on text/event-stream by itself; setting this
+		# explicitly means a mislabelled content type cannot reintroduce it.
+		flush_interval -1
+
+		transport http {
+			# A long agent run holds the response open well past any default.
+			read_timeout 1h
+			write_timeout 1h
+		}
+	}
+}

@@ -63,7 +63,7 @@ def test_demo_finances_cover_ten_categories_and_are_idempotent():
         seed_system_taxonomy(db)
         assert user is not None
 
-        expected = len(DEMO_EXPENSES) * 2 + 4
+        expected = len(DEMO_EXPENSES) * 3 + 6
         assert seed_demo_finances(db, user, today=date(2026, 8, 13)) == expected
         assert seed_demo_finances(db, user, today=date(2026, 8, 13)) == 0
         assert db.scalar(select(func.count()).select_from(Transaction).where(Transaction.user_id == user.id)) == expected

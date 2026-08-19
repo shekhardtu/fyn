@@ -43,6 +43,10 @@
   --color-attention: var(--attention);
   --color-attention-tint: var(--attention-tint);
 
+  /* Overlay dimming. Not `ink`: ink flips light in dark mode, and a scrim
+     must darken the page in both themes. */
+  --color-scrim: var(--scrim);
+
   /* Primitive aliases used by components/ui/* */
   --color-card: var(--surface);
   --color-card-foreground: var(--ink);
@@ -92,6 +96,8 @@
 }
 
 :root {
+  color-scheme: light;
+
   --font-body: "DM Sans Variable";
   --font-display: "Manrope Variable";
 
@@ -100,10 +106,14 @@
   --ground: #fafafb;
   --sunken: #f2f3f6;
 
-  /* Ink */
+  /* Overlay dimming — always toward black, whatever the theme. */
+  --scrim: #101116;
+
+  /* Ink. Muted is tuned to hold AA at the 11px meta size on the sunken
+     ground, which is where the densest numbers in the product sit. */
   --ink: #101116;
   --ink-body: #3c4048;
-  --ink-muted: #6c727c;
+  --ink-muted: #61676f;
 
   /* Rules */
   --line: #e5e7ec;
@@ -120,6 +130,18 @@
   /* Money. Data only — a control never wears these. */
   --money-in: #0b7d57;
   --money-out: #c0432c;
+
+  /* Categorical chart series. Fixed assignment order 1→6, never cycled; a
+     seventh series folds into "Other". Slot 1 is the fyn indigo. Each mode's
+     six steps are validated together (CVD separation, lightness band, chroma,
+     3:1 contrast) against that mode's --surface — re-run the palette validator
+     before touching any of these. */
+  --chart-1: #4340e0;
+  --chart-2: #eb6834;
+  --chart-3: #14a271;
+  --chart-4: #c08a00;
+  --chart-5: #d5517f;
+  --chart-6: #008300;
 
   /* Destructive and cautionary chrome. Same family as money-out today,
      declared separately so tuning one cannot silently retint the other. */
@@ -161,6 +183,106 @@
   --rail-header-h: 3.5rem;
 }
 
+/* ── Dark ─────────────────────────────────────────────────────────────────
+   The same system on a night ground. Ink and grounds swap roles; the indigo
+   lifts two steps so it carries on dark, and filled controls flip to dark
+   text for contrast. `data-theme` (set from the Appearance preference)
+   outranks the OS; without it the OS decides.
+
+   The two blocks below must stay identical — one serves the OS default, the
+   other the explicit choice. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --surface: #17181e;
+    --ground: #101116;
+    --sunken: #1e2027;
+    --scrim: #04050a;
+
+    --ink: #f0f1f5;
+    --ink-body: #c6cad2;
+    --ink-muted: #9298a3;
+
+    --line: #272931;
+    --line-soft: #21232b;
+    --line-strong: #363945;
+
+    --secondary: #8b89ff;
+    --secondary-hover: #a3a1ff;
+    --secondary-tint: #232345;
+    --secondary-line: #3d3c78;
+    --on-secondary: #101116;
+
+    --money-in: #4cc39a;
+    --money-out: #e77e63;
+
+    /* The same six series, re-stepped for the dark surface — a selected dark
+       palette, not a flip. Slot 1 stays the fyn indigo family, held two steps
+       below --secondary so it sits inside the validated lightness band. */
+    --chart-1: #7d7bf7;
+    --chart-2: #d95926;
+    --chart-3: #199e70;
+    --chart-4: #c98500;
+    --chart-5: #d55181;
+    --chart-6: #008300;
+
+    --danger: #e77e63;
+    --danger-ink: #f0937b;
+    --danger-tint: #38201a;
+    --danger-line: #59322a;
+    --attention: #d69a55;
+    --attention-tint: #33270f;
+
+    --shadow-overlay: 0 12px 40px rgb(0 0 0 / 0.55);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --surface: #17181e;
+  --ground: #101116;
+  --sunken: #1e2027;
+  --scrim: #04050a;
+
+  --ink: #f0f1f5;
+  --ink-body: #c6cad2;
+  --ink-muted: #9298a3;
+
+  --line: #272931;
+  --line-soft: #21232b;
+  --line-strong: #363945;
+
+  --secondary: #8b89ff;
+  --secondary-hover: #a3a1ff;
+  --secondary-tint: #232345;
+  --secondary-line: #3d3c78;
+  --on-secondary: #101116;
+
+  --money-in: #4cc39a;
+  --money-out: #e77e63;
+
+  /* The same six series, re-stepped for the dark surface — a selected dark
+     palette, not a flip. Slot 1 stays the fyn indigo family, held two steps
+     below --secondary so it sits inside the validated lightness band. */
+  --chart-1: #7d7bf7;
+  --chart-2: #d95926;
+  --chart-3: #199e70;
+  --chart-4: #c98500;
+  --chart-5: #d55181;
+  --chart-6: #008300;
+
+  --danger: #e77e63;
+  --danger-ink: #f0937b;
+  --danger-tint: #38201a;
+  --danger-line: #59322a;
+  --attention: #d69a55;
+  --attention-tint: #33270f;
+
+  --shadow-overlay: 0 12px 40px rgb(0 0 0 / 0.55);
+}
+
 @layer base {
   * {
     @apply border-line;
@@ -191,6 +313,26 @@
 ::selection {
   background: var(--secondary-tint);
   color: var(--secondary-hover);
+}
+
+/* A quiet ruled page for the browser-session scratchpad. The rule uses the
+   theme's own line token, so it stays legible without turning into graph paper
+   in dark mode. */
+.scratchpad-paper {
+  line-height: 1.9rem;
+  background-color: var(--surface);
+  background-image: linear-gradient(
+    to bottom,
+    transparent calc(100% - 1px),
+    var(--line-soft) 0
+  );
+  /* The text begins after `py-4` (1rem), but its alphabetic baseline sits a
+     little above the bottom of that line box. Pull the rule up by the font's
+     baseline gap so ordinary letters rest on it like ruled notebook paper. */
+  background-position: 0 calc(1rem - 0.3rem);
+  background-size: 100% 1.9rem;
+  background-repeat: repeat-y;
+  background-attachment: local;
 }
 
 /* The browser's :focus-visible heuristic is not strict enough for this UI:
@@ -312,18 +454,31 @@ html[data-focus-modality="keyboard"] :where(a, button, input, select, textarea, 
   overscroll-behavior: contain;
 }
 
+/* A table embedded in the transcript keeps the same tidy scrollbars but must
+   never own the wheel at its edges: a panel floats over the page, a table is
+   part of it. Reaching the table's top or bottom hands the rest of the
+   gesture back to the conversation — containing it here is how a pointer
+   resting on a table pins the whole page. */
+.table-scroll {
+  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-width: thin;
+}
+
 .conversation-scroll::-webkit-scrollbar,
-.panel-scroll::-webkit-scrollbar {
+.panel-scroll::-webkit-scrollbar,
+.table-scroll::-webkit-scrollbar {
   width: 8px;
 }
 
 .conversation-scroll::-webkit-scrollbar-track,
-.panel-scroll::-webkit-scrollbar-track {
+.panel-scroll::-webkit-scrollbar-track,
+.table-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
 
 .conversation-scroll::-webkit-scrollbar-thumb,
-.panel-scroll::-webkit-scrollbar-thumb {
+.panel-scroll::-webkit-scrollbar-thumb,
+.table-scroll::-webkit-scrollbar-thumb {
   background-color: var(--line-strong);
   background-clip: content-box;
   border: 2px solid transparent;
@@ -331,7 +486,8 @@ html[data-focus-modality="keyboard"] :where(a, button, input, select, textarea, 
 }
 
 .conversation-scroll::-webkit-scrollbar-thumb:hover,
-.panel-scroll::-webkit-scrollbar-thumb:hover {
+.panel-scroll::-webkit-scrollbar-thumb:hover,
+.table-scroll::-webkit-scrollbar-thumb:hover {
   background-color: var(--ink-muted);
 }
 
@@ -607,6 +763,34 @@ html[data-focus-modality="keyboard"] :where(a, button, input, select, textarea, 
 @media (hover: none) {
   .ledger-strike {
     opacity: 1;
+  }
+}
+
+/* Amending a caption. Double-click opens the title as a line to write on: no
+   box, just the rule ruling itself under the text while the caret takes the
+   accent. The old caption arrives selected — the tint says "replace me". */
+.rename-line {
+  background-image: linear-gradient(var(--secondary), var(--secondary));
+  background-repeat: no-repeat;
+  background-position: 0 100%;
+  background-size: 100% 2px;
+  caret-color: var(--secondary);
+  animation: rename-rule-draw 200ms var(--ease);
+}
+
+.rename-line::selection {
+  background: var(--secondary-tint);
+}
+
+@keyframes rename-rule-draw {
+  from {
+    background-size: 0% 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rename-line {
+    animation: none;
   }
 }
 
@@ -1081,6 +1265,98 @@ html[data-focus-modality="keyboard"] .entry-card:has(textarea:focus) {
   to { opacity: 1; transform: none; }
 }
 
+/* ── Day boundaries ───────────────────────────────────────────────────────
+   Everything below a day mark was written on that day. It orients the reader
+   between turns without being a turn itself, so it stays quiet: the meta size,
+   muted ink, and the sunken ground for its only lift — no border, no shadow,
+   no colour of its own. The figures are tabular so a thread's dates do not
+   shuffle sideways against each other. Round, unlike the ruled rows around it,
+   because a date is a marker on the thread rather than an entry in it. */
+.day-pill {
+  display: flex;
+  justify-content: center;
+}
+
+.day-pill time {
+  border-radius: 999px;
+  background: var(--sunken);
+  padding: 4px 12px;
+  font-size: var(--text-meta);
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+/* ── The next lines ───────────────────────────────────────────────────────
+   Follow-ups continue the book. They share the blank thread's starter rows —
+   the tick, the hairline, the text stepping right under the pointer — because
+   a starter and a follow-up are the same object: a line you could write next.
+   Each row takes its place in turn via an inline delay; `backwards` holds a
+   row invisible through its own delay rather than at full opacity. */
+.next-entries {
+  --rule: var(--line);
+  --rule-strong: var(--line-strong);
+  --axis: 10px;
+}
+
+.next-entry {
+  position: relative;
+  display: block;
+  width: 100%;
+  /* 12px vertical keeps the row at the 44px touch floor without a spacer. */
+  padding: 12px 10px 12px 28px;
+  text-align: left;
+  font-size: var(--text-control);
+  font-weight: 450;
+  line-height: 1.45;
+  color: var(--ink-body);
+  border-top: 1px solid var(--rule);
+  transition: color var(--m-state) linear, padding-left var(--m-enter) var(--ease);
+  animation: widget-enter var(--m-enter) var(--ease) backwards;
+}
+
+.next-entry:last-child {
+  border-bottom: 1px solid var(--rule);
+}
+
+.next-entry .ledger-mark {
+  opacity: 1;
+  transform: none;
+}
+
+.next-entry:hover {
+  padding-left: 36px;
+  color: var(--ink);
+}
+
+.next-entry:hover .ledger-mark {
+  background: var(--secondary);
+}
+
+.next-entry:active {
+  color: var(--secondary-hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .next-entry:hover {
+    padding-left: 28px;
+  }
+}
+
+/* The entry number arriving is the book's receipt: this line is posted now,
+   and this is where to find it. It seats itself like a small stamp — from a
+   shade proud of the page down into place. */
+.entry-stamp {
+  display: inline-block;
+  animation: entry-stamp var(--m-enter) var(--ease);
+}
+
+@keyframes entry-stamp {
+  from { opacity: 0; transform: scale(1.12); }
+  to { opacity: 1; transform: none; }
+}
+
 /* The composer's reading of what you have typed. It replaces the hint on the
    same line rather than appearing beneath it, so the box never changes height
    while you write — the dock's height is the transcript's bottom margin, and
@@ -1114,64 +1390,9 @@ html[data-focus-modality="keyboard"] .entry-card:has(textarea:focus) {
   letter-spacing: -0.02em;
 }
 
-/* Donut charts decide their composition from the widget's actual width, not
-   from the browser viewport. Narrow conversation columns keep a compact legend
-   below the plot; wide/maximized widgets use the otherwise empty right side. */
-.chart-donut-container {
-  container-type: inline-size;
-}
 
-.chart-donut-layout {
-  display: grid;
-  align-items: center;
-  gap: 18px;
-}
 
-.chart-donut-plot {
-  max-width: 420px;
-  justify-self: center;
-}
 
-.chart-donut-legend {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-  gap: 8px 20px;
-  min-width: 0;
-}
-
-.chart-donut-legend-item {
-  padding-block: 5px;
-}
-
-@container (min-width: 560px) {
-  .chart-donut-layout {
-    grid-template-columns: minmax(250px, 1.1fr) minmax(210px, 0.9fr);
-    gap: clamp(20px, 4cqi, 42px);
-  }
-
-  .chart-donut-plot {
-    justify-self: end;
-  }
-
-  .chart-donut-legend {
-    grid-template-columns: minmax(0, 1fr);
-    align-content: center;
-    width: 100%;
-    max-width: 340px;
-    justify-self: start;
-    gap: 0;
-  }
-
-  .chart-donut-legend-item {
-    min-height: 38px;
-    border-bottom: 1px solid var(--line);
-    padding-block: 9px;
-  }
-
-  .chart-donut-legend-item:last-child {
-    border-bottom: 0;
-  }
-}
 
 .typing-dot {
   width: 5px;
@@ -1199,6 +1420,9 @@ html[data-focus-modality="keyboard"] .entry-card:has(textarea:focus) {
   *, *::before, *::after {
     scroll-behavior: auto !important;
     animation-duration: 0.01ms !important;
+    /* Staggered entrances (the follow-up rows) must not hold content
+       invisible for the length of a delay that no longer buys any motion. */
+    animation-delay: 0ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
@@ -1218,12 +1442,9 @@ html[data-focus-modality="keyboard"] .entry-card:has(textarea:focus) {
    with series animation switched off for frame-cost reasons that still hold;
    Vega faded up from behind a spinner. Animating the container instead is one
    composited layer and makes the two agree. */
-.chart-reveal {
-  animation: widget-enter var(--m-enter) var(--ease);
-}
 
-/* The rail's cut-off edge, and the same argument the transcript makes above:
-   a mask, not a scrim.
+/* A cut-off scroll edge — the rail's list and a table's rows alike — and the
+   same argument the transcript makes above: a mask, not a scrim.
 
    There was a gradient overlay here painted in the rail's own grey. It sat on
    top of whatever scrolled beneath it, so a row passing under came out
@@ -1231,12 +1452,121 @@ html[data-focus-modality="keyboard"] .entry-card:has(textarea:focus) {
    did not even match the thing it was covering. Masking fades the pixels
    themselves, which is colour-agnostic and cannot bisect a row.
 
-   Only the bottom edge needs it: the group band is sticky and opaque, so the
-   top of the list is already masked by something that belongs there. Masking
-   the top as well would make that band translucent and let rows show through
-   it. The flags come from data attributes the scroll handler writes directly,
-   so none of this costs a React render. */
-[data-edge-bottom="true"] > .panel-scroll {
+   Only the bottom edge needs it: the rail's group band and a table's header
+   are sticky and opaque, so the top is already masked by something that
+   belongs there. Masking the top as well would make those translucent and let
+   rows show through. The flags come from data attributes `useScrollEdges`
+   writes directly, so none of this costs a React render. */
+[data-edge-bottom="true"] > .panel-scroll,
+[data-edge-bottom="true"] > .table-scroll {
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
   mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
+}
+
+/* The table's word for the same cut-off: a small pill floating inside the
+   bottom edge, bobbing toward the rows still below the fold. A sibling of the
+   scroller rather than a child, so the fade cannot erase it, and never a
+   control — pointer events pass through to the rows it floats over. */
+.table-scroll-hint {
+  pointer-events: none;
+  position: absolute;
+  inset-inline: 0;
+  bottom: 10px;
+  display: flex;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity var(--m-enter) var(--ease);
+}
+
+[data-edge-bottom="true"] > .table-scroll-hint {
+  opacity: 1;
+}
+
+.table-scroll-hint > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  padding: 3px 10px;
+  font-size: var(--text-meta);
+  font-weight: 500;
+  color: var(--ink-muted);
+  animation: hint-bob 1.6s ease-in-out infinite;
+}
+
+@keyframes hint-bob {
+  0%, 100% { transform: none; }
+  50% { transform: translateY(3px); }
+}
+
+/* ── Settings: the ledger's front matter ──────────────────────────────────
+   The standing instructions that govern every entry and every answer after
+   them. Settings does not bring its own navigation: it borrows the rail,
+   swapping the conversation index for its three destinations. Those rows are
+   `.ledger-entry.money-entry` already, so the only thing needed here is the
+   band that holds the way back out. */
+.settings-leave-band {
+  flex: none;
+  padding: 0.5rem 0 0.625rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+/* The leaving row reads as the quietest thing in the rail until you reach for
+   it: it is an exit, not a destination, and it must never compete with the
+   three sections under it for the eye. */
+.settings-leave-band .ledger-entry {
+  color: var(--ink-muted);
+}
+
+.settings-leave-band .ledger-entry:hover {
+  background: var(--sunken);
+  color: var(--ink-body);
+}
+
+/* Section heads carry a rule out to the right margin — the device the
+   conversation index already uses for its dividers. */
+.settings-head {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.settings-head-label {
+  font-family: var(--font-display), sans-serif;
+  font-size: var(--text-body);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+.settings-head::after {
+  content: "";
+  order: 1;
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+/* A control that would change nothing if you pressed it says so, rather than
+   sitting there dimmed and ambiguous. */
+.settings-stamp {
+  order: 2;
+  flex: none;
+  border: 1px dashed var(--line-strong);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: var(--text-meta);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--ink-muted);
+}
+
+/* The boundaries with no switch. Every settings page shows what you can
+   change; this one gives the same room to what you cannot, because trust is
+   calibrated against a boundary you can see. Quieter than the live controls
+   — the boldness is in showing them at all, not in shouting. */
+.settings-fixed .settings-head::after {
+  background: var(--line-strong);
 }

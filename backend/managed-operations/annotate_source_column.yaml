@@ -1,0 +1,105 @@
+apiVersion: fyn.ai/v1
+kind: Operation
+
+metadata:
+  id: ops.sources.annotate_column
+  version: 1
+  title: Record what an uploaded column means
+  namespace: finance
+  owner: operations
+  enabled: true
+
+discovery:
+  description: Record the user's authoritative statement about the meaning of one column in an uploaded spreadsheet source.
+  aliases:
+    - annotate source column
+    - correct column meaning
+    - that column means
+  examples:
+    - The Amount column in my expenses sheet includes GST
+    - In my upload, Narration is actually the merchant name
+  negativeExamples:
+    - Rename the Food category
+
+eligibility:
+  requiredPermissions:
+    - sources.write
+  expectedEffect: mutation
+  access: workflow
+
+routing:
+  strategy: managed
+  bindings: {}
+
+input:
+  schema:
+    type: object
+    additionalProperties: false
+    required:
+      - sourceId
+      - field
+      - statement
+    properties:
+      sourceId:
+        type: string
+        title: Uploaded source
+        minLength: 1
+        maxLength: 60
+      field:
+        type: string
+        title: Column
+        minLength: 1
+        maxLength: 120
+      statement:
+        type: string
+        title: What it means
+        minLength: 1
+        maxLength: 2000
+      role:
+        type: string
+        title: Column role
+        enum: [money, date, merchant, category, account, description, number, text]
+
+clarification:
+  requiredFields:
+    - sourceId
+    - field
+    - statement
+  prompt: Which uploaded source and column, and what does that column mean?
+
+instructions:
+  selection: Use when the user states or corrects what a column in one of their uploaded spreadsheet sources means.
+  argumentCollection: Preserve the user's statement exactly as written. sourceId comes from the uploaded-source catalog in this conversation's tools.
+  response: Do not claim the meaning was recorded until governed execution completes.
+
+execution:
+  label: Recording the column's meaning
+  steps:
+    - id: annotate
+      uses: manifest.annotate_column@1
+      with:
+        sourceId: ${input.sourceId}
+        field: ${input.field}
+        statement: ${input.statement}
+
+approval:
+  minimum: required
+  title: Record this column meaning?
+  summary: Record that “${input.field}” means — ${input.statement}
+
+presentation:
+  success:
+    title: Column meaning recorded
+    message: “${input.field}” now carries your statement; future answers use it.
+  failure:
+    title: Nothing recorded
+    message: The column meaning was not changed.
+
+tests:
+  - name: correction statement routes here
+    request: In my uploaded expenses sheet, the Amount column includes GST
+    expectedEffect: mutation
+    expectedApproval: required
+  - name: taxonomy request must not match
+    request: Rename the Food category
+    expectedMatch: false

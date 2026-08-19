@@ -1,10 +1,8 @@
 /**
- * Draws the PWA icon set from the design tokens.
- *
- * Same mark as the native app (mobile/scripts/make-icons.mjs) so the two
- * installs are visually one product: a rupee glyph cut by a rising stroke on
- * the app's own indigo. Rendered through the Playwright Chromium that is
- * already installed for the e2e suite, so this adds no image toolchain.
+ * Draws the PWA icon set from the design tokens: a rupee glyph cut by a
+ * rising stroke on the app's own indigo. Rendered through the Playwright
+ * Chromium that is already installed for the e2e suite, so this adds no
+ * image toolchain.
  *
  *   node scripts/make-pwa-icons.mjs
  */

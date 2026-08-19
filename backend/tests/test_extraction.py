@@ -22,6 +22,10 @@ def test_transaction_currency_inherits_user_setting_and_explicit_code_wins():
     assert extract_transaction("Spent ₹10 on coffee", default_currency="USD").currency == "INR"
 
 
+def test_digits_embedded_in_an_identifier_are_not_an_amount():
+    assert parse_amount_minor("Remove RemovalCafe1786430623348 from the list") is None
+
+
 @pytest.mark.parametrize(("text", "transaction_type", "merchant", "category", "subcategory"), [
     ("Spent ₹2,000 at Toit last night", "expense", "Toit", "food", "dining"),
     ("Paid ₹850 at Swiggy for dinner", "expense", "Swiggy", "food", "delivery"),
@@ -31,6 +35,7 @@ def test_transaction_currency_inherits_user_setting_and_explicit_code_wins():
     ("Paid ₹45,000 toward my home loan", "loan_payment", None, None, None),
     ("200 rupees for ice cream", "expense", None, "food", "ice_cream"),
     ("200 rupess for ice cream", "expense", None, "food", "ice_cream"),
+    ("Add 100 rupee to expense, as Food Category, and subcategory Coffee", "expense", None, "food", "coffee"),
 ])
 def test_structured_extraction(text, transaction_type, merchant, category, subcategory):
     result = extract_transaction(text, today=date(2026, 8, 10))
@@ -45,6 +50,15 @@ def test_relative_date_and_inference_provenance():
     assert result.transaction_date == date(2026, 8, 9)
     assert "transaction_date" not in result.inferred_fields
     assert "category" in result.inferred_fields
+
+
+def test_explicit_expense_noun_is_not_treated_as_an_inferred_direction():
+    result = extract_transaction(
+        "Add 100 rupee to expense, as Food Category, and subcategory Coffee",
+        today=date(2026, 8, 15),
+    )
+
+    assert "transaction_type" in result.explicit_fields
 
 
 def test_bare_amount_minimizes_questions():
@@ -66,6 +80,7 @@ def test_payment_success_phrase_is_not_part_of_merchant():
     "What were my expenses yesterday?",
     "Show spending for the last 7 days",
     "List my transactions this month",
+    "Using my income and expenses this month, project expenses to month-end and tell me projected savings.",
 ])
 def test_financial_questions_are_classified_as_queries(text):
     assert looks_like_financial_query(text)
