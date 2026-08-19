@@ -90,7 +90,7 @@ PRODUCTION_READY = {
     "msg91_auth_key": "key",
     "msg91_template_id": "template",
     "postmark_server_token": "token",
-    "postmark_from_email": "login@fynai.com",
+    "postmark_from_email": "login@fynai.co",
 }
 
 
