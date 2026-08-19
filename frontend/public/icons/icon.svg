@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="fyn">
+  <rect width="512" height="512" fill="#4340e0"/>
+  <g transform="translate(256 256) scale(1) translate(-256 -256)">
+    <rect x="135" y="159.2" width="44" height="193.60000000000002" rx="22" fill="#ffffff"/>
+    <rect x="236.2" y="185.6" width="140.8" height="44" rx="22" fill="#ffffff"/>
+    <rect x="236.2" y="282.4" width="92.4" height="44" rx="22" fill="#ffffff"/>
+  </g>
+</svg>
