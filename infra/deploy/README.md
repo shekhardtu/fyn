@@ -9,7 +9,7 @@ This box runs the **API and its database only** — the SPA is built and hosted
 elsewhere and calls `api.fynai.co` cross-origin.
 
 ```
-  SPA (off-box) ── app.fynai.co
+  SPA (off-box) ── fynai.co
         │  fetch, credentials: "include"
         ▼
   api.fynai.co ──> edge (Caddy, shared) ──> fyn-backend:8000 ──> fyn-postgres:5432

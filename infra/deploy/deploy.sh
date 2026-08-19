@@ -103,14 +103,14 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
     healthy) echo "    healthy"; break ;;
     unhealthy)
       echo ""
-      fyn_ssh "cd ${FYN_REMOTE_DIR} && docker compose -p ${FYN_PROJECT} -f ${FYN_COMPOSE_FILE} logs --tail 60 backend" || true
-      fyn_die "backend reported unhealthy. Most often a failed alembic migration — the log above shows it. Postgres and the old data are untouched."
+      fyn_compose "logs --tail 60 backend" || true
+      fyn_die "backend reported unhealthy — the log above shows why. Two common causes: a failed alembic migration, or the production auth gate refusing to boot (config.py require_production_auth_config) when ENVIRONMENT=production and a provider credential is missing. Postgres and its data are untouched either way."
       ;;
   esac
   sleep 5
 done
 [ "$status" = "healthy" ] || {
-  fyn_ssh "cd ${FYN_REMOTE_DIR} && docker compose -p ${FYN_PROJECT} -f ${FYN_COMPOSE_FILE} logs --tail 60 backend" || true
+  fyn_compose "logs --tail 60 backend" || true
   fyn_die "backend did not become healthy within 300s (last status: ${status})."
 }
 

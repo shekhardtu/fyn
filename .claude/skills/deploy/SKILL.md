@@ -40,7 +40,7 @@ Phase 0 summary and proceed; do not `AskUserQuestion` to confirm.
 ## The Deployment, in One Picture
 
 ```
-  SPA (built and hosted OFF this box)  ── app.fynai.co
+  SPA (built and hosted OFF this box)  ── fynai.co
             │  fetch, credentials: "include"
             ▼
   api.fynai.co ──> edge-caddy-1  (shared: also serves jitraa's three hosts)
@@ -53,7 +53,7 @@ Facts that follow from that shape, and that the failure table depends on:
 - **This box runs the API and its database only.** There is no frontend
   container and no nginx `/api` relay. The SPA is built elsewhere and calls
   `api.fynai.co` cross-origin.
-- **The session cookie survives that split** because `app.fynai.co` and
+- **The session cookie survives that split** because `fynai.co` and
   `api.fynai.co` share the registrable domain `fynai.co`, which makes the pair
   same-site. `SESSION_COOKIE_DOMAIN` is deliberately **empty** — a host-only
   cookie on the API is the tightest scope that works. Moving the SPA to an
@@ -157,6 +157,7 @@ build (`pip install` on 2 vCPU). The SPA is not built here.
 | `backend/.env is missing on the server` | Box never bootstrapped | Run `./infra/deploy/setup-server.sh` |
 | `POSTGRES_PASSWORD` required | Server `.env` predates this infra | Add `POSTGRES_PASSWORD=…` to `/opt/fyn/backend/.env` — must match the one inside `DATABASE_URL` |
 | `image build failed` | Failed `pip install`, dependency drift | Reproduce locally, fix, push, re-run. Nothing changed on the server |
+| `backend reported unhealthy` + `RuntimeError: Unsafe authentication configuration` | The app's own fail-closed gate (`backend/app/config.py` `require_production_auth_config`). With `ENVIRONMENT=production` it refuses to boot unless **both** an SMS provider (`MSG91_AUTH_KEY` + `MSG91_TEMPLATE_ID`) **and** an email provider (`POSTMARK_SERVER_TOKEN` + `POSTMARK_FROM_EMAIL`) are set, `AUTH_SECRET` is real, and `OTP_DEBUG_ECHO=false`. Migrations have already run by this point | Fill the credentials in `/opt/fyn/backend/.env`, then `./infra/deploy/deploy.sh api` |
 | `backend reported unhealthy` + alembic traceback | Migration failed | **The old containers are already gone.** See Rollback. Read the traceback; a bad migration usually needs a follow-up migration, not a hand-edit of `alembic_version` |
 | Healthy, but public URL unreachable and internal fine | DNS, not the app | `dig +short api.fynai.co` must return `49.13.87.106`, **DNS-only / grey cloud** — the orange proxy buffers SSE |
 | `the edge config is invalid with fyn's route added` | Bad `infra/deploy/fyn.caddy` | The file was removed again and edge was NOT reloaded, so jitraa is untouched. Fix the site file |

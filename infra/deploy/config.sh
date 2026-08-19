@@ -51,11 +51,12 @@ FYN_EDGE_PORT="${FYN_EDGE_PORT:-8000}"
 FYN_DOMAIN="${FYN_DOMAIN:-api.fynai.co}"
 FYN_HEALTH_URL="${FYN_HEALTH_URL:-https://${FYN_DOMAIN}/api/health}"
 
-# Where the SPA is served from. Becomes CORS_ORIGINS on the server, and the
-# browser sends the session cookie only because this shares a registrable
-# domain with FYN_DOMAIN above — moving it to an unrelated domain would make
-# the pair cross-site and force SameSite=None.
-FYN_APP_ORIGIN="${FYN_APP_ORIGIN:-https://app.fynai.co}"
+# Where the SPA is served from — the apex, built and hosted off this box.
+# Becomes CORS_ORIGINS on the server. The browser sends the session cookie
+# only because this shares a registrable domain with FYN_DOMAIN above; moving
+# the SPA to an unrelated domain would make the pair cross-site and force
+# SameSite=None.
+FYN_APP_ORIGIN="${FYN_APP_ORIGIN:-https://fynai.co}"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 # Non-interactive by design: a deploy must never block on a passphrase or a
