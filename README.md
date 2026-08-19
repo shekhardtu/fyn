@@ -118,8 +118,8 @@ In another terminal:
 
 ```bash
 cd frontend
-npm install
-npm run dev
+yarn install
+yarn dev
 ```
 
 Open `http://localhost:3000`.
@@ -142,8 +142,8 @@ Check the active mode at `http://localhost:8000/api/health`. It should report `"
 
 ```bash
 cd backend && ../.venv/bin/pytest
-cd frontend && npm test && npm run lint && npm run build
-cd frontend && npm run test:e2e
+cd frontend && yarn test && yarn lint && yarn build
+cd frontend && yarn test:e2e
 ```
 
 The end-to-end tests exercise bare-amount clarification through save/refresh, rich merchant entry through grounded analytics, confirmation-safe CSV upload, privacy/export controls, and active-conversation persistence. The reconciliation benchmark covers exact replay, cross-source corroboration, pending/posted events, same-amount and same-merchant false-merge traps, refunds, transfers, recurring charges, and human review. Its current gate requires 100% precision, at least 95% recall, zero false merges, and at most 5% false splits; the bundled dataset currently scores 100% precision/recall with zero false merges/splits.

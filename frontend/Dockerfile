@@ -1,7 +1,7 @@
 FROM node:24-alpine AS dependencies
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci
+COPY package.json yarn.lock ./
+RUN yarn install --frozen-lockfile
 
 FROM node:24-alpine AS builder
 WORKDIR /app
@@ -24,7 +24,7 @@ ENV NODE_OPTIONS=$NODE_OPTIONS
 
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY . .
-RUN npm run build
+RUN yarn build
 
 FROM nginxinc/nginx-unprivileged:1.29-alpine AS runner
 # The entrypoint substitutes ${BACKEND_ORIGIN} into the template at start,

@@ -10,7 +10,7 @@ backend:
 	cd backend && $(VENV)/uvicorn app.main:app --reload
 
 frontend:
-	cd frontend && npm run dev
+	cd frontend && yarn dev
 
 # Prefer the standalone expen-postgres container (Colima setups without the
 # compose plugin); otherwise fall back to compose.

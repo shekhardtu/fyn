@@ -156,7 +156,7 @@ build (`pip install` on 2 vCPU). The SPA is not built here.
 | `server-side git sync failed` | Deploy key expired/removed | Re-add a read-only deploy key on the repo; see `setup-server.sh` |
 | `backend/.env is missing on the server` | Box never bootstrapped | Run `./infra/deploy/setup-server.sh` |
 | `POSTGRES_PASSWORD` required | Server `.env` predates this infra | Add `POSTGRES_PASSWORD=…` to `/opt/fyn/backend/.env` — must match the one inside `DATABASE_URL` |
-| `image build failed` | Type error, failed `npm ci`, dependency drift | Reproduce locally, fix, push, re-run. Nothing changed on the server |
+| `image build failed` | Failed `pip install`, dependency drift | Reproduce locally, fix, push, re-run. Nothing changed on the server |
 | `backend reported unhealthy` + alembic traceback | Migration failed | **The old containers are already gone.** See Rollback. Read the traceback; a bad migration usually needs a follow-up migration, not a hand-edit of `alembic_version` |
 | Healthy, but public URL unreachable and internal fine | DNS, not the app | `dig +short api.fynai.co` must return `49.13.87.106`, **DNS-only / grey cloud** — the orange proxy buffers SSE |
 | `the edge config is invalid with fyn's route added` | Bad `infra/deploy/fyn.caddy` | The file was removed again and edge was NOT reloaded, so jitraa is untouched. Fix the site file |
