@@ -27,9 +27,16 @@ One Caddy owns `:80`/`:443` and the certificate store for every application on
 
 An application that wants a public hostname must:
 
-1. **Join the external `edge` network with an explicit alias** — `<app>-<role>`.
-   Explicit because Compose would otherwise expose a bare service name (`web`,
-   `api`) onto a network shared by every app on the box.
+1. **Join the external `edge` network with a service name that is unique
+   across the whole box** — `jitraa-web`, `fyn-backend`. Not merely an explicit
+   `aliases` entry: Compose registers the *service name* as an alias on every
+   network the service joins, in addition to anything under `aliases`. A
+   service called `backend` therefore publishes `backend` here, where it
+   shadows the `backend` of every neighbour that has one. That is not
+   hypothetical — it took jitraa's API down on 2026-08-19, twenty minutes after
+   fyn's API joined this network as a service named `backend`: jitraa's web
+   container resolved `backend` to fyn's, and got connection-refused on a port
+   fyn does not listen on. Nothing in either app had changed.
 2. **Put exactly one container on `edge`** — its own front door. Databases,
    queues and workers stay on the app's private default network, where no
    neighbour can resolve or reach them.

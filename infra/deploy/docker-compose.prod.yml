@@ -15,9 +15,16 @@
 #
 # Boundaries this file is responsible for (see infra/edge/docker-compose.yml):
 #   - Nothing is published to a host port. The only way in is the edge proxy.
-#   - Only `backend` joins the shared `edge` network, under an explicit
-#     `fyn-backend` alias. Postgres stays on fyn's private network,
-#     unreachable from any neighbouring app.
+#   - Only the API joins the shared `edge` network. Postgres stays on fyn's
+#     private network, unreachable from any neighbouring app.
+#   - Its service is named `fyn-backend`, not `backend`. Compose registers the
+#     service name as a network alias on EVERY network the service joins, in
+#     addition to any explicit `aliases`. A service called `backend` therefore
+#     publishes `backend` onto the shared network, where it shadows the
+#     `backend` of every neighbour that has one — which is precisely how a fyn
+#     deploy took jitraa's API down: its web container resolved `backend` to
+#     this container and got connection-refused on the wrong port. Any service
+#     that joins `edge` needs a name that is unique across the whole box.
 #   - Every service is memory-capped. The box has 3.7 GiB and no per-app limit
 #     would mean a fyn leak can get a neighbour OOM-killed.
 
@@ -43,7 +50,11 @@ services:
       timeout: 3s
       retries: 20
 
-  backend:
+  fyn-backend:
+    # Renamed to keep the container and every script that names it unchanged
+    # while the *service* name — which is what leaks onto the shared network —
+    # becomes unambiguous.
+    container_name: fyn-backend-1
     build: ../../backend
     restart: unless-stopped
     mem_limit: 1g
@@ -64,8 +75,6 @@ services:
     networks:
       default:
       edge:
-        aliases:
-          - fyn-backend
     depends_on:
       postgres:
         condition: service_healthy

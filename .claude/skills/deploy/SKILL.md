@@ -63,8 +63,12 @@ Facts that follow from that shape, and that the failure table depends on:
   `infra/edge/README.md` — read it before changing anything outside `fyn`.
 - **Nothing of fyn's is published to a host port.** The single public entrance
   is `edge-caddy-1`. A "port closed" reading from outside is correct.
-- **Only `fyn-backend` joins the shared `edge` network**, under that alias.
-  Postgres stays on `fyn_default`, where jitraa cannot resolve it.
+- **Only the API joins the shared `edge` network**, as a service named
+  `fyn-backend`. Compose publishes the *service name* as an alias on every
+  network it joins, so a service called `backend` would shadow jitraa's own
+  `backend` for anything on `edge` — which is exactly how a fyn deploy took
+  jitraa's API down once. Postgres stays on `fyn_default`, where jitraa
+  cannot resolve it at all.
 - **`api.fynai.co` must stay DNS-only (grey cloud).** Cloudflare's proxy
   buffers the agent's server-sent events, and grey is also what lets Caddy use
   tls-alpn-01. jitraa learned this the same way for `api.jitraa.com`.
