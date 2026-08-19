@@ -157,12 +157,19 @@ def get_settings() -> Settings:
 
 
 def development_auth_shortcuts(settings: Settings) -> list[str]:
-    """Every authentication convenience that must not survive a deployment.
+    """Every authentication weakness worth naming, safe locally and not deployed."""
+    return unsafe_auth_settings(settings) + [
+        reason for _, reason in sorted(unavailable_otp_channels(settings).items())
+    ]
 
-    Each is safe locally and unsafe deployed: the shared pepper makes one-time
-    codes forgeable by anyone with the source, the debug echo hands the code
-    straight back to the caller, and a console sender prints sign-in codes to
-    the server log instead of sending them.
+
+def unsafe_auth_settings(settings: Settings) -> list[str]:
+    """Settings that compromise every channel at once.
+
+    The shared pepper makes one-time codes forgeable by anyone with the source,
+    and the debug echo hands the code straight back to the caller. Neither
+    disables a way in; both make every way in unsound, which is why they stop a
+    deployment from starting at all.
     """
     problems = []
     # Checked by shape, not just against the placeholder. `AUTH_SECRET=` in an
@@ -178,24 +185,42 @@ def development_auth_shortcuts(settings: Settings) -> list[str]:
         problems.append(f"AUTH_SECRET is under {MINIMUM_AUTH_SECRET_LENGTH} characters")
     if settings.otp_debug_echo:
         problems.append("OTP_DEBUG_ECHO returns one-time codes to the caller")
-    if settings.sms_sender_name == "console":
-        problems.append("no SMS provider is configured, so phone codes are only printed to this log (set MSG91_AUTH_KEY and MSG91_TEMPLATE_ID)")
-    if settings.email_sender_name == "console":
-        problems.append("no email provider is configured, so email codes are only printed to this log (set POSTMARK_SERVER_TOKEN and POSTMARK_FROM_EMAIL)")
     return problems
 
 
-def require_production_auth_config(settings: Settings) -> None:
-    """Refuse to start a deployment with development-only authentication.
+def unavailable_otp_channels(settings: Settings) -> dict[str, str]:
+    """Channels with no delivery provider, keyed by OtpChannel value.
 
-    Outside production the same findings are printed rather than raised: local
-    work has to be possible without an SMS account, but it should never be
-    quietly unclear that sign-in codes are going to a terminal.
+    A console sender would print sign-in codes to the server log instead of
+    sending them, so the channel cannot be offered. That disables one way in,
+    not the service: refusing to start over it would take down sign-in on the
+    channel that *is* configured, and every other endpoint with it, for a
+    condition only reachable by someone choosing that one way in. So it is
+    reported at startup and refused where the code would be sent — the same
+    shape as an unconfigured Google client.
     """
-    problems = development_auth_shortcuts(settings)
-    if not problems:
-        return
+    unavailable = {}
+    if settings.sms_sender_name == "console":
+        unavailable["phone"] = "no SMS provider is configured, so phone codes would only be printed to this log (set MSG91_AUTH_KEY and MSG91_TEMPLATE_ID)"
+    if settings.email_sender_name == "console":
+        unavailable["email"] = "no email provider is configured, so email codes would only be printed to this log (set POSTMARK_SERVER_TOKEN and POSTMARK_FROM_EMAIL)"
+    return unavailable
+
+
+def require_production_auth_config(settings: Settings) -> None:
+    """Refuse to start a deployment whose authentication is unsafe.
+
+    Unsafe is not the same as incomplete — see the two functions above. Outside
+    production every finding is printed rather than raised: local work has to be
+    possible without an SMS account, but it should never be quietly unclear that
+    sign-in codes are going to a terminal.
+    """
     if settings.environment == "production":
-        raise RuntimeError("Unsafe authentication configuration: " + "; ".join(problems))
-    for problem in problems:
+        problems = unsafe_auth_settings(settings)
+        if problems:
+            raise RuntimeError("Unsafe authentication configuration: " + "; ".join(problems))
+        for channel, reason in sorted(unavailable_otp_channels(settings).items()):
+            print(f"[auth] {channel} sign-in is unavailable: {reason}", flush=True)
+        return
+    for problem in development_auth_shortcuts(settings):
         print(f"[auth] development mode: {problem}", flush=True)

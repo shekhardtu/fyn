@@ -120,10 +120,55 @@ def test_production_refuses_a_secret_that_is_not_one(label, changes):
     assert "AUTH_SECRET" in refusal
 
 
-def test_production_refuses_development_delivery_shortcuts():
+def test_production_refuses_settings_that_compromise_every_channel():
     assert "OTP_DEBUG_ECHO" in (_startup(otp_debug_echo=True) or "")
-    assert "MSG91" in (_startup(msg91_auth_key=None) or "")
-    assert "POSTMARK" in (_startup(postmark_server_token=None) or "")
+
+
+def test_production_starts_without_a_provider_for_one_channel():
+    """A channel with no provider disables that channel, not the deployment.
+
+    Refusing to boot took down sign-in on the channel that *was* configured,
+    and every other endpoint with it — for a condition only reachable by
+    someone choosing that one way in.
+    """
+    assert _startup(msg91_auth_key=None) is None
+    assert _startup(postmark_server_token=None) is None
+
+
+def test_a_channel_without_a_provider_is_reported_at_startup(capsys):
+    """Unavailable is not the same as unnoticed."""
+    assert _startup(postmark_server_token=None) is None
+    assert "email sign-in is unavailable" in capsys.readouterr().out
+
+
+def test_a_channel_without_a_provider_is_refused_when_it_is_used(client, settings, monkeypatch):
+    """The refusal lands on the person choosing that channel, not on the server.
+
+    503 rather than 400: the caller did nothing wrong and cannot fix it by
+    retrying — the same answer an unconfigured Google client gives.
+    """
+    current = get_settings()
+    monkeypatch.setattr(current, "environment", "production")
+    monkeypatch.setattr(current, "postmark_server_token", None)
+
+    refused = client.post("/api/auth/otp/start", json={"channel": "email", "value": "someone@example.com"})
+
+    assert refused.status_code == 503
+    assert "Email sign-in is not available" in refused.json()["detail"]
+
+
+def test_the_configured_channel_still_works_when_another_has_no_provider(client, settings, monkeypatch):
+    """The whole point: one missing provider must not close the other door."""
+    current = get_settings()
+    monkeypatch.setattr(current, "environment", "production")
+    monkeypatch.setattr(current, "postmark_server_token", None)
+    monkeypatch.setattr(current, "msg91_auth_key", "key")
+    monkeypatch.setattr(current, "msg91_template_id", "template")
+    monkeypatch.setattr("app.services.auth.deliver_code", lambda *a, **k: None)
+
+    started = client.post("/api/auth/otp/start", json={"channel": "phone", "value": PHONE})
+
+    assert started.status_code == 200
 
 
 def test_a_fully_configured_deployment_starts():

@@ -25,7 +25,7 @@ from .security import clear_session_cookie, current_user, optional_user, session
 from .services.auth import SentCode, complete_link, complete_login, send_link_code, send_login_code, sign_in_with_google
 from .services.google_identity import GoogleAuthError, GoogleUnavailable, google_sign_in_enabled
 from .services.identity import IdentityConflict, IdentityError, detach_identity, identities_of, owned_identity
-from .services.otp import OtpError, OtpRateLimited
+from .services.otp import OtpChannelUnavailable, OtpError, OtpRateLimited
 from .services.otp_delivery import OtpDeliveryError
 from .services.sessions import issue_session, revoke_session
 
@@ -53,6 +53,10 @@ def _translated_errors():
             detail=str(error),
             headers={"Retry-After": str(error.retry_after_seconds)},
         ) from error
+    except OtpChannelUnavailable as error:
+        # Not the caller's mistake and not retryable by them — the same answer
+        # an unconfigured Google client gets a few lines above.
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
     except OtpError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
     except OtpDeliveryError as error:

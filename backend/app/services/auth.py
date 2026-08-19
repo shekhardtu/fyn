@@ -18,7 +18,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from ..config import get_settings
+from ..config import get_settings, unavailable_otp_channels
 from ..domain import IDENTITY_CHANNELS, IdentityProvider, IdentitySource, OtpChannel, OtpPurpose
 from ..models import User, UserIdentity
 from .google_identity import GoogleAccount, verify_google_credential
@@ -34,7 +34,7 @@ from .identity import (
     record_sign_in,
     register_user,
 )
-from .otp import IssuedChallenge, start_challenge, verify_challenge
+from .otp import IssuedChallenge, OtpChannelUnavailable, start_challenge, verify_challenge
 from .otp_delivery import deliver_code
 
 
@@ -70,6 +70,18 @@ def _send(db: Session, issued: IssuedChallenge, channel: OtpChannel, destination
     minute; the hourly ceiling still counts the attempt.
     """
     settings = get_settings()
+    # A channel with no provider is refused here rather than at startup: the
+    # deployment still serves every other channel and every other endpoint, and
+    # the person who chose this one gets told why instead of meeting a dead API.
+    # The challenge is released first so an undelivered code does not hold the
+    # resend window shut, exactly as a provider failure would.
+    unavailable = unavailable_otp_channels(settings)
+    if settings.environment == "production" and channel.value in unavailable:
+        issued.challenge.expires_at = issued.challenge.created_at
+        db.commit()
+        raise OtpChannelUnavailable(
+            f"{channel.value.capitalize()} sign-in is not available on this server."
+        )
     # Development phone authentication is an entirely local round trip: the
     # response carries the code and no SMS provider is called, even if local
     # credentials happen to be configured. Production keeps the real delivery

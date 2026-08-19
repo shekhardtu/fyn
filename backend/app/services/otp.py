@@ -34,6 +34,14 @@ class OtpError(Exception):
     """A challenge that cannot be completed as presented."""
 
 
+class OtpChannelUnavailable(OtpError):
+    """The channel asked for has no delivery provider on this deployment.
+
+    Separate from OtpError because it is not a bad request: the caller did
+    nothing wrong and retrying will not help until the server is configured.
+    """
+
+
 class OtpRateLimited(OtpError):
     """Too many codes asked for, too fast."""
 
