@@ -8,21 +8,22 @@ An AI-native personal finance application whose primary interface is a conversat
 - One account, both methods: link a phone number to a Google account, or an email address to a phone account, and either signs you in. A later Google sign-in whose address is already verified is adopted rather than duplicated.
 - A phone number or email address belongs to exactly one account, enforced by a unique constraint. Linking one that is spoken for is refused before a code is sent; deleting the account holding it releases it.
 - Chat-first responsive UI with persistent conversations and one primary composer.
-- State-aware orchestration: greetings and bare amounts use safe fast paths; every semantic financial request is routed by Agno, compiled to a typed domain action, independently validated by a fast model, and rerouted through a stronger model when rejected.
-- Governed analysis-tool factory: Agno can propose new declarative capabilities; the harness validates, compiles, executes, verifies, versions, repairs, saves, and reuses them without accepting arbitrary code or SQL.
+- State-aware orchestration: safe deterministic gates handle explicit local contracts; Operator resolves contextual turns, Planner proposes complex read-only analysis, and Validator independently reviews consequential contracts.
+- SQL-first governed analysis: the Operator authors an arbitrary PostgreSQL query graph with full tenant-governed schema context. CTEs, nested SELECTs, joins, set operations, windows, statistics, and derived mathematics are available; PostgreSQL row-level security supplies the authenticated-user boundary.
 - Live in-chat agent activity showing the selected tool, individual stage timing, cumulative timing, model, and total runtime; traces persist after refresh.
 - Native AG-UI transport with ordered lifecycle, text, activity, safe reasoning, tool-call, state snapshot/delta, interrupt, error, and completion events. Runs survive navigation or a dropped client connection and can be replayed from the persisted event log.
 - Typed, Zod/Pydantic-validated widget protocol; the model never emits arbitrary UI code.
+- Filesystem-only operation catalog with file-generated capability identity, protected common policy, one-file Ops workflows, atomic runtime reloads, derived effects/approvals, fail-fast primitive wiring, and generic web forms.
 - Durable widget action receipts: completed or cancelled HITL controls persist their submitted values, become read-only immediately, and remain read-only after refresh.
-- Stateful transaction drafts with category/subcategory clarification, user-scoped taxonomy creation, edit, confirmation, and idempotent commit. The router receives the active workflow state and may choose only state-valid actions.
+- Stateful transaction drafts with category/subcategory clarification, user-scoped taxonomy creation, edit, confirmation, and idempotent commit. Operator receives the active workflow state and may choose only state-valid actions.
 - Expense, income, refund, investment, loan-payment, and transfer intent classification.
 - Conversational account resolution for transfers; accounts are created only after confirmation.
 - Monthly budgets and savings goals with staged creation/contributions and live progress widgets.
 - User-owned merchant category learning; an explicit correction overrides later AI inference.
 - Indian amount parsing (`₹2,000`, `3 lakh`, `20k`) and relative dates.
 - Grounded spending summaries, category breakdowns, month comparisons, change drivers, largest expenses, recurring-pattern detection, and saved analyses.
-- Versioned finance semantic registry covering governed entities, physical fields, approved relationships, metrics, dimensions, field types, time semantics, and query-cost policy. Generated plans never contain SQL.
-- Generic semantic query plans over transactions, accounts, budgets, goals, loans, recurring patterns, and subscriptions, with deterministic comparison/ranking/share/period-change/change-driver transforms.
+- Versioned finance source manifest covering every tenant-governed table, physical column, relationship, and canonical financial meaning. It is injected as SQL authoring context rather than limiting questions to a finite transform vocabulary.
+- Legacy semantic plans and deterministic transforms remain available only in `ANALYSIS_QUERY_MODE=hybrid` as a rollback/compatibility path.
 - Recommendation context from saved budgets, goals, loans, accounts, and recurring expenses; the harness rejects recommendations without relevant user-specific context.
 - Deterministic affordability, loan/prepayment, and investment-projection calculators using minor units/decimal math.
 - Financial observations separated from canonical transactions, with multi-source provenance.
@@ -31,14 +32,14 @@ An AI-native personal finance application whose primary interface is a conversat
 - Configurable reconciliation scoring, deterministic exact/strong matches, ambiguity review, and explicit merge/keep-separate actions.
 - Message classification that rejects OTPs, promotions, balance-only messages, and order confirmations without proof of payment.
 - PostgreSQL schema, composite reconciliation indexes, UUID foreign keys, and Alembic migration.
-- Narrow Agno evaluator for ambiguous reconciliation; it returns typed advice and cannot merge data.
+- Narrow Reconciler for ambiguous ingestion matches; it returns typed advice and cannot merge data.
 - Confirmation-safe CSV statement upload: rows are staged, summarized, and reconciled only after Import.
 - Privacy settings for location opt-in, source revocation, complete JSON export, and explicit data deletion.
 
 ## Architecture
 
 ```text
-Vite HttpAgent SPA / Expo native AG-UI adapter + typed widgets
+Vite HttpAgent SPA + typed widgets
                  │  AG-UI over SSE
                  ▼
 FastAPI AG-UI runtime + durable runs/events/interrupts
@@ -46,23 +47,20 @@ FastAPI AG-UI runtime + durable runs/events/interrupts
                  ▼
 Conversation harness + persisted workflow state
         │
-        ├── bare amount ──────────────────► safe deterministic clarification
-        ├── explicit rich analysis ───────► governed Luna router
-        └── unified Luna read agent
-                 │ authenticated read/calculation tools
-                 ├── conversation/read ──► contextual answer from the same run
-                 ├── complete typed read ─► governed query executor
-                 └── generic handoff ─────► governed Luna router
-                                                   │
-                                      fast Luna contract validator
-                                                   │
-                                  rejected ────────┴──────► Terra reroute
-                                                   │
-                         typed command/query or declarative AnalysisTool spec
-                                                   │
+        ├── deterministic gate ────────────► explicit safe local contracts
+        └── Operator (Luna)
+                 │ authenticated read/calculation tools + typed handoff
+                 ├── grounded conversation/read ──► final verified answer
+                 ├── complete typed contract ─────► deterministic policy
+                 └── unresolved complex analysis ─► Planner (Terra)
+                                                       │ declarative plan
+                                      consequential ───┴──► Validator (Luna)
+                                                       │
+                             typed command/query or AnalysisTool specification
+                                                       │
                          versioned semantic registry
                       entity + field + relationship context
-                                                   │
+                                                       │
                            validate → compile → execute → verify → persist
                                           │
                   ┌───────────────────────┴──────────────────────┐
@@ -72,15 +70,19 @@ Conversation harness + persisted workflow state
                   └───────────────────────┬──────────────────────┘
                                           ▼
                                       PostgreSQL
+
+Ingestion reconciliation ─────────────► Reconciler (Luna) ─► bounded match advice
 ```
 
 Financial facts, drafts, conversations, preferences, and provenance are stored separately. The LLM is never the database and important calculations are not delegated to it.
 
-The web client uses AG-UI's official `HttpAgent`. AG-UI does not currently ship a React Native adapter, so Expo uses its native streaming fetch with the official `@ag-ui/core` event schemas as a deliberately thin transport adapter. Both clients consume the same protocol and Fyn projection. The typed widget protocol, governed finance actions, and BI rendering remain application code, so AG-UI does not hand financial authority to client-provided tools or arbitrary generated UI. See [the AG-UI runtime contract](docs/AG_UI_RUNTIME.md) for event, reconnect, interrupt, cancellation, and capability semantics.
+The web client uses AG-UI's official `HttpAgent`. The typed widget protocol, governed finance actions, and BI rendering remain application code, so AG-UI does not hand financial authority to client-provided tools or arbitrary generated UI. See [the AG-UI runtime contract](docs/AG_UI_RUNTIME.md) for event, reconnect, interrupt, cancellation, and capability semantics.
 
-The semantic registry is reconstructed from versioned application code for every planner/validator contract; it is not remembered in model chat history. Startup drift checks verify unique semantic names, every exposed field and relationship against SQLAlchemy, and complete compiler adapters for every queryable dimension and join. Relationships needed only for domain context are explicitly marked non-queryable. Before execution, the deterministic compiler independently verifies the metric/base-entity pairing, dimension and filter availability, approved joins, operator/type compatibility, integer-minor-unit money values, event-versus-snapshot time behavior, tenant scope, and bounded query cost. Only parameterized SQLAlchemy `SELECT` statements can be produced. Each result includes the registry version and schema hash for lineage.
+The native source manifest is reconstructed from versioned application code and the physical SQLAlchemy schema; it is not remembered in model chat history. In the default `sql` mode, the Operator receives every column on every table protected by the analyst tenant policy and may compose arbitrary read-only PostgreSQL. The SQL AST gate prevents escapes to tables without tenant policy, while PostgreSQL RLS is the load-bearing isolation: the authenticated user id is injected by the server and cannot be selected by the model. Read-only transactions, timeouts, and output caps are operational protections rather than restrictions on analytical composition.
 
-Generated analysis tools are reproducible cache entries rather than financial truth. A registry version/hash change deletes incompatible tool specifications and execution runs; generating a revised plan for the same normalized intent replaces its prior cached variant. Canonical financial and conversation records are not affected by this cleanup lifecycle.
+Ops-authored capabilities are documented in [Filesystem operations](docs/OPERATIONS.md). Their YAML/JSON files are the sole catalog source and are never copied into PostgreSQL.
+
+Successful SQL is parameterized and retained as value-free worked-example memory rather than financial truth. A source-manifest change invalidates incompatible examples. Canonical financial and conversation records are not affected by this lifecycle.
 
 ## Run locally
 
@@ -142,7 +144,6 @@ Check the active mode at `http://localhost:8000/api/health`. It should report `"
 cd backend && ../.venv/bin/pytest
 cd frontend && npm test && npm run lint && npm run build
 cd frontend && npm run test:e2e
-cd mobile && npm run typecheck
 ```
 
 The end-to-end tests exercise bare-amount clarification through save/refresh, rich merchant entry through grounded analytics, confirmation-safe CSV upload, privacy/export controls, and active-conversation persistence. The reconciliation benchmark covers exact replay, cross-source corroboration, pending/posted events, same-amount and same-merchant false-merge traps, refunds, transfers, recurring charges, and human review. Its current gate requires 100% precision, at least 95% recall, zero false merges, and at most 5% false splits; the bundled dataset currently scores 100% precision/recall with zero false merges/splits.
@@ -215,6 +216,8 @@ Before a public deployment, set `ENVIRONMENT=production` (which refuses the deve
 
 ## Agent credentials
 
-`OPENAI_API_KEY` in `backend/.env` enables the Agno model path. With `UNIFIED_READ_AGENT_ENABLED=true`, one Luna run owns ordinary conversation and authenticated read/calculation answers from understanding through final wording. It has no mutation authority: a stop-after-call handoff sends transaction changes, taxonomy, budgets/goals, and unsupported finance work into the typed governed pipeline. A handoff that already contains a complete low-risk read query executes directly without a duplicate router; explicit charts and richer analysis enter the semantic planner directly instead of paying for an inevitable handoff first. Deliberately ambiguous bare amounts retain their safe local clarification path. Luna also handles governed routing, extraction, reconciliation advice, and independent response-contract validation; Terra handles complex analysis generation and rejected-route repair. Deterministic services enforce user scope, mutations, read-only queries, calculations, evidence lineage, and state transitions. Governed read/analysis executors produce the final verified copy with their widgets and citations, so no second prose model can add latency or unsupported figures. The in-chat trace reports direct read/handoff selection, retrieval, routing, validation/rerouting, execution, grounding, individual timings, and cumulative runtime.
+`OPENAI_API_KEY` in `backend/.env` enables the governed model path. The copilot has four one-word policy modes built from one versioned prompt template: Operator, Planner, Validator, and Reconciler. Operator owns ordinary conversation, authenticated reads/calculations, transaction extraction, and complete typed handoffs. Planner runs only for complex analysis that cannot be expressed by the Operator's typed query contract. Validator runs only at consequential execution boundaries or after a repair. Reconciler is isolated to bounded ingestion match advice. Deterministic services retain all authority for user scope, mutation confirmation, read-only compilation, calculations, evidence lineage, and state transitions.
+
+Complete Operator handoffs execute without a duplicate interpretation pass. Verified read/analysis handlers produce final copy with the same widgets and citations, so there is no separate Writer pass. Deliberately ambiguous bare amounts retain their safe local clarification path. The in-chat trace reports Operator, optional Planner/Validator passes, deterministic execution, grounding, individual timings, and cumulative runtime.
 
 Raw model chain-of-thought is never exposed. The visible reasoning text is a short structured execution plan plus observable harness stages (tool discovery/synthesis, validation, repair, execution, and verification).

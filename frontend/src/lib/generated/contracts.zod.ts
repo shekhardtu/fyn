@@ -25,6 +25,35 @@ export const AffordabilityResult = z.looseObject({
   "months_to_goal": z.union([z.int(), z.null()]),
   "rule": z.string(),
 });
+export const AgentModelPassMetrics = z.looseObject({
+  "stage": z.string(),
+  "model": z.string(),
+  "provider": z.union([z.string(), z.null()]).default(null),
+  "inputTokens": z.int().min(0),
+  "outputTokens": z.int().min(0),
+  "totalTokens": z.int().min(0),
+  "cacheReadTokens": z.int().min(0),
+  "cacheWriteTokens": z.int().min(0),
+  "reasoningTokens": z.int().min(0),
+  "durationMs": z.union([z.number().min(0), z.null()]).default(null),
+  "timeToFirstTokenMs": z.union([z.number().min(0), z.null()]).default(null),
+  "costUsd": z.union([z.number().min(0), z.null()]).default(null),
+});
+export const AgentRunMetrics = z.looseObject({
+  "source": z.literal("agno_run_output").default("agno_run_output"),
+  "modelPasses": z.int().min(0).default(0),
+  "inputTokens": z.int().min(0).default(0),
+  "outputTokens": z.int().min(0).default(0),
+  "totalTokens": z.int().min(0).default(0),
+  "cacheReadTokens": z.int().min(0).default(0),
+  "cacheWriteTokens": z.int().min(0).default(0),
+  "reasoningTokens": z.int().min(0).default(0),
+  "modelDurationMs": z.union([z.number().min(0), z.null()]).default(null),
+  "firstModelTimeToFirstTokenMs": z.union([z.number().min(0), z.null()]).default(null),
+  "costUsd": z.union([z.number().min(0), z.null()]).default(null),
+  "costCoverage": z.number().min(0).max(1).default(0),
+  "passes": z.array(AgentModelPassMetrics).optional(),
+});
 export const AgentActivityData = z.looseObject({
   "lifecycle": z.union([WidgetLifecycle, z.null()]).default(null),
   "completion": z.union([z.record(z.string(), z.unknown()), z.null()]).default(null),
@@ -35,6 +64,8 @@ export const AgentActivityData = z.looseObject({
   "reasoningTrace": z.union([z.string(), z.null()]).default(null),
   "debugTrace": z.boolean().default(false),
   "steps": z.array(z.record(z.string(), z.unknown())).optional(),
+  "modelPassCount": z.union([z.int().min(0), z.null()]).default(null),
+  "metrics": z.union([AgentRunMetrics, z.null()]).default(null),
   "totalMs": z.number().min(0).default(0),
   "live": z.boolean().default(false),
 });
@@ -48,8 +79,12 @@ export const AgentActivityEvent = z.looseObject({
   "resultTool": z.union([z.string(), z.null()]).default(null),
   "detail": z.union([z.string(), z.null()]).default(null),
   "badge": z.union([z.string(), z.null()]).default(null),
+  "input": z.union([z.unknown(), z.null()]).default(null),
+  "output": z.union([z.unknown(), z.null()]).default(null),
   "durationMs": z.number().min(0),
   "cumulativeMs": z.number().min(0),
+  "failureSummary": z.union([z.string(), z.null()]).default(null),
+  "modelPassCount": z.union([z.int().min(0), z.null()]).default(null),
 });
 export const AgentDecisionDiagnostic = z.looseObject({
   "tool": z.union([z.string(), z.null()]).default(null),
@@ -58,11 +93,10 @@ export const AgentDecisionDiagnostic = z.looseObject({
   "created_at": z.iso.datetime(),
 });
 export const AgentModelSet = z.looseObject({
-  "router": z.string(),
-  "transaction": z.string(),
-  "analysis": z.string(),
+  "operator": z.string(),
+  "planner": z.string(),
   "validator": z.string(),
-  "reconciliation": z.string(),
+  "reconciler": z.string(),
 });
 export const AgentDiagnosticsOut = z.looseObject({
   "mode": z.enum(["llm", "deterministic_fallback"]),
@@ -87,7 +121,7 @@ export const DataReference = z.looseObject({
   "entity_ids": z.array(z.string()).optional(),
   "query": z.record(z.string(), z.unknown()).optional(),
 });
-export const WidgetActionId = z.enum(["set_spend_nature", "start_add_category", "start_add_subcategory", "cancel_add_category", "cancel_taxonomy_change", "create_category", "create_subcategory", "select_category", "select_transaction_type", "select_subcategory", "change_category", "select_account", "revisit_transaction_step", "cancel_transaction_draft", "cancel_pending_action", "save_budget", "save_goal", "contribute_goal", "commit_import", "calculate_loan_scenario", "calculate_investment_scenario", "commit_transaction", "edit_transaction", "cancel_transaction_edit", "update_transaction_draft", "edit_saved_transaction", "cancel_saved_transaction_edit", "update_saved_transaction", "request_remove_transaction", "confirm_remove_transaction", "cancel_remove_transaction", "merge_reconciliation", "separate_reconciliation", "resolve_clarification"]);
+export const WidgetActionId = z.enum(["set_spend_nature", "start_add_category", "start_add_subcategory", "cancel_add_category", "cancel_taxonomy_change", "create_category", "create_subcategory", "create_taxonomy_path", "select_category", "select_transaction_type", "select_subcategory", "change_category", "select_account", "revisit_transaction_step", "cancel_transaction_draft", "cancel_pending_action", "edit_budget", "request_delete_budget", "delete_budget", "save_budget", "save_goal", "contribute_goal", "commit_import", "calculate_loan_scenario", "calculate_investment_scenario", "commit_transaction", "edit_transaction", "cancel_transaction_edit", "update_transaction_draft", "edit_saved_transaction", "cancel_saved_transaction_edit", "update_saved_transaction", "request_remove_transaction", "confirm_remove_transaction", "cancel_remove_transaction", "merge_reconciliation", "separate_reconciliation", "resolve_clarification", "rename_conversation", "submit_operation", "approve_operation", "cancel_operation"]);
 export const PendingAction = z.looseObject({
   "action": WidgetActionId,
   "resource_id": z.string(),
@@ -101,7 +135,7 @@ export const WidgetAction = z.looseObject({
   "style": WidgetActionStyle.default("secondary"),
   "payload": z.record(z.string(), z.unknown()).optional(),
 });
-export const WidgetType = z.enum(["agent_activity", "clarification", "category_selector", "transaction_type_selector", "subcategory_selector", "taxonomy_editor", "account_selector", "confirmation_card", "transaction_preview", "transaction_edit", "transaction_list", "data_table", "data_chart", "data_visualization", "financial_summary", "analysis_table", "avoidable_expenses", "insight_card", "budget_progress", "goal_progress", "scenario_analysis", "loan_calculator", "loan_strategy", "investment_projection", "reconciliation_review", "import_review"]);
+export const WidgetType = z.enum(["agent_activity", "clarification", "category_selector", "transaction_type_selector", "subcategory_selector", "taxonomy_editor", "account_selector", "confirmation_card", "transaction_preview", "transaction_edit", "data_chart", "avoidable_expenses", "insight_card", "budget_progress", "goal_progress", "loan_calculator", "investment_projection", "reconciliation_review", "import_review", "related_questions", "operation_form", "operation_approval"]);
 export const Widget = z.looseObject({
   "id": z.string(),
   "type": WidgetType,
@@ -121,24 +155,15 @@ export const AgentResponse = z.looseObject({
   "citations": z.array(DataReference).optional(),
   "conversation_id": z.uuid(),
   "message_id": z.uuid(),
-});
-export const AgentRunEvaluationOut = z.looseObject({
-  "complete": z.boolean(),
-  "evidencePassed": z.boolean(),
-  "contextual": z.boolean(),
-  "grounded": z.boolean(),
-  "groundingRequired": z.boolean(),
-  "depthScore": z.int().min(0).max(100),
-  "qualityScore": z.int().min(0).max(100),
-  "responseWords": z.int().min(0),
-  "citationCount": z.int().min(0),
-  "widgetCount": z.int().min(0),
-  "correctnessBasis": z.enum(["structured_evidence", "claim_integrity", "unsupported_financial_figure"]),
-  "signals": z.array(z.string()).optional(),
+  "user_message_id": z.union([z.uuid(), z.null()]).default(null),
+  "delivered_at": z.iso.datetime(),
 });
 export const AgentRunOut = z.looseObject({
   "id": z.uuid(),
   "status": z.string(),
+  "taskStatus": z.string(),
+  "failureStage": z.union([z.string(), z.null()]).default(null),
+  "errorCode": z.union([z.string(), z.null()]).default(null),
   "lastSequence": z.int(),
   "cancelRequested": z.boolean(),
   "finalMessageId": z.union([z.uuid(), z.null()]).default(null),
@@ -149,45 +174,17 @@ export const AgentRunOut = z.looseObject({
   "finishedAt": z.union([z.iso.datetime(), z.null()]).default(null),
   "durationMs": z.union([z.number(), z.null()]).default(null),
   "timeToFirstResponseMs": z.union([z.number(), z.null()]).default(null),
+  "metrics": AgentRunMetrics.optional(),
 });
-export const AgentRunMetricOut = z.looseObject({
-  "run": AgentRunOut,
-  "evaluation": z.union([AgentRunEvaluationOut, z.null()]).default(null),
-});
-export const AgentThreadMetricsOut = z.looseObject({
-  "threadId": z.uuid(),
-  "sampleSize": z.int().min(0),
-  "completionRate": z.number().min(0).max(1),
-  "evidencePassRate": z.union([z.number().min(0).max(1), z.null()]).default(null),
-  "contextualityRate": z.union([z.number().min(0).max(1), z.null()]).default(null),
-  "groundingRate": z.union([z.number().min(0).max(1), z.null()]).default(null),
-  "averageQualityScore": z.union([z.number().min(0).max(100), z.null()]).default(null),
-  "averageDepthScore": z.union([z.number().min(0).max(100), z.null()]).default(null),
-  "averageDurationMs": z.union([z.number().min(0), z.null()]).default(null),
-  "p50DurationMs": z.union([z.number().min(0), z.null()]).default(null),
-  "p95DurationMs": z.union([z.number().min(0), z.null()]).default(null),
-  "averageTimeToFirstResponseMs": z.union([z.number().min(0), z.null()]).default(null),
-  "p50TimeToFirstResponseMs": z.union([z.number().min(0), z.null()]).default(null),
-  "recentRuns": z.array(AgentRunMetricOut).optional(),
+export const AgentSettingsOut = z.looseObject({
+  "answerValidationMode": z.enum(["full", "evidence_only", "off"]),
+  "answerStyle": z.enum(["explained", "concise"]),
 });
 export const AgentThreadStateOut = z.looseObject({
   "threadId": z.uuid(),
   "activeRun": z.union([AgentRunOut, z.null()]).default(null),
   "latestRun": z.union([AgentRunOut, z.null()]).default(null),
   "interrupts": z.array(AgentInterruptOut).optional(),
-});
-export const AnalysisTableData = z.looseObject({
-  "lifecycle": z.union([WidgetLifecycle, z.null()]).default(null),
-  "completion": z.union([z.record(z.string(), z.unknown()), z.null()]).default(null),
-  "title": z.string(),
-  "body": z.union([z.string(), z.null()]).default(null),
-  "columns": z.array(z.string()).optional(),
-  "rows": z.array(z.record(z.string(), z.unknown())).optional(),
-  "budgetRoom": z.array(z.record(z.string(), z.unknown())).optional(),
-  "queryResults": z.array(z.record(z.string(), z.unknown())).optional(),
-  "transforms": z.array(z.record(z.string(), z.unknown())).optional(),
-  "context": z.record(z.string(), z.unknown()).optional(),
-  "currency": z.union([z.string(), z.null()]).default(null),
 });
 export const IdentityProvider = z.enum(["phone", "email", "google"]);
 export const IdentitySource = z.enum(["otp", "google"]);
@@ -213,7 +210,6 @@ export const AuthStatusOut = z.looseObject({
   "authenticated": z.boolean(),
   "profile": z.union([ProfileOut, z.null()]).default(null),
   "googleSignInAvailable": z.boolean(),
-  "sessionToken": z.union([z.string(), z.null()]).default(null),
 });
 export const AvoidableExpensesData = z.looseObject({
   "lifecycle": z.union([WidgetLifecycle, z.null()]).default(null),
@@ -237,6 +233,7 @@ export const MessageOut = z.looseObject({
   "widgets": z.array(Widget),
   "citations": z.array(DataReference),
   "created_at": z.iso.datetime(),
+  "delivered_at": z.iso.datetime(),
 });
 export const ConversationOut = z.looseObject({
   "id": z.uuid(),
@@ -247,6 +244,9 @@ export const ConversationOut = z.looseObject({
 export const BootstrapResponse = z.looseObject({
   "user": BootstrapUser,
   "active_conversation": ConversationOut,
+});
+export const BudgetActionPayload = z.looseObject({
+  "budgetId": z.uuid(),
 });
 export const BudgetProgressData = z.looseObject({
   "lifecycle": z.union([WidgetLifecycle, z.null()]).default(null),
@@ -296,6 +296,11 @@ export const CategorySelectorData = z.looseObject({
   "options": z.array(z.record(z.string(), z.unknown())).optional(),
   "allowCreate": z.boolean().default(false),
   "mode": z.union([z.string(), z.null()]).default(null),
+});
+export const ChartLineage = z.looseObject({
+  "origin": z.string().regex(new RegExp("^[a-z][a-z0-9_]{0,39}$")),
+  "manifestHash": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+  "executedAt": z.string().min(1).max(64),
 });
 export const ClarificationOptionData = z.looseObject({
   "id": z.string().min(1).max(64).regex(new RegExp("^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")),
@@ -353,6 +358,9 @@ export const ConversationPage = z.looseObject({
   "items": z.array(ConversationSummaryOut),
   "nextCursor": z.union([z.string(), z.null()]).default(null),
 });
+export const ConversationRenameIn = z.looseObject({
+  "title": z.string().min(1).max(160),
+});
 export const CreateCategoryPayload = z.looseObject({
   "draftId": z.union([z.uuid(), z.null()]).default(null),
   "categoryId": z.union([z.uuid(), z.null()]).default(null),
@@ -363,75 +371,9 @@ export const CreateSubcategoryPayload = z.looseObject({
   "categoryId": z.uuid(),
   "name": z.string().min(1).max(80),
 });
-export const DataChartAxisType = z.enum(["category", "date", "datetime", "number"]);
-export const DataChartAxis = z.looseObject({
-  "key": z.string().regex(new RegExp("^[A-Za-z][A-Za-z0-9_]{0,63}$")),
-  "label": z.string().min(1).max(80),
-  "type": DataChartAxisType.default("category"),
-});
-export const DataChartValueType = z.enum(["money", "number", "percentage"]);
-export const DataChartSeries = z.looseObject({
-  "key": z.string().regex(new RegExp("^[A-Za-z][A-Za-z0-9_]{0,63}$")),
-  "label": z.string().min(1).max(80),
-  "valueType": DataChartValueType.default("number"),
-  "currency": z.union([z.string().max(3), z.null()]).default(null),
-  "groupKey": z.union([z.string().regex(new RegExp("^[A-Za-z][A-Za-z0-9_]{0,63}$")), z.null()]).default(null),
-});
-export const DataChartType = z.enum(["bar", "line", "area", "pie", "heatmap"]);
-export const DataChartData = z.looseObject({
-  "lifecycle": z.union([WidgetLifecycle, z.null()]).default(null),
-  "completion": z.union([z.record(z.string(), z.unknown()), z.null()]).default(null),
-  "title": z.string().min(1).max(160),
-  "body": z.union([z.string().max(500), z.null()]).default(null),
-  "chartType": DataChartType,
-  "rows": z.array(z.record(z.string(), z.unknown())).max(100).optional(),
-  "xAxis": DataChartAxis,
-  "yAxis": z.union([DataChartAxis, z.null()]).default(null),
-  "series": z.array(DataChartSeries).min(1).max(8),
-  "labelKeys": z.array(z.string()).max(3).optional(),
-  "emptyMessage": z.string().max(240).default("No data is available for this chart."),
-  "queryResult": z.union([z.record(z.string(), z.unknown()), z.null()]).default(null),
-});
-export const DataDeletionOut = z.looseObject({
-  "deleted": z.literal(true),
-});
-export const TableColumnAlign = z.enum(["left", "right"]);
-export const TableColumnPriority = z.enum(["primary", "secondary", "detail"]);
-export const TableColumnType = z.enum(["entity", "text", "money", "date", "datetime", "number", "percentage", "boolean", "status", "tags"]);
-export const DataTableColumn = z.looseObject({
-  "key": z.string().regex(new RegExp("^[A-Za-z][A-Za-z0-9_]{0,63}$")),
-  "label": z.string().min(1).max(80),
-  "type": TableColumnType.default("text"),
-  "align": TableColumnAlign.default("left"),
-  "priority": TableColumnPriority.default("secondary"),
-  "currencyKey": z.union([z.string().regex(new RegExp("^[A-Za-z][A-Za-z0-9_]{0,63}$")), z.null()]).default(null),
-  "secondaryKeys": z.array(z.string()).max(4).optional(),
-});
-export const WidgetActionIcon = z.enum(["edit", "remove", "view", "review", "download", "retry", "open"]);
-export const DataTableRowAction = z.looseObject({
-  "id": z.string().min(1).max(60),
-  "label": z.string().min(1).max(80),
-  "action": WidgetActionId,
-  "style": WidgetActionStyle.default("secondary"),
-  "resourceKey": z.string().regex(new RegExp("^[A-Za-z][A-Za-z0-9_]{0,63}$")),
-  "payloadKey": z.string().regex(new RegExp("^[A-Za-z][A-Za-z0-9_]{0,63}$")),
-  "icon": z.union([WidgetActionIcon, z.null()]).default(null),
-  "capability": z.union([z.string().regex(new RegExp("^[A-Za-z][A-Za-z0-9_.:-]{0,99}$")), z.null()]).default(null),
-});
-export const DataTableData = z.looseObject({
-  "lifecycle": z.union([WidgetLifecycle, z.null()]).default(null),
-  "completion": z.union([z.record(z.string(), z.unknown()), z.null()]).default(null),
-  "title": z.string().min(1).max(160),
-  "body": z.union([z.string().max(500), z.null()]).default(null),
-  "columns": z.array(DataTableColumn).min(1).max(12),
-  "rows": z.array(z.record(z.string(), z.unknown())).max(100).optional(),
-  "rowIdKey": z.string().regex(new RegExp("^[A-Za-z][A-Za-z0-9_]{0,63}$")).default("id"),
-  "rowActions": z.array(DataTableRowAction).max(6).optional(),
-  "capabilitiesKey": z.string().regex(new RegExp("^[A-Za-z_][A-Za-z0-9_]{0,63}$")).default("_capabilities"),
-  "emptyMessage": z.string().max(240).default("No matching records."),
-});
-export const VisualizationLayout = z.looseObject({
-  "columns": z.int().min(1).max(3).default(1),
+export const CreateTaxonomyPathPayload = z.looseObject({
+  "name": z.string().min(1).max(80),
+  "subcategories": z.array(z.string()).min(1).max(10),
 });
 export const VisualFieldEncoding = z.looseObject({
   "field": z.string().regex(new RegExp("^[a-z][a-z0-9_]{0,63}$")),
@@ -459,16 +401,16 @@ export const VisualizationView = z.looseObject({
   "encoding": VisualEncodingContract,
   "height": z.int().min(180).max(720).default(320),
 });
-export const DataVisualizationData = z.looseObject({
+export const DataChartData = z.looseObject({
   "lifecycle": z.union([WidgetLifecycle, z.null()]).default(null),
   "completion": z.union([z.record(z.string(), z.unknown()), z.null()]).default(null),
-  "title": z.string().min(1).max(160),
-  "body": z.union([z.string().max(500), z.null()]).default(null),
-  "datasets": z.record(z.string(), z.unknown()),
-  "views": z.array(VisualizationView).min(1).max(8),
-  "layout": VisualizationLayout.optional(),
-  "queryResults": z.union([z.record(z.string(), z.unknown()), z.null()]).default(null),
-  "emptyMessage": z.string().max(240).default("No data is available for this visualization."),
+  "view": VisualizationView,
+  "rows": z.array(z.record(z.string(), z.unknown())).min(1).max(250),
+  "currency": z.union([z.string(), z.null()]).default(null),
+  "lineage": ChartLineage,
+});
+export const DataDeletionOut = z.looseObject({
+  "deleted": z.literal(true),
 });
 export const DraftActionPayload = z.looseObject({
   "draftId": z.uuid(),
@@ -488,20 +430,6 @@ export const FinancialMessageOut = z.looseObject({
   "reason": z.string(),
   "reconciliation": z.union([ReconciliationResultOut, z.null()]).default(null),
 });
-export const FinancialSummaryData = z.looseObject({
-  "lifecycle": z.union([WidgetLifecycle, z.null()]).default(null),
-  "completion": z.union([z.record(z.string(), z.unknown()), z.null()]).default(null),
-  "title": z.string(),
-  "amountMinor": z.int(),
-  "currency": z.string(),
-  "count": z.int().default(0),
-  "period": z.union([z.string(), z.null()]).default(null),
-  "periodTitle": z.union([z.string(), z.null()]).default(null),
-  "scopePath": z.array(z.string()).optional(),
-  "scopeLabel": z.union([z.string(), z.null()]).default(null),
-  "description": z.union([z.string(), z.null()]).default(null),
-  "breakdown": z.array(z.record(z.string(), z.unknown())).optional(),
-});
 export const GoalProgressData = z.looseObject({
   "lifecycle": z.union([WidgetLifecycle, z.null()]).default(null),
   "completion": z.union([z.record(z.string(), z.unknown()), z.null()]).default(null),
@@ -518,11 +446,12 @@ export const GoogleSignInIn = z.looseObject({
   "credential": z.string().min(1),
 });
 export const HealthOut = z.looseObject({
-  "status": z.literal("ok"),
+  "status": z.enum(["ok", "degraded"]),
   "time": z.iso.datetime(),
   "database": z.enum(["postgresql", "sqlite"]),
   "agent_mode": z.enum(["llm", "deterministic_fallback"]),
   "models": z.union([AgentModelSet, z.null()]).default(null),
+  "operationCatalog": z.record(z.string(), z.unknown()),
 });
 export const ImportActionPayload = z.looseObject({
   "importId": z.uuid(),
@@ -613,15 +542,39 @@ export const LoanScenarioActionPayload = z.looseObject({
   "tenureMonths": z.int().gt(0).max(600),
   "prepaymentMinor": z.int().min(0).default(0),
 });
-export const LoanStrategyData = z.looseObject({
-  "lifecycle": z.union([WidgetLifecycle, z.null()]).default(null),
-  "completion": z.union([z.record(z.string(), z.unknown()), z.null()]).default(null),
-  "title": z.string(),
-  "body": z.union([z.string(), z.null()]).default(null),
-  "loans": z.array(z.record(z.string(), z.unknown())).optional(),
-});
 export const LocationPreferenceOut = z.looseObject({
   "locationEnabled": z.boolean(),
+});
+export const OperationActionPayload = z.looseObject({
+  "operationId": z.string().regex(new RegExp("^[a-z][a-z0-9_.-]{1,99}$")),
+  "operationVersion": z.int().min(1),
+  "operationChecksum": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+  "inputs": z.record(z.string(), z.unknown()).optional(),
+});
+export const OperationApprovalData = z.looseObject({
+  "lifecycle": z.union([WidgetLifecycle, z.null()]).default(null),
+  "completion": z.union([z.record(z.string(), z.unknown()), z.null()]).default(null),
+  "title": z.string().min(1).max(160),
+  "body": z.union([z.string().max(500), z.null()]).default(null),
+  "operationId": z.string().regex(new RegExp("^[a-z][a-z0-9_.-]{1,99}$")),
+  "operationVersion": z.int().min(1),
+  "operationChecksum": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+  "inputs": z.record(z.string(), z.unknown()).optional(),
+  "effect": z.enum(["draft", "mutation"]),
+  "summary": z.string().min(1).max(500),
+});
+export const OperationFormData = z.looseObject({
+  "lifecycle": z.union([WidgetLifecycle, z.null()]).default(null),
+  "completion": z.union([z.record(z.string(), z.unknown()), z.null()]).default(null),
+  "title": z.string().min(1).max(160),
+  "body": z.union([z.string().max(500), z.null()]).default(null),
+  "operationId": z.string().regex(new RegExp("^[a-z][a-z0-9_.-]{1,99}$")),
+  "operationVersion": z.int().min(1),
+  "operationChecksum": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+  "inputs": z.record(z.string(), z.unknown()).optional(),
+  "inputSchema": z.record(z.string(), z.unknown()),
+  "missingFields": z.array(z.string()).max(30).optional(),
+  "submitLabel": z.string().min(1).max(80).default("Continue"),
 });
 export const OtpChannel = z.enum(["phone", "email"]);
 export const OtpSentOut = z.looseObject({
@@ -639,6 +592,29 @@ export const OtpStartIn = z.looseObject({
 export const OtpVerifyIn = z.looseObject({
   "challengeId": z.uuid(),
   "code": z.string().min(4).max(10),
+});
+export const OverviewAccountOut = z.looseObject({
+  "id": z.uuid(),
+  "name": z.string(),
+  "accountType": z.string(),
+  "institution": z.union([z.string(), z.null()]).default(null),
+  "mask": z.union([z.string(), z.null()]).default(null),
+  "balanceMinor": z.int(),
+  "currency": z.string().min(3).max(3),
+});
+export const OverviewBudgetOut = z.looseObject({
+  "id": z.uuid(),
+  "name": z.string(),
+  "categoryId": z.union([z.uuid(), z.null()]).default(null),
+  "categorySlug": z.union([z.string(), z.null()]).default(null),
+  "category": z.union([z.string(), z.null()]).default(null),
+  "amountMinor": z.int().min(0),
+  "spentMinor": z.int().min(0),
+  "remainingMinor": z.int().min(0),
+  "overMinor": z.int().min(0),
+  "percentUsed": z.number().min(0),
+  "currency": z.string().min(3).max(3),
+  "period": z.string(),
 });
 export const OverviewSubcategoryOut = z.looseObject({
   "id": z.string(),
@@ -673,10 +649,32 @@ export const OverviewSummaryOut = z.looseObject({
   "changeMinor": z.int(),
   "changePercent": z.union([z.number(), z.null()]),
 });
+export const OverviewTransactionOut = z.looseObject({
+  "id": z.uuid(),
+  "transactionType": TransactionType,
+  "amountMinor": z.int(),
+  "currency": z.string().min(3).max(3),
+  "merchant": z.union([z.string(), z.null()]).default(null),
+  "transactionAt": z.iso.datetime(),
+  "category": z.union([z.string(), z.null()]).default(null),
+  "account": z.union([z.string(), z.null()]).default(null),
+});
+export const OverviewTrendPointOut = z.looseObject({
+  "day": z.int().min(1).max(31),
+  "date": z.iso.date(),
+  "incomeMinor": z.int(),
+  "spentMinor": z.int(),
+  "previousIncomeMinor": z.int(),
+  "previousSpentMinor": z.int(),
+});
 export const OverviewOut = z.looseObject({
   "period": OverviewPeriodOut,
   "summary": OverviewSummaryOut,
   "categories": z.array(OverviewCategoryOut),
+  "budgets": z.array(OverviewBudgetOut),
+  "trend": z.array(OverviewTrendPointOut),
+  "recentTransactions": z.array(OverviewTransactionOut),
+  "accounts": z.array(OverviewAccountOut),
 });
 export const PrivacyStatusOut = z.looseObject({
   "locationEnabled": z.boolean(),
@@ -703,6 +701,11 @@ export const ReconciliationReviewOut = z.looseObject({
   "score": z.number(),
   "signals": z.record(z.string(), z.unknown()).optional(),
 });
+export const RelatedQuestionsData = z.looseObject({
+  "lifecycle": z.union([WidgetLifecycle, z.null()]).default(null),
+  "completion": z.union([z.record(z.string(), z.unknown()), z.null()]).default(null),
+  "questions": z.array(z.string()).min(1).max(4),
+});
 export const ResolveClarificationPayload = z.looseObject({
   "clarificationId": z.uuid(),
   "optionId": z.string().min(1).max(64).regex(new RegExp("^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")),
@@ -713,6 +716,7 @@ export const RevisitTransactionStepPayload = z.looseObject({
   "step": z.enum(["transaction_type", "category", "source_account"]),
 });
 export const SaveBudgetPayload = z.looseObject({
+  "budgetId": z.union([z.uuid(), z.null()]).default(null),
   "amountMinor": z.int().gt(0),
   "categoryId": z.union([z.uuid(), z.null()]).default(null),
   "name": z.union([z.string().max(120), z.null()]).default(null),
@@ -720,21 +724,6 @@ export const SaveBudgetPayload = z.looseObject({
 export const SaveGoalPayload = z.looseObject({
   "targetMinor": z.int().gt(0),
   "name": z.union([z.string().max(120), z.null()]).default(null),
-});
-export const ScenarioAnalysisData = z.looseObject({
-  "lifecycle": z.union([WidgetLifecycle, z.null()]).default(null),
-  "completion": z.union([z.record(z.string(), z.unknown()), z.null()]).default(null),
-  "title": z.string(),
-  "currency": z.string(),
-  "purchase_minor": z.union([z.int(), z.null()]).default(null),
-  "reserve_required_minor": z.union([z.int(), z.null()]).default(null),
-  "available_after_reserve_minor": z.union([z.int(), z.null()]).default(null),
-  "gap_minor": z.union([z.int(), z.null()]).default(null),
-  "monthly_surplus_minor": z.union([z.int(), z.null()]).default(null),
-  "months_to_goal": z.union([z.int(), z.null()]).default(null),
-  "affordable_now": z.union([z.boolean(), z.null()]).default(null),
-  "rule": z.union([z.string(), z.null()]).default(null),
-  "dataQuality": z.union([z.string(), z.record(z.string(), z.unknown()), z.null()]).default(null),
 });
 export const SelectAccountPayload = z.looseObject({
   "draftId": z.uuid(),
@@ -784,13 +773,15 @@ export const TaxonomyCreateIn = z.looseObject({
 export const TaxonomyEditorData = z.looseObject({
   "lifecycle": z.union([WidgetLifecycle, z.null()]).default(null),
   "completion": z.union([z.record(z.string(), z.unknown()), z.null()]).default(null),
-  "operation": z.enum(["create_category", "create_subcategory"]),
+  "operation": z.enum(["create_category", "create_subcategory", "create_taxonomy_path"]),
   "name": z.union([z.string(), z.null()]).default(null),
+  "subcategories": z.array(z.string()).max(10).optional(),
   "parentCategory": z.union([z.string(), z.null()]).default(null),
   "appliesToDraft": z.boolean().default(false),
   "draftId": z.union([z.string(), z.null()]).default(null),
   "categoryId": z.union([z.string(), z.null()]).default(null),
   "resultId": z.union([z.string(), z.null()]).default(null),
+  "resultIds": z.array(z.string()).max(11).optional(),
 });
 export const TransactionActionPayload = z.looseObject({
   "transactionId": z.uuid(),
@@ -818,13 +809,6 @@ export const TransactionEditData = z.looseObject({
   "categories": z.array(z.record(z.string(), z.unknown())).optional(),
   "subcategories": z.array(z.record(z.string(), z.unknown())).optional(),
   "fields": z.array(z.string()).optional(),
-});
-export const TransactionListData = z.looseObject({
-  "lifecycle": z.union([WidgetLifecycle, z.null()]).default(null),
-  "completion": z.union([z.record(z.string(), z.unknown()), z.null()]).default(null),
-  "title": z.string(),
-  "body": z.union([z.string(), z.null()]).default(null),
-  "transactions": z.array(z.record(z.string(), z.unknown())).optional(),
 });
 export const TransactionStatus = z.enum(["provisional", "confirmed"]);
 export const TransactionListItemOut = z.looseObject({
@@ -911,23 +895,24 @@ export const schemas = {
   AgentDecisionDiagnostic,
   AgentDiagnosticsOut,
   AgentInterruptOut,
+  AgentModelPassMetrics,
   AgentModelSet,
   AgentResponse,
-  AgentRunEvaluationOut,
-  AgentRunMetricOut,
+  AgentRunMetrics,
   AgentRunOut,
-  AgentThreadMetricsOut,
+  AgentSettingsOut,
   AgentThreadStateOut,
-  AnalysisTableData,
   AuthStatusOut,
   AvoidableExpensesData,
   BootstrapResponse,
   BootstrapUser,
+  BudgetActionPayload,
   BudgetProgressData,
   CancelPendingActionPayload,
   CategoryDirectoryOut,
   CategoryDirectorySubcategoryOut,
   CategorySelectorData,
+  ChartLineage,
   ClarificationData,
   ClarificationOptionData,
   ConfirmationCardData,
@@ -935,21 +920,16 @@ export const schemas = {
   ConversationCreatedOut,
   ConversationOut,
   ConversationPage,
+  ConversationRenameIn,
   ConversationSummaryOut,
   CreateCategoryPayload,
   CreateSubcategoryPayload,
-  DataChartAxis,
+  CreateTaxonomyPathPayload,
   DataChartData,
-  DataChartSeries,
   DataDeletionOut,
   DataReference,
-  DataTableColumn,
-  DataTableData,
-  DataTableRowAction,
-  DataVisualizationData,
   DraftActionPayload,
   FinancialMessageOut,
-  FinancialSummaryData,
   GoalProgressData,
   GoogleSignInIn,
   HealthOut,
@@ -965,17 +945,23 @@ export const schemas = {
   LoanPaymentResult,
   LoanPrepaymentResult,
   LoanScenarioActionPayload,
-  LoanStrategyData,
   LocationPreferenceOut,
   MessageOut,
+  OperationActionPayload,
+  OperationApprovalData,
+  OperationFormData,
   OtpSentOut,
   OtpStartIn,
   OtpVerifyIn,
+  OverviewAccountOut,
+  OverviewBudgetOut,
   OverviewCategoryOut,
   OverviewOut,
   OverviewPeriodOut,
   OverviewSubcategoryOut,
   OverviewSummaryOut,
+  OverviewTransactionOut,
+  OverviewTrendPointOut,
   PendingAction,
   PrivacyStatusOut,
   ProfileOut,
@@ -983,11 +969,11 @@ export const schemas = {
   ReconciliationResultOut,
   ReconciliationReviewData,
   ReconciliationReviewOut,
+  RelatedQuestionsData,
   ResolveClarificationPayload,
   RevisitTransactionStepPayload,
   SaveBudgetPayload,
   SaveGoalPayload,
-  ScenarioAnalysisData,
   SelectAccountPayload,
   SelectCategoryPayload,
   SelectSubcategoryPayload,
@@ -1002,7 +988,6 @@ export const schemas = {
   TransactionCategoryHintIn,
   TransactionCategoryHintOut,
   TransactionEditData,
-  TransactionListData,
   TransactionListItemOut,
   TransactionPreviewData,
   TransactionSpendNaturePayload,
@@ -1012,7 +997,6 @@ export const schemas = {
   UpdateSavedTransactionPayload,
   VisualEncodingContract,
   VisualFieldEncoding,
-  VisualizationLayout,
   VisualizationView,
   Widget,
   WidgetAction,
@@ -1032,22 +1016,18 @@ export const widgetDataSchemas = {
   "confirmation_card": ConfirmationCardData,
   "transaction_preview": TransactionPreviewData,
   "transaction_edit": TransactionEditData,
-  "transaction_list": TransactionListData,
-  "data_table": DataTableData,
   "data_chart": DataChartData,
-  "data_visualization": DataVisualizationData,
-  "financial_summary": FinancialSummaryData,
-  "analysis_table": AnalysisTableData,
   "avoidable_expenses": AvoidableExpensesData,
   "insight_card": InsightCardData,
   "budget_progress": BudgetProgressData,
   "goal_progress": GoalProgressData,
-  "scenario_analysis": ScenarioAnalysisData,
   "loan_calculator": LoanCalculatorData,
-  "loan_strategy": LoanStrategyData,
   "investment_projection": InvestmentProjectionData,
   "reconciliation_review": ReconciliationReviewData,
   "import_review": ImportReviewData,
+  "related_questions": RelatedQuestionsData,
+  "operation_form": OperationFormData,
+  "operation_approval": OperationApprovalData,
 } as const;
 
 export const actionPayloadSchemas = {
@@ -1058,6 +1038,7 @@ export const actionPayloadSchemas = {
   "cancel_taxonomy_change": TaxonomyCancelPayload,
   "create_category": CreateCategoryPayload,
   "create_subcategory": CreateSubcategoryPayload,
+  "create_taxonomy_path": CreateTaxonomyPathPayload,
   "select_category": SelectCategoryPayload,
   "select_transaction_type": SelectTransactionTypePayload,
   "select_subcategory": SelectSubcategoryPayload,
@@ -1066,6 +1047,9 @@ export const actionPayloadSchemas = {
   "revisit_transaction_step": RevisitTransactionStepPayload,
   "cancel_transaction_draft": DraftActionPayload,
   "cancel_pending_action": CancelPendingActionPayload,
+  "edit_budget": BudgetActionPayload,
+  "request_delete_budget": BudgetActionPayload,
+  "delete_budget": BudgetActionPayload,
   "save_budget": SaveBudgetPayload,
   "save_goal": SaveGoalPayload,
   "contribute_goal": ContributeGoalPayload,
@@ -1085,4 +1069,8 @@ export const actionPayloadSchemas = {
   "merge_reconciliation": ReconciliationActionPayload,
   "separate_reconciliation": ReconciliationActionPayload,
   "resolve_clarification": ResolveClarificationPayload,
+  "rename_conversation": ConversationRenameIn,
+  "submit_operation": OperationActionPayload,
+  "approve_operation": OperationActionPayload,
+  "cancel_operation": OperationActionPayload,
 } as const;

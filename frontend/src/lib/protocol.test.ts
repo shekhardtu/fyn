@@ -17,38 +17,26 @@ describe("widget protocol", () => {
     expect(() => widgetSchema.parse({ id: "unsafe", type: "custom_html", version: 1, data: { html: "<script />" } })).toThrow();
   });
 
-  it("accepts generated analysis results only through registered widgets", () => {
-    const widget = widgetSchema.parse({
+  it("rejects retired display widget types", () => {
+    expect(() => widgetSchema.parse({
       id: "analysis-1",
       type: "analysis_table",
       version: 1,
       data: { title: "Custom analysis", queryResults: [] },
       actions: [],
-    });
-    expect(widget.type).toBe("analysis_table");
+    })).toThrow();
   });
 
-  it("validates a capability-gated dynamic data table", () => {
-    const widget = widgetSchema.parse({
+  it("no longer accepts a typed record table", () => {
+    // Records are narrated as Markdown the agent writes; the only widgets left
+    // on the protocol are the interactive HITL surfaces.
+    expect(() => widgetSchema.parse({
       id: "transactions-1",
       type: "data_table",
       version: 1,
-      data: {
-        title: "Transactions",
-        columns: [
-          { key: "merchant", label: "Transaction", type: "entity", priority: "primary" },
-          { key: "amountMinor", label: "Amount", type: "money", align: "right", priority: "primary", currencyKey: "currency" },
-        ],
-        rows: [{ id: "txn-1", merchant: "Toit", amountMinor: 77700, currency: "INR", _capabilities: ["transaction.edit"] }],
-        rowActions: [{ id: "edit", label: "Edit", action: "edit_saved_transaction", resourceKey: "id", payloadKey: "transactionId", capability: "transaction.edit", icon: "edit" }],
-      },
+      data: { title: "Transactions", columns: [], rows: [] },
       actions: [],
-    });
-    expect(widget.type).toBe("data_table");
-  });
-
-  it("rejects malformed dynamic table payloads", () => {
-    expect(() => widgetSchema.parse({ id: "bad", type: "data_table", version: 1, data: { title: "Missing columns", rows: [] }, actions: [] })).toThrow();
+    })).toThrow();
   });
 
   it("validates the agent output contract", () => {
@@ -58,6 +46,7 @@ describe("widget protocol", () => {
       citations: [],
       conversation_id: crypto.randomUUID(),
       message_id: crypto.randomUUID(),
+      delivered_at: new Date().toISOString(),
     }).message).toBe("Ready");
   });
 });

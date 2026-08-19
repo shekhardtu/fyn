@@ -5,8 +5,10 @@ import { createRoot } from "react-dom/client";
 import { RouterProvider } from "react-router/dom";
 import { appRouter } from "@/app/router";
 import { setupServiceWorker } from "@/lib/service-worker";
+import { initTheme } from "@/lib/theme";
 import "@/app/globals.css";
 
+initTheme();
 setupServiceWorker();
 
 const root = document.getElementById("root");

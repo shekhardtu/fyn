@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from functools import partial
 from inspect import Parameter, Signature, signature
@@ -157,3 +158,35 @@ def bind_existing_tool(
     else:
         bound_tool.parameters = _parameters_schema(public_signature, public_hints, resolved_strict)
     return bound_tool
+
+
+def bind_schema_tool(
+    function: Callable[..., Any],
+    *,
+    name: str,
+    description: str,
+    parameters: dict[str, Any],
+    strict: bool = True,
+    stop_after_tool_call: bool = False,
+) -> Function:
+    """Bind a runtime JSON-Schema tool without manufacturing a Python model.
+
+    Filesystem operations already own a validated JSON Schema. Recreating that
+    schema as one catch-all ``dict[str, Any]`` loses the very contract the file
+    supplied and is incompatible with strict structured tool calls. A Function
+    can carry the compiled schema directly while its entrypoint accepts the
+    already-named keyword arguments and performs the domain validation.
+
+    The schema is copied because provider adapters are allowed to normalize a
+    tool definition in place. The immutable operation catalog must never be
+    changed by a model client.
+    """
+    return Function(
+        name=name,
+        description=description,
+        parameters=deepcopy(parameters),
+        strict=strict,
+        entrypoint=function,
+        skip_entrypoint_processing=True,
+        stop_after_tool_call=stop_after_tool_call,
+    )

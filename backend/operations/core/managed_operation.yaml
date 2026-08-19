@@ -1,0 +1,12 @@
+apiVersion: fyn.ai/v1
+kind: Operation
+metadata: {id: managed_operation, version: 1, title: Managed operation, namespace: system, owner: engineering, enabled: true}
+discovery: {description: Execute an authorized filesystem-defined operation, aliases: [managed workflow], examples: [Run an available operation], negativeExamples: [], modelSelectable: false}
+eligibility: {requiredPermissions: [], expectedEffect: mutation, access: workflow}
+input: {schema: {type: object, additionalProperties: false, properties: {}}}
+instructions: {selection: Internal generic dispatcher for a catalog-selected managed operation.}
+routing: {strategy: protocol, bindings: {}}
+execution: {steps: [{id: execute, uses: managed.dispatch@1}], label: Preparing governed operation, validation: deterministic}
+approval: {minimum: required}
+presentation: {success: {title: Operation complete, message: The operation completed.}, failure: {title: Operation stopped, message: The operation could not be completed.}}
+tests: [{name: managed operation route, request: Run an available operation, expectedEffect: mutation, expectedApproval: required}]

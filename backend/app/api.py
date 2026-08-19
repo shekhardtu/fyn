@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 from datetime import date, datetime
+import io
 from uuid import UUID, uuid4
 
 import hashlib
@@ -10,9 +12,10 @@ import json
 from ag_ui.core import AgentCapabilities, RunAgentInput
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Response, UploadFile, status
 from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy import and_, delete, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from pydantic import ValidationError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
+from sqlalchemy.orm.attributes import flag_modified
 
 from .database import get_db
 from .event_time import as_utc, local_date_string, local_now, now_utc
@@ -27,6 +30,8 @@ from .models import (
     AuditLog,
     Category,
     Conversation,
+    Dashboard,
+    DashboardTile,
     Import as ImportJob,
     ImportRecord,
     Message,
@@ -37,27 +42,46 @@ from .models import (
     User,
     UserPreference,
 )
+from .services.spreadsheet import annotate_source_field, ensure_spreadsheet_manifest
 from .schemas import (
     AgentInterruptOut,
     AgentRunOut,
-    AgentRunMetricOut,
-    AgentThreadMetricsOut,
+    SourceAnnotationsIn,
+    SourceAnnotationsOut,
+    SpreadsheetColumnDraftOut,
+    SpreadsheetSourceOut,
     AgentThreadStateOut,
     AffordabilityIn,
     AgentDiagnosticsOut,
     AgentResponse,
+    AgentSettingsIn,
+    AgentSettingsOut,
     BootstrapResponse,
     CategoryDirectoryOut,
     CategoryDirectorySubcategoryOut,
     ConversationOut,
     ConversationCreatedOut,
     ConversationPage,
+    ConversationRenameIn,
     ConversationSummaryOut,
+    DashboardCreateIn,
+    DashboardCreatedOut,
+    DashboardListOut,
+    DashboardOut,
+    DashboardSummaryOut,
+    DashboardTileCreateIn,
+    DashboardTileCreatedOut,
+    DashboardTileErrorOut,
+    DashboardTileOut,
     DataDeletionIn,
     DataDeletionOut,
     FinancialMessageIn,
     FinancialMessageOut,
     HealthOut,
+    InsightEvidenceOut,
+    InsightLineageOut,
+    InsightOut,
+    InsightsOut,
     InvestmentProjectionIn,
     ImportResultOut,
     LoanCalculationIn,
@@ -78,20 +102,44 @@ from .schemas import (
     Widget,
     WidgetAction,
     WidgetType,
+    WidgetUpdate,
 )
-from .services.agent_observability import evaluate_agent_reply
 # Every route below is user-scoped through this one dependency, so protecting
 # it protected all of them at once.
 from .security import clear_session_cookie, current_user
+from .services.analysis_harness import HarnessValidationError, execute_analysis_template
 from .services.calculators import affordability, investment_projection, loan_with_prepayment
+from .services.chart_widgets import ChartSpecError, build_chart_widget, dataset_id
+from .services.intelligence import IntelligenceResult, tool_facing_rows
+from .services.manifest import native_manifest_fingerprint
+from .services.semantic import AnalysisPlan, AnalysisToolProposal
+from .visualization_contracts import VisualEncodingContract, VisualFieldEncoding, VisualizationView
 from .services.adapters import CSVAdapter, MessageAdapter, import_summary
-from .services.conversation import get_or_create_conversation, persist_agent_response, user_conversation
+from .services.conversation import (
+    get_or_create_conversation,
+    persist_agent_response,
+    prepare_widget_action,
+    user_conversation,
+)
+from .services.preferences import (
+    AnswerStyle,
+    AnswerValidationMode,
+    answer_style,
+    answer_validation_mode,
+    set_answer_style,
+    set_answer_validation_mode,
+    set_user_preference,
+    user_preference,
+)
 from .services.reconciliation import ingest_observation
-from .services.preferences import set_user_preference, user_preference
 from .services.overview import overview_snapshot
+from .services.proactive import current_insights
 from .services.taxonomy import TaxonomyRepository
 from .services.transactions import (
+    canonical_transactions,
     create_manual_transaction as record_manual_transaction,
+    remove_transaction as remove_active_transaction,
+    restore_transaction as restore_removed_transaction,
     transaction_log,
     update_saved_transaction as apply_transaction_update,
 )
@@ -105,6 +153,7 @@ from .services.agui import (
     execute_run as execute_agui_run,
     normalize_run_input,
     sse_event as agui_sse_event,
+    supersede_open_interrupts,
 )
 
 
@@ -113,6 +162,9 @@ router = APIRouter(prefix="/api")
 # Enough to fill the history rail past the fold on a tall screen, so the first
 # lazy page is fetched while scrolling rather than immediately on load.
 CONVERSATION_PAGE_SIZE = 25
+# Every dashboard view re-executes every tile through the governed harness and
+# writes its audit rows, so the tile count is a hard cost boundary, not taste.
+MAX_TILES_PER_DASHBOARD = 12
 _agui_tasks: set[asyncio.Task] = set()
 
 
@@ -124,11 +176,10 @@ def _agent_models(settings) -> dict[str, str] | None:
     if _agent_mode(settings) != "llm":
         return None
     return {
-        "router": settings.router_model,
-        "transaction": settings.transaction_model,
-        "analysis": settings.analysis_model,
+        "operator": settings.operator_model,
+        "planner": settings.planner_model,
         "validator": settings.validator_model,
-        "reconciliation": settings.reconciliation_model,
+        "reconciler": settings.reconciler_model,
     }
 
 
@@ -161,19 +212,30 @@ def _owned_conversation(
 @router.get("/health", response_model=HealthOut)
 def health() -> HealthOut:
     settings = get_settings()
+    from .operations import operation_catalog
+    catalog_health = operation_catalog().health()
     return HealthOut.model_validate({
-        "status": "ok",
+        "status": "degraded" if catalog_health.status != "ok" else "ok",
         "time": now_utc().isoformat(),
         "database": "postgresql" if settings.database_url.startswith("postgresql") else "sqlite",
         "agent_mode": _agent_mode(settings),
         "models": _agent_models(settings),
+        "operationCatalog": catalog_health.model_dump(mode="json", by_alias=True, exclude_none=True),
     })
 
 
 @router.get("/diagnostics/agent", response_model=AgentDiagnosticsOut)
 def agent_diagnostics(db: Session = Depends(get_db), user: User = Depends(current_user)) -> AgentDiagnosticsOut:
     settings = get_settings()
-    actions = list(db.scalars(select(AIAction).where(AIAction.user_id == user.id, AIAction.action_type == "primary_router").order_by(AIAction.created_at.desc()).limit(20)))
+    actions = list(db.scalars(
+        select(AIAction)
+        .where(
+            AIAction.user_id == user.id,
+            AIAction.action_type == "operator_decision",
+        )
+        .order_by(AIAction.created_at.desc())
+        .limit(20)
+    ))
     return AgentDiagnosticsOut.model_validate({
         "mode": _agent_mode(settings),
         "models": _agent_models(settings),
@@ -217,6 +279,52 @@ def overview(
         return OverviewOut.model_validate(overview_snapshot(db, user.id, selected_month, today))
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.get("/insights", response_model=InsightsOut)
+def insights(
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> InsightsOut:
+    """This user's proactive insights, every one of them replayed on this read.
+
+    The response body is not a cache read: each claim is regenerated from
+    canonical data and then recomputed from its own key, so a stored insight the
+    data no longer supports is stamped stale and never appears here. The commit
+    persists that verification outcome — a read of this page records what it
+    found.
+    """
+    today = local_now(user.timezone).date()
+    verified_at = now_utc()
+    verified = current_insights(db, user, today, checked_at=verified_at)
+    body = InsightsOut(
+        insights=[
+            InsightOut(
+                id=row.id,
+                kind=row.insight_type,
+                subject=row.subject,
+                headline=row.title,
+                evidence=InsightEvidenceOut.model_validate(row.evidence),
+                # Built field by field rather than validated from the stored
+                # dict: the lineage is written in camelCase and the aliases here
+                # are serialization-only, so a model_validate would read every
+                # stamp as missing and answer a lineage of nulls.
+                lineage=InsightLineageOut(
+                    manifest_hash=row.lineage["manifestHash"],
+                    traits_computed_at=row.lineage["traitsComputedAt"],
+                    computed_at=row.lineage["computedAt"],
+                ),
+                recompute_key=row.recompute_key,
+                verified_at=as_utc(row.verified_at).isoformat(),
+            )
+            for row in verified
+        ],
+        verified_at=verified_at.isoformat(),
+    )
+    # Serialized before the commit: committing expires the rows, and re-reading
+    # them to build the body would issue a second query per insight.
+    db.commit()
+    return body
 
 
 @router.get("/conversations", response_model=ConversationPage)
@@ -263,6 +371,27 @@ def get_conversation(conversation_id: UUID, db: Session = Depends(get_db), user:
     return ConversationOut.model_validate(conversation)
 
 
+@router.patch("/conversations/{conversation_id}", response_model=ConversationSummaryOut)
+def rename_conversation(
+    conversation_id: UUID,
+    request: ConversationRenameIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> ConversationSummaryOut:
+    """Set the thread's title. The auto-title from the first message is only a
+    default; the user's explicit choice replaces it and is never overwritten."""
+    conversation = _owned_conversation(db, user, conversation_id)
+    conversation.title = request.title
+    # Renaming is housekeeping, not activity. Pinning `updated_at` to its
+    # current value (an explicitly-set column skips `onupdate`) keeps the
+    # thread in place in the recency-ordered rail instead of sending it to
+    # the top.
+    flag_modified(conversation, "updated_at")
+    db.commit()
+    db.refresh(conversation)
+    return ConversationSummaryOut.model_validate(conversation)
+
+
 @router.delete("/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_conversation(conversation_id: UUID, db: Session = Depends(get_db), user: User = Depends(current_user)) -> Response:
     """Erase one thread and everything that points at it.
@@ -270,9 +399,9 @@ def delete_conversation(conversation_id: UUID, db: Session = Depends(get_db), us
     Deleting a conversation removes the thread, not the money: transactions it
     recorded are canonical financial history and survive. Everything that only
     exists because the thread existed does not — its messages and their widgets,
-    drafts that never became transactions, the router's decision log, and the
-    per-run analysis traces. The generated tools themselves are a user-level
-    registry shared by every thread, so those stay.
+    drafts that never became transactions, Operator's decision log, and the
+    per-run analysis traces. Shared analysis templates and the user's saved
+    template associations are independent of any one thread, so those stay.
 
     SQLite only honours `ON DELETE CASCADE` with `PRAGMA foreign_keys` on, so
     each dependent table is cleared explicitly rather than trusted to cascade;
@@ -414,127 +543,6 @@ def agent_thread_state(
     )
 
 
-def _percentile(values: list[float], percentile: float) -> float | None:
-    if not values:
-        return None
-    ordered = sorted(values)
-    position = (len(ordered) - 1) * percentile
-    lower = int(position)
-    upper = min(lower + 1, len(ordered) - 1)
-    fraction = position - lower
-    return round(ordered[lower] + (ordered[upper] - ordered[lower]) * fraction, 1)
-
-
-@router.get("/agent/threads/{thread_id}/metrics", response_model=AgentThreadMetricsOut)
-def agent_thread_metrics(
-    thread_id: UUID,
-    db: Session = Depends(get_db),
-    user: User = Depends(current_user),
-) -> AgentThreadMetricsOut:
-    """Return measured latency plus transparent deterministic quality signals."""
-    _owned_conversation(db, user, thread_id)
-    runs = list(
-        db.scalars(
-            select(AgentRun)
-            .where(AgentRun.user_id == user.id, AgentRun.conversation_id == thread_id)
-            .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
-            .limit(100)
-        )
-    )
-    thread_messages = list(
-        db.scalars(
-            select(Message)
-            .where(Message.conversation_id == thread_id)
-            .order_by(Message.created_at, Message.id)
-        )
-    )
-    messages = {message.id: message for message in thread_messages}
-    previous_assistant: dict[UUID, str | None] = {}
-    latest_assistant_text: str | None = None
-    for message in thread_messages:
-        if message.role != "assistant" or not message.content.strip():
-            continue
-        previous_assistant[message.id] = latest_assistant_text
-        latest_assistant_text = message.content
-    run_ids = [run.id for run in runs]
-    completed_activities: dict[UUID, int] = {}
-    if run_ids:
-        activity_events = db.scalars(
-            select(AgentEvent).where(
-                AgentEvent.run_id.in_(run_ids),
-                AgentEvent.event_type == "ACTIVITY_SNAPSHOT",
-            )
-        )
-        for event in activity_events:
-            content = (event.payload or {}).get("content") or {}
-            if content.get("status") == ExecutionStatus.COMPLETED.value:
-                completed_activities[event.run_id] = completed_activities.get(event.run_id, 0) + 1
-
-    run_metrics: list[AgentRunMetricOut] = []
-    evaluations = []
-    for run in runs:
-        evaluation = evaluate_agent_reply(
-            run,
-            messages.get(run.final_message_id),
-            completed_activity_count=completed_activities.get(run.id, 0),
-            previous_assistant_text=previous_assistant.get(run.final_message_id),
-        )
-        if evaluation is not None:
-            evaluations.append(evaluation)
-        run_metrics.append(
-            AgentRunMetricOut(
-                run=AgentRunOut.model_validate(run),
-                evaluation=evaluation,
-            )
-        )
-
-    terminal = [run for run in runs if run.status in TERMINAL_RUN_STATUSES]
-    delivered = [
-        run
-        for run in terminal
-        if run.status in {AgentRunStatus.SUCCEEDED.value, AgentRunStatus.INTERRUPTED.value}
-    ]
-    durations = [run.duration_ms for run in terminal if run.duration_ms is not None]
-    first_responses = [
-        run.time_to_first_response_ms
-        for run in terminal
-        if run.time_to_first_response_ms is not None
-    ]
-    grounding_evaluations = [item for item in evaluations if item.grounding_required]
-
-    def average(values: list[float]) -> float | None:
-        return round(sum(values) / len(values), 1) if values else None
-
-    return AgentThreadMetricsOut(
-        thread_id=thread_id,
-        sample_size=len(runs),
-        completion_rate=round(len(delivered) / len(terminal), 4) if terminal else 0,
-        evidence_pass_rate=(
-            round(sum(item.evidence_passed for item in evaluations) / len(evaluations), 4)
-            if evaluations
-            else None
-        ),
-        contextuality_rate=(
-            round(sum(item.contextual for item in evaluations) / len(evaluations), 4)
-            if evaluations
-            else None
-        ),
-        grounding_rate=(
-            round(sum(item.grounded for item in grounding_evaluations) / len(grounding_evaluations), 4)
-            if grounding_evaluations
-            else None
-        ),
-        average_quality_score=average([item.quality_score for item in evaluations]),
-        average_depth_score=average([item.depth_score for item in evaluations]),
-        average_duration_ms=average(durations),
-        p50_duration_ms=_percentile(durations, 0.5),
-        p95_duration_ms=_percentile(durations, 0.95),
-        average_time_to_first_response_ms=average(first_responses),
-        p50_time_to_first_response_ms=_percentile(first_responses, 0.5),
-        recent_runs=run_metrics[:12],
-    )
-
-
 @router.post("/agent", response_class=StreamingResponse)
 async def run_agent(
     request: RunAgentInput,
@@ -577,22 +585,61 @@ async def run_agent(
     except (ValueError, ValidationError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
-    open_interrupt = db.scalar(
-        select(AgentInterrupt.id)
-        .join(AgentRun, AgentRun.id == AgentInterrupt.run_id)
-        .where(
-            AgentRun.user_id == user.id,
-            AgentRun.conversation_id == thread_id,
-            AgentInterrupt.status == AgentInterruptStatus.OPEN.value,
+    open_interrupts = list(
+        db.scalars(
+            select(AgentInterrupt)
+            .join(AgentRun, AgentRun.id == AgentInterrupt.run_id)
+            .where(
+                AgentRun.user_id == user.id,
+                AgentRun.conversation_id == thread_id,
+                AgentInterrupt.status == AgentInterruptStatus.OPEN.value,
+            )
+            .order_by(AgentInterrupt.created_at, AgentInterrupt.id)
         )
-        .limit(1)
     )
-    if open_interrupt and input_payload.get("kind") != "resume":
-        input_payload = {
-            "kind": "protocol_error",
-            "message": "Resolve the current agent interrupt before starting another run.",
-            "code": "pending_interrupt",
-        }
+    if open_interrupts and input_payload.get("kind") != "resume":
+        action = input_payload.get("action") if input_payload.get("kind") == "action" else None
+        target_widget_id = (
+            action.get("widgetId") or action.get("widget_id")
+            if isinstance(action, dict)
+            else None
+        )
+        target_origin = None
+        if target_widget_id and isinstance(action, dict):
+            try:
+                target_origin = prepare_widget_action(
+                    db,
+                    conversation,
+                    str(target_widget_id),
+                    str(action.get("action") or ""),
+                )
+            except (KeyError, ValueError):
+                target_origin = None
+        # A server-authored action on a different, newer widget is an explicit
+        # change of direction. This also repairs conversations persisted by an
+        # older client that uploaded a statement without retiring the previous
+        # clarification first.
+        can_supersede = target_origin is not None and all(
+            interrupt.widget_id != target_widget_id
+            and as_utc(target_origin[0].created_at) > as_utc(interrupt.created_at)
+            for interrupt in open_interrupts
+        )
+        if can_supersede:
+            updates = supersede_open_interrupts(
+                db,
+                user,
+                conversation,
+                superseded_by=f"widget:{target_widget_id}",
+            )
+            input_payload["supersededWidgetUpdates"] = [
+                update.model_dump(mode="json", by_alias=True) for update in updates
+            ]
+        else:
+            input_payload = {
+                "kind": "protocol_error",
+                "message": "Finish or cancel the current card before starting another request.",
+                "code": "pending_interrupt",
+            }
 
     if client_message_id:
         prior_message_run = db.scalar(
@@ -726,12 +773,24 @@ async def import_csv(conversation_id: UUID = Form(...), file: UploadFile = File(
     file_hash = hashlib.sha256(content).hexdigest()
     existing = db.scalar(select(ImportJob).where(ImportJob.user_id == user.id, ImportJob.source_type == FinancialSourceType.CSV.value, ImportJob.file_hash == file_hash))
     if existing:
+        widget_updates = supersede_open_interrupts(
+            db,
+            user,
+            conversation,
+            superseded_by="csv_upload",
+        )
         result = import_summary(existing, idempotent_replay=True)
-        return _record_import_preview(db, conversation, file.filename, result)
+        return _record_import_preview(db, conversation, file.filename, result, widget_updates=widget_updates)
     try:
         rows = CSVAdapter().adapt(content, user.timezone)
     except (UnicodeDecodeError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+    widget_updates = supersede_open_interrupts(
+        db,
+        user,
+        conversation,
+        superseded_by="csv_upload",
+    )
     job = ImportJob(user_id=user.id, source_type=FinancialSourceType.CSV.value, filename=file.filename, file_hash=file_hash, status=ImportStatus.AWAITING_CONFIRMATION, total_records=len(rows))
     db.add(job)
     db.commit()
@@ -750,13 +809,21 @@ async def import_csv(conversation_id: UUID = Form(...), file: UploadFile = File(
     job.status = ImportStatus.AWAITING_CONFIRMATION
     db.commit()
     result = import_summary(job, idempotent_replay=False)
-    return _record_import_preview(db, conversation, file.filename, result)
+    return _record_import_preview(db, conversation, file.filename, result, widget_updates=widget_updates)
 
 
-def _record_import_preview(db: Session, conversation: Conversation, filename: str, result: dict) -> dict:
-    db.add(Message(conversation_id=conversation.id, role="user", content=f"Uploaded {filename}", widgets=[], citations=[]))
+def _record_import_preview(
+    db: Session,
+    conversation: Conversation,
+    filename: str,
+    result: dict,
+    *,
+    widget_updates: list[WidgetUpdate] | None = None,
+) -> ImportResultOut:
+    user_message = Message(conversation_id=conversation.id, role="user", content=f"Uploaded {filename}", widgets=[], citations=[])
+    db.add(user_message)
     widget = Widget(
-        id=f"import-{result['importId']}",
+        id=f"import-{result['importId']}-{uuid4()}",
         type=WidgetType.IMPORT_REVIEW,
         data={"title": filename, **result},
         actions=[] if result["status"] == ImportStatus.COMPLETED else [
@@ -770,11 +837,14 @@ def _record_import_preview(db: Session, conversation: Conversation, filename: st
         conversation,
         content,
         widgets=[widget],
+        widget_updates=widget_updates,
         pending_action=PendingAction(
             action=WidgetActionId.COMMIT_IMPORT,
             resource_id=result["importId"],
         ) if widget.actions else None,
     )
+    # Committed alongside the reply just above, so the ID is durable by here.
+    agent_response.user_message_id = user_message.id
     response = ImportResultOut(
         import_id=result["importId"],
         status=result["status"],
@@ -814,11 +884,12 @@ def transactions(
     offset: int = Query(default=0, ge=0),
     q: str | None = Query(default=None, max_length=160),
     transaction_type: TransactionType | None = Query(default=None),
+    include_removed: bool = Query(default=True, description="Include soft-deleted records, flagged by deletedAt"),
     db: Session = Depends(get_db),
     user: User = Depends(current_user),
 ) -> list[TransactionListItemOut]:
     statement = (
-        transaction_log(user.id)
+        (transaction_log(user.id) if include_removed else canonical_transactions(user.id))
         .add_columns(Category.name, Subcategory.name)
         .outerjoin(Category, Category.id == Transaction.category_id)
         .outerjoin(Subcategory, Subcategory.id == Transaction.subcategory_id)
@@ -1121,6 +1192,36 @@ def update_transaction(
     return _saved_transaction_item(db, user.id, transaction)
 
 
+@router.delete("/transactions/{transaction_id}", response_model=TransactionListItemOut)
+def remove_transaction(
+    transaction_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> TransactionListItemOut:
+    try:
+        transaction = remove_active_transaction(db, user.id, transaction_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    db.commit()
+    db.refresh(transaction)
+    return _saved_transaction_item(db, user.id, transaction)
+
+
+@router.post("/transactions/{transaction_id}/restore", response_model=TransactionListItemOut)
+def restore_transaction(
+    transaction_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> TransactionListItemOut:
+    try:
+        transaction = restore_removed_transaction(db, user.id, transaction_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    db.commit()
+    db.refresh(transaction)
+    return _saved_transaction_item(db, user.id, transaction)
+
+
 @router.get("/reconciliation/reviews", response_model=list[ReconciliationReviewOut])
 def reconciliation_reviews(db: Session = Depends(get_db), user: User = Depends(current_user)) -> list[ReconciliationReviewOut]:
     candidates = list(db.scalars(select(ReconciliationCandidate).where(ReconciliationCandidate.user_id == user.id, ReconciliationCandidate.decision == ReconciliationOutcome.NEEDS_REVIEW).order_by(ReconciliationCandidate.score.desc())))
@@ -1141,6 +1242,45 @@ def privacy_status(db: Session = Depends(get_db), user: User = Depends(current_u
         for source in sorted(REVOCABLE_SOURCE_TYPES, key=lambda item: item.value)
     }
     return PrivacyStatusOut(location_enabled=mapped.get("location:enabled", {}).get("enabled", False), sources=sources, retention="until_deleted")
+
+
+@router.get("/agent-settings", response_model=AgentSettingsOut)
+def agent_settings(
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> AgentSettingsOut:
+    return AgentSettingsOut(
+        answer_validation_mode=answer_validation_mode(db, user.id).value,
+        answer_style=answer_style(db, user.id).value,
+    )
+
+
+@router.patch("/agent-settings", response_model=AgentSettingsOut)
+def update_agent_settings(
+    request: AgentSettingsIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> AgentSettingsOut:
+    changed: dict[str, str] = {}
+    if request.answer_validation_mode is not None:
+        mode = AnswerValidationMode(request.answer_validation_mode)
+        set_answer_validation_mode(db, user.id, mode)
+        changed["answerValidationMode"] = mode.value
+    if request.answer_style is not None:
+        style = AnswerStyle(request.answer_style)
+        set_answer_style(db, user.id, style)
+        changed["answerStyle"] = style.value
+    db.add(AuditLog(
+        user_id=user.id,
+        action="agent.settings_updated",
+        entity_type="user_preference",
+        metadata_redacted=changed,
+    ))
+    db.commit()
+    return AgentSettingsOut(
+        answer_validation_mode=answer_validation_mode(db, user.id).value,
+        answer_style=answer_style(db, user.id).value,
+    )
 
 
 @router.patch("/privacy/location", response_model=LocationPreferenceOut)
@@ -1194,4 +1334,362 @@ def calculate_loan(request: LoanCalculationIn) -> LoanPrepaymentResult:
 @router.post("/calculators/investment", response_model=InvestmentProjectionResult)
 def calculate_investment(request: InvestmentProjectionIn) -> InvestmentProjectionResult:
     return InvestmentProjectionResult.model_validate(investment_projection(**request.model_dump()))
-    FinancialMessageIn,
+
+
+def _spreadsheet_source_out(source, manifest) -> SpreadsheetSourceOut:
+    document = manifest.document
+    stated = document.get("annotations", {}).get("fields", {})
+    roles = document["semantics"]["columns"]
+    return SpreadsheetSourceOut(
+        source_id=source.id,
+        name=source.name,
+        manifest_version=manifest.version,
+        row_count=document["physical"]["row_count"],
+        columns=[
+            SpreadsheetColumnDraftOut(
+                name=column["name"],
+                inferred_type=column["type"],
+                role=(
+                    stated.get(column["name"], {}).get("role")
+                    or roles.get(column["name"], {}).get("role", "text")
+                ),
+                confidence=(
+                    1.0 if stated.get(column["name"], {}).get("role")
+                    else roles.get(column["name"], {}).get("confidence", 0.0)
+                ),
+                user_stated=stated.get(column["name"], {}).get("statement"),
+            )
+            for column in document["physical"]["columns"]
+        ],
+    )
+
+
+@router.post("/sources/spreadsheet", response_model=SpreadsheetSourceOut)
+async def upload_spreadsheet_source(
+    file: UploadFile = File(...),
+    name: str | None = Form(None),
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> SpreadsheetSourceOut:
+    """Store a raw tabular source and draft its manifest for confirmation.
+
+    Deliberately distinct from /imports/csv: nothing here becomes canonical
+    transactions. The sheet stays a foreign source with its own manifest.
+    """
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=415, detail="Upload a CSV file; xlsx arrives with a later phase")
+    content = await file.read(CSV_UPLOAD_MAX_BYTES + 1)
+    if len(content) > CSV_UPLOAD_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="CSV is limited to 10 MB")
+    try:
+        text_content = content.decode("utf-8-sig")
+    except UnicodeDecodeError as error:
+        raise HTTPException(status_code=422, detail="CSV must be UTF-8 encoded") from error
+    try:
+        dialect = csv.Sniffer().sniff(text_content[:4096], delimiters=",;\t")
+    except csv.Error:
+        dialect = csv.excel
+    parsed = [row for row in csv.reader(io.StringIO(text_content), dialect)]
+    if not parsed:
+        raise HTTPException(status_code=422, detail="The file has no rows")
+    headers, rows = [cell.strip() for cell in parsed[0]], parsed[1:]
+    try:
+        source, manifest = ensure_spreadsheet_manifest(
+            db, user, (name or file.filename).strip()[:120], headers, rows
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return _spreadsheet_source_out(source, manifest)
+
+
+@router.post("/sources/spreadsheet/{source_id}/annotations", response_model=SourceAnnotationsOut)
+def annotate_spreadsheet_source(
+    source_id: UUID,
+    request: SourceAnnotationsIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> SourceAnnotationsOut:
+    manifest = None
+    for item in request.annotations:
+        try:
+            manifest = annotate_source_field(
+                db, user, source_id, item.field, item.statement, role=item.role
+            )
+        except ValueError as error:
+            if "unknown_source" in str(error):
+                raise HTTPException(status_code=404, detail="Source not found") from error
+            raise HTTPException(status_code=422, detail=str(error)) from error
+    return SourceAnnotationsOut(
+        source_id=source_id,
+        manifest_version=manifest.version,
+        annotated_fields=[item.field for item in request.annotations],
+    )
+
+
+# --- Live dashboards -----------------------------------------------------------
+# A tile stores a bound AnalysisToolProposal, never a result: every dashboard
+# read re-executes each plan through the governed harness, so the numbers on
+# the page are exactly as fresh as the ledger. One broken tile degrades to its
+# own typed error and never takes the page down with it.
+
+
+def _owned_dashboard(db: Session, user: User, dashboard_id: UUID) -> Dashboard:
+    dashboard = db.scalar(select(Dashboard).where(
+        Dashboard.id == dashboard_id,
+        Dashboard.user_id == user.id,
+    ))
+    if not dashboard:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    return dashboard
+
+
+def _synthesized_tile_view(result: dict) -> VisualizationView:
+    """Deterministic fallback chart: a bar over the first grouped dimension."""
+    dimensions = list(result.get("dimensions") or [])
+    if not dimensions:
+        raise ChartSpecError(
+            "The first query result has no grouped dimension to draw a bar over",
+            code="unknown_field",
+        )
+    is_count = "count" in str(result.get("metric", ""))
+    return VisualizationView(
+        id="tile_default_view",
+        title=str(result.get("name") or "Analysis result")[:160],
+        dataset=dataset_id(str(result.get("name") or "")),
+        mark="bar",
+        encoding=VisualEncodingContract(
+            x=VisualFieldEncoding(field=dimensions[0], type="nominal", value_type="category"),
+            y=VisualFieldEncoding(
+                field="value" if is_count else "value_minor",
+                type="quantitative",
+                value_type="number" if is_count else "money_minor",
+            ),
+        ),
+    )
+
+
+def _tile_chart(plan: AnalysisPlan, result: IntelligenceResult, fallback_currency: str) -> dict:
+    """Bind the tile's one chart to the rows this execution just produced."""
+    if not result.query_results:
+        raise ChartSpecError(
+            "The analysis produced no query results to draw",
+            code="empty_result",
+        )
+    by_dataset: dict[str, dict] = {}
+    for item in result.query_results:
+        name = str(item.get("name") or "")
+        by_dataset.setdefault(name, item)
+        by_dataset.setdefault(dataset_id(name), item)
+    if plan.visualizations:
+        view = plan.visualizations[0]
+        dataset = by_dataset.get(view.dataset)
+        if dataset is None:
+            raise ChartSpecError(
+                f"View {view.id} references dataset {view.dataset}, which matches no plan query",
+                code="unknown_dataset",
+            )
+    else:
+        dataset = result.query_results[0]
+        view = _synthesized_tile_view(dataset)
+    widget = build_chart_widget(
+        view,
+        tool_facing_rows(dataset),
+        dataset.get("currency") or fallback_currency,
+        {
+            "origin": "dashboard",
+            "manifestHash": native_manifest_fingerprint(),
+            "executedAt": now_utc().isoformat(),
+        },
+    )
+    return widget.data
+
+
+def _executed_tile(db: Session, user: User, tile: DashboardTile, today: date) -> DashboardTileOut:
+    """Re-execute one stored tile. A failing tile reports; it never raises."""
+    executed_at = now_utc().isoformat()
+    chart: dict | None = None
+    error: DashboardTileErrorOut | None = None
+    spec = tile.spec if isinstance(tile.spec, dict) else {}
+    try:
+        proposal: AnalysisToolProposal | None = None
+        if spec.get("kind") != "plan":
+            error = DashboardTileErrorOut(
+                code="invalid_analysis_plan",
+                detail="The stored tile spec is not a plan tile.",
+            )
+        else:
+            try:
+                proposal = AnalysisToolProposal.model_validate(spec.get("proposal"))
+            except ValidationError as validation_error:
+                error = DashboardTileErrorOut(
+                    code="invalid_analysis_plan",
+                    detail="; ".join(
+                        f"{'.'.join(str(part) for part in item['loc'])}: {item['msg']}"
+                        for item in validation_error.errors()[:8]
+                    ),
+                )
+        if proposal is not None:
+            outcome = execute_analysis_template(db, user.id, None, today, proposal)
+            chart = _tile_chart(proposal.plan, outcome.result, user.currency)
+    except HarnessValidationError as harness_error:
+        error = DashboardTileErrorOut(code=harness_error.error_code, detail=str(harness_error))
+    except ChartSpecError as chart_error:
+        error = DashboardTileErrorOut(code=chart_error.code, detail=str(chart_error))
+    except Exception as execution_error:  # noqa: BLE001 - a tile is a container:
+        # one poisoned tile must report, never take the page or its siblings down.
+        error = DashboardTileErrorOut(
+            code="tile_execution_error",
+            detail=f"{type(execution_error).__name__}: {execution_error}",
+        )
+    if error is not None:
+        # The harness flags its FAILED run row before re-raising; committing
+        # here keeps that audit trace durable instead of letting the request
+        # teardown roll it back (loud-failure law).
+        db.commit()
+    return DashboardTileOut(
+        id=tile.id,
+        title=tile.title,
+        position=tile.position,
+        executed_at=executed_at,
+        chart=chart,
+        error=error,
+    )
+
+
+@router.post("/dashboards", response_model=DashboardCreatedOut)
+def create_dashboard(
+    request: DashboardCreateIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> DashboardCreatedOut:
+    dashboard = Dashboard(user_id=user.id, name=request.name)
+    db.add(dashboard)
+    db.commit()
+    return DashboardCreatedOut(id=dashboard.id, name=dashboard.name)
+
+
+@router.get("/dashboards", response_model=DashboardListOut)
+def list_dashboards(
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> DashboardListOut:
+    tile_counts = dict(db.execute(
+        select(DashboardTile.dashboard_id, func.count(DashboardTile.id))
+        .where(DashboardTile.user_id == user.id)
+        .group_by(DashboardTile.dashboard_id)
+    ).all())
+    dashboards = db.scalars(
+        select(Dashboard)
+        .where(Dashboard.user_id == user.id)
+        .order_by(Dashboard.created_at, Dashboard.id)
+    ).all()
+    return DashboardListOut(dashboards=[
+        DashboardSummaryOut(id=item.id, name=item.name, tile_count=tile_counts.get(item.id, 0))
+        for item in dashboards
+    ])
+
+
+@router.post("/dashboards/{dashboard_id}/tiles", response_model=DashboardTileCreatedOut)
+def add_dashboard_tile(
+    dashboard_id: UUID,
+    request: DashboardTileCreateIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> DashboardTileCreatedOut:
+    dashboard = _owned_dashboard(db, user, dashboard_id)
+    # A tile that cannot even parse must be refused at the door; the page-level
+    # error object exists for specs that rot after storage, not for bad input.
+    try:
+        proposal = AnalysisToolProposal.model_validate(request.proposal)
+    except ValidationError as error:
+        raise HTTPException(
+            status_code=422,
+            detail="invalid_analysis_plan: the proposal does not satisfy the AnalysisToolProposal contract",
+        ) from error
+    # Refuse tiles that can never render, instead of storing a permanent
+    # per-view error: dedicated analysis types return no query results to
+    # draw, and unmet missing_information fails validation on every read.
+    if proposal.plan.analysis_type != "semantic_query":
+        raise HTTPException(
+            status_code=422,
+            detail="not_chartable: only semantic_query plans produce chartable query results",
+        )
+    if proposal.plan.missing_information:
+        raise HTTPException(
+            status_code=422,
+            detail="not_chartable: the plan declares missing_information and would fail on every view",
+        )
+    tile_count = db.scalar(
+        select(func.count(DashboardTile.id)).where(DashboardTile.dashboard_id == dashboard.id)
+    )
+    if int(tile_count or 0) >= MAX_TILES_PER_DASHBOARD:
+        raise HTTPException(
+            status_code=422,
+            detail=f"dashboard_full: a dashboard re-executes every tile per view and is capped at {MAX_TILES_PER_DASHBOARD} tiles",
+        )
+    if request.position is not None:
+        position = request.position
+    else:
+        top = db.scalar(
+            select(func.max(DashboardTile.position))
+            .where(DashboardTile.dashboard_id == dashboard.id)
+        )
+        position = 0 if top is None else top + 1
+    tile = DashboardTile(
+        user_id=user.id,
+        dashboard_id=dashboard.id,
+        title=request.title,
+        position=position,
+        spec={"kind": "plan", "proposal": proposal.model_dump(mode="json")},
+    )
+    db.add(tile)
+    db.commit()
+    return DashboardTileCreatedOut(
+        id=tile.id,
+        dashboard_id=tile.dashboard_id,
+        title=tile.title,
+        position=tile.position,
+    )
+
+
+@router.get("/dashboards/{dashboard_id}", response_model=DashboardOut)
+def get_dashboard(
+    dashboard_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> DashboardOut:
+    dashboard = _owned_dashboard(db, user, dashboard_id)
+    today = local_now(user.timezone).date()
+    tiles = db.scalars(
+        select(DashboardTile)
+        .where(
+            DashboardTile.dashboard_id == dashboard.id,
+            DashboardTile.user_id == user.id,
+        )
+        .order_by(DashboardTile.position, DashboardTile.created_at)
+    ).all()
+    rendered = [_executed_tile(db, user, tile, today) for tile in tiles]
+    # The executions above wrote their durable audit rows (analysis_tool_runs,
+    # template usage counters); a read of the page still commits that trail.
+    db.commit()
+    return DashboardOut(id=dashboard.id, name=dashboard.name, tiles=rendered)
+
+
+@router.delete("/dashboards/{dashboard_id}/tiles/{tile_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_dashboard_tile(
+    dashboard_id: UUID,
+    tile_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> Response:
+    dashboard = _owned_dashboard(db, user, dashboard_id)
+    tile = db.scalar(select(DashboardTile).where(
+        DashboardTile.id == tile_id,
+        DashboardTile.dashboard_id == dashboard.id,
+        DashboardTile.user_id == user.id,
+    ))
+    if not tile:
+        raise HTTPException(status_code=404, detail="Dashboard tile not found")
+    db.delete(tile)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

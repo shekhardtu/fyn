@@ -23,7 +23,7 @@ def user_filter(identifier: str):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Seed a realistic two-month finance ledger for one existing account.")
+    parser = argparse.ArgumentParser(description="Seed a realistic three-month finance ledger for one existing account.")
     parser.add_argument("--user", required=True, help="Exact email, phone number, or user UUID")
     args = parser.parse_args()
 

@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app.api import current_user, router
 from app.database import get_db
-from app.models import Category, Subcategory, Transaction, User
+from app.models import Account, Budget, Category, Subcategory, Transaction, User
 from app.seed import DEFAULT_USER_EMAIL
 from app.services.overview import overview_snapshot
 
@@ -79,6 +79,124 @@ def test_overview_groups_expenses_by_category_and_subcategory(db):
             {"id": "groceries", "label": "Groceries", "amount_minor": 440_000, "count": 1, "share_percent": 38.6},
         ],
     }
+    assert result["trend"][0] == {
+        "day": 1,
+        "date": date(2026, 8, 1),
+        "income_minor": 8_200_000,
+        "spent_minor": 0,
+        "previous_income_minor": 0,
+        "previous_spent_minor": 0,
+    }
+    assert result["trend"][6]["spent_minor"] == 100_000
+    assert result["trend"][7]["previous_spent_minor"] == 1_400_000
+    assert [item["merchant"] for item in result["recent_transactions"][:2]] == ["Test merchant", "Test merchant"]
+    assert result["accounts"] == []
+
+
+def test_overview_includes_user_owned_accounts_and_never_another_users(db):
+    user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
+    other = User(email="elsewhere@example.com", display_name="Elsewhere", currency="INR", timezone="Asia/Kolkata")
+    db.add(other)
+    db.flush()
+    db.add_all([
+        Account(user_id=user.id, name="Everyday", account_type="bank", institution="HDFC", mask="4321", balance_minor=345_600, currency="INR"),
+        Account(user_id=other.id, name="Private", account_type="bank", balance_minor=999_999, currency="INR"),
+    ])
+    db.commit()
+
+    result = overview_snapshot(db, user.id, date(2026, 8, 1), date(2026, 8, 13))
+
+    assert result["accounts"] == [{
+        "id": result["accounts"][0]["id"],
+        "name": "Everyday",
+        "account_type": "bank",
+        "institution": "HDFC",
+        "mask": "4321",
+        "balance_minor": 345_600,
+        "currency": "INR",
+    }]
+
+
+def test_overview_projects_overall_and_category_budgets_from_the_canonical_records(db):
+    user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
+    food = db.scalar(select(Category).where(Category.slug == "food"))
+    other = User(email="budget-private@example.com", display_name="Private", currency="INR", timezone="Asia/Kolkata")
+    db.add(other)
+    db.flush()
+    overall = Budget(
+        user_id=user.id,
+        category_id=None,
+        name="Monthly spending budget",
+        amount_minor=3_000_000,
+        currency="INR",
+        period="monthly",
+    )
+    food_budget = Budget(
+        user_id=user.id,
+        category_id=food.id,
+        name="Food budget",
+        amount_minor=1_000_000,
+        currency="INR",
+        period="monthly",
+    )
+    db.add_all([
+        overall,
+        food_budget,
+        Budget(user_id=user.id, category_id=None, name="Annual plan", amount_minor=9_000_000, currency="INR", period="annual"),
+        Budget(user_id=other.id, category_id=None, name="Private budget", amount_minor=99_000_000, currency="INR", period="monthly"),
+        _transaction(user, amount=1_200_000, kind="expense", at="2026-08-05T09:00:00", category=food),
+        _transaction(user, amount=300_000, kind="expense", at="2026-08-06T09:00:00"),
+    ])
+    db.commit()
+
+    result = overview_snapshot(db, user.id, date(2026, 8, 1), date(2026, 8, 13))
+
+    assert result["budgets"] == [
+        {
+            "id": overall.id,
+            "name": "Monthly spending budget",
+            "category_id": None,
+            "category_slug": None,
+            "category": None,
+            "amount_minor": 3_000_000,
+            "spent_minor": 1_500_000,
+            "remaining_minor": 1_500_000,
+            "over_minor": 0,
+            "percent_used": 50.0,
+            "currency": "INR",
+            "period": "monthly",
+        },
+        {
+            "id": food_budget.id,
+            "name": "Food budget",
+            "category_id": food.id,
+            "category_slug": "food",
+            "category": "Food",
+            "amount_minor": 1_000_000,
+            "spent_minor": 1_200_000,
+            "remaining_minor": 0,
+            "over_minor": 200_000,
+            "percent_used": 120.0,
+            "currency": "INR",
+            "period": "monthly",
+        },
+    ]
+
+
+def test_overview_trend_keeps_the_full_comparison_total_for_a_shorter_month(db):
+    user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
+    db.add_all([
+        _transaction(user, amount=200_000, kind="expense", at="2026-01-31T09:00:00"),
+        _transaction(user, amount=100_000, kind="expense", at="2026-02-28T09:00:00"),
+    ])
+    db.commit()
+
+    result = overview_snapshot(db, user.id, date(2026, 2, 1), date(2026, 8, 13))
+
+    assert len(result["trend"]) == 28
+    assert result["trend"][-1]["spent_minor"] == 100_000
+    assert result["trend"][-1]["previous_spent_minor"] == 200_000
+    assert sum(point["previous_spent_minor"] for point in result["trend"]) == result["summary"]["previous_spent_minor"]
 
 
 def test_overview_api_serializes_the_frontend_contract_and_rejects_future_months(db, monkeypatch):
@@ -101,6 +219,9 @@ def test_overview_api_serializes_the_frontend_contract_and_rejects_future_months
         assert payload["summary"]["spentMinor"] == 125_000
         assert payload["categories"][0]["subcategories"][0]["label"] == "Dining"
         assert payload["period"]["previousEnd"] == "2026-07-13"
+        assert len(payload["trend"]) == 13
+        assert payload["recentTransactions"][0]["merchant"] == "Test merchant"
+        assert payload["accounts"] == []
 
         future = client.get("/api/overview", params={"month": "2026-09-01"})
         assert future.status_code == 422

@@ -12,3 +12,4 @@ frontend/test-results/
 frontend/tsconfig.tsbuildinfo
 /test-results/
 .DS_Store
+evals/browser/fixture-data/

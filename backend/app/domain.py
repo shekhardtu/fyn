@@ -11,6 +11,9 @@ class ValueEnum(str, Enum):
 
 ACTIVE_STATUS = "active"
 TAXONOMY_FIELD_NAMES = ("category", "subcategory")
+# Single source for the conversation title bound: the column, the rename
+# schema, and the generated frontend contract all derive from this value.
+CONVERSATION_TITLE_MAX = 160
 
 
 class TransactionType(ValueEnum):
@@ -66,6 +69,7 @@ class WidgetActionId(ValueEnum):
     CANCEL_TAXONOMY_CHANGE = "cancel_taxonomy_change"
     CREATE_CATEGORY = "create_category"
     CREATE_SUBCATEGORY = "create_subcategory"
+    CREATE_TAXONOMY_PATH = "create_taxonomy_path"
     SELECT_CATEGORY = "select_category"
     SELECT_TRANSACTION_TYPE = "select_transaction_type"
     SELECT_SUBCATEGORY = "select_subcategory"
@@ -74,6 +78,9 @@ class WidgetActionId(ValueEnum):
     REVISIT_TRANSACTION_STEP = "revisit_transaction_step"
     CANCEL_TRANSACTION_DRAFT = "cancel_transaction_draft"
     CANCEL_PENDING_ACTION = "cancel_pending_action"
+    EDIT_BUDGET = "edit_budget"
+    REQUEST_DELETE_BUDGET = "request_delete_budget"
+    DELETE_BUDGET = "delete_budget"
     SAVE_BUDGET = "save_budget"
     SAVE_GOAL = "save_goal"
     CONTRIBUTE_GOAL = "contribute_goal"
@@ -93,11 +100,16 @@ class WidgetActionId(ValueEnum):
     MERGE_RECONCILIATION = "merge_reconciliation"
     SEPARATE_RECONCILIATION = "separate_reconciliation"
     RESOLVE_CLARIFICATION = "resolve_clarification"
+    RENAME_CONVERSATION = "rename_conversation"
+    SUBMIT_OPERATION = "submit_operation"
+    APPROVE_OPERATION = "approve_operation"
+    CANCEL_OPERATION = "cancel_operation"
 
 
 TaxonomyOperation = Literal[
     WidgetActionId.CREATE_CATEGORY,
     WidgetActionId.CREATE_SUBCATEGORY,
+    WidgetActionId.CREATE_TAXONOMY_PATH,
 ]
 
 
@@ -179,9 +191,23 @@ class AgentRunStatus(ValueEnum):
     """Durable lifecycle states for one AG-UI run."""
 
     QUEUED = "queued"
+    # Claimed by the bounded startup recovery pool but not yet executing. A
+    # separate state keeps two app workers from replaying the same queued run.
+    RECOVERING = "recovering"
     RUNNING = "running"
     INTERRUPTED = "interrupted"
     SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class AgentTaskStatus(ValueEnum):
+    """Whether the requested domain task completed, independent of transport."""
+
+    PENDING = "pending"
+    NEEDS_INPUT = "needs_input"
+    SUCCEEDED = "succeeded"
+    DEGRADED = "degraded"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
@@ -197,6 +223,17 @@ class AnalysisToolStatus(ValueEnum):
     DRAFT = "draft"
     VALIDATING = "validating"
     ACTIVE = "active"
+
+
+class EntityLinkKind(ValueEnum):
+    """What kind of real-world counterparty a resolved alias names.
+
+    ``MERCHANT`` is the resolved lane today; ``ACCOUNT`` is declared here so the
+    stored ``kind`` has one vocabulary rather than being invented per caller.
+    """
+
+    MERCHANT = "merchant"
+    ACCOUNT = "account"
 
 
 class FinancialSourceType(ValueEnum):

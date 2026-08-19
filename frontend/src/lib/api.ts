@@ -2,7 +2,7 @@ import { HttpAgent, type AgentSubscriber, type Interrupt } from "@ag-ui/client";
 import { AgentCapabilitiesSchema, type AgentCapabilities, type Message as AgUiMessage } from "@ag-ui/core";
 
 import { environment } from "@/config/environment";
-import { agentActivityEventSchema, agentResponseSchema, agentThreadMetricsSchema, agentThreadStateSchema, authStatusSchema, bootstrapSchema, categoryDirectoryEntrySchema, categoryDirectorySchema, categorySubcategorySchema, conversationCreatedSchema, conversationPageSchema, conversationSchema, importResultSchema, otpSentSchema, overviewSchema, parseActionPayload, privacyStatusSchema, profileSchema, transactionCategoryHintSchema, transactionListItemSchema, transactionListSchema, type AgentActivityEvent, type AgentInterruptOut, type AgentResponse, type AgentThreadMetricsOut, type AgentThreadStateOut, type AuthStatusOut, type Bootstrap, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type ConversationCreatedOut, type ConversationOut, type ConversationPage, type ImportResult, type OtpSentOut, type OverviewOut, type PrivacyStatusOut, type ProfileOut, type TransactionCategoryHintOut, type TransactionListItemOut, type TransactionUpdateIn, type WidgetActionId } from "@/lib/protocol";
+import { agentActivityEventSchema, agentResponseSchema, agentSettingsSchema, agentThreadStateSchema, authStatusSchema, bootstrapSchema, categoryDirectoryEntrySchema, categoryDirectorySchema, categorySubcategorySchema, conversationCreatedSchema, conversationPageSchema, conversationSchema, conversationSummarySchema, dashboardDetailSchema, dashboardListSchema, importResultSchema, otpSentSchema, overviewSchema, parseActionPayload, privacyStatusSchema, profileSchema, transactionCategoryHintSchema, transactionListItemSchema, transactionListSchema, type AgentActivityEvent, type AgentInterruptOut, type AgentResponse, type AgentSettingsOut, type AgentThreadStateOut, type AuthStatusOut, type Bootstrap, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type ConversationCreatedOut, type ConversationOut, type ConversationPage, type ConversationSummary, type DashboardDetail, type DashboardSummary, type ImportResult, type OtpSentOut, type OverviewOut, type PrivacyStatusOut, type ProfileOut, type TransactionCategoryHintOut, type TransactionListItemOut, type TransactionUpdateIn, type WidgetActionId } from "@/lib/protocol";
 
 const API_URL = environment.apiUrl;
 
@@ -117,7 +117,27 @@ export async function bootstrap(): Promise<Bootstrap> {
 
 export async function loadOverview(month?: string): Promise<OverviewOut> {
   const query = month ? `?month=${encodeURIComponent(`${month}-01`)}` : "";
-  return conform(overviewSchema, await request(`/api/overview${query}`), "overview");
+  const payload = await request(`/api/overview${query}`);
+  const compatiblePayload = payload && typeof payload === "object" && !Array.isArray(payload) && !("budgets" in payload)
+    ? { ...payload, budgets: [] }
+    : payload;
+  return conform(overviewSchema, compatiblePayload, "overview");
+}
+
+/* ── Dashboards ─────────────────────────────────────────────────────────────
+ * Saved analysis charts, re-executed on every read so a tile is always live
+ * data — the page never caches a stale plot beyond react-query's own window. */
+
+export async function listDashboards(): Promise<DashboardSummary[]> {
+  return conform(dashboardListSchema, await request("/api/dashboards"), "dashboard list").dashboards;
+}
+
+export async function loadDashboard(id: string): Promise<DashboardDetail> {
+  return conform(dashboardDetailSchema, await request(`/api/dashboards/${encodeURIComponent(id)}`), "dashboard");
+}
+
+export async function deleteDashboardTile(dashboardId: string, tileId: string): Promise<void> {
+  await request(`/api/dashboards/${encodeURIComponent(dashboardId)}/tiles/${encodeURIComponent(tileId)}`, { method: "DELETE" });
 }
 
 export async function loadCategories(): Promise<CategoryDirectoryOut[]> {
@@ -180,13 +200,26 @@ export type TransactionPageInput = {
   offset?: number;
   search?: string;
   transactionType?: TransactionListItemOut["transactionType"] | null;
+  includeRemoved?: boolean;
 };
 
-export async function loadTransactions({ limit = 50, offset = 0, search = "", transactionType = null }: TransactionPageInput = {}): Promise<TransactionListItemOut[]> {
+export async function loadTransactions({ limit = 50, offset = 0, search = "", transactionType = null, includeRemoved = true }: TransactionPageInput = {}): Promise<TransactionListItemOut[]> {
   const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (search.trim()) query.set("q", search.trim());
   if (transactionType) query.set("transaction_type", transactionType);
+  if (!includeRemoved) query.set("include_removed", "false");
   return conform(transactionListSchema, await request(`/api/transactions?${query}`), "transaction list");
+}
+
+/** Soft-deletes one transaction: it stays in the log struck through, leaves
+ *  every total, and can be restored. */
+export async function removeTransaction(id: string): Promise<TransactionListItemOut> {
+  return conform(transactionListItemSchema, await request(`/api/transactions/${encodeURIComponent(id)}`, { method: "DELETE" }), "removed transaction");
+}
+
+/** Clears a removal's tombstone; the record rejoins every total at once. */
+export async function restoreTransaction(id: string): Promise<TransactionListItemOut> {
+  return conform(transactionListItemSchema, await request(`/api/transactions/${encodeURIComponent(id)}/restore`, { method: "POST" }), "restored transaction");
 }
 
 export async function createTransactionRecord(payload: TransactionUpdateIn): Promise<TransactionListItemOut> {
@@ -221,6 +254,12 @@ export async function listConversations(cursor?: string | null): Promise<Convers
 
 /** Erases the thread and everything recorded against it. Transactions it
  *  captured are financial history and are deliberately left alone. */
+export async function renameConversation(id: string, title: string): Promise<ConversationSummary> {
+  return conform(conversationSummarySchema, await request(`/api/conversations/${encodeURIComponent(id)}`, {
+    method: "PATCH", body: JSON.stringify({ title }),
+  }), "renamed conversation");
+}
+
 export async function deleteConversation(id: string): Promise<void> {
   await request(`/api/conversations/${id}`, { method: "DELETE" });
 }
@@ -230,6 +269,20 @@ export async function deleteConversation(id: string): Promise<void> {
  *  document, so closing the tab doesn't quietly un-press the delete. */
 export function flushConversationDeletion(id: string): void {
   void fetch(`${API_URL}/api/conversations/${id}`, { method: "DELETE", keepalive: true }).catch(() => undefined);
+}
+
+/** The same keepalive escape hatch for taxonomy deletes still inside their
+ *  undo window when the page goes away. */
+export function flushCategoryDeletion(categoryId: string): void {
+  void fetch(`${API_URL}/api/categories/${encodeURIComponent(categoryId)}`, { method: "DELETE", keepalive: true }).catch(() => undefined);
+}
+
+export function flushSubcategoryDeletion(categoryId: string, subcategoryId: string): void {
+  void fetch(`${API_URL}/api/categories/${encodeURIComponent(categoryId)}/subcategories/${encodeURIComponent(subcategoryId)}`, { method: "DELETE", keepalive: true }).catch(() => undefined);
+}
+
+export function flushHintDeletion(categoryId: string, hintId: string): void {
+  void fetch(`${API_URL}/api/categories/${encodeURIComponent(categoryId)}/hints/${encodeURIComponent(hintId)}`, { method: "DELETE", keepalive: true }).catch(() => undefined);
 }
 
 export type AgentActivity = AgentActivityEvent;
@@ -496,6 +549,10 @@ async function runFynAgent(
       citations: [],
       conversation_id: conversationId,
       message_id: assistantMessageId || crypto.randomUUID(),
+      // Synthesised client-side, so the persisted identity of the question is
+      // unknown here; the bubble keeps its provisional ID until a reload.
+      user_message_id: null,
+      delivered_at: new Date().toISOString(),
     };
   }
   if (!response) {
@@ -570,9 +627,6 @@ export async function loadAgentThreadState(conversationId: string): Promise<Agen
   return conform(agentThreadStateSchema, await request(`/api/agent/threads/${encodeURIComponent(conversationId)}`), "agent state");
 }
 
-export async function loadAgentThreadMetrics(conversationId: string): Promise<AgentThreadMetricsOut> {
-  return conform(agentThreadMetricsSchema, await request(`/api/agent/threads/${encodeURIComponent(conversationId)}/metrics`), "agent metrics");
-}
 
 export async function cancelAgentRun(runId: string): Promise<void> {
   await request(`/api/agent/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST", body: "{}" });
@@ -625,6 +679,27 @@ export function uploadCsv(conversationId: string, file: File, onProgress?: (perc
 }
 
 export type PrivacyStatus = PrivacyStatusOut;
+
+export type AnswerValidationMode = AgentSettingsOut["answerValidationMode"];
+export type AnswerStyle = AgentSettingsOut["answerStyle"];
+
+export async function getAgentSettings(): Promise<AgentSettingsOut> {
+  return conform(agentSettingsSchema, await request("/api/agent-settings"), "agent setting");
+}
+
+export async function setAnswerValidationMode(answerValidationMode: AnswerValidationMode): Promise<AgentSettingsOut> {
+  return conform(agentSettingsSchema, await request("/api/agent-settings", {
+    method: "PATCH",
+    body: JSON.stringify({ answerValidationMode }),
+  }), "updated agent setting");
+}
+
+export async function setAnswerStyle(answerStyle: AnswerStyle): Promise<AgentSettingsOut> {
+  return conform(agentSettingsSchema, await request("/api/agent-settings", {
+    method: "PATCH",
+    body: JSON.stringify({ answerStyle }),
+  }), "updated agent setting");
+}
 
 export async function getPrivacyStatus(): Promise<PrivacyStatus> {
   return conform(privacyStatusSchema, await request("/api/privacy"), "privacy setting");

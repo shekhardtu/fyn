@@ -1,7 +1,18 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CategoryManager, type CategoryUsage } from "@/components/category-manager";
 import type { CategoryDirectoryOut } from "@/lib/protocol";
+
+const { toastMock } = vi.hoisted(() => ({ toastMock: { add: vi.fn(), close: vi.fn() } }));
+
+vi.mock("@/components/ui/toast", () => ({ toast: toastMock, UNDO_WINDOW_MS: 7000 }));
+
+type UndoSlip = {
+  title: string;
+  description: string;
+  actionProps: { onClick: () => void };
+  onClose: () => void;
+};
 
 const categories: CategoryDirectoryOut[] = [{
   id: "42b9db9a-ff04-4ffc-b428-82bb3fb1eb80",
@@ -32,6 +43,11 @@ function props() {
 }
 
 describe("CategoryManager", () => {
+  beforeEach(() => {
+    toastMock.add.mockClear();
+    toastMock.close.mockClear();
+  });
+
   it("creates subcategories and transaction hints from the selected category", async () => {
     const callbacks = props();
     render(<CategoryManager {...callbacks} />);
@@ -50,13 +66,44 @@ describe("CategoryManager", () => {
     await waitFor(() => expect(callbacks.onCreateHint).toHaveBeenCalledWith(categories[0].id, "Heads Up For Tails", null));
   });
 
-  it("requires an explicit confirmation before deletion", async () => {
+  it("explains an in-use category instead of sending a delete", () => {
     const callbacks = props();
     render(<CategoryManager {...callbacks} />);
     fireEvent.click(screen.getByRole("button", { name: "Delete Pets" }));
-    expect(screen.getByText("Pets", { selector: "strong" })).toBeVisible();
+
+    expect(screen.getByRole("status")).toHaveTextContent("Pets is categorizing 1 transaction");
     expect(callbacks.onDeleteCategory).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-    await waitFor(() => expect(callbacks.onDeleteCategory).toHaveBeenCalledWith(categories[0].id));
+    expect(toastMock.add).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Got it" }));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("deletes an unused subcategory when its undo window closes", async () => {
+    const callbacks = props();
+    render(<CategoryManager {...callbacks} />);
+    fireEvent.click(screen.getByRole("button", { name: "Delete Vet" }));
+
+    // The row leaves at once; the API waits for the slip to close un-undone.
+    expect(screen.queryByText("Vet")).not.toBeInTheDocument();
+    expect(callbacks.onDeleteSubcategory).not.toHaveBeenCalled();
+    const slip = toastMock.add.mock.calls[0][0] as UndoSlip;
+    expect(slip.description).toBe("Vet");
+    slip.onClose();
+    // The row stays withheld until the API answers; in the app the refetch
+    // then removes it for real, which a static fixture can't show.
+    await waitFor(() => expect(callbacks.onDeleteSubcategory).toHaveBeenCalledWith(categories[0].id, categories[0].subcategories[0].id));
+  });
+
+  it("puts the row back on undo without calling the API", async () => {
+    const callbacks = props();
+    render(<CategoryManager {...callbacks} />);
+    fireEvent.click(screen.getByRole("button", { name: "Delete Vet" }));
+
+    const slip = toastMock.add.mock.calls[0][0] as UndoSlip;
+    slip.actionProps.onClick();
+    expect(toastMock.close).toHaveBeenCalledWith(categories[0].subcategories[0].id);
+    slip.onClose();
+    await waitFor(() => expect(screen.getByText("Vet")).toBeVisible());
+    expect(callbacks.onDeleteSubcategory).not.toHaveBeenCalled();
   });
 });

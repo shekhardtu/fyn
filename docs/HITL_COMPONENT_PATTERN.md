@@ -8,12 +8,15 @@ when its visual state and its server transition agree.
 1. The backend owns every business transition. Each `pendingAction` must have
    a matching forward action and an explicit escape action before the response
    can be persisted.
-2. The conversation shell owns interrupt resumption. It supplies a protocol
+2. Every actionable widget occurrence owns a unique event id. Resource ids
+   belong in widget data and action payloads; reusing one as a later card id is
+   rejected at persistence so completed state cannot leak into a new decision.
+3. The conversation shell owns interrupt resumption. It supplies a protocol
    cancel fallback for older persisted widgets that predate an explicit cancel
    action.
-3. Renderers own only interaction state: entered values, optimistic selection,
+4. Renderers own only interaction state: entered values, optimistic selection,
    validation, disclosure state, and focus.
-4. Shared primitives own appearance: card, option, field, action row, error,
+5. Shared primitives own appearance: card, option, field, action row, error,
    and compact receipt. New HITL components should compose these primitives
    instead of creating local spacing or button rules.
 
@@ -44,11 +47,12 @@ the controls with one compact historical receipt.
 | Taxonomy creation | add category/subcategory | back to selector | cancel transaction draft when nested; cancel when standalone |
 | Transaction confirmation | save transaction | edit or change category | cancel transaction draft |
 | Transaction edit | apply changes | back to confirmation | cancel transaction draft; cancel saved edit without mutation |
-| Budget/goal/contribution | confirm creation/contribution | start a new request after cancel | cancel pending action |
+| Budget/goal/contribution | confirm budget create/update/delete or goal creation/contribution | edit a saved budget or start a new request after cancel | cancel pending action |
 | Import review | import staged records | attach a corrected file after cancel | cancel pending action |
 | Removal confirmation | remove transaction | cancel and keep transaction | cancel removal |
 | Reconciliation | merge | go back from destructive confirmation | keep separate |
 | Calculators | calculate/project | edit inputs and rerun | non-blocking; composer remains available |
+| Dashboard tile removal | remove after an inline second decision | keep the tile | keep the tile |
 
 ## Visual rules
 
@@ -70,10 +74,14 @@ the controls with one compact historical receipt.
 
 - Its backend response passes the blocking-contract invariant.
 - Every action submits its server-authored id and payload.
+- A later actionable card cannot reuse an earlier event id, even for the same
+  resource.
 - Empty data still has a completion path.
 - Back and cancel reach different, correct states when both are meaningful.
 - Pending preserves layout, indicates the chosen action, and prevents repeats.
 - A failed request restores interaction without losing entered values.
 - Completed, cancelled, and superseded states render compact receipts.
 - Keyboard focus, accessible name, disabled state, and 44px effective targets
-  are verified on web and native.
+  are verified.
+- Optional model-generated garnish is skipped while a HITL card is pending, so
+  it cannot delay the decision surface.

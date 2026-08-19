@@ -1,0 +1,12 @@
+apiVersion: fyn.ai/v1
+kind: Operation
+metadata: {id: find_transactions_for_removal, version: 1, title: Remove transaction, namespace: finance, owner: engineering, enabled: true}
+discovery: {description: Find a user transaction and require approval before removal, aliases: [delete transaction, undo expense], examples: [Delete my last expense], negativeExamples: [Show my last expense]}
+eligibility: {requiredPermissions: [transactions.write], expectedEffect: mutation, access: read}
+input: {schema: {type: object, additionalProperties: false, properties: {}}}
+instructions: {selection: Use for removal of an existing financial transaction.}
+routing: {strategy: decision, bindings: {}}
+execution: {steps: [{id: execute, uses: transaction.find_removal@1}], label: Finding transactions eligible for removal, validation: model}
+approval: {minimum: required}
+presentation: {success: {title: Transaction removed, message: The approved transaction was removed.}, failure: {title: Transaction retained, message: No transaction was removed.}}
+tests: [{name: removal route, request: Delete my last expense, expectedEffect: mutation, expectedApproval: required}]

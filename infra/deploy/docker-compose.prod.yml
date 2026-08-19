@@ -1,0 +1,91 @@
+# fyn's production stack on the shared box.
+#
+# Deliberately standalone rather than an override of the root docker-compose.yml:
+# Compose *appends* to `ports` when merging files, so an override cannot
+# unpublish the root file's 0.0.0.0:5432 / :8000 / :3000. On a shared box those
+# must never be published. Keep the two files in sync when services change.
+#
+#   docker compose -p fyn -f infra/deploy/docker-compose.prod.yml \
+#     --env-file backend/.env up -d --build
+#
+# This box runs the API and its database only. The SPA is built and served
+# elsewhere and reaches this stack cross-origin at api.fynai.co — which is why
+# there is no frontend service here and no nginx /api relay. The browser's
+# session cookie stays same-site because both hostnames sit under fynai.co.
+#
+# Boundaries this file is responsible for (see infra/edge/docker-compose.yml):
+#   - Nothing is published to a host port. The only way in is the edge proxy.
+#   - Only `backend` joins the shared `edge` network, under an explicit
+#     `fyn-backend` alias. Postgres stays on fyn's private network,
+#     unreachable from any neighbouring app.
+#   - Every service is memory-capped. The box has 3.7 GiB and no per-app limit
+#     would mean a fyn leak can get a neighbour OOM-killed.
+
+name: fyn
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 1.0
+    environment:
+      POSTGRES_USER: finance
+      # No default on purpose: a deploy must fail loudly rather than quietly
+      # ship the development password to a public host.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in backend/.env on the server}
+      POSTGRES_DB: finance
+    volumes:
+      - finance-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finance"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build: ../../backend
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: 1.5
+    env_file:
+      - ../../backend/.env
+    environment:
+      # Wins over the same key in env_file: the server's .env may still carry a
+      # localhost URL from a copy of .env.example.
+      DATABASE_URL: postgresql+psycopg://finance:${POSTGRES_PASSWORD:?}@postgres:5432/finance
+      OPERATIONS_CORE_DIR: /app/operations
+      OPERATIONS_MANAGED_DIR: /app/managed-operations
+    volumes:
+      - ../../backend/managed-operations:/app/managed-operations:ro
+    # The API is the app's front door here, so it is the one container on the
+    # shared network. The alias is explicit because Compose would otherwise put
+    # a bare "backend" onto a network shared with every other app on the box.
+    networks:
+      default:
+      edge:
+        aliases:
+          - fyn-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # python:3.12-slim ships neither curl nor wget.
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).status == 200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      # The image's CMD runs `alembic upgrade head` before uvicorn, so a cold
+      # start with pending migrations needs room before it is called unhealthy.
+      start_period: 120s
+      retries: 5
+
+networks:
+  # fyn's own network. Named so the boundary is explicit: postgres lives only
+  # here, reachable by the backend and by nothing else on the box.
+  default:
+  edge:
+    name: edge
+    external: true
+
+volumes:
+  finance-postgres:

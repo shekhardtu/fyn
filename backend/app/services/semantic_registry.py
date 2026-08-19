@@ -116,8 +116,10 @@ class SemanticPolicy(BaseModel):
     max_relationships_per_query: int = 6
     max_estimated_cells: int = 10_000
     require_tenant_scope: bool = True
-    disallow_raw_sql: bool = True
-    disallow_sensitive_projection: bool = True
+    # The default analysis lane is arbitrary read-only SQL behind tenant RLS.
+    # These flags describe analytical freedom, not database isolation.
+    disallow_raw_sql: bool = False
+    disallow_sensitive_projection: bool = False
 
 
 class SemanticSchemaRegistry(BaseModel):

@@ -1,6 +1,24 @@
 # Governed conversational analytics architecture
 
-## Why a single text-to-SQL agent is insufficient
+## Current SQL-first execution boundary
+
+Native-ledger analysis is SQL-first. The Operator receives the full physical
+schema for every table covered by the analyst tenant policy and can author one
+query graph containing any number of CTEs, nested SELECTs, joins, unions,
+intersections, windows, conditional aggregates, statistical functions, and
+derived expressions. The final SELECT is shaped for the user-facing answer;
+intermediate relations stay inside the query.
+
+The model never supplies tenant identity. PostgreSQL row-level security reads
+the authenticated id injected by the server, and the SQL gate refuses physical
+table leaves outside that protected manifest. The analyst role remains
+read-only, with a timeout and bounded returned rows. These are operational and
+isolation boundaries, not a finite analytical grammar.
+
+`ANALYSIS_QUERY_MODE=hybrid` retains the older AnalysisPlan/template workflow
+described later in this document as a compatibility path.
+
+## Historical motivation for the hybrid planner
 
 Accurate conversational analytics is a state, semantics, compilation, and
 verification problem. A larger model can improve planning, but it cannot repair
@@ -114,6 +132,21 @@ rehydrates the last grounded query definition and drops prior entity IDs, so an
 edit or deletion is reflected. `Only those shown records` binds
 `activeDataScope` and keeps the exact IDs. This distinction prevents both stale
 tables and accidental expansion beyond a user-selected result set.
+
+## Source manifests
+
+Every queryable origin is a `data_sources` row with content-addressed,
+versioned `source_manifests` documents (platform blueprint, phase 1). A
+manifest carries provenance-tagged sections: `curated` semantics, a
+`profiled` physical scan, and later `user_stated` annotations that survive
+re-scans. The native ledger's manifest is generated from the semantic
+registry plus a deterministic schema scan and is posted idempotently at
+startup; a registry change supersedes the active version. Per-user value
+catalogs (the exact categorical values present in one user's rows, frequency
+ordered, truncation marked, sensitive fields excluded) are computed inside
+the canonical tenant scope at planning time and injected into the planner
+prompt — they are user-scoped context and are never stored in the shared
+manifest document.
 
 ## Two execution lanes
 

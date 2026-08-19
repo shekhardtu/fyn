@@ -171,6 +171,33 @@ def test_removed_transactions_stay_in_the_log_but_out_of_the_totals(db):
         searched = client.get("/api/transactions", params={"q": "groceries"})
         assert [item["id"] for item in searched.json()] == [str(removed.id)]
 
+        # The log can be narrowed back to canonical records on request.
+        canonical_only = client.get("/api/transactions", params={"include_removed": "false"})
+        assert [item["id"] for item in canonical_only.json()] == [str(kept.id)]
+
+        # Restore clears the tombstone and the record rejoins the totals.
+        restored = client.post(f"/api/transactions/{removed.id}/restore")
+        assert restored.status_code == 200
+        assert restored.json()["deletedAt"] is None
+        overview_after = client.get("/api/overview", params={"month": "2026-07-01"})
+        assert overview_after.json()["summary"]["spentMinor"] == 80_000
+        assert overview_after.json()["summary"]["expenseCount"] == 2
+
+        # Restoring an active record is a 404, not a silent success.
+        again = client.post(f"/api/transactions/{removed.id}/restore")
+        assert again.status_code == 404
+
+        # The ledger page can remove directly: same tombstone as the chat.
+        page_removed = client.delete(f"/api/transactions/{kept.id}")
+        assert page_removed.status_code == 200
+        assert page_removed.json()["deletedAt"] is not None
+        overview_final = client.get("/api/overview", params={"month": "2026-07-01"})
+        assert overview_final.json()["summary"]["spentMinor"] == 50_000
+        # A second delete of the same record is a refusal.
+        assert client.delete(f"/api/transactions/{kept.id}").status_code == 404
+        # And the round trip closes: restore brings it back.
+        assert client.post(f"/api/transactions/{kept.id}/restore").status_code == 200
+
 
 def test_transaction_page_edit_cannot_cross_the_user_boundary(db):
     user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))

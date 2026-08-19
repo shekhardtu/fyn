@@ -1,0 +1,12 @@
+apiVersion: fyn.ai/v1
+kind: Operation
+metadata: {id: show_reconciliation_review, version: 1, title: Reconciliation review, namespace: finance, owner: engineering, enabled: true}
+discovery: {description: Load governed reconciliation candidates, aliases: [duplicate review], examples: [Show transactions needing review], negativeExamples: [], modelSelectable: false}
+eligibility: {requiredPermissions: [transactions.read], expectedEffect: none, access: read}
+input: {schema: {type: object, additionalProperties: false, properties: {}}}
+instructions: {selection: Use to display reconciliation review candidates.}
+routing: {strategy: decision, bindings: {}}
+execution: {steps: [{id: execute, uses: finance.query@1}], label: Loading reconciliation review, metric: reconciliation_review, validation: deterministic}
+approval: {minimum: never}
+presentation: {success: {title: Review ready, message: Reconciliation review is ready.}, failure: {title: Review unavailable, message: Reconciliation review could not be loaded.}}
+tests: [{name: reconciliation route, request: Show transactions needing review, expectedEffect: none, expectedApproval: never}]

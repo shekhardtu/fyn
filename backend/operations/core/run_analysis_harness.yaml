@@ -1,0 +1,29 @@
+apiVersion: fyn.ai/v1
+kind: Operation
+metadata: {id: run_analysis_harness, version: 1, title: Governed analysis, namespace: finance, owner: engineering, enabled: true}
+# modelSelectable is false because analysis now runs as tools mounted on the
+# agent loop (run_financial_analysis, run_governed_sql, the source lanes), which
+# is also where charts are produced. The operation stays in the catalog as the
+# dispatch target for deterministic template replay, but offering it to the
+# model is a trap: a planner-strategy proposal has no binder, so every request
+# that chose it died as "couldn't bind that request to a governed operation".
+discovery: {description: Run generated read-only analysis through the governed harness, modelSelectable: false, aliases: [advanced analysis], examples: [Review my last three months expense pattern and suggest where I can save], negativeExamples: []}
+eligibility: {requiredPermissions: [transactions.read], expectedEffect: none, access: read}
+input:
+  schema:
+    type: object
+    additionalProperties: false
+    required: [request]
+    properties:
+      request: {type: string, minLength: 3, maxLength: 2000}
+instructions: {selection: Use for generated read-only analyses that require the governed planner.}
+routing: {strategy: planner, bindings: {request: "${input.request}"}}
+execution: {steps: [{id: execute, uses: analysis.run@1}], label: Running the governed analysis harness, validation: model}
+approval: {minimum: never}
+presentation: {success: {title: Analysis ready, message: The governed analysis is ready.}, failure: {title: Analysis unavailable, message: The governed analysis could not be completed.}}
+tests:
+  - name: analysis route
+    request: Review my last three months expense pattern and suggest where I can save
+    expectedInputs: {request: Review my last three months expense pattern and suggest where I can save}
+    expectedEffect: none
+    expectedApproval: never

@@ -17,6 +17,19 @@ class EmptyInput(ToolInput):
     pass
 
 
+class OptionalDateRangeInput(ToolInput):
+    start: date | None = None
+    end: date | None = None
+
+    @model_validator(mode="after")
+    def paired_ordered_range(self):
+        if (self.start is None) != (self.end is None):
+            raise ValueError("Provide both start and end, or neither")
+        if self.start and self.end and self.end < self.start:
+            raise ValueError("End date must be on or after start date")
+        return self
+
+
 class DateRangeInput(ToolInput):
     start: date
     end: date
@@ -34,6 +47,41 @@ class SpendingSummaryInput(DateRangeInput):
 
 class SubcategoryBreakdownInput(DateRangeInput):
     category_slug: str = Field(min_length=1, max_length=60)
+
+
+class TransactionListInput(ToolInput):
+    """Filters for one bounded, tenant-scoped read of canonical transactions.
+
+    Every field is an exact match against governed data. Slugs and enums are
+    never guessed: an unknown slug returns no rows rather than a near match,
+    so a filter the user did not ask for cannot silently widen the answer.
+    """
+
+    transaction_type: Literal["expense", "income", "refund", "transfer", "adjustment"] | None = None
+    merchant: str | None = Field(default=None, min_length=1, max_length=160)
+    category_slug: str | None = Field(default=None, min_length=1, max_length=120)
+    subcategory_slug: str | None = Field(default=None, min_length=1, max_length=120)
+    account: str | None = Field(default=None, min_length=1, max_length=120)
+    tag: str | None = Field(default=None, min_length=1, max_length=80)
+    min_amount_minor: int | None = Field(default=None, ge=0)
+    max_amount_minor: int | None = Field(default=None, ge=0)
+    start: date | None = None
+    end: date | None = None
+    sort_by: Literal["transaction_at", "amount"] = "transaction_at"
+    sort_direction: Literal["asc", "desc"] = "desc"
+    limit: int = Field(default=50, ge=1, le=200)
+
+    @model_validator(mode="after")
+    def ordered_bounds(self):
+        if self.start and self.end and self.end < self.start:
+            raise ValueError("End date must be on or after start date")
+        if (
+            self.min_amount_minor is not None
+            and self.max_amount_minor is not None
+            and self.max_amount_minor < self.min_amount_minor
+        ):
+            raise ValueError("max_amount_minor must be at least min_amount_minor")
+        return self
 
 
 class LoanPaymentInput(ToolInput):
@@ -115,23 +163,16 @@ class MonthlyComparisonResult(BaseModel):
     percent_change: float | None
 
 
-class ChangeDriverResult(BaseModel):
-    id: str
-    label: str
-    current_minor: int
-    previous_minor: int
-    change_minor: int
-
-
-class ChangeDriversResult(MonthlyComparisonResult):
-    drivers: list[ChangeDriverResult]
-
-
 class CashPositionResult(BaseModel):
     income_minor: int
     expenses_minor: int
     net_minor: int
     currency: str = Field(min_length=3, max_length=3)
+    # Derived deterministically so a ratio answer is tool evidence, not model
+    # arithmetic. Null when there are no expenses to divide by.
+    income_to_expense_ratio: float | None = None
+    start: str | None = None
+    end: str | None = None
 
 
 class RecurringExpenseResult(BaseModel):
@@ -146,6 +187,37 @@ class RecurringExpenseResult(BaseModel):
 
 class RecurringExpensesResult(RootModel[list[RecurringExpenseResult]]):
     pass
+
+
+class TransactionRow(BaseModel):
+    """One canonical transaction, already authorized and formatted for reading."""
+
+    id: str
+    merchant: str
+    transaction_type: str
+    category: str | None = None
+    subcategory: str | None = None
+    account: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    transaction_at: str
+    transaction_date: date
+    status: str
+    amount_minor: int
+    amount: str
+    currency: str = Field(min_length=3, max_length=3)
+
+
+class TransactionListResult(BaseModel):
+    """A bounded transaction read plus the totals the model must not recompute."""
+
+    rows: list[TransactionRow]
+    returned: int = Field(ge=0)
+    total_minor: int
+    total: str
+    currency: str = Field(min_length=3, max_length=3)
+    # True when the filter matched more records than `limit` returned, so a
+    # reply can say the list is capped instead of implying it is complete.
+    truncated: bool = False
 
 
 class LoanPaymentResult(BaseModel):

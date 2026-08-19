@@ -1,0 +1,114 @@
+apiVersion: fyn.ai/v1
+kind: Operation
+
+metadata:
+  id: ops.taxonomy.create_path
+  version: 2
+  title: Create category and optional subcategories
+  namespace: finance
+  owner: operations
+  enabled: true
+
+discovery:
+  description: Create a user-owned expense category with zero or more named subcategories.
+  aliases:
+    - create category path
+    - create category
+    - add subcategory
+  examples:
+    - Create Pet Care with Vet underneath it
+    - Create a category called Browser Test
+  negativeExamples:
+    - Show my existing categories
+
+eligibility:
+  requiredPermissions:
+    - taxonomy.write
+  expectedEffect: mutation
+  access: workflow
+
+routing:
+  strategy: managed
+  bindings: {}
+
+input:
+  schema:
+    type: object
+    additionalProperties: false
+    required:
+      - category
+      - subcategories
+    properties:
+      category:
+        type: string
+        title: Category
+        minLength: 1
+        maxLength: 80
+      subcategories:
+        type: array
+        title: Subcategories
+        minItems: 0
+        maxItems: 10
+        uniqueItems: true
+        items:
+          type: string
+          minLength: 1
+          maxLength: 80
+
+clarification:
+  requiredFields:
+    - category
+    - subcategories
+  prompt: Name the category and any subcategories to create beneath it.
+
+instructions:
+  selection: Use when the user asks to create a category, create subcategories beneath one, or create both together.
+  argumentCollection: Preserve category names exactly as supplied by the user. Use an empty subcategories list when only the parent category was requested.
+  response: Do not claim success until governed execution completes.
+
+execution:
+  label: Creating category hierarchy
+  steps:
+    - id: create_category
+      uses: taxonomy.create_category@1
+      with:
+        name: ${input.category}
+    - id: create_subcategories
+      forEach: ${input.subcategories}
+      uses: taxonomy.create_subcategory@1
+      with:
+        parentId: ${steps.create_category.output.id}
+        name: ${item}
+
+approval:
+  minimum: required
+  title: Create this category hierarchy?
+  summary: Create “${input.category}” and its listed subcategories.
+
+presentation:
+  success:
+    title: Category created
+    message: “${input.category}” and its subcategories were created.
+  failure:
+    title: Category unchanged
+    message: No category changes were saved.
+
+tests:
+  - name: category hierarchy request
+    request: Create Pet Care with Vet underneath it
+    expectedInputs:
+      category: Pet Care
+      subcategories:
+        - Vet
+    expectedEffect: mutation
+    expectedApproval: required
+  - name: category-only request
+    request: Create a category called Browser Test
+    expectedInputs:
+      category: Browser Test
+      subcategories: []
+    expectedEffect: mutation
+    expectedApproval: required
+  - name: read request must not match
+    request: Show my existing categories
+    expectedMatch: false

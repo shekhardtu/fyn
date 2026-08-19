@@ -19,7 +19,7 @@ from app.services.semantic import (
     validate_finance_query_plan,
 )
 from app.services.semantic_registry import semantic_schema_registry
-from app.services.analytics import cash_position, category_breakdown, spending_summary
+from app.services.intelligence import cash_totals, category_rows, expense_summary
 
 
 def occurred(day: date, clock: str | None = None):
@@ -141,15 +141,24 @@ def test_money_analytics_never_sum_different_currencies(db):
     ])
     db.flush()
 
-    summary = spending_summary(db, user.id, date(2026, 8, 1), date(2026, 8, 11))
-    breakdown = category_breakdown(db, user.id, date(2026, 8, 1), date(2026, 8, 11))
-    position = cash_position(db, user.id)
+    # The canonical deterministic reads, which the semantic lane must agree with.
+    summary = expense_summary(db, user.id, date(2026, 8, 1), date(2026, 8, 11))
+    breakdown = category_rows(db, user.id, date(2026, 8, 1), date(2026, 8, 11))
+    position = cash_totals(db, user.id)
     semantic = execute_finance_query(db, user.id, _query("gross_spend"))
 
     assert summary["total_minor"] == 1_000
     assert summary["currency"] == "USD"
     assert breakdown == [{"id": "food", "label": "Food", "amount_minor": 1_000, "count": 1, "currency": "USD"}]
-    assert position == {"income_minor": 5_000, "expenses_minor": 1_000, "net_minor": 4_000, "currency": "USD"}
+    assert position == {
+        "income_minor": 5_000,
+        "expenses_minor": 1_000,
+        "net_minor": 4_000,
+        "currency": "USD",
+        "income_to_expense_ratio": 5.0,
+        "start": None,
+        "end": None,
+    }
     assert semantic["rows"] == [{"value": 1_000}]
     assert semantic["currency"] == "USD"
 

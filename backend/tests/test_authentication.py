@@ -157,6 +157,27 @@ def test_google_address_variants_resolve_to_one_mailbox(settings):
 # ── Signing in ───────────────────────────────────────────────────────────────
 
 
+def test_development_phone_otp_is_returned_without_sending_sms(client, settings, monkeypatch):
+    monkeypatch.setattr(settings, "environment", "development")
+    monkeypatch.setattr(settings, "otp_debug_echo", False)
+
+    def must_not_deliver(*_args, **_kwargs):
+        raise AssertionError("development phone OTP must not call a delivery provider")
+
+    monkeypatch.setattr("app.services.auth.deliver_code", must_not_deliver)
+
+    started = client.post("/api/auth/otp/start", json={"channel": "phone", "value": PHONE})
+
+    assert started.status_code == 200
+    body = started.json()
+    assert body["debugCode"]
+    verified = client.post(
+        "/api/auth/otp/verify",
+        json={"challengeId": body["challengeId"], "code": body["debugCode"]},
+    )
+    assert verified.status_code == 200
+
+
 def test_first_phone_sign_in_adopts_the_account_that_predates_authentication(client, db):
     """The seeded local user carries the data recorded before there was a login."""
     seeded = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
@@ -437,9 +458,6 @@ def test_the_session_endpoint_answers_for_a_visitor_who_is_not_signed_in(client)
         "authenticated": False,
         "profile": None,
         "googleSignInAvailable": True,
-        # Nobody is signed in, so there is no session to hand to any caller —
-        # including a native one that would otherwise be given the token.
-        "sessionToken": None,
     }
 
 
@@ -465,149 +483,11 @@ def test_one_account_never_sees_another_accounts_profile(client, db):
     ).user_id == db.scalar(select(User).where(User.phone == PHONE)).id
 
 
-# ── Native clients ───────────────────────────────────────────────────────────
-#
-# A phone has no cookie jar the platform will manage for it across reinstalls
-# and process death, so the app keeps its session in the Keychain/Keystore and
-# presents it as a bearer credential. The token is only ever handed back to a
-# caller that said it needs one.
-
-
-def test_a_native_client_is_given_its_session_token(client):
-    started = client.post("/api/auth/otp/start", json={"channel": "phone", "value": PHONE})
-    body = started.json()
-    verified = client.post(
-        "/api/auth/otp/verify",
-        json={"challengeId": body["challengeId"], "code": body["debugCode"]},
-        headers={"X-Client": "native"},
-    )
-
-    assert verified.status_code == 200, verified.text
-    assert verified.json()["sessionToken"]
-
-
-def test_a_browser_is_never_given_its_session_token(client):
-    """The cookie is `httponly` precisely so script on the page cannot read it.
-    Returning the same value in a readable body would hand it straight back."""
-    assert sign_in_with_phone(client)["sessionToken"] is None
-
-
-def test_a_bearer_token_authenticates_without_any_cookie(client):
-    token = client.post(
-        "/api/auth/otp/verify",
-        json=_started_challenge(client),
-        headers={"X-Client": "native"},
-    ).json()["sessionToken"]
-    client.cookies.clear()
-
-    assert client.get("/api/profile").status_code == 401
-    assert client.get("/api/profile", headers={"Authorization": f"Bearer {token}"}).status_code == 200
-
-
-def test_a_bearer_token_wins_over_a_stale_cookie(client):
-    """A native shell that once signed in through a WebView can be left holding
-    a cookie for an account it has since signed out of. The credential it
-    deliberately attached is the one that counts."""
-    stale = sign_in_with_phone(client, OTHER_PHONE)
-    fresh_token = client.post(
-        "/api/auth/otp/verify",
-        json=_started_challenge(client, PHONE),
-        headers={"X-Client": "native"},
-    ).json()["sessionToken"]
-
-    reached = client.get("/api/profile", headers={"Authorization": f"Bearer {fresh_token}"}).json()
-    assert reached["phone"] == PHONE
-    assert reached["id"] != stale["profile"]["id"]
-
-
-def test_signing_out_revokes_a_bearer_session(client):
-    token = client.post(
-        "/api/auth/otp/verify",
-        json=_started_challenge(client),
-        headers={"X-Client": "native"},
-    ).json()["sessionToken"]
-    bearer = {"Authorization": f"Bearer {token}"}
-
-    assert client.post("/api/auth/signout", headers=bearer).status_code == 200
-    client.cookies.clear()
-    assert client.get("/api/profile", headers=bearer).status_code == 401
-
-
-def _started_challenge(client, phone: str = PHONE) -> dict:
-    body = client.post("/api/auth/otp/start", json={"channel": "phone", "value": phone}).json()
-    return {"challengeId": body["challengeId"], "code": body["debugCode"]}
-
-
-# ── Google from more than one client ─────────────────────────────────────────
-#
-# Google issues an ID token whose audience is whichever OAuth client asked for
-# it, so the same person arrives with a different `aud` from the browser, the
-# iPhone and the Android app. All three have to reach one account.
-
-
-def test_every_configured_google_client_is_accepted(monkeypatch):
-    from app.config import Settings
-
-    settings = Settings(
-        google_client_id="web.apps.googleusercontent.com",
-        google_ios_client_id="ios.apps.googleusercontent.com",
-        google_android_client_id="android.apps.googleusercontent.com",
-    )
-    assert settings.google_audiences == [
-        "web.apps.googleusercontent.com",
-        "ios.apps.googleusercontent.com",
-        "android.apps.googleusercontent.com",
-    ]
-
-
-def test_google_audiences_ignores_blanks_and_repeats():
-    from app.config import Settings
-
-    settings = Settings(google_client_id="one.apps.googleusercontent.com", google_ios_client_id="  ")
-    assert settings.google_audiences == ["one.apps.googleusercontent.com"]
-
-    shared = Settings(google_client_id="same.apps.googleusercontent.com", google_ios_client_id="same.apps.googleusercontent.com")
-    assert shared.google_audiences == ["same.apps.googleusercontent.com"]
-
-
-def test_a_token_for_the_ios_client_is_verified(monkeypatch):
-    """The native audience is checked even though the web client is tried first."""
+def test_a_token_for_another_client_is_refused(monkeypatch):
     from app.services import google_identity
 
     current = get_settings()
     monkeypatch.setattr(current, "google_client_id", "web.apps.googleusercontent.com")
-    monkeypatch.setattr(current, "google_ios_client_id", "ios.apps.googleusercontent.com")
-
-    seen: list[str] = []
-
-    def fake_verify(credential, request, audience):
-        seen.append(audience)
-        if audience != "ios.apps.googleusercontent.com":
-            raise ValueError("wrong audience")
-        return {
-            "iss": "https://accounts.google.com",
-            "sub": "google-subject-1",
-            "email": "person@example.com",
-            "email_verified": True,
-            "name": "Signed In",
-        }
-
-    import google.oauth2.id_token as id_token_module
-
-    monkeypatch.setattr(id_token_module, "verify_oauth2_token", fake_verify)
-
-    account = google_identity.verify_google_credential("a-token")
-    assert account.subject == "google-subject-1"
-    # The web client was tried first and rejected before the iOS one matched.
-    assert seen == ["web.apps.googleusercontent.com", "ios.apps.googleusercontent.com"]
-
-
-def test_a_token_for_no_configured_client_is_refused(monkeypatch):
-    from app.services import google_identity
-
-    current = get_settings()
-    monkeypatch.setattr(current, "google_client_id", "web.apps.googleusercontent.com")
-    monkeypatch.setattr(current, "google_ios_client_id", "ios.apps.googleusercontent.com")
 
     import google.oauth2.id_token as id_token_module
 

@@ -9,6 +9,7 @@ from ..config import DEFAULT_CURRENCY
 from ..domain import FinancialSourceType, SpendNature, TAXONOMY_FIELD_NAMES, TransactionType
 from ..event_time import local_date, now_utc
 from ..taxonomy_catalog import DefaultCategorySlug, taxonomy_path
+from .finance_time import resolve_finance_period
 
 @dataclass
 class ExtractedTransaction:
@@ -34,7 +35,11 @@ class ExtractedTransaction:
 
 
 AMOUNT_PATTERN = re.compile(
-    r"(?:₹|\$|€|£|rs\.?|inr|usd|eur|gbp)?\s*([0-9][0-9,]*(?:\.\d+)?)\s*(crores?|cr|lakhs?|lacs?|lakh|lac|k)?",
+    r"(?<![A-Za-z0-9])"
+    r"(?:₹|\$|€|£|rs\.?|inr|usd|eur|gbp)?\s*"
+    r"([0-9][0-9,]*(?:\.\d+)?)\s*"
+    r"(crores?|cr|lakhs?|lacs?|lakh|lac|k)?"
+    r"(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
 MERCHANT_PATTERNS = [
@@ -119,7 +124,7 @@ def classify_type(text: str) -> tuple[TransactionType, bool]:
         (TransactionType.CASH_WITHDRAWAL, ("withdrew", "withdrawal", "atm")),
         (TransactionType.CASH_DEPOSIT, ("cash deposit", "deposited cash")),
         (TransactionType.INCOME, ("salary", "credited", "received", "got paid", "freelance", "income")),
-        (TransactionType.EXPENSE, ("spent", "paid", "bought", "debited", "purchase")),
+        (TransactionType.EXPENSE, ("spent", "paid", "bought", "debited", "purchase", "expense", "expenses")),
     ]
     for transaction_type, tokens in rules:
         # Financial event classification is a write boundary. Substring
@@ -161,7 +166,21 @@ def extract_transaction(text: str, today: date | None = None, default_currency: 
         match = pattern.search(text)
         if match:
             merchant = match.group(1).strip(" .,-")
-            if merchant.lower() in {"my salary", "salary", "a freelance project", "freelance work", "my home loan", "mutual funds"}:
+            if merchant.lower() in {
+                "expense",
+                "an expense",
+                "my expense",
+                "income",
+                "my income",
+                "transaction",
+                "a transaction",
+                "my salary",
+                "salary",
+                "a freelance project",
+                "freelance work",
+                "my home loan",
+                "mutual funds",
+            }:
                 merchant = None
             break
 
@@ -281,71 +300,39 @@ def normalize_merchant(value: str | None) -> str | None:
 
 def looks_like_financial_query(text: str) -> bool:
     lowered = text.lower()
-    question_or_request = bool(
-        re.search(r"^\s*(?:how|what|why|show|list|compare|can|could|which|give|tell|total)\b", lowered)
-        and re.search(
-            r"\b(?:spend|spent|spending|breakdown|expense|expenses|rupees?|money|transaction|transactions|income|salary|cash\s+flow|recurring|subscription|afford|emi|interest|sip|investment)\b",
-            lowered,
+    financial_subject = re.search(
+        # A question about a connected source — an uploaded sheet, an invoice
+        # table, a vendor — is a financial question even when it never says
+        # "spend": the words a person uses for their own data are the subject.
+        r"\b(?:spend|spent|spending|savings?|breakdown|expenses?|rupees?|money|"
+        r"transactions?|income|salary|cash\s+flow|recurring|subscription|afford|"
+        r"emi|interest|sip|investment|budget|loan|invoices?|vendors?|merchants?|"
+        r"sheet|spreadsheet|upload(?:ed)?|chart|graph|plot|dashboard|category|categories)\b",
+        lowered,
+    )
+    request_signal = re.search(
+        r"^\s*(?:how|what|why|show|list|compare|can|could|which|give|tell|total|"
+        r"using|project|forecast|analy[sz]e|review|estimate|summarize)\b"
+        r"|\b(?:project|forecast|analy[sz]e|compare|calculate|estimate|summarize)\b"
+        r"|\?\s*$",
+        lowered,
+    )
+    return bool(financial_subject and request_signal) or any(
+        token in lowered
+        for token in (
+            "how much", "why did", "compare", "breakdown", "biggest expense",
+            "recurring", "subscription", "afford", "spending", "duplicate",
+            "reconciliation", "need review", "prepay", "interest save", "emi",
+            "increase my sip", "investment projection",
+            "add up to", "invoices", "budget sheet", "uploaded", "chart", "graph",
         )
     )
-    return question_or_request or any(token in lowered for token in ("how much", "why did", "compare", "breakdown", "biggest expense", "recurring", "subscription", "afford", "spending", "duplicate", "reconciliation", "need review", "prepay", "interest save", "emi", "increase my sip", "investment projection"))
-
-
-_NUMBER_WORDS = {
-    "one": 1,
-    "two": 2,
-    "three": 3,
-    "four": 4,
-    "five": 5,
-    "six": 6,
-    "seven": 7,
-    "eight": 8,
-    "nine": 9,
-    "ten": 10,
-    "fourteen": 14,
-    "thirty": 30,
-}
 
 
 def parse_spending_period(text: str, today: date | None = None) -> tuple[date, date, str] | None:
-    """Resolve common conversational expense periods to inclusive date bounds."""
+    """Compatibility-free public adapter to the centralized finance resolver."""
     today = today or local_date(now_utc(), None)
-    lowered = text.lower()
-
-    if "last month" in lowered or "previous month" in lowered:
-        current_start = today.replace(day=1)
-        previous_end = current_start - timedelta(days=1)
-        return previous_end.replace(day=1), previous_end, "Last month"
-    if "this month" in lowered:
-        return today.replace(day=1), today, "This month"
-    if "last year" in lowered or "previous year" in lowered:
-        previous_year = today.year - 1
-        return date(previous_year, 1, 1), date(previous_year, 12, 31), "Last year"
-    if "this year" in lowered:
-        return date(today.year, 1, 1), today, "This year"
-
-    if "day before yesterday" in lowered:
-        target = today - timedelta(days=2)
-        return target, target, "Day before yesterday"
-    if "yesterday" in lowered:
-        target = today - timedelta(days=1)
-        return target, target, "Yesterday"
-    if re.search(r"\btoday\b", lowered):
-        return today, today, "Today"
-    if "this week" in lowered:
-        start = today - timedelta(days=today.weekday())
-        return start, today, "This week"
-    if re.search(r"\b(?:last|past|previous)\s+week\b", lowered):
-        return today - timedelta(days=6), today, "Last 7 days"
-
-    match = re.search(
-        r"\b(?:last|past|previous)\s+(\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|fourteen|thirty)\s+days?\b",
-        lowered,
-    )
-    if match:
-        raw_days = match.group(1)
-        days = int(raw_days) if raw_days.isdigit() else _NUMBER_WORDS[raw_days]
-        days = max(1, min(days, 366))
-        return today - timedelta(days=days - 1), today, f"Last {days} days"
-
-    return None
+    resolution = resolve_finance_period(text, today)
+    if resolution.status != "resolved" or not resolution.start_date or not resolution.end_date:
+        return None
+    return resolution.start_date, resolution.end_date, resolution.label or "Selected period"

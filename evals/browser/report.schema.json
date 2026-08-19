@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fyn.browser-eval-report.v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "suiteVersion", "run", "results", "summary"],
+  "properties": {
+    "schemaVersion": { "const": "fyn.browser-eval-report.v2" },
+    "suiteVersion": { "type": "integer", "minimum": 1 },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "startedAt", "finishedAt", "baseUrl", "commit", "evaluator", "model", "notes"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "finishedAt": { "type": ["string", "null"], "format": "date-time" },
+        "baseUrl": { "type": "string", "format": "uri" },
+        "commit": { "type": "string", "minLength": 1 },
+        "evaluator": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "notes": { "type": "string" }
+      }
+    },
+    "results": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["caseId", "status", "observedResponse", "measurements", "assertions", "artifacts", "notes", "blockedReason"],
+        "properties": {
+          "caseId": { "type": "string", "minLength": 1 },
+          "status": { "enum": ["pending", "pass", "fail", "blocked"] },
+          "observedResponse": { "type": "string" },
+          "measurements": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["attempts"],
+            "properties": {
+              "attempts": {
+                "type": "array",
+                "minItems": 2,
+                "items": { "$ref": "#/$defs/attempt" }
+              }
+            }
+          },
+          "assertions": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "passed", "evidence"],
+              "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "passed": { "type": ["boolean", "null"] },
+                "evidence": { "type": "string" }
+              }
+            }
+          },
+          "artifacts": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "notes": { "type": "string" },
+          "blockedReason": { "type": "string" }
+        }
+      }
+    },
+    "summary": { "$ref": "#/$defs/summary" }
+  },
+  "$defs": {
+    "attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempt", "observedOutcome", "routeSignature", "turns", "notes"],
+      "properties": {
+        "attempt": { "type": "integer", "minimum": 1 },
+        "observedOutcome": { "type": "string" },
+        "routeSignature": { "type": "string" },
+        "turns": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/turnMeasurement" }
+        },
+        "notes": { "type": "string" }
+      }
+    },
+    "turnMeasurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "step", "runId", "timeToFirstResponseMs", "totalDurationMs", "modelDurationMs",
+        "modelPassCount", "inputTokens", "outputTokens", "totalTokens", "costUsd",
+        "costCoverage", "costBasis", "notes"
+      ],
+      "properties": {
+        "step": { "type": "integer", "minimum": 1 },
+        "runId": { "type": "string" },
+        "timeToFirstResponseMs": { "type": ["number", "null"], "minimum": 0 },
+        "totalDurationMs": { "type": ["number", "null"], "minimum": 0 },
+        "modelDurationMs": { "type": ["number", "null"], "minimum": 0 },
+        "modelPassCount": { "type": ["integer", "null"], "minimum": 0 },
+        "inputTokens": { "type": ["integer", "null"], "minimum": 0 },
+        "outputTokens": { "type": ["integer", "null"], "minimum": 0 },
+        "totalTokens": { "type": ["integer", "null"], "minimum": 0 },
+        "costUsd": { "type": ["number", "null"], "minimum": 0 },
+        "costCoverage": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "costBasis": { "enum": ["provider_usage", "partial_provider_usage", "unavailable"] },
+        "notes": { "type": "string" }
+      }
+    },
+    "nullableMetric": { "type": ["number", "null"], "minimum": 0 },
+    "tierSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "total", "score"],
+      "properties": {
+        "passed": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 0 },
+        "score": { "type": "number", "minimum": 0, "maximum": 10 }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "passed", "failed", "blocked", "pending", "score", "byTier", "metrics"],
+      "properties": {
+        "status": { "enum": ["pending", "pass", "fail", "blocked"] },
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "blocked": { "type": "integer", "minimum": 0 },
+        "pending": { "type": "integer", "minimum": 0 },
+        "score": { "type": "number", "minimum": 0, "maximum": 10 },
+        "byTier": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["easy", "medium", "hard", "complex"],
+          "properties": {
+            "easy": { "$ref": "#/$defs/tierSummary" },
+            "medium": { "$ref": "#/$defs/tierSummary" },
+            "hard": { "$ref": "#/$defs/tierSummary" },
+            "complex": { "$ref": "#/$defs/tierSummary" }
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["latency", "correctness", "predictability", "cost"],
+          "properties": {
+            "latency": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["turnsMeasured", "medianTimeToFirstResponseMs", "p95TimeToFirstResponseMs", "medianTotalDurationMs", "p95TotalDurationMs"],
+              "properties": {
+                "turnsMeasured": { "type": "integer", "minimum": 0 },
+                "medianTimeToFirstResponseMs": { "$ref": "#/$defs/nullableMetric" },
+                "p95TimeToFirstResponseMs": { "$ref": "#/$defs/nullableMetric" },
+                "medianTotalDurationMs": { "$ref": "#/$defs/nullableMetric" },
+                "p95TotalDurationMs": { "$ref": "#/$defs/nullableMetric" }
+              }
+            },
+            "correctness": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["score", "passedCases", "totalCases"],
+              "properties": {
+                "score": { "type": "number", "minimum": 0, "maximum": 10 },
+                "passedCases": { "type": "integer", "minimum": 0 },
+                "totalCases": { "type": "integer", "minimum": 0 }
+              }
+            },
+            "predictability": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["casesMeasured", "meanOutcomeConsistency", "meanRouteConsistency", "meanLatencyCv"],
+              "properties": {
+                "casesMeasured": { "type": "integer", "minimum": 0 },
+                "meanOutcomeConsistency": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+                "meanRouteConsistency": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+                "meanLatencyCv": { "$ref": "#/$defs/nullableMetric" }
+              }
+            },
+            "cost": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["turnsMeasured", "modelPasses", "inputTokens", "outputTokens", "totalTokens", "costUsd", "costCoverage"],
+              "properties": {
+                "turnsMeasured": { "type": "integer", "minimum": 0 },
+                "modelPasses": { "type": "integer", "minimum": 0 },
+                "inputTokens": { "type": ["integer", "null"], "minimum": 0 },
+                "outputTokens": { "type": ["integer", "null"], "minimum": 0 },
+                "totalTokens": { "type": ["integer", "null"], "minimum": 0 },
+                "costUsd": { "$ref": "#/$defs/nullableMetric" },
+                "costCoverage": { "type": "number", "minimum": 0, "maximum": 1 }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

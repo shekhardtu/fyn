@@ -1,0 +1,38 @@
+# Base config for the shared edge proxy. Global options and reusable snippets
+# only — every route lives in an app-owned file under /etc/caddy/sites/.
+
+{
+	email {$ACME_EMAIL}
+}
+
+# Hosts served through Cloudflare's proxy (orange cloud). Cloudflare terminates
+# TLS at its edge and does not forward the ALPN negotiation, so tls-alpn-01 can
+# never succeed for them — Caddy would burn a failed attempt on every renewal.
+# HTTP-01 does work: Cloudflare 308s the challenge to https and Let's Encrypt
+# follows redirects through to this origin.
+#
+# Do NOT import this for a DNS-only host. There tls-alpn-01 is available and
+# preferable. (Carried over from jitraa's Caddyfile, verified 2026-08-01.)
+(cloudflare_proxied) {
+	tls {
+		issuer acme {
+			email {$ACME_EMAIL}
+			disable_tlsalpn_challenge
+		}
+	}
+}
+
+# Sensible defaults an app can opt into with `import app_defaults`.
+(app_defaults) {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}
+
+# Snippets above are defined before this line so imported site files can use
+# them. One file per app; each app's deploy owns its own and no other.
+import /etc/caddy/sites/*.caddy

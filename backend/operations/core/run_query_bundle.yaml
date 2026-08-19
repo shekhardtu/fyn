@@ -1,0 +1,12 @@
+apiVersion: fyn.ai/v1
+kind: Operation
+metadata: {id: run_query_bundle, version: 1, title: Coordinated data views, namespace: finance, owner: engineering, enabled: true}
+discovery: {description: Run coordinated governed query views, aliases: [summary and transactions], examples: [Show rows and a category summary], negativeExamples: []}
+eligibility: {requiredPermissions: [transactions.read], expectedEffect: none, access: read}
+input: {schema: {type: object, additionalProperties: false, properties: {}}}
+instructions: {selection: Use when one request needs multiple coordinated result shapes.}
+routing: {strategy: planner, bindings: {}}
+execution: {steps: [{id: execute, uses: analysis.bundle@1}], label: Running coordinated data views, validation: model}
+approval: {minimum: never}
+presentation: {success: {title: Views ready, message: The coordinated views are ready.}, failure: {title: Views unavailable, message: The coordinated views could not be completed.}}
+tests: [{name: query bundle route, request: Show rows and a category summary, expectedEffect: none, expectedApproval: never}]

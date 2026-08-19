@@ -47,6 +47,17 @@ def test_frontend_contract_artifacts_match_backend_models():
     assert (GENERATED / "contracts.zod.ts").read_text() == _render_zod(bundle)
 
 
+def test_server_only_fields_are_not_declared_in_frontend_interfaces():
+    rendered = _render_types(frontend_contract_bundle())
+    pending_action = rendered.split("export interface PendingAction {", 1)[1].split("}", 1)[0]
+    agent_response = rendered.split("export interface AgentResponse {", 1)[1].split("}", 1)[0]
+
+    assert "continuation" not in pending_action
+    assert "task_status" not in agent_response
+    assert "failure_stage" not in agent_response
+    assert "error_code" not in agent_response
+
+
 def test_widget_action_registry_exactly_matches_action_handler():
     """The public action enum and dispatcher must evolve as one contract."""
     tree = ast.parse(textwrap.dedent(inspect.getsource(handle_action)))

@@ -88,6 +88,17 @@ DEMO_EXPENSES = (
 DEMO_CATEGORY_SLUGS = frozenset(item[0] for item in DEMO_EXPENSES)
 ESSENTIAL_CATEGORIES = frozenset({"food", "transport", "bills", "health", "housing", "education"})
 PREVIOUS_MONTH_FACTORS = (86, 93, 101, 89, 96)
+TWO_MONTHS_AGO_FACTORS = (82, 97, 88, 104, 91)
+DEMO_MONTH_FACTORS = {
+    "two_months_ago": TWO_MONTHS_AGO_FACTORS,
+    "previous": PREVIOUS_MONTH_FACTORS,
+    "current": (100, 100, 100, 100, 100),
+}
+DEMO_INCOMES = {
+    "two_months_ago": (("salary", "Salary", 18_500_000), ("freelance", "Consulting", 2_000_000)),
+    "previous": (("salary", "Salary", 18_500_000), ("freelance", "Consulting", 1_800_000)),
+    "current": (("salary", "Salary", 18_500_000), ("freelance", "Consulting", 2_500_000)),
+}
 
 
 def _previous_month(month: date) -> date:
@@ -103,7 +114,7 @@ def _at(month: date, index: int, timezone_name: str, *, through_day: int | None 
 
 
 def seed_demo_finances(db: Session, user: User, *, today: date | None = None) -> int:
-    """Add two realistic, repeatable months of demo finances for one user.
+    """Add three realistic, repeatable months of demo finances for one user.
 
     The caller chooses the account explicitly. Each row carries a stable marker
     in ``notes``; rerunning fills missing rows and never duplicates existing
@@ -112,6 +123,7 @@ def seed_demo_finances(db: Session, user: User, *, today: date | None = None) ->
     today = today or local_now(user.timezone).date()
     current_month = today.replace(day=1)
     previous_month = _previous_month(current_month)
+    two_months_ago = _previous_month(previous_month)
     category_slugs = DEMO_CATEGORY_SLUGS | {"income"}
     categories = {
         category.slug: category
@@ -177,11 +189,13 @@ def seed_demo_finances(db: Session, user: User, *, today: date | None = None) ->
         added += 1
 
     for month, period, through_day in (
+        (two_months_ago, "two_months_ago", today.day),
         (previous_month, "previous", today.day),
         (current_month, "current", today.day),
     ):
+        factors = DEMO_MONTH_FACTORS[period]
         for index, (category_slug, subcategory_slug, merchant, current_amount) in enumerate(DEMO_EXPENSES):
-            amount_minor = current_amount if period == "current" else current_amount * PREVIOUS_MONTH_FACTORS[index % len(PREVIOUS_MONTH_FACTORS)] // 100
+            amount_minor = current_amount * factors[index % len(factors)] // 100
             add_transaction(
                 key=f"{DEMO_MARKER}:{month:%Y-%m}:expense:{category_slug}:{subcategory_slug}",
                 kind=TransactionType.EXPENSE,
@@ -193,8 +207,7 @@ def seed_demo_finances(db: Session, user: User, *, today: date | None = None) ->
                 spend_nature=SpendNature.ESSENTIAL if category_slug in ESSENTIAL_CATEGORIES else SpendNature.DISCRETIONARY,
             )
 
-        incomes = (("salary", "Salary", 18_500_000), ("freelance", "Consulting", 2_500_000 if period == "current" else 1_800_000))
-        for income_index, (subcategory_slug, merchant, amount_minor) in enumerate(incomes):
+        for income_index, (subcategory_slug, merchant, amount_minor) in enumerate(DEMO_INCOMES[period]):
             add_transaction(
                 key=f"{DEMO_MARKER}:{month:%Y-%m}:income:{subcategory_slug}",
                 kind=TransactionType.INCOME,

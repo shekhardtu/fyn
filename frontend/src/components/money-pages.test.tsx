@@ -55,9 +55,48 @@ describe("TransactionRow", () => {
     expect(screen.getByText(/Removed \d{1,2} Aug 2026/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Edit Swiggy transaction" })).not.toBeInTheDocument();
   });
+
+  it("offers removal on an active row when the page can remove", () => {
+    const onRemove = vi.fn();
+    render(<TransactionRow transaction={transaction} onEdit={vi.fn()} onRemove={onRemove} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove Swiggy transaction" }));
+    expect(onRemove).toHaveBeenCalledWith(transaction);
+  });
+
+  it("offers restore on a removed row when the page can restore", () => {
+    const onRestore = vi.fn();
+    const removed = { ...transaction, deletedAt: "2026-08-14T10:15:00Z" };
+    render(<TransactionRow transaction={removed} onEdit={vi.fn()} onRestore={onRestore} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Restore Swiggy transaction" }));
+    expect(onRestore).toHaveBeenCalledWith(removed);
+  });
 });
 
 describe("TransactionEditor", () => {
+  it("questions a close once the form is dirty, and only discards on the explicit button", () => {
+    const onClose = vi.fn();
+    render(<TransactionEditor transaction={transaction} categories={categories} saving={false} problem={null} onClose={onClose} onSave={() => undefined} />);
+
+    // Pristine: Cancel closes straight away.
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(screen.getByLabelText("Merchant"), { target: { value: "Zomato" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("alertdialog", { name: "Discard unsaved changes" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Merchant")).toHaveValue("Zomato");
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
   it("submits a page edit through the generated transaction contract", () => {
     const onSave = vi.fn();
     render(<TransactionEditor transaction={transaction} categories={categories} saving={false} problem={null} onClose={() => undefined} onSave={onSave} />);

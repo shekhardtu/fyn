@@ -9,7 +9,7 @@ from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
 from ..domain import SpendNature, TransactionStatus, TransactionType
-from ..event_time import as_utc
+from ..event_time import as_utc, now_utc
 from ..models import Transaction, TransactionFieldValue, TransactionSource
 from ..taxonomy_catalog import DefaultCategorySlug, TRANSACTION_CATEGORY_ROOTS, category_slug_matches_transaction_type
 from .extraction import normalize_merchant
@@ -68,6 +68,51 @@ def transaction_log(user_id: UUID) -> Select[tuple[Transaction]]:
     every calculation must keep using the canonical scope.
     """
     return select(Transaction).where(Transaction.user_id == user_id)
+
+
+def remove_transaction(
+    db: Session,
+    user_id: UUID,
+    transaction_id: UUID,
+) -> Transaction:
+    """Soft-delete one active transaction.
+
+    The same tombstone the conversational removal writes: the record stays in
+    the log as a struck-off entry and leaves every calculation. Removing a
+    record that is already removed (or not yours) is a refusal, so a double
+    click cannot look like two successful deletes.
+    """
+    transaction = active_transaction(db, user_id, transaction_id)
+    if transaction is None:
+        raise ValueError("Unknown transaction")
+    transaction.deleted_at = now_utc()
+    db.flush()
+    return transaction
+
+
+def restore_transaction(
+    db: Session,
+    user_id: UUID,
+    transaction_id: UUID,
+) -> Transaction:
+    """Bring a soft-deleted transaction back into the canonical records.
+
+    The inverse of a removal: clearing the tombstone is all it takes, because
+    every calculation reads through the canonical scope. Restoring something
+    that is not removed (or not yours) is refused rather than silently OK'd,
+    so the client can tell a stale row from a successful restore.
+    """
+    transaction = db.scalar(
+        transaction_log(user_id).where(
+            Transaction.id == transaction_id,
+            Transaction.deleted_at.is_not(None),
+        )
+    )
+    if transaction is None:
+        raise ValueError("Unknown transaction")
+    transaction.deleted_at = None
+    db.flush()
+    return transaction
 
 
 def apply_expense_transaction_scope(

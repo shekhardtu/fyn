@@ -45,21 +45,21 @@ class SentCode:
     destination_masked: str
     expires_in_seconds: int
     resend_after_seconds: int
-    # Present only when OTP_DEBUG_ECHO is on, which startup refuses against a
-    # real database. It is what lets the test suite and a fresh local checkout
-    # complete a sign-in without an SMS or email account.
+    # Present for local phone sign-in, or when OTP_DEBUG_ECHO is explicitly on.
+    # Production startup refuses debug echo and never enters development mode.
     debug_code: str | None
 
 
 def _issued(issued: IssuedChallenge, channel: OtpChannel, destination: str) -> SentCode:
     settings = get_settings()
+    development_phone = settings.environment == "development" and channel is OtpChannel.PHONE
     return SentCode(
         challenge_id=issued.challenge.id,
         channel=channel,
         destination_masked=mask(channel, destination),
         expires_in_seconds=settings.otp_ttl_seconds,
         resend_after_seconds=settings.otp_resend_interval_seconds,
-        debug_code=issued.code if settings.otp_debug_echo else None,
+        debug_code=issued.code if settings.otp_debug_echo or development_phone else None,
     )
 
 
@@ -69,12 +69,18 @@ def _send(db: Session, issued: IssuedChallenge, channel: OtpChannel, destination
     An undelivered code should not hold the resend window shut for the next
     minute; the hourly ceiling still counts the attempt.
     """
-    try:
-        deliver_code(channel, destination, issued.code)
-    except Exception:
-        issued.challenge.expires_at = issued.challenge.created_at
-        db.commit()
-        raise
+    settings = get_settings()
+    # Development phone authentication is an entirely local round trip: the
+    # response carries the code and no SMS provider is called, even if local
+    # credentials happen to be configured. Production keeps the real delivery
+    # path and startup refuses response echo there.
+    if not (settings.environment == "development" and channel is OtpChannel.PHONE):
+        try:
+            deliver_code(channel, destination, issued.code)
+        except Exception:
+            issued.challenge.expires_at = issued.challenge.created_at
+            db.commit()
+            raise
     return _issued(issued, channel, destination)
 
 

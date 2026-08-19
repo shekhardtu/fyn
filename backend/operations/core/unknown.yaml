@@ -1,0 +1,12 @@
+apiVersion: fyn.ai/v1
+kind: Operation
+metadata: {id: unknown, version: 1, title: Unknown request, namespace: system, owner: engineering, enabled: true}
+discovery: {description: Stop safely when no governed capability matches, aliases: [unknown], examples: [An unsupported request], negativeExamples: [], modelSelectable: false}
+eligibility: {requiredPermissions: [], expectedEffect: none, access: unknown}
+input: {schema: {type: object, additionalProperties: false, properties: {}}}
+instructions: {selection: Use only when neither conversation nor a safe typed workflow can handle the request.}
+routing: {strategy: protocol, bindings: {}}
+execution: {steps: [{id: execute, uses: agent.unknown@1}], label: Preparing clarification, validation: deterministic}
+approval: {minimum: never}
+presentation: {success: {title: More information needed, message: More information is needed.}, failure: {title: Request unavailable, message: The request could not be handled safely.}}
+tests: [{name: unknown route, request: An unsupported request, expectedEffect: none, expectedApproval: never}]

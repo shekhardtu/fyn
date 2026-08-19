@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
+import re
 from typing import Annotated, Any, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -27,28 +28,30 @@ from ..models import (
     Transaction,
     TransactionTag,
 )
-from ..visualization_contracts import (
-    ORDERED_SERIES_MARKS,
-    ORDERED_VISUAL_FIELD_TYPES,
-    VisualEncodingContract as VisualEncodingSet,
-    # Unused here but re-exported: agents.py and conversation.py import
-    # VisualEncoding from this module.
-    VisualFieldEncoding as VisualEncoding,  # noqa: F401
-    VisualMark,
-)
 from ..validation import SemanticIdentifier
+from ..visualization_contracts import VisualizationView
 from .semantic_registry import CalendarTimeGrain, FilterOperator, MODEL_BINDINGS, SemanticMetric, SortDirection, SUBDAY_TIME_GRAINS, TIME_GRAIN_SPECS, TimeComponent, TimeGrain, semantic_schema_registry
 from .currency import user_currency, user_timezone
 from .transactions import apply_canonical_transaction_scope
 
 
 AnalysisContextSource = Literal["budgets", "goals", "loans", "accounts", "recurring_expenses"]
+DEDICATED_ANALYSIS_TYPES = frozenset({
+    "three_month_allocation", "avoidable_expenses", "loan_strategy",
+    "recurring_expenses", "affordability", "monthly_comparison",
+})
+_SERVICE_INPUT_KEY = re.compile(r"[a-z][a-z0-9_]{0,40}")
 AnalysisTransformOperation = Literal[
     "compare_totals", "period_change", "change_drivers", "share_of_total", "rank",
-    "difference", "ratio", "cumulative_sum", "moving_average",
+    "difference", "ratio", "prorate", "cumulative_sum", "moving_average",
 ]
 BINARY_TRANSFORM_OPERATIONS = frozenset({"difference", "ratio"})
 WINDOW_TRANSFORM_OPERATIONS = frozenset({"cumulative_sum", "moving_average"})
+DIMENSION_TRANSFORM_OPERATIONS = frozenset({
+    "compare_totals", "period_change", "change_drivers", "share_of_total", "rank",
+    "cumulative_sum", "moving_average",
+})
+SCALAR_TRANSFORM_OPERATIONS = frozenset({"difference", "prorate"})
 TIME_PIVOT_DIMENSIONS = ("time_bucket", "time_segment")
 
 class SemanticValidationError(ValueError):
@@ -125,86 +128,101 @@ class AnalysisTransform(BaseModel):
     operation: AnalysisTransformOperation
     query_name: str = Field(min_length=1, max_length=100)
     secondary_query_name: str | None = Field(default=None, min_length=1, max_length=100)
-    dimension: SemanticIdentifier
+    secondary_transform_name: str | None = Field(default=None, min_length=1, max_length=100)
+    dimension: SemanticIdentifier | None = None
     period_dimension: SemanticIdentifier | None = None
+    target_start_date: date | None = None
+    target_end_date: date | None = None
     limit: int = Field(default=5, ge=2, le=20)
     window: int = Field(default=3, ge=2, le=24)
 
 
-class VisualizationSpec(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
-    query_name: str = Field(min_length=1, max_length=100)
-    transform_name: str | None = Field(default=None, min_length=1, max_length=100)
-    mark: VisualMark
-    encoding: VisualEncodingSet
-    title: str = Field(min_length=1, max_length=160)
-    rationale: str = Field(min_length=3, max_length=240)
-
-
 class AnalysisPlan(BaseModel):
     objective: Literal["descriptive", "diagnostic", "recommendation", "scenario"]
-    analysis_type: Literal["semantic_query", "three_month_allocation", "avoidable_expenses", "loan_strategy"]
+    analysis_type: Literal[
+        "semantic_query", "three_month_allocation", "avoidable_expenses", "loan_strategy",
+        "recurring_expenses", "affordability", "monthly_comparison",
+    ]
     queries: list[FinanceQueryPlan] = Field(default_factory=list, max_length=12)
     transforms: list[AnalysisTransform] = Field(default_factory=list, max_length=12)
-    visualizations: list[VisualizationSpec] = Field(default_factory=list, max_length=8)
+    # Renderer-neutral chart declarations. Each view's dataset names one of
+    # this plan's queries; chart-specific coherence is enforced by the
+    # deterministic chart builder, which degrades loudly without failing the
+    # analysis itself.
+    visualizations: list[VisualizationView] = Field(default_factory=list, max_length=4)
     context_sources: list[AnalysisContextSource] = Field(default_factory=list, max_length=5)
+    service_inputs: dict[str, int] = Field(default_factory=dict)
     safe_reasoning_summary: list[str] = Field(default_factory=list, min_length=1, max_length=6)
     missing_information: list[str] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode="after")
     def validate_transforms(self):
+        if self.service_inputs:
+            if self.analysis_type not in DEDICATED_ANALYSIS_TYPES:
+                raise ValueError("service_inputs are only valid for dedicated analysis types")
+            if len(self.service_inputs) > 4:
+                raise ValueError("service_inputs accepts at most four entries")
+            for key in self.service_inputs:
+                if not _SERVICE_INPUT_KEY.fullmatch(key):
+                    raise ValueError(f"service_inputs key is not a valid identifier: {key}")
+        from .chart_widgets import dataset_id
+
+        # Names that collapse to one dataset id would bind a chart view to
+        # whichever query happened to come first — reject the ambiguity.
+        normalized_names = [dataset_id(query.name) for query in self.queries]
+        if len(set(normalized_names)) != len(normalized_names):
+            raise ValueError("query names must remain distinct after dataset normalization")
         queries = {query.name: query for query in self.queries}
         transforms = {transform.name: transform for transform in self.transforms}
+        completed_transforms: set[str] = set()
         for transform in self.transforms:
             query = queries.get(transform.query_name)
             if not query:
                 raise ValueError(f"transform references unknown query: {transform.query_name}")
-            if transform.dimension not in query.dimensions:
+            if transform.operation in DIMENSION_TRANSFORM_OPERATIONS and transform.dimension is None:
+                raise ValueError(f"{transform.operation} requires a dimension")
+            if transform.dimension is not None and transform.dimension not in query.dimensions:
                 if transform.dimension != "time_bucket" or not query.time_grouping:
                     raise ValueError(f"transform dimension {transform.dimension} is not produced by {query.name}")
             if transform.operation in BINARY_TRANSFORM_OPERATIONS:
-                if not transform.secondary_query_name or transform.secondary_query_name not in queries:
-                    raise ValueError(f"{transform.operation} requires a secondary query")
+                secondary_sources = int(transform.secondary_query_name is not None) + int(
+                    transform.secondary_transform_name is not None
+                )
+                if secondary_sources != 1:
+                    raise ValueError(
+                        f"{transform.operation} requires exactly one secondary query or transform"
+                    )
+                if transform.secondary_query_name and transform.secondary_query_name not in queries:
+                    raise ValueError(f"{transform.operation} references an unknown secondary query")
+                if transform.secondary_transform_name:
+                    if transform.secondary_transform_name not in completed_transforms:
+                        raise ValueError(
+                            f"{transform.operation} must reference an earlier secondary transform"
+                        )
+                    secondary = transforms[transform.secondary_transform_name]
+                    if secondary.operation not in SCALAR_TRANSFORM_OPERATIONS:
+                        raise ValueError(
+                            f"{transform.operation} requires a scalar secondary transform"
+                        )
+            elif transform.secondary_query_name or transform.secondary_transform_name:
+                raise ValueError(
+                    f"{transform.operation} does not accept a secondary query or transform"
+                )
+            if transform.operation == "prorate":
+                if transform.target_start_date is None or transform.target_end_date is None:
+                    raise ValueError("prorate requires a target_start_date and target_end_date")
+                if transform.target_end_date < transform.target_start_date:
+                    raise ValueError("prorate target_end_date must not be before target_start_date")
+            elif transform.target_start_date is not None or transform.target_end_date is not None:
+                raise ValueError(
+                    f"{transform.operation} does not accept a target date range"
+                )
             if transform.operation == "change_drivers":
                 if not transform.period_dimension or transform.period_dimension not in query.dimensions:
                     raise ValueError("change_drivers requires a period_dimension produced by its query")
                 if transform.period_dimension == transform.dimension:
                     raise ValueError("change_drivers needs distinct period and driver dimensions")
-        for visualization in self.visualizations:
-            query = queries.get(visualization.query_name)
-            if not query:
-                raise ValueError(f"visualization references unknown query: {visualization.query_name}")
-            produced = set(query.dimensions) | {"value"}
-            if query.time_grouping:
-                produced.add("time_bucket")
-            if query.time_pivot:
-                produced.update(TIME_PIVOT_DIMENSIONS)
-            if visualization.transform_name:
-                if visualization.transform_name not in transforms:
-                    raise ValueError(f"visualization references unknown transform: {visualization.transform_name}")
-                produced = {"label", "value", "raw_value", "rank", "basis_points"}
-            channels = visualization.encoding
-            referenced = {
-                item.field
-                for item in (
-                    channels.x, channels.y, channels.color, channels.size,
-                    channels.theta, channels.row, channels.column, *channels.tooltip,
-                )
-                if item is not None
-            }
-            missing = referenced - produced
-            if missing:
-                raise ValueError(f"visualization references fields not produced by {query.name}: {sorted(missing)}")
-            if visualization.mark in ORDERED_SERIES_MARKS and (
-                not channels.x or channels.x.type not in ORDERED_VISUAL_FIELD_TYPES
-            ):
-                raise ValueError("line and area marks require an ordered x encoding")
-            if visualization.mark == "rect" and not (channels.x and channels.y and channels.color):
-                raise ValueError("rect marks require x, y and color encodings")
-            if visualization.mark == "arc" and not (channels.theta and channels.color):
-                raise ValueError("arc marks require theta and color encodings")
-            if not any((channels.x, channels.y, channels.theta)):
-                raise ValueError("visualization requires at least one positional encoding")
+            completed_transforms.add(transform.name)
         return self
 
 
@@ -263,6 +281,11 @@ def validate_finance_query_plan(plan: FinanceQueryPlan) -> dict[str, Any]:
     for name in plan.dimensions:
         dimension = available_dimensions.get(name)
         if not dimension:
+            if name == "time_bucket":
+                raise SemanticValidationError(
+                    "time_bucket is the output of the time_grouping operator, not a dimension; "
+                    "express calendar bucketing with time_grouping or the month dimension"
+                )
             raise SemanticValidationError(f"Dimension {name} is not valid for {entity}")
         required_relationships.extend(dimension.relationship_path)
 
@@ -316,6 +339,16 @@ def validate_finance_query_plan(plan: FinanceQueryPlan) -> dict[str, Any]:
         raise SemanticValidationError("Query exceeds the governed result-size limit")
     if metric.time_semantics == "event_window" and (plan.end_date - plan.start_date).days > registry.policy.max_window_days:
         raise SemanticValidationError("Query exceeds the governed event window")
+    if plan.time_grouping and plan.time_grouping.fill_gaps:
+        # Gap-filling guarantees at least one row per bucket, so a bucket
+        # count above the limit is certain to fail at execution; reject it at
+        # validation, where a stored dashboard tile can still be refused.
+        buckets = len(_time_bucket_values(plan))
+        if buckets > plan.limit:
+            raise SemanticValidationError(
+                f"Gap-filled {plan.time_grouping.grain} grouping over this window needs "
+                f"{buckets} rows, above the requested limit of {plan.limit}"
+            )
     return {
         "registry_version": registry.version,
         "schema_hash": registry.schema_hash,

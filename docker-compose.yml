@@ -22,6 +22,12 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://finance:finance@postgres:5432/finance
       CORS_ORIGINS: http://localhost:3000
+      OPERATIONS_CORE_DIR: /app/operations
+      OPERATIONS_MANAGED_DIR: /app/managed-operations
+    volumes:
+      # Production instances should mount the same read-only shared directory.
+      # Ops publishes with an atomic rename; the API only watches and reads it.
+      - ./backend/managed-operations:/app/managed-operations:ro
     ports:
       - "8000:8000"
     depends_on:
