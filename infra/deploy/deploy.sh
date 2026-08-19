@@ -34,7 +34,7 @@ done
 
 case "$TARGET" in
   all) SERVICES="" ;;             # empty = every service in the file
-  api) SERVICES="backend" ;;
+  api) SERVICES="fyn-backend" ;;   # the service name, unique across the shared box
 esac
 
 started=$(date +%s)
@@ -103,14 +103,14 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
     healthy) echo "    healthy"; break ;;
     unhealthy)
       echo ""
-      fyn_compose "logs --tail 60 backend" || true
+      fyn_compose "logs --tail 60 fyn-backend" || true
       fyn_die "backend reported unhealthy — the log above shows why. Two common causes: a failed alembic migration, or the production auth gate refusing to boot (config.py require_production_auth_config) when ENVIRONMENT=production and a provider credential is missing. Postgres and its data are untouched either way."
       ;;
   esac
   sleep 5
 done
 [ "$status" = "healthy" ] || {
-  fyn_compose "logs --tail 60 backend" || true
+  fyn_compose "logs --tail 60 fyn-backend" || true
   fyn_die "backend did not become healthy within 300s (last status: ${status})."
 }
 

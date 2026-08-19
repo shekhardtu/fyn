@@ -21,7 +21,7 @@ elsewhere and calls `api.fynai.co` cross-origin.
 | `deploy.sh` | `[all\|api] [--no-cache] [--server]` — the deploy |
 | `install-route.sh` | Ships `fyn.caddy` to the edge proxy, validates, reloads |
 | `status.sh` | Live commit, containers, health, box memory |
-| `logs.sh` | `[service] [tail]` — follow logs |
+| `logs.sh` | `[service] [tail]` (service is `fyn-backend` or `postgres`) — follow logs |
 
 Every setting lives in `config.sh` and is env-overridable:
 

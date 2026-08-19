@@ -191,7 +191,7 @@ containers with their health, and both health endpoints. Verify:
 If the deploy touched agent or streaming paths, watch a run's SSE for a minute:
 
 ```bash
-./infra/deploy/logs.sh backend 100
+./infra/deploy/logs.sh fyn-backend 100
 ```
 
 Look for tracebacks, `RUN_ERROR`, and restart loops.
