@@ -98,6 +98,5 @@ module = [
   "app.services.otp",
   "app.services.recommendation",
   "app.services.reconciliation",
-  "app.services.runtime_tools",
 ]
 ignore_errors = true

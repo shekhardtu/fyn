@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 from inspect import signature
 from types import ModuleType
-from typing import Callable, get_args, Literal
+from typing import Callable, Literal
 
 from sqlalchemy.orm import Session
 
@@ -39,13 +39,18 @@ class RuntimeToolSpec:
                         f"Tool {self.name} has infrastructure parameter {parameter.name} "
                         "after a model-visible parameter"
                     )
-                dependencies.append(parameter.name)
+                dependencies.append(_DEPENDENCY_NAMES[parameter.name])
             else:
                 public_parameter_seen = True
         return tuple(dependencies)
 
 
-_DEPENDENCY_NAMES = frozenset(get_args(Dependency))
+_DEPENDENCY_NAMES: dict[str, Dependency] = {
+    "db": "db",
+    "user": "user",
+    "user_id": "user_id",
+    "today": "today",
+}
 _RUNTIME_TOOL_MODULES = (taxonomy, grounding_tools, calculators)
 
 
