@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 from hashlib import sha256
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
@@ -123,13 +123,14 @@ def start_challenge(
 
     now = _now()
     db.execute(
-        OtpChallenge.__table__.update()
+        update(OtpChallenge)
         .where(
             OtpChallenge.destination == destination,
             OtpChallenge.consumed_at.is_(None),
             OtpChallenge.expires_at > now,
         )
         .values(expires_at=now)
+        .execution_options(synchronize_session=False)
     )
 
     challenge_id = uuid4()

@@ -95,6 +95,5 @@ module = [
   "app.services.finance_time",
   "app.services.intelligence",
   "app.services.manifest",
-  "app.services.otp",
 ]
 ignore_errors = true
