@@ -120,6 +120,7 @@ PRIMITIVES: tuple[PrimitiveDefinition, ...] = (
     PrimitiveDefinition("agent.clarify", 1, EmptyPrimitiveInput, DataEffect.DRAFT, ConfirmationPolicy.NEVER, frozenset(), False, True, True, frozenset(), None, "clarify"),
     PrimitiveDefinition("agent.unknown", 1, EmptyPrimitiveInput, DataEffect.NONE, ConfirmationPolicy.NEVER, frozenset(), False, True, True, frozenset(), None, "unknown"),
     PrimitiveDefinition("transaction.record", 1, EmptyPrimitiveInput, DataEffect.MUTATION, ConfirmationPolicy.CONDITIONAL, frozenset({"transactions.write"}), False, True, True, frozenset(), None, "record_transaction"),
+    PrimitiveDefinition("budget.manage", 1, EmptyPrimitiveInput, DataEffect.MUTATION, ConfirmationPolicy.CONDITIONAL, frozenset({"planning.write"}), False, True, True, frozenset(), None, "manage_budget"),
     PrimitiveDefinition("transaction.find_removal", 1, EmptyPrimitiveInput, DataEffect.MUTATION, ConfirmationPolicy.REQUIRED, frozenset({"transactions.write"}), False, True, True, frozenset(), None, "remove_transaction"),
     PrimitiveDefinition("taxonomy.change", 1, EmptyPrimitiveInput, DataEffect.MUTATION, ConfirmationPolicy.REQUIRED, frozenset({"taxonomy.write"}), False, True, True, frozenset(), None, "change_taxonomy"),
     # Planning only prepares a typed, user-confirmable proposal. The separate

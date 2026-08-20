@@ -44,6 +44,7 @@ def test_every_capability_declares_its_maximum_business_data_effect():
     )
     assert mutation_capabilities() == capabilities_for_primitives(
         "transaction.record@1",
+        "budget.manage@1",
         "transaction.find_removal@1",
         "taxonomy.change@1",
         "managed.dispatch@1",
@@ -55,9 +56,12 @@ def test_every_capability_declares_its_maximum_business_data_effect():
 
 
 def test_mutation_capabilities_cannot_hide_their_confirmation_policy():
-    conditional = capability_for_primitive("transaction.record@1")
-    assert capability_spec(conditional).confirmation is ConfirmationPolicy.CONDITIONAL
-    for capability in mutation_capabilities() - {conditional}:
+    conditional = capabilities_for_primitives("transaction.record@1", "budget.manage@1")
+    assert all(
+        capability_spec(capability).confirmation is ConfirmationPolicy.CONDITIONAL
+        for capability in conditional
+    )
+    for capability in mutation_capabilities() - conditional:
         assert capability_spec(capability).confirmation is ConfirmationPolicy.REQUIRED
     assert capability_spec(capability_for_primitive("planning.run@1")).confirmation is ConfirmationPolicy.REQUIRED
     assert all(

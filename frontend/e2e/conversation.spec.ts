@@ -145,7 +145,7 @@ test("bare amount follows clarification, auto-save, edit/remove controls, and re
   await expect(page.getByText(/Added ₹1,234 expense under Food → Dining/).last()).toBeVisible();
 });
 
-test("custom budget amount keeps the approval widget in view without resetting the transcript", async ({ page }) => {
+test("custom budget amount saves once and returns a non-editable acknowledgement", async ({ page }) => {
   test.setTimeout(90_000);
   const threadStateLoaded = page.waitForResponse((response) => {
     const url = new URL(response.url());
@@ -174,18 +174,22 @@ test("custom budget amount keeps the approval widget in view without resetting t
   await customAmount.fill("₹25,123");
   await amountStep.getByRole("button", { name: "Continue" }).click();
 
-  const approval = page.getByRole("group", { name: /Action required: Food budget/ });
-  const budgetAmount = approval.getByRole("textbox", { name: "Monthly budget amount" });
-  await expect(budgetAmount).toBeVisible({ timeout: 45_000 });
-  await expect(budgetAmount).toBeFocused();
-  await expect(approval).toBeInViewport();
+  const acknowledgement = page.locator("article").filter({ hasText: "Set your food budget to ₹25,123 per month." }).last();
+  await expect(acknowledgement).toBeVisible({ timeout: 45_000 });
+  await expect(acknowledgement.getByRole("textbox", { name: "Monthly budget amount" })).toHaveCount(0);
+  await expect(acknowledgement.getByRole("button", { name: "Update budget", exact: true })).toBeVisible();
+  await expect(acknowledgement.getByRole("button", { name: "Delete budget", exact: true })).toBeVisible();
+  await expect(acknowledgement).toBeInViewport();
   const transcriptScroller = page.locator(".conversation-scroll");
   await expect.poll(() => transcriptScroller.evaluate((node) => node.scrollTop)).toBeGreaterThan(100);
 
-  // The viewport regression does not need to create financial state. Retire the
-  // preview through its governed cancellation path after the assertion.
-  await approval.getByRole("button", { name: /^Cancel(?:\s|$)/ }).click();
-  await expect(page.getByText(/(?:Cancelled|No changes were made)/).last()).toBeVisible();
+  // Remove only the budget this test created, leaving the shared browser
+  // fixture in the same financial state in which the scenario found it.
+  await acknowledgement.getByRole("button", { name: "Delete budget", exact: true }).click();
+  const deletion = page.locator("article").filter({ hasText: "Delete your food budget?" }).last();
+  await expect(deletion).toBeVisible();
+  await deletion.getByRole("button", { name: "Delete budget", exact: true }).click();
+  await expect(page.getByText(/Deleted your food budget/i).last()).toBeVisible();
 });
 
 test("ambiguous add request becomes a HITL draft instead of a validator dead end", async ({ page }) => {

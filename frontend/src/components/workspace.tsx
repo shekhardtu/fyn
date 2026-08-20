@@ -27,7 +27,8 @@ import { useScrollEdges } from "@/lib/scroll-edges";
 import { usePlainKey } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
 import { contractLimits } from "@/lib/generated/contracts";
-import { activeWidgetId, adoptUserMessageIdentity, applyWidgetUpdates, completedWidgetIds, reconcileUsedWidgetIds, shouldAdoptServerTranscript, transcriptRevision } from "@/lib/widget-state";
+import { activeWidgetId, completedWidgetIds, mergeAgentResponse, reconcileUsedWidgetIds, shouldAdoptServerTranscript, transcriptRevision } from "@/lib/widget-state";
+import { interruptActionResolution, recoverInterruptWidget } from "@/lib/interrupt-widget";
 import { appPaths, appRoutePatterns } from "@/routing/paths";
 
 const MAX_UPLOAD_BYTES = contractLimits.csvUploadBytes;
@@ -55,10 +56,6 @@ function csvProblem(file: File) {
 
 function prefersReducedMotion() {
   return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-}
-
-function responseToMessage(response: AgentResponse): Message {
-  return { id: response.message_id, role: "assistant", content: response.message, widgets: response.widgets, citations: response.citations, created_at: response.delivered_at, delivered_at: response.delivered_at };
 }
 
 /** The rail is a drawer below `md` and a docked column above it; the layout,
@@ -549,44 +546,26 @@ function InterruptFallback({ interrupt, busy, onResolve }: {
   busy: boolean;
   onResolve: (response: { status: "resolved"; payload: unknown } | { status: "cancelled" }) => void;
 }) {
-  const toolApproval = interrupt.reason === "tool_call";
-  const clarification = interrupt.reason === "clarification";
-  const continuation = clarification && interrupt.metadata.continuation && typeof interrupt.metadata.continuation === "object"
-    ? interrupt.metadata.continuation as Record<string, unknown>
-    : null;
-  const clarificationOptions = continuation?.options && typeof continuation.options === "object"
-    ? Object.entries(continuation.options as Record<string, unknown>)
-    : [];
-  const chooseClarification = (optionId: string) => onResolve({
-    status: "resolved",
-    payload: {
-      approved: true,
-      editedArgs: {
-        widgetId: interrupt.widgetId,
-        action: "resolve_clarification",
-        payload: { clarificationId: continuation?.clarificationId, optionId },
-        completeWidget: true,
-      },
-    },
-  });
+  const recoveredWidget = recoverInterruptWidget(interrupt);
+  if (recoveredWidget) return <div role="group" aria-label="Agent response required" className="mx-auto mb-2 w-full max-w-[var(--column-w)]">
+    <WidgetRenderer
+      widget={recoveredWidget}
+      pending={busy}
+      onAction={(widgetId, action, payload) => onResolve(interruptActionResolution(widgetId, action, payload))}
+      onCancel={() => onResolve({ status: "cancelled" })}
+    />
+  </div>;
+
   return <div role="group" aria-label="Agent response required" className="hitl-card mx-auto mb-2 w-full max-w-[var(--column-w)] overflow-hidden rounded-lg border bg-surface">
     <div className="flex gap-2.5 px-3.5 py-3">
       <ShieldCheck size={17} className="mt-0.5 shrink-0 text-secondary" />
       <div className="min-w-0 flex-1">
-        <p className="text-control font-semibold text-ink">{toolApproval ? "Approval needed" : "Choose an option"}</p>
-        <p className="mt-0.5 text-note leading-4 text-ink-muted">{interrupt.message || "Review this request before the agent continues."}</p>
+        <p className="text-control font-semibold text-ink">Request needs to be restarted</p>
+        <p className="mt-0.5 text-note leading-4 text-ink-muted">Its verified interaction surface is unavailable. Cancel it, then send the request again.</p>
       </div>
     </div>
     <div className="hitl-actions border-t border-line">
       <Button type="button" variant="ghost" disabled={busy} onClick={() => onResolve({ status: "cancelled" })}>Cancel</Button>
-      {toolApproval ? <>
-        <Button type="button" variant="outline" disabled={busy} onClick={() => onResolve({ status: "resolved", payload: { approved: false } })}>Don’t approve</Button>
-        <Button type="button" disabled={busy} onClick={() => onResolve({ status: "resolved", payload: { approved: true } })}>{busy ? <Loader2 className="animate-spin" /> : null}Approve</Button>
-      </> : null}
-      {clarificationOptions.map(([optionId, rawOption]) => {
-        const option = rawOption && typeof rawOption === "object" ? rawOption as Record<string, unknown> : {};
-        return <Button key={optionId} type="button" variant={clarificationOptions[0]?.[0] === optionId ? "default" : "outline"} disabled={busy} onClick={() => chooseClarification(optionId)}>{String(option.label || optionId)}</Button>;
-      })}
     </div>
   </div>;
 }
@@ -1117,15 +1096,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   }, [conversationId, showHeader]);
 
   const succeeded = useCallback((response: AgentResponse) => {
-    setMessages((current) => {
-      const updated = adoptUserMessageIdentity(
-        applyWidgetUpdates(current, response.widgetUpdates),
-        response.user_message_id,
-      );
-      return updated.some((message) => message.id === response.message_id)
-        ? updated
-        : [...updated, responseToMessage(response)];
-    });
+    setMessages((current) => mergeAgentResponse(current, response));
     setError(null);
     setRetry(null);
     setConnectionLost(false);
