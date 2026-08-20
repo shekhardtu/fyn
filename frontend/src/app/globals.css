@@ -320,8 +320,15 @@
      zoomed — the single most common reason a mobile web form feels broken.
      Raised only for coarse pointers, so the desktop type scale is untouched. */
   @media (pointer: coarse) {
+    /* `!important` deliberately. Two things otherwise win: Tailwind's preflight
+       sets `font: inherit` on form controls *after* this rule and the shorthand
+       resets font-size, and every field also carries a utility class
+       (`text-control`, 14px) whose specificity beats an element selector. The
+       first version of this fix lost to both and shipped doing nothing.
+       This is a platform constraint, not a style preference — below 16px iOS
+       zooms on focus and the zoom is what creates the sideways pan. */
     input, textarea, select {
-      font-size: max(16px, 1em);
+      font-size: max(16px, 1em) !important;
     }
   }
 }
