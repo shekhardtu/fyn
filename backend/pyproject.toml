@@ -87,7 +87,6 @@ module = [
   "app.services.agui",
   "app.services.analysis_harness",
   "app.services.auth",
-  "app.services.capabilities",
   "app.services.category_prediction",
   "app.services.continuations",
   "app.services.conversation",
