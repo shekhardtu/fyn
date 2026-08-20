@@ -34,7 +34,7 @@ function useOnline() {
 function OfflineNotice() {
   const online = useOnline();
   if (online) return null;
-  return <div role="status" className="fixed inset-x-0 top-0 z-100 flex items-center justify-center gap-2 bg-attention-tint px-4 py-1.5 text-note font-medium text-attention">
+  return <div role="status" className="fixed inset-x-0 top-0 z-100 flex items-center justify-center gap-2 bg-attention-tint px-4 pt-[calc(0.375rem+env(safe-area-inset-top))] pb-1.5 text-note font-medium text-attention">
     <WifiOff size={13} aria-hidden /> Offline — showing your last synced data.
   </div>;
 }

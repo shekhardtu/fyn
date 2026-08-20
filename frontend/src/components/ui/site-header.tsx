@@ -55,7 +55,12 @@ export function SiteHeader({ title, subtitle, subtitleClassName, hidden = false,
   return <header
     inert={hidden ? true : undefined}
     className={cn(
-      "sticky top-0 z-20 flex h-14 shrink-0 items-center gap-3 border-b border-line bg-surface px-3 transition-transform duration-200 will-change-transform sm:px-6",
+      // The bar keeps its 3.5rem of content but grows by the status-bar inset and
+      // pads itself down by the same amount. Installed on iOS the web view runs
+      // under the status bar, so without this the clock sits on top of the title
+      // and the menu button cannot be tapped. `.rail-header` has always done
+      // this; this bar had not needed to until the app became installable.
+      "sticky top-0 z-20 flex h-[calc(3.5rem+env(safe-area-inset-top))] shrink-0 items-center gap-3 border-b border-line bg-surface px-3 pt-[env(safe-area-inset-top)] transition-transform duration-200 will-change-transform sm:px-6",
       hidden && "pointer-events-none -translate-y-full",
     )}
   >
