@@ -1157,6 +1157,9 @@ def create_manual_transaction(
             subcategory_id=request.subcategory_id,
             spend_nature=request.spend_nature,
             location=request.location,
+            latitude=request.latitude,
+            longitude=request.longitude,
+            location_accuracy=request.location_accuracy,
         )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
@@ -1180,6 +1183,9 @@ def update_transaction(
             "transaction_type": request.transaction_type,
             "spend_nature": request.spend_nature,
             "location": request.location,
+            "latitude": request.latitude,
+            "longitude": request.longitude,
+            "location_accuracy": request.location_accuracy,
         }
         if request.transaction_type == TransactionType.EXPENSE:
             changes.update(category_id=request.category_id, subcategory_id=request.subcategory_id)

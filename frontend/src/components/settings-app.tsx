@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, Download, Loader2, MapPin, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { NotLiveStamp, PanelHeading, SettingSwitch, SettingsGroup, settingsProblem, settingsSaved } from "@/components/settings-parts";
+import { primeLocationPermission } from "@/lib/device-location";
 import { Button } from "@/components/ui/button";
 import { deleteAllData, downloadDataExport, getPrivacyStatus, revokeSource, setLocationEnabled } from "@/lib/api";
 import { useThemePreference, type ThemePreference } from "@/lib/theme";
@@ -47,7 +48,13 @@ export function AppSettingsPanel({ onDeleted }: { onDeleted: () => void }) {
 
   const run = useMutation({
     mutationFn: async ({ kind, value }: { kind: "location" | "revoke" | "export" | "delete"; value?: string | boolean }) => {
-      if (kind === "location") return setLocationEnabled(Boolean(value));
+      if (kind === "location") {
+        await setLocationEnabled(Boolean(value));
+        // Ask the browser here, while the person is looking at the switch they
+        // just moved. The alternative is a prompt that ambushes them mid-entry,
+        // or none at all — and a switch reading "on" over a browser that says no.
+        return value ? await primeLocationPermission() : "off";
+      }
       if (kind === "revoke") return revokeSource(String(value));
       if (kind === "export") return downloadDataExport();
       return deleteAllData();
@@ -57,7 +64,13 @@ export function AppSettingsPanel({ onDeleted }: { onDeleted: () => void }) {
       setBusyControl(null);
       if (variables.kind === "delete") { onDeleted(); return; }
       if (variables.kind === "export") settingsSaved(`Saved ${typeof result === "string" ? result : "your export"} to your downloads.`);
-      if (variables.kind === "location") settingsSaved(variables.value ? "Saved — nothing is captured until location capture ships." : "Location enrichment is off.");
+      if (variables.kind === "location") {
+        if (!variables.value) settingsSaved("Off — new transactions won’t record a location.");
+        else if (result === "denied") settingsProblem("Saved, but your browser is blocking location for this site. Allow it in your browser’s site settings, then try again.");
+        else if (result === "unsupported") settingsProblem("Saved, but this browser can’t report a location here. That needs a secure (https) connection.");
+        else if (result === "prompt") settingsProblem("Saved, but your device didn’t return a position just now. New entries will try again.");
+        else settingsSaved("On — new transactions will record where you add them.");
+      }
       if (variables.kind === "revoke") { setConfirmingRevoke(null); settingsSaved(`${String(variables.value).toUpperCase()} can no longer add transactions.`); }
       await queryClient.invalidateQueries({ queryKey: ["privacy"] });
     },
@@ -95,8 +108,8 @@ export function AppSettingsPanel({ onDeleted }: { onDeleted: () => void }) {
       </p> : null}
       {privacy.isLoading ? <div role="status" aria-label="Loading privacy settings" className="space-y-3">{[0, 1, 2].map((row) => <div key={row} className="h-16 animate-pulse rounded-lg bg-line/70" />)}</div> : null}
       {privacy.data ? <SettingSwitch
-        label="Location enrichment"
-        description="Will record where a transaction happened — the coordinates your device reports, and the city and state they map to. Nothing is captured yet, so switching this on only stores the preference."
+        label="Record location"
+        description="Saves where you are when you add a transaction, as the coordinates your device reports. New entries only — editing an older one never changes where it says it happened. Your browser will ask permission the first time."
         checked={locationEnabled}
         disabled={run.isPending}
         busy={busyControl === "location"}

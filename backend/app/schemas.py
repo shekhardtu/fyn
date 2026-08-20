@@ -1057,6 +1057,12 @@ class TransactionUpdateIn(BaseModel):
     subcategory_id: UUID | None = Field(default=None, alias="subcategoryId")
     spend_nature: SpendNature = Field(alias="spendNature")
     location: str | None = Field(default=None, max_length=160)
+    # A device fix, sent only when the person has turned location on. The
+    # service checks that preference again before storing any of it — a client
+    # that sends coordinates regardless must not be able to record them.
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    location_accuracy: int | None = Field(default=None, alias="locationAccuracy", ge=0)
 
 
 class ObservationIn(BaseModel):

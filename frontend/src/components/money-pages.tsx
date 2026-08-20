@@ -9,7 +9,8 @@ import { Combobox } from "@/components/ui/combobox";
 import { SITE_HEADER_HEIGHT, SiteHeader, useAutoHideSiteHeader } from "@/components/ui/site-header";
 import { toast, UNDO_WINDOW_MS } from "@/components/ui/toast";
 import { useWorkspaceOverlay, useWorkspaceShell } from "@/components/workspace";
-import { createCategory, createSubcategory, createTransactionHint, createTransactionRecord, deleteCategory, deleteSubcategory, deleteTransactionHint, loadCategories, loadOverview, loadTransactions, removeTransaction, renameCategory, renameSubcategory, restoreTransaction, updateTransaction, updateTransactionHint } from "@/lib/api";
+import { createCategory, createSubcategory, createTransactionHint, createTransactionRecord, deleteCategory, deleteSubcategory, deleteTransactionHint, getPrivacyStatus, loadCategories, loadOverview, loadTransactions, removeTransaction, renameCategory, renameSubcategory, restoreTransaction, updateTransaction, updateTransactionHint } from "@/lib/api";
+import { fixForEntry, useDeviceLocation } from "@/lib/device-location";
 import { formatInstant, formatMoney, formatTransactionClassification, parseAmountToMinor, timestampInputToUtc, timestampInputValue } from "@/lib/format";
 import { usePlainKey } from "@/lib/shortcuts";
 import { editableTransactionTypes, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type TransactionListItemOut, type TransactionUpdateIn } from "@/lib/protocol";
@@ -51,11 +52,12 @@ function transactionTone(transaction: TransactionListItemOut) {
   return { className: "text-ink", prefix: "", icon: ReceiptText };
 }
 
-export function TransactionEditor({ transaction, categories, saving, problem, onClose, onSave, onCreateCategory, onCreateSubcategory }: {
+export function TransactionEditor({ transaction, categories, saving, problem, locationAllowed = false, onClose, onSave, onCreateCategory, onCreateSubcategory }: {
   transaction: TransactionListItemOut | null;
   categories: CategoryDirectoryOut[];
   saving: boolean;
   problem: string | null;
+  locationAllowed?: boolean;
   onClose: () => void;
   onSave: (payload: TransactionUpdateIn) => void;
   onCreateCategory?: (name: string) => Promise<CategoryDirectoryOut>;
@@ -71,6 +73,11 @@ export function TransactionEditor({ transaction, categories, saving, problem, on
   const [spendNature, setSpendNature] = useState<TransactionListItemOut["spendNature"]>(transaction?.spendNature ?? "unknown");
   const [location, setLocation] = useState(transaction?.location ?? "");
   const [validation, setValidation] = useState<string | null>(null);
+  // Only while adding. An edit happens wherever the person happens to be
+  // later, which is not where the money was spent — so editing an entry
+  // leaves whatever fix it already has rather than restamping it with the
+  // kitchen table.
+  const deviceFix = useDeviceLocation(creating && locationAllowed);
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const subcategories = categories.find((category) => category.id === categoryId)?.subcategories ?? [];
 
@@ -129,6 +136,7 @@ export function TransactionEditor({ transaction, categories, saving, problem, on
       subcategoryId: transactionType === "expense" ? subcategoryId || null : null,
       spendNature: transactionType === "expense" ? spendNature : "unknown",
       location: location.trim() || null,
+      ...fixForEntry(deviceFix, instant),
     });
   }
 
@@ -365,6 +373,12 @@ export function TransactionsPage() {
     updateHeaderForScroll(event.currentTarget.scrollTop);
   }
 
+  // Shares the settings page's cache entry, so opening the drawer costs no
+  // extra request. Read here rather than inside the editor: the drawer is a
+  // presentational component that takes what it needs, which is also what
+  // keeps it testable without a query client.
+  const locationAllowed = useQuery({ queryKey: ["privacy"], queryFn: getPrivacyStatus, staleTime: 5 * 60_000 }).data?.locationEnabled ?? false;
+
   const save = useMutation({
     mutationFn: ({ id, payload }: { id: string | null; payload: TransactionUpdateIn }) => id ? updateTransaction(id, payload) : createTransactionRecord(payload),
     onSuccess: (updated, variables) => {
@@ -504,7 +518,7 @@ export function TransactionsPage() {
         {transactions.isPending || categories.isPending ? <PageSkeleton /> : (transactions.isError && !transactions.data) || categories.isError ? <QueryFailure title="We couldn’t load your transactions" onRetry={() => { void transactions.refetch(); void categories.refetch(); }} /> : items.length ? <VirtualTransactionList items={items} scrollRef={mainRef} headerVisible={headerVisible} layoutKey={notice ?? ""} hasNextPage={transactions.hasNextPage} fetchingNextPage={transactions.isFetchingNextPage} onLoadMore={loadMore} onEdit={(transaction) => { setNotice(null); save.reset(); setEditing(transaction); }} onRestore={(transaction) => { setNotice(null); restore.mutate({ transaction }); }} onRemove={(transaction) => { setNotice(null); remove.mutate({ transaction }); }} /> : <div className="rounded-xl border border-line bg-surface px-6 py-12 text-center"><ReceiptText className="mx-auto text-secondary" /><h2 className="mt-4 font-heading text-title font-semibold text-ink">{search.trim() || kind !== "all" ? "No matching transactions" : "No transactions yet"}</h2><p className="mt-2 text-control text-ink-muted">{search.trim() || kind !== "all" ? "Try a different search or transaction type." : "Add your first transaction to start the ledger."}</p></div>}
       </div>
     </div>
-    {editing && categories.data ? <TransactionEditor key={editing === "new" ? "new" : editing.id} transaction={editing === "new" ? null : editing} categories={categories.data} saving={save.isPending} problem={save.error?.message ?? null} onClose={() => { if (!save.isPending) setEditing(null); }} onSave={(payload) => save.mutate({ id: editing === "new" ? null : editing.id, payload })} onCreateCategory={addCategory} onCreateSubcategory={addSubcategory} /> : null}
+    {editing && categories.data ? <TransactionEditor key={editing === "new" ? "new" : editing.id} transaction={editing === "new" ? null : editing} categories={categories.data} saving={save.isPending} problem={save.error?.message ?? null} locationAllowed={locationAllowed} onClose={() => { if (!save.isPending) setEditing(null); }} onSave={(payload) => save.mutate({ id: editing === "new" ? null : editing.id, payload })} onCreateCategory={addCategory} onCreateSubcategory={addSubcategory} /> : null}
   </main>;
 }
 

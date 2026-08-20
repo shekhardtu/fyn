@@ -391,3 +391,70 @@ def test_category_page_refuses_to_delete_taxonomy_that_financial_records_use(db)
         deletion = client.delete(f"/api/categories/{category['id']}")
         assert deletion.status_code == 409
         assert "reassign" in deletion.json()["detail"]
+
+
+def test_transaction_endpoints_store_a_device_fix_only_while_location_is_allowed(db):
+    """Coordinates travel the whole way, and only with permission.
+
+    Every field on a transaction is hand-copied across five places — the schema,
+    both endpoints, and both service functions — so a field can be accepted by
+    the API and silently dropped before the row is written. This exercises the
+    seam end to end rather than any one layer.
+    """
+    user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
+    food = db.scalar(select(Category).where(Category.slug == "food"))
+    entry = {
+        "amountMinor": 42_000,
+        "merchant": "Third Wave",
+        "transactionAt": "2026-08-19T09:15:00Z",
+        "transactionType": "expense",
+        "categoryId": str(food.id),
+        "subcategoryId": None,
+        "spendNature": "discretionary",
+        "location": "Indiranagar",
+    }
+    fix = {"latitude": 12.971599, "longitude": 77.594566, "locationAccuracy": 18}
+
+    with TestClient(_application(db, user)) as client:
+        # Off by default: a client that sends coordinates anyway is refused by
+        # the writer, not merely unasked by the interface.
+        refused = client.post("/api/transactions", json={**entry, **fix})
+        assert refused.status_code == 201
+        stored = db.get(Transaction, UUID(refused.json()["id"]))
+        assert (stored.latitude, stored.longitude, stored.location_accuracy) == (None, None, None)
+        assert stored.location_source == "user"
+
+        assert client.patch("/api/privacy/location", json={"enabled": True}).status_code == 200
+
+        created = client.post("/api/transactions", json={**entry, **fix})
+        assert created.status_code == 201
+        saved = db.get(Transaction, UUID(created.json()["id"]))
+        assert float(saved.latitude) == 12.971599
+        assert float(saved.longitude) == 77.594566
+        assert saved.location_accuracy == 18
+        assert saved.location_source == "device"
+
+        # Renaming the place keeps the fix and its provenance.
+        renamed = client.patch(f"/api/transactions/{saved.id}", json={**entry, "location": "100 Feet Road"})
+        assert renamed.status_code == 200
+        db.refresh(saved)
+        assert renamed.json()["location"] == "100 Feet Road"
+        assert float(saved.latitude) == 12.971599
+        assert saved.location_source == "device"
+
+        moved = client.patch(f"/api/transactions/{saved.id}", json={
+            **entry, "latitude": 12.934533, "longitude": 77.626579, "locationAccuracy": 42,
+        })
+        assert moved.status_code == 200
+        db.refresh(saved)
+        assert float(saved.latitude) == 12.934533
+        assert saved.location_accuracy == 42
+
+        # Revoked afterwards: an edit from a device that has lost permission
+        # neither records a new fix nor erases where the spend actually was.
+        assert client.patch("/api/privacy/location", json={"enabled": False}).status_code == 200
+        edited = client.patch(f"/api/transactions/{saved.id}", json={**entry, "latitude": 1.0, "longitude": 1.0})
+        assert edited.status_code == 200
+        db.refresh(saved)
+        assert float(saved.latitude) == 12.934533
+        assert saved.location_source == "device"

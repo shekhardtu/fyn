@@ -9114,6 +9114,47 @@
           ],
           "default": null,
           "title": "Location"
+        },
+        "latitude": {
+          "anyOf": [
+            {
+              "maximum": 90,
+              "minimum": -90,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latitude"
+        },
+        "longitude": {
+          "anyOf": [
+            {
+              "maximum": 180,
+              "minimum": -180,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Longitude"
+        },
+        "locationAccuracy": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Locationaccuracy"
         }
       },
       "required": [
@@ -10935,5 +10976,5 @@
     "approve_operation": "OperationActionPayload",
     "cancel_operation": "OperationActionPayload"
   },
-  "schemaHash": "db0bea3b92fd6fda1917b2413d1fd21f6a0f80e442dafd879a64d01848f3f655"
+  "schemaHash": "ece9533edffb7babf2d2008257b020b7110bdde6590efc0ff52326cd3a810790"
 }

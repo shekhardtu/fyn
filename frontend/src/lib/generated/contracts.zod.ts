@@ -867,6 +867,9 @@ export const TransactionUpdateIn = z.looseObject({
   "subcategoryId": z.union([z.uuid(), z.null()]).default(null),
   "spendNature": SpendNature,
   "location": z.union([z.string().max(160), z.null()]).default(null),
+  "latitude": z.union([z.number().min(-90).max(90), z.null()]).default(null),
+  "longitude": z.union([z.number().min(-180).max(180), z.null()]).default(null),
+  "locationAccuracy": z.union([z.int().min(0), z.null()]).default(null),
 });
 export const UpdateDraftPayload = z.looseObject({
   "draftId": z.uuid(),

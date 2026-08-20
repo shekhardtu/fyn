@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..domain import SpendNature, TransactionStatus, TransactionType
 from ..event_time import as_utc, now_utc
+from .preferences import user_preference
 from ..models import Transaction, TransactionFieldValue, TransactionSource
 from ..taxonomy_catalog import DefaultCategorySlug, TRANSACTION_CATEGORY_ROOTS, category_slug_matches_transaction_type
 from .extraction import normalize_merchant
@@ -295,6 +296,36 @@ def _record_user_values(db: Session, transaction_id: UUID, values: dict[str, obj
     ])
 
 
+def _accepted_device_fix(
+    db: Session,
+    user_id: UUID,
+    latitude: float | None,
+    longitude: float | None,
+    accuracy: int | None,
+) -> dict[str, object] | None:
+    """The coordinates a transaction may keep, or None if it may keep none.
+
+    The preference is read here rather than trusted from the request. A client
+    is free to send coordinates it was never granted — a tab left open across a
+    settings change, a replayed payload, any caller holding a session — and the
+    only place that can refuse them for certain is the one doing the writing.
+
+    Both halves are required: a latitude without a longitude locates nothing,
+    and storing half a fix would make the row look located when it is not.
+    """
+    if latitude is None or longitude is None:
+        return None
+    preference = user_preference(db, user_id, "location:enabled")
+    if not (preference and (preference.value or {}).get("enabled") is True):
+        return None
+    return {"latitude": latitude, "longitude": longitude, "location_accuracy": accuracy}
+
+
+def _typed_location_source(label: str | None) -> str | None:
+    """Provenance for a row carrying a typed label and no coordinates."""
+    return "user" if label and label.strip() else None
+
+
 def create_manual_transaction(
     db: Session,
     user_id: UUID,
@@ -308,12 +339,17 @@ def create_manual_transaction(
     subcategory_id: UUID | str | None,
     spend_nature: str | SpendNature,
     location: str | None,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    location_accuracy: int | None = None,
 ) -> Transaction:
     """Create a confirmed user-entered transaction through canonical services."""
     if amount_minor <= 0:
         raise ValueError("Transaction amount must be greater than zero")
     kind = TransactionType(str(transaction_type))
     category, subcategory = _taxonomy_path(db, user_id, category_id, subcategory_id) if kind is TransactionType.EXPENSE else (None, None)
+    label = str(location or "").strip()[:160] or None
+    fix = _accepted_device_fix(db, user_id, latitude, longitude, location_accuracy)
     transaction = create_transaction(
         db,
         user_id=user_id,
@@ -325,8 +361,11 @@ def create_manual_transaction(
         subcategory_id=subcategory.id if subcategory else None,
         transaction_at=as_utc(transaction_at),
         posted_at=as_utc(transaction_at),
-        location_label=str(location or "").strip()[:160] or None,
-        location_source="user" if location and location.strip() else None,
+        location_label=label,
+        **(fix or {}),
+        # A fix outranks a typed label: the coordinates are the stronger claim
+        # about where this happened, whatever the person calls the place.
+        location_source="device" if fix else _typed_location_source(label),
         spend_nature=_spend_nature_or_unknown(spend_nature).value,
         status=TransactionStatus.CONFIRMED.value,
     )
@@ -358,6 +397,9 @@ def update_saved_transaction(
     subcategory_id: UUID | str | None | object = UNSET,
     spend_nature: str | SpendNature | object = UNSET,
     location: object = UNSET,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    location_accuracy: int | None = None,
     tags: object = UNSET,
 ) -> Transaction:
     """Apply a user correction through one canonical transaction boundary.
@@ -365,6 +407,12 @@ def update_saved_transaction(
     Chat widgets and the standalone Transactions page both call here. The
     service owns tenant scoping, taxonomy validation, merchant identity, tags,
     and provenance; HTTP and conversation handlers only adapt their payloads.
+
+    Coordinates are the one field group without an UNSET sentinel, because they
+    have no "clear" gesture to express: a save either carries a fresh fix or it
+    does not, and one that does not leaves any stored fix where it is. Re-saving
+    an edit from a device that has since lost permission must not erase where
+    the transaction actually happened.
     """
     transaction = active_transaction(db, user_id, transaction_id)
     if not transaction:
@@ -387,8 +435,20 @@ def update_saved_transaction(
         changed_fields["transaction_type"] = transaction.transaction_type
     if location is not UNSET:
         transaction.location_label = str(location or "").strip()[:160] or None
-        transaction.location_source = "user" if transaction.location_label else None
         changed_fields["location"] = transaction.location_label
+        # Renaming the place does not demote a stored fix to a typed one. The
+        # coordinates still say where this happened; only their label changed.
+        if transaction.latitude is None or transaction.longitude is None:
+            transaction.location_source = _typed_location_source(transaction.location_label)
+    fix = _accepted_device_fix(db, user_id, latitude, longitude, location_accuracy)
+    if fix:
+        transaction.latitude = fix["latitude"]
+        transaction.longitude = fix["longitude"]
+        transaction.location_accuracy = fix["location_accuracy"]
+        transaction.location_source = "device"
+        # The provenance log records that a fix arrived, never the fix itself:
+        # copying coordinates into a second table doubles what one leak costs.
+        changed_fields["location_source"] = "device"
     if spend_nature is not UNSET:
         transaction.spend_nature = _spend_nature_or_unknown(spend_nature).value
         changed_fields["spend_nature"] = transaction.spend_nature
