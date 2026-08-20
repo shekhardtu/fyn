@@ -70,15 +70,5 @@ select = ["F", "E9"]
 plugins = ["pydantic.mypy"]
 ignore_missing_imports = true
 
-# A ratchet, not a blanket exemption. 54 of 84 modules type-check clean today
-# and are enforced; the 30 below do not and are listed one by one so the
-# list can only shrink deliberately. A new module is checked by default, which
-# is the point: new code cannot join the backlog by accident.
-#
-# Progress: `mypy app` passes. To take one off the list, delete its line and
-# fix what appears.
-[[tool.mypy.overrides]]
-module = [
-  "app.contracts",
-]
-ignore_errors = true
+# Every backend application module is enforced. New modules are checked by
+# default, so the completed ratchet cannot silently acquire a new exemption.
