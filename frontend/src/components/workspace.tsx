@@ -1953,7 +1953,12 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
         {children}
         {/* The identity key deliberately remounts the tab-scoped draft if an
             auth transition replaces the user without rebuilding this shell. */}
-        {initial.data ? <Scratchpad key={initial.data.user.id} storageScope={initial.data.user.id} /> : null}
+        {/* Development only. `import.meta.env.DEV` is substituted with a literal
+            at build time, so the production bundle drops the branch and the
+            module with it — the note pad is not merely hidden, it is not
+            shipped. A flag read off an object would have hidden it while still
+            shipping the code and its listeners. */}
+        {import.meta.env.DEV && initial.data ? <Scratchpad key={initial.data.user.id} storageScope={initial.data.user.id} /> : null}
         {navError ? <div role="alert" className="fixed inset-x-0 bottom-4 z-50 mx-auto w-fit max-w-[90vw] rounded-lg border border-danger-line bg-danger-tint px-4 py-3 text-note text-danger-ink shadow-[var(--shadow-overlay)]">{navError}</div> : null}
         {/* Deleting everything deletes the account itself, so there is nothing
             left to return to — the session is already void server-side. */}
