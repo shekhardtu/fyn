@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import Table, delete, inspect, select, update
 from sqlalchemy.orm import Session
 
 from ..database import Base
@@ -74,7 +74,7 @@ def _camel_table_name(table_name: str) -> str:
 
 @dataclass(frozen=True)
 class OwnedDataSpec:
-    model: type
+    model: type[Base]
     owner_column: str = "user_id"
     export_key: str | None = None
     # Credentials are deleted with the account but never written into an export
@@ -88,18 +88,20 @@ class OwnedDataSpec:
 
     @property
     def key(self) -> str:
-        return self.export_key or _camel_table_name(self.model.__tablename__)
+        table = cast(Table, inspect(self.model).local_table)
+        return self.export_key or _camel_table_name(table.name)
 
 
 @dataclass(frozen=True)
 class DependentDataSpec:
-    model: type
-    parent_model: type
+    model: type[Base]
+    parent_model: type[Base]
     parent_column: str
 
     @property
     def key(self) -> str:
-        return _camel_table_name(self.model.__tablename__)
+        table = cast(Table, inspect(self.model).local_table)
+        return _camel_table_name(table.name)
 
 
 # This order is also a safe explicit deletion order when a database does not
@@ -181,7 +183,8 @@ def validate_user_data_registry() -> None:
         missing = sorted(model.__name__ for model in expected - registered)
         extra = sorted(model.__name__ for model in registered - expected)
         raise RuntimeError(f"User-data registry drift; missing={missing}, extra={extra}")
-    keys = [item.key for item in (*OWNED_USER_DATA, *DEPENDENT_USER_DATA)]
+    keys = [item.key for item in OWNED_USER_DATA]
+    keys.extend(item.key for item in DEPENDENT_USER_DATA)
     if len(keys) != len(set(keys)):
         raise RuntimeError("User-data export keys must be unique")
 
@@ -204,23 +207,24 @@ def serialize_rows(rows: list[Any], *, redacted_columns: tuple[str, ...] = ()) -
     serialized: list[dict] = []
     for row in rows:
         mapper = row.__mapper__
+        table = cast(Table, row.__table__)
         serialized.append(
             {
                 # Keep stable database-column keys in the export, but resolve
                 # values through the ORM attribute. These differ when a model
                 # deliberately avoids a reserved SQLAlchemy name, such as
                 # AgentInterrupt.metadata -> metadata_payload.
-                column.key: _json_value(
+                column.name: _json_value(
                     getattr(row, mapper.get_property_by_column(column).key)
                 )
-                for column in row.__table__.columns
-                if column.key not in redacted_columns
+                for column in table.columns
+                if column.name not in redacted_columns
             }
         )
     return serialized
 
 
-def _owned_rows(db: Session, user_id: UUID) -> dict[type, list[Any]]:
+def _owned_rows(db: Session, user_id: UUID) -> dict[type[Base], list[Base]]:
     return {
         spec.model: list(db.scalars(
             select(spec.model).where(getattr(spec.model, spec.owner_column) == user_id)
@@ -232,18 +236,18 @@ def _owned_rows(db: Session, user_id: UUID) -> dict[type, list[Any]]:
 def export_user_data(db: Session, user: User) -> dict[str, Any]:
     owned = _owned_rows(db, user.id)
     payload: dict[str, Any] = {"user": serialize_rows([user])[0]}
-    for spec in OWNED_USER_DATA:
-        if not spec.exportable:
+    for owned_spec in OWNED_USER_DATA:
+        if not owned_spec.exportable:
             continue
-        payload[spec.key] = serialize_rows(
-            owned[spec.model], redacted_columns=spec.redacted_columns
+        payload[owned_spec.key] = serialize_rows(
+            owned[owned_spec.model], redacted_columns=owned_spec.redacted_columns
         )
-    for spec in DEPENDENT_USER_DATA:
-        parent_ids = [item.id for item in owned[spec.parent_model]]
-        rows = list(db.scalars(
-            select(spec.model).where(getattr(spec.model, spec.parent_column).in_(parent_ids))
+    for dependent_spec in DEPENDENT_USER_DATA:
+        parent_ids = [cast(UUID, getattr(item, "id")) for item in owned[dependent_spec.parent_model]]
+        rows: list[Base] = list(db.scalars(
+            select(dependent_spec.model).where(getattr(dependent_spec.model, dependent_spec.parent_column).in_(parent_ids))
         )) if parent_ids else []
-        payload[spec.key] = serialize_rows(rows)
+        payload[dependent_spec.key] = serialize_rows(rows)
     payload["userMemories"] = export_user_memories(user.id)
     return payload
 
@@ -252,15 +256,15 @@ def delete_user_data(db: Session, user: User) -> int:
     """Delete all registered relational data and Agno memory for one user."""
     deleted_memories = clear_user_memories(user.id)
     owned = _owned_rows(db, user.id)
-    for spec in DEPENDENT_USER_DATA:
-        parent_ids = [item.id for item in owned[spec.parent_model]]
+    for dependent_spec in DEPENDENT_USER_DATA:
+        parent_ids = [cast(UUID, getattr(item, "id")) for item in owned[dependent_spec.parent_model]]
         if parent_ids:
-            db.execute(delete(spec.model).where(
-                getattr(spec.model, spec.parent_column).in_(parent_ids)
+            db.execute(delete(dependent_spec.model).where(
+                getattr(dependent_spec.model, dependent_spec.parent_column).in_(parent_ids)
             ))
-    for spec in OWNED_USER_DATA:
-        db.execute(delete(spec.model).where(
-            getattr(spec.model, spec.owner_column) == user.id
+    for owned_spec in OWNED_USER_DATA:
+        db.execute(delete(owned_spec.model).where(
+            getattr(owned_spec.model, owned_spec.owner_column) == user.id
         ))
     # Templates are shared, value-free infrastructure. Keep the reusable
     # definition but erase the optional creator audit link before deleting the

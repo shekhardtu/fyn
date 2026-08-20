@@ -106,6 +106,5 @@ module = [
   "app.services.sql_gate",
   "app.services.template_retrieval",
   "app.services.transactions",
-  "app.services.user_data",
 ]
 ignore_errors = true
