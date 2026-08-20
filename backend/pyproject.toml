@@ -46,6 +46,7 @@ dev = [
   "ruff>=0.16,<1",
   "mypy>=1.19,<2",
   "types-dateparser>=1.2,<2",
+  "types-PyYAML>=6.0,<7",
 ]
 
 [tool.pytest.ini_options]
@@ -79,6 +80,5 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = [
   "app.contracts",
-  "app.operations.catalog",
 ]
 ignore_errors = true
