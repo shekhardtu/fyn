@@ -93,6 +93,5 @@ module = [
   "app.services.external_db",
   "app.services.extraction",
   "app.services.finance_time",
-  "app.services.intelligence",
 ]
 ignore_errors = true
