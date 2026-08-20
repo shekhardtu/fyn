@@ -1,0 +1,17 @@
+apiVersion: fyn.ai/v1
+kind: Operation
+metadata: {id: manage_budget, version: 1, title: Manage budget, namespace: finance, owner: engineering, enabled: true}
+discovery: {description: "Create, update, or delete a monthly budget through its typed category contract", aliases: [create budget, set budget, update budget, delete budget], examples: [Set a 20000 travel budget, Update my food budget, Delete my travel budget], negativeExamples: [Show my budgets]}
+eligibility: {requiredPermissions: [planning.write], expectedEffect: mutation, access: write}
+input: {schema: {type: object, additionalProperties: false, required: [request], properties: {request: {type: string, minLength: 3, maxLength: 2000}}}}
+instructions: {selection: "Use when the user wants to create, set up, update, or delete a monthly budget. Complete budget inputs may be persisted immediately; missing values and destructive deletes remain typed HITL."}
+routing: {strategy: decision, bindings: {}}
+execution: {steps: [{id: execute, uses: budget.manage@1}], label: Managing monthly budget, validation: model}
+approval: {minimum: conditional}
+presentation: {success: {title: Budget updated, message: The budget was saved.}, failure: {title: Budget unchanged, message: No budget change was made.}}
+tests:
+  - name: complete budget route
+    request: Set a 20000 travel budget
+    expectedInputs: {request: Set a 20000 travel budget}
+    expectedEffect: mutation
+    expectedApproval: conditional

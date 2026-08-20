@@ -27,7 +27,7 @@ import { useScrollEdges } from "@/lib/scroll-edges";
 import { usePlainKey } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
 import { contractLimits } from "@/lib/generated/contracts";
-import { activeWidgetId, adoptUserMessageIdentity, applyWidgetUpdates, completedWidgetIds, reconcileUsedWidgetIds, shouldAdoptServerTranscript, transcriptRevision } from "@/lib/widget-state";
+import { activeWidgetId, completedWidgetIds, mergeAgentResponse, reconcileUsedWidgetIds, shouldAdoptServerTranscript, transcriptRevision } from "@/lib/widget-state";
 import { interruptActionResolution, recoverInterruptWidget } from "@/lib/interrupt-widget";
 import { appPaths, appRoutePatterns } from "@/routing/paths";
 
@@ -56,10 +56,6 @@ function csvProblem(file: File) {
 
 function prefersReducedMotion() {
   return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-}
-
-function responseToMessage(response: AgentResponse): Message {
-  return { id: response.message_id, role: "assistant", content: response.message, widgets: response.widgets, citations: response.citations, created_at: response.delivered_at, delivered_at: response.delivered_at };
 }
 
 /** The rail is a drawer below `md` and a docked column above it; the layout,
@@ -1100,15 +1096,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   }, [conversationId, showHeader]);
 
   const succeeded = useCallback((response: AgentResponse) => {
-    setMessages((current) => {
-      const updated = adoptUserMessageIdentity(
-        applyWidgetUpdates(current, response.widgetUpdates),
-        response.user_message_id,
-      );
-      return updated.some((message) => message.id === response.message_id)
-        ? updated
-        : [...updated, responseToMessage(response)];
-    });
+    setMessages((current) => mergeAgentResponse(current, response));
     setError(null);
     setRetry(null);
     setConnectionLost(false);

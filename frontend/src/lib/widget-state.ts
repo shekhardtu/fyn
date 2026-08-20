@@ -32,6 +32,27 @@ export function applyWidgetUpdates(messages: Message[], updates: AgentResponse["
   });
 }
 
+/** Apply an action receipt and append its follow-up in one transcript commit.
+ * The completed origin must render before the next pending or terminal card;
+ * splitting these operations across React updates briefly exposes two active
+ * HITL surfaces and lets focus attach to the card that was just resolved. */
+export function mergeAgentResponse(messages: Message[], response: AgentResponse): Message[] {
+  const updated = adoptUserMessageIdentity(
+    applyWidgetUpdates(messages, response.widgetUpdates),
+    response.user_message_id,
+  );
+  if (updated.some((message) => message.id === response.message_id)) return updated;
+  return [...updated, {
+    id: response.message_id,
+    role: "assistant",
+    content: response.message,
+    widgets: response.widgets,
+    citations: response.citations,
+    created_at: response.delivered_at,
+    delivered_at: response.delivered_at,
+  }];
+}
+
 export function completedWidgetIds(messages: Message[]) {
   const widgetsByDraft = new Map<string, string[]>();
   const completed = new Set<string>();

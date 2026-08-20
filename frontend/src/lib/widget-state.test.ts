@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Message, Widget } from "@/lib/protocol";
-import { activeWidgetId, adoptUserMessageIdentity, applyWidgetUpdates, completedWidgetIds, reconcileUsedWidgetIds, shouldAdoptServerTranscript, transcriptRevision } from "@/lib/widget-state";
+import { activeWidgetId, adoptUserMessageIdentity, applyWidgetUpdates, completedWidgetIds, mergeAgentResponse, reconcileUsedWidgetIds, shouldAdoptServerTranscript, transcriptRevision } from "@/lib/widget-state";
 
 function widget(id: string, actionable = true): Widget {
   return {
@@ -133,6 +133,42 @@ describe("applyWidgetUpdates", () => {
     expect(updated[0].id).toBe("assistant-1");
     expect(updated[0].widgets[0].data).toMatchObject({ name: "Flights", lifecycle: "completed" });
     expect(updated[0].widgets[0].actions).toEqual([]);
+  });
+});
+
+describe("mergeAgentResponse", () => {
+  it("retires the submitted HITL card before appending its terminal acknowledgement", () => {
+    const editor = widget("budget-editor");
+    editor.type = "budget_progress";
+    editor.data = { title: "Food budget", amountMinor: 2_000_000, lifecycle: "pending" };
+    const terminal = widget("budget-saved");
+    terminal.type = "budget_progress";
+    terminal.data = { title: "Food budget", amountMinor: 2_500_000 };
+    terminal.actions = [
+      { id: "edit", label: "Update budget", action: "edit_budget", style: "secondary", payload: { budgetId: "budget-1" } },
+      { id: "delete", label: "Delete budget", action: "request_delete_budget", style: "danger", payload: { budgetId: "budget-1" } },
+    ];
+    const resolved = { ...editor, data: { ...editor.data, lifecycle: "completed" }, actions: [] };
+    const deliveredAt = new Date().toISOString();
+
+    const merged = mergeAgentResponse(
+      [message("editor-message", "assistant", [editor])],
+      {
+        message: "Set your food budget to ₹25,000 per month.",
+        widgets: [terminal],
+        widgetUpdates: [{ widgetId: editor.id, widget: resolved }],
+        pendingAction: null,
+        citations: [],
+        conversation_id: "conversation-1",
+        message_id: "terminal-message",
+        user_message_id: null,
+        delivered_at: deliveredAt,
+      },
+    );
+
+    expect(merged.map((item) => item.id)).toEqual(["editor-message", "terminal-message"]);
+    expect(merged[0].widgets[0]).toMatchObject({ data: { lifecycle: "completed" }, actions: [] });
+    expect(activeWidgetId(merged)).toBe("budget-saved");
   });
 });
 

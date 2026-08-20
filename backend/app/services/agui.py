@@ -74,11 +74,12 @@ from .continuations import (
     ClarificationContinuationEnvelope,
     ClarificationTransition,
     GovernedBudgetContinuation,
+    GovernedGoalContinuation,
     GovernedQueryContinuation,
     LegacyPromptContinuation,
 )
 from .extraction import parse_amount_minor
-from .planning_contracts import BudgetSetupContract
+from .planning_contracts import BudgetSetupContract, GoalAmountContract
 
 
 FYN_RESPONSE_EVENT = "fyn.response.v1"
@@ -974,6 +975,20 @@ def _resume_response(
                         label="Customer-provided monthly amount",
                         budget=BudgetSetupContract(
                             **envelope.custom_budget.model_dump(),
+                            amount_minor=amount_minor,
+                        ),
+                    )
+                elif envelope.custom_strategy == "goal_amount":
+                    amount_minor = parse_amount_minor(custom_text)
+                    if amount_minor is None or amount_minor <= 0 or envelope.custom_goal is None:
+                        raise ProtocolRunError(
+                            "Enter a valid goal amount.",
+                            "invalid_resume_payload",
+                        )
+                    transition = GovernedGoalContinuation(
+                        label="Customer-provided goal amount",
+                        goal=GoalAmountContract(
+                            **envelope.custom_goal.model_dump(),
                             amount_minor=amount_minor,
                         ),
                     )

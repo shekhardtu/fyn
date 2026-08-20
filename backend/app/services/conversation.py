@@ -100,6 +100,7 @@ from .continuations import (
     ClarificationContinuationEnvelope,
     ClarificationTransition,
     GovernedBudgetContinuation,
+    GovernedGoalContinuation,
     GovernedQueryContinuation,
     GovernedTaxonomyContinuation,
     LegacyPromptContinuation,
@@ -122,7 +123,12 @@ from .recommendation import (
 from .currency import format_money_minor
 from .extraction import ExtractedTransaction, extract_transaction, infer_expense_category, normalize_merchant, parse_amount_minor, parse_spending_period
 from .merchants import MerchantRepository
-from .planning_contracts import BudgetSetupContract, BudgetSetupSeed
+from .planning_contracts import (
+    BudgetSetupContract,
+    BudgetSetupSeed,
+    GoalAmountContract,
+    GoalAmountSeed,
+)
 from .reconciliation import attach_observation, ingest_observation, resolve_reconciliation
 from .repositories import UserScopedRepository
 from .turn_policy import EffectAuthorization, TurnIntentContract, authorize_capability, resolve_turn_intent
@@ -1196,6 +1202,7 @@ def _clarification_response(
     clarification: ClarificationRequest,
     *,
     custom_budget: BudgetSetupSeed | None = None,
+    custom_goal: GoalAmountSeed | None = None,
 ) -> AgentResponse:
     """Persist a generic, resumable ambiguity instead of guessing."""
     clarification_id = uuid4()
@@ -1297,8 +1304,15 @@ def _clarification_response(
         original_request=original_request,
         options=transitions,
         allow_custom=clarification.allow_custom,
-        custom_strategy="budget_amount" if custom_budget is not None else "route_once",
+        custom_strategy=(
+            "budget_amount"
+            if custom_budget is not None
+            else "goal_amount"
+            if custom_goal is not None
+            else "route_once"
+        ),
         custom_budget=custom_budget,
+        custom_goal=custom_goal,
         clarification_depth=int(resume_guard.get("depth", -1)) + 1,
         clarification_fingerprint=_clarification_fingerprint(clarification),
     ).model_dump(mode="json", by_alias=True)
@@ -1978,6 +1992,18 @@ def _looks_like_planning_command(text: str) -> bool:
     )
 
 
+def _looks_like_budget_mutation_command(text: str) -> bool:
+    """Separate budget writes from read-only planning views at intake."""
+    return bool(
+        re.search(r"\bbudget\b", text, re.I)
+        and re.search(
+            r"\b(?:create|set(?:\s+up)?|setup|make|update|change|lower|raise|delete|remove)\b",
+            text,
+            re.I,
+        )
+    )
+
+
 def _goal_name(text: str) -> str:
     lowered = text.lower()
     known = ("vacation", "emergency fund", "home", "car", "education", "wedding", "retirement")
@@ -2066,6 +2092,7 @@ def _custom_value_clarification(
     conflict_field: str,
     custom_label: str,
     custom_budget: BudgetSetupSeed | None = None,
+    custom_goal: GoalAmountSeed | None = None,
 ) -> AgentResponse:
     return _clarification_response(
         db,
@@ -2080,6 +2107,7 @@ def _custom_value_clarification(
             custom_label=custom_label,
         ),
         custom_budget=custom_budget,
+        custom_goal=custom_goal,
     )
 
 
@@ -2118,48 +2146,160 @@ def _budget_setup_response(
             Budget.user_id == user.id,
             Budget.category_id == setup.category_id,
         ))
-    name = existing_budget.name if existing_budget else setup.name
-    resource_id = str(existing_budget.id) if existing_budget else DRAFT_RESOURCE_ID
-    payload = {
-        "budgetId": str(existing_budget.id) if existing_budget else None,
-        "name": name,
-        "amountMinor": setup.amount_minor,
-        "categoryId": str(category.id) if category else None,
-    }
-    label = "Update budget" if existing_budget else "Set budget"
+    updating = existing_budget is not None
+    if existing_budget:
+        existing_budget.amount_minor = setup.amount_minor
+        existing_budget.name = setup.name or existing_budget.name
+        budget = existing_budget
+    else:
+        budget = Budget(
+            user_id=user.id,
+            category_id=setup.category_id,
+            name=setup.name,
+            amount_minor=setup.amount_minor,
+            currency=setup.currency,
+        )
+        db.add(budget)
+        db.flush()
     spent = _budget_spent_minor(db, user, category)
     widget = _budget_widget(
-        resource_id,
-        name,
-        setup.amount_minor,
+        str(budget.id),
+        budget.name,
+        budget.amount_minor,
         spent,
         category.slug if category else None,
-        setup.currency,
-        [
-            WidgetAction(
-                id="save",
-                label=label,
-                action=WidgetActionId.SAVE_BUDGET,
-                style="primary",
-                payload=payload,
-            ),
-            _cancel_pending_action(resource_id),
-        ],
+        budget.currency,
+        _budget_management_actions(budget),
     )
-    verb = "update" if existing_budget else "set"
-    category_label = f"{category.name.lower()} " if category else ""
     return persist_agent_response(
         db,
         conversation,
-        (
-            f"Ready to {verb} your monthly {category_label}budget to "
-            f"{format_money_minor(setup.amount_minor, setup.currency)}."
-        ),
+        f"{'Updated' if updating else 'Set'} your {budget.name.lower()} to {format_money_minor(budget.amount_minor, budget.currency)} per month.",
+        widgets=[widget],
+    )
+
+
+def _budget_edit_response(
+    db: Session,
+    user: User,
+    conversation: Conversation,
+    budget: Budget,
+) -> AgentResponse:
+    category = TaxonomyRepository(db, user.id).category(budget.category_id, expense_only=True)
+    widget = _budget_widget(
+        str(budget.id),
+        budget.name,
+        budget.amount_minor,
+        _budget_spent_minor(db, user, category),
+        category.slug if category else None,
+        budget.currency,
+        [
+            WidgetAction(
+                id="save",
+                label="Update budget",
+                action=WidgetActionId.SAVE_BUDGET,
+                style="primary",
+                payload={
+                    "budgetId": str(budget.id),
+                    "name": budget.name,
+                    "amountMinor": budget.amount_minor,
+                    "categoryId": str(budget.category_id) if budget.category_id else None,
+                },
+            ),
+            _cancel_pending_action(str(budget.id)),
+        ],
+    )
+    return persist_agent_response(
+        db,
+        conversation,
+        f"Choose the new monthly amount for your {budget.name.lower()}.",
         widgets=[widget],
         pending_action=PendingAction(
             action=WidgetActionId.SAVE_BUDGET,
-            resource_id=resource_id,
+            resource_id=str(budget.id),
         ),
+    )
+
+
+def _goal_amount_response(
+    db: Session,
+    user: User,
+    conversation: Conversation,
+    setup: GoalAmountContract,
+) -> AgentResponse:
+    """Resume one goal amount slot without reinterpreting the user's number."""
+    if setup.operation == WidgetActionId.SAVE_GOAL.value:
+        payload = {"name": setup.name, "targetMinor": setup.amount_minor}
+        widget = _goal_widget(
+            DRAFT_RESOURCE_ID,
+            setup.name,
+            setup.amount_minor,
+            0,
+            setup.currency,
+            [
+                WidgetAction(
+                    id="save",
+                    label="Create goal",
+                    action=WidgetActionId.SAVE_GOAL,
+                    style="primary",
+                    payload=payload,
+                ),
+                _cancel_pending_action(DRAFT_RESOURCE_ID),
+            ],
+        )
+        content = (
+            f"Ready to create a {format_money_minor(setup.amount_minor, setup.currency)} "
+            f"{setup.name} goal."
+        )
+        pending = PendingAction(
+            action=WidgetActionId.SAVE_GOAL,
+            resource_id=DRAFT_RESOURCE_ID,
+        )
+    else:
+        goal_id = setup.goal_id
+        if goal_id is None:
+            raise ValueError("A goal contribution is missing its goal id")
+        goal = UserScopedRepository(db, user.id).get(Goal, goal_id)
+        if goal is None:
+            return _conversation_response(
+                db,
+                conversation,
+                "That savings goal is no longer available. Nothing was changed.",
+                task_status="failed",
+                failure_stage="goal_resolution",
+                error_code="goal_unavailable",
+            )
+        widget = _goal_widget(
+            str(goal.id),
+            goal.name,
+            goal.target_minor,
+            goal.current_minor,
+            goal.currency,
+            [
+                WidgetAction(
+                    id="contribute",
+                    label=f"Add {format_money_minor(setup.amount_minor, goal.currency)}",
+                    action=WidgetActionId.CONTRIBUTE_GOAL,
+                    style="primary",
+                    payload={"goalId": str(goal.id), "amountMinor": setup.amount_minor},
+                ),
+                _cancel_pending_action(str(goal.id)),
+            ],
+        )
+        content = (
+            f"Ready to add {format_money_minor(setup.amount_minor, goal.currency)} "
+            f"to your {goal.name} goal."
+        )
+        pending = PendingAction(
+            action=WidgetActionId.CONTRIBUTE_GOAL,
+            resource_id=str(goal.id),
+        )
+    return persist_agent_response(
+        db,
+        conversation,
+        content,
+        widgets=[widget],
+        pending_action=pending,
     )
 
 
@@ -2170,9 +2310,15 @@ def _planning_response(
     text: str,
     *,
     budget_setup: BudgetSetupContract | None = None,
+    goal_amount: GoalAmountContract | None = None,
+    allow_budget_mutation: bool = False,
 ) -> AgentResponse:
     if budget_setup is not None:
+        if not allow_budget_mutation:
+            raise RuntimeError("A complete budget contract requires the budget mutation capability")
         return _budget_setup_response(db, user, conversation, budget_setup)
+    if goal_amount is not None:
+        return _goal_amount_response(db, user, conversation, goal_amount)
     lowered = text.lower()
     today = _local_today(user)
     parsed_amount = _budget_amount_minor(text) if "budget" in lowered else extract_transaction(text, today=today, default_currency=user.currency).amount_minor
@@ -2212,6 +2358,8 @@ def _planning_response(
                 content = f"Ready to delete your {existing_budget.name.lower()}."
                 pending = PendingAction(action=WidgetActionId.DELETE_BUDGET, resource_id=str(existing_budget.id))
         elif any(token in lowered for token in ("set", "create", "make", "limit", "update", "change", "lower", "raise")):
+            if not parsed_amount and existing_budget:
+                return _budget_edit_response(db, user, conversation, existing_budget)
             if not parsed_amount:
                 name = existing_budget.name if existing_budget else f"{category.name} budget" if category else "Monthly spending budget"
                 return _custom_value_clarification(
@@ -2223,7 +2371,7 @@ def _planning_response(
                         if category
                         else "What monthly amount should I use for this budget?"
                     ),
-                    reason="The amount is required before a budget approval can be prepared.",
+                    reason="The amount is required before the budget can be saved.",
                     conflict_field="amount_minor",
                     custom_label="Enter monthly amount",
                     custom_budget=BudgetSetupSeed(
@@ -2236,6 +2384,8 @@ def _planning_response(
                 )
             else:
                 name = existing_budget.name if existing_budget else f"{category.name} budget" if category else "Monthly spending budget"
+                if not allow_budget_mutation:
+                    raise RuntimeError("A complete budget request requires the budget mutation capability")
                 return _budget_setup_response(
                     db,
                     user,
@@ -2275,6 +2425,12 @@ def _planning_response(
                 reason="The contribution amount is required before an approval can be prepared.",
                 conflict_field="amount_minor",
                 custom_label="Enter contribution amount",
+                custom_goal=GoalAmountSeed(
+                    operation=WidgetActionId.CONTRIBUTE_GOAL.value,
+                    goal_id=goal.id,
+                    name=goal.name,
+                    currency=goal.currency,
+                ),
             )
         else:
             widgets = [_goal_widget(str(goal.id), goal.name, goal.target_minor, goal.current_minor, goal.currency, [WidgetAction(id="contribute", label=f"Add {format_money_minor(parsed_amount, goal.currency)}", action=WidgetActionId.CONTRIBUTE_GOAL, style="primary", payload={"goalId": str(goal.id), "amountMinor": parsed_amount}), _cancel_pending_action(str(goal.id))])]
@@ -2291,6 +2447,11 @@ def _planning_response(
                 reason="The target amount is required before a goal approval can be prepared.",
                 conflict_field="target_minor",
                 custom_label="Enter target amount",
+                custom_goal=GoalAmountSeed(
+                    operation=WidgetActionId.SAVE_GOAL.value,
+                    name=name,
+                    currency=user.currency,
+                ),
             )
         else:
             payload = {"name": name, "targetMinor": parsed_amount}
@@ -3341,10 +3502,21 @@ def _fast_path_decision(
         # request on that path prevents the general financial-query agent from
         # treating budget state as an ad-hoc SQL analysis.
         return CopilotDecision(
-            tool=capability_for_primitive("planning.run@1"),
+            tool=capability_for_primitive(
+                "budget.manage@1"
+                if _looks_like_budget_mutation_command(text)
+                else "planning.run@1"
+            ),
             confidence=1.0,
             reason="Explicit budget or goal management request.",
-            safe_reasoning_summary=["Recognized a budget or goal workflow", "Use the governed HITL planning surface"],
+            safe_reasoning_summary=[
+                "Recognized a budget or goal workflow",
+                (
+                    "Use the typed budget mutation contract"
+                    if _looks_like_budget_mutation_command(text)
+                    else "Use the governed HITL planning surface"
+                ),
+            ],
         ), None
     # Small talk (greetings, acknowledgements, identity questions) is never
     # resolved here: the contextual agent owns conversation so replies stay
@@ -4487,6 +4659,7 @@ class _ConversationPrimitiveRuntime:
         transaction_clarification: ExtractedTransaction | None = None,
         extracted: ExtractedTransaction | None = None,
         budget_setup: BudgetSetupContract | None = None,
+        goal_amount: GoalAmountContract | None = None,
     ):
         self.db = db
         self.user = user
@@ -4500,6 +4673,7 @@ class _ConversationPrimitiveRuntime:
         self.transaction_clarification = transaction_clarification
         self.extracted = extracted
         self.budget_setup = budget_setup
+        self.goal_amount = goal_amount
 
     def invoke(self, target, arguments: dict[str, Any]) -> AgentResponse:
         if target.effect is DataEffect.MUTATION and not self.authorization.allowed:
@@ -4604,6 +4778,17 @@ class _ConversationPrimitiveRuntime:
             self.conversation,
             self.text,
             budget_setup=self.budget_setup,
+            goal_amount=self.goal_amount,
+        )
+
+    def manage_budget(self, _arguments: dict[str, Any]) -> AgentResponse:
+        return _planning_response(
+            self.db,
+            self.user,
+            self.conversation,
+            self.text,
+            budget_setup=self.budget_setup,
+            allow_budget_mutation=True,
         )
 
     def run_query_bundle(self, _arguments: dict[str, Any]) -> AgentResponse:
@@ -4679,6 +4864,7 @@ def _dispatch_decision(
     extracted: ExtractedTransaction | None = None,
     intent_contract: TurnIntentContract | None = None,
     budget_setup: BudgetSetupContract | None = None,
+    goal_amount: GoalAmountContract | None = None,
 ) -> AgentResponse:
     """Execute every routed capability through its one registry-owned executor."""
     spec = capability_spec(decision.tool)
@@ -4686,6 +4872,19 @@ def _dispatch_decision(
     workflow = operation_catalog().snapshot().operation(capability.value)
     if workflow is None or workflow.source != "core":
         raise RuntimeError(f"Protected operation is unavailable: {capability.value}")
+    if spec.invokes("planning.run@1") and _looks_like_budget_mutation_command(text):
+        spec = capability_spec(capability_for_primitive("budget.manage@1"))
+        capability = spec.id
+        workflow = operation_catalog().snapshot().operation(capability.value)
+        if workflow is None or workflow.source != "core":
+            raise RuntimeError(f"Protected operation is unavailable: {capability.value}")
+        emit(
+            "effect_normalization",
+            "Normalized budget write to the mutation capability",
+            ExecutionStatus.COMPLETED,
+            capability.value,
+            "Keep durable budget effects under their declared authorization ceiling",
+        )
     resume_guard = _clarification_resume_guard.get()
     if (
         spec.invokes("agent.clarify@1")
@@ -4858,6 +5057,7 @@ def _dispatch_decision(
         transaction_clarification=transaction_clarification,
         extracted=extracted,
         budget_setup=budget_setup,
+        goal_amount=goal_amount,
     )
 
     def run_declared_workflow() -> AgentResponse:
@@ -5024,6 +5224,11 @@ def handle_clarification_resolution(
         if isinstance(parsed_transition, GovernedBudgetContinuation)
         else None
     )
+    goal_contract = (
+        parsed_transition.goal
+        if isinstance(parsed_transition, GovernedGoalContinuation)
+        else None
+    )
     if isinstance(parsed_transition, GovernedTaxonomyContinuation):
         selected_label = parsed_transition.label
     if isinstance(parsed_transition, LegacyPromptContinuation):
@@ -5033,6 +5238,7 @@ def handle_clarification_resolution(
         intent_contract is None
         and taxonomy_contract is None
         and budget_contract is None
+        and goal_contract is None
     )
     resolved_request = original_request.strip()
     if legacy_prompt_resume:
@@ -5063,6 +5269,7 @@ def handle_clarification_resolution(
                 resolved_intent=intent_contract,
                 resolved_taxonomy=taxonomy_contract,
                 resolved_budget=budget_contract,
+                resolved_goal=goal_contract,
                 clarification_resume=legacy_prompt_resume,
             )
     finally:
@@ -5084,6 +5291,7 @@ def _run_turn(
     resolved_intent: ResolvedIntentContract | None = None,
     resolved_taxonomy: TaxonomyInterpretation | None = None,
     resolved_budget: BudgetSetupContract | None = None,
+    resolved_goal: GoalAmountContract | None = None,
     clarification_resume: bool = False,
 ) -> AgentResponse:
     run_started = perf_counter()
@@ -5251,6 +5459,7 @@ def _run_turn(
             resolved_intent is not None
             or resolved_taxonomy is not None
             or resolved_budget is not None
+            or resolved_goal is not None
         )
         else IntentAuthority.USER_TURN
     )
@@ -5265,12 +5474,12 @@ def _run_turn(
 
     if resolved_budget is not None:
         decision = CopilotDecision(
-            tool=capability_for_primitive("planning.run@1"),
+            tool=capability_for_primitive("budget.manage@1"),
             confidence=1.0,
             reason="A server-authored clarification contract resolved the budget amount.",
             safe_reasoning_summary=[
                 "Retained the selected category by stable ID",
-                "Prepare the governed budget approval without routing again",
+                "Persist the completed budget contract without routing again",
             ],
             validated_by="clarification_continuation_policy",
             validation_confidence=1.0,
@@ -5292,6 +5501,37 @@ def _run_turn(
             emit,
             intent_contract=turn_intent,
             budget_setup=resolved_budget,
+        )
+
+    if resolved_goal is not None:
+        decision = CopilotDecision(
+            tool=capability_for_primitive("planning.run@1"),
+            confidence=1.0,
+            reason="A server-authored clarification contract resolved the goal amount.",
+            safe_reasoning_summary=[
+                "Retained the goal operation and stable record identity",
+                "Prepare the governed goal approval without routing again",
+            ],
+            validated_by="clarification_continuation_policy",
+            validation_confidence=1.0,
+        )
+        emit(
+            "operator",
+            "Resumed the validated goal contract",
+            "completed",
+            decision.tool,
+            f"{resolved_goal.operation} · {resolved_goal.amount_minor} minor units",
+        )
+        return _dispatch_decision(
+            db,
+            user,
+            conversation,
+            text,
+            decision,
+            execute,
+            emit,
+            intent_contract=turn_intent,
+            goal_amount=resolved_goal,
         )
 
     if resolved_taxonomy is not None:
@@ -5777,6 +6017,7 @@ def _run_turn(
             capability_invokes(fast_path[0].tool, "transaction.record@1")
             or capability_invokes(fast_path[0].tool, "agent.clarify@1")
             or capability_invokes(fast_path[0].tool, "planning.run@1")
+            or capability_invokes(fast_path[0].tool, "budget.manage@1")
         )
     ):
         # In Operator mode one contextual agent owns ordinary conversation and
@@ -6778,37 +7019,7 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
         budget = owned.get(Budget, UUID(str(payload["budgetId"])))
         if not budget:
             raise ValueError("Unknown budget")
-        category = taxonomy.category(budget.category_id, expense_only=True)
-        widget = _budget_widget(
-            str(budget.id),
-            budget.name,
-            budget.amount_minor,
-            _budget_spent_minor(db, user, category),
-            category.slug if category else None,
-            budget.currency,
-            [
-                WidgetAction(
-                    id="save",
-                    label="Update budget",
-                    action=WidgetActionId.SAVE_BUDGET,
-                    style="primary",
-                    payload={
-                        "budgetId": str(budget.id),
-                        "name": budget.name,
-                        "amountMinor": budget.amount_minor,
-                        "categoryId": str(budget.category_id) if budget.category_id else None,
-                    },
-                ),
-                _cancel_pending_action(str(budget.id)),
-            ],
-        )
-        return persist_agent_response(
-            db,
-            conversation,
-            f"Choose the new monthly amount for your {budget.name.lower()}.",
-            widgets=[widget],
-            pending_action=PendingAction(action=WidgetActionId.SAVE_BUDGET, resource_id=str(budget.id)),
-        )
+        return _budget_edit_response(db, user, conversation, budget)
     if action is WidgetActionId.REQUEST_DELETE_BUDGET:
         budget = owned.get(Budget, UUID(str(payload["budgetId"])))
         if not budget:

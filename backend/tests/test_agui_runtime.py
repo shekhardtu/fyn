@@ -14,7 +14,7 @@ from app.api import _record_import_preview, router
 from app.database import get_db
 from app.domain import AgentInterruptStatus, AgentRunStatus, FinancialSourceType, ImportStatus
 from app.event_time import now_utc
-from app.models import AgentEvent, AgentInterrupt, AgentRun, Budget, Category, Import, Message, Subcategory, TaxonomyScope, User
+from app.models import AgentEvent, AgentInterrupt, AgentRun, Budget, Category, Goal, Import, Message, Subcategory, TaxonomyScope, User
 from app.operations import operation_catalog
 from app.operations.tools import OperationProposal
 from app.seed import DEFAULT_USER_EMAIL
@@ -227,8 +227,8 @@ def test_pending_widget_becomes_interrupt_and_resume_uses_governed_action(db):
         db,
         user,
         conversation,
-        {"kind": "message", "text": "Set a ₹20,000 food budget", "messageId": "budget-request"},
-        "budget-request",
+        {"kind": "message", "text": "Create a ₹2 lakh vacation goal", "messageId": "goal-request"},
+        "goal-request",
     )
 
     assert first.status == AgentRunStatus.INTERRUPTED.value
@@ -329,7 +329,7 @@ def test_pending_widget_becomes_interrupt_and_resume_uses_governed_action(db):
     assert replay_custom.payload["value"]["response"] == original_custom.payload["value"]["response"]
 
 
-def test_category_budget_amount_resume_preserves_category_and_requires_save(db):
+def test_category_budget_amount_resume_preserves_category_and_saves_once(db):
     user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
     category = Category(
         slug=f"custom-{uuid4().hex}",
@@ -372,7 +372,7 @@ def test_category_budget_amount_resume_preserves_category_and_requires_save(db):
     assert clarification_widget["data"]["options"] == []
     custom = next(item for item in clarification_widget["actions"] if item["id"] == "custom")
 
-    proposed, _live = _execute(db, user, conversation, {
+    saved, _live = _execute(db, user, conversation, {
         "kind": "resume",
         "entries": [{
             "interruptId": str(clarification_interrupt.id),
@@ -389,28 +389,98 @@ def test_category_budget_amount_resume_preserves_category_and_requires_save(db):
         }],
     })
 
-    assert proposed.status == AgentRunStatus.INTERRUPTED.value
-    assert db.scalar(select(Budget)) is None
-    budget_interrupt = db.scalar(select(AgentInterrupt).where(
-        AgentInterrupt.run_id == proposed.id,
+    assert saved.status == AgentRunStatus.SUCCEEDED.value
+    assert db.scalar(select(AgentInterrupt).where(
+        AgentInterrupt.run_id == saved.id,
+        AgentInterrupt.status == AgentInterruptStatus.OPEN.value,
+    )) is None
+    budget_message = db.get(Message, saved.final_message_id)
+    budget_widget = next(item for item in budget_message.widgets if item["type"] == "budget_progress")
+    assert {item["action"] for item in budget_widget["actions"]} == {
+        "edit_budget",
+        "request_delete_budget",
+    }
+    budget = db.scalar(select(Budget))
+    assert budget.category_id == category.id
+    assert budget.amount_minor == 2_500_000
+
+
+def test_goal_amount_resume_keeps_the_goal_sequence_typed_until_terminal_acknowledgement(db):
+    user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
+    conversation = get_or_create_conversation(db, user)
+
+    first, _live = _execute(
+        db,
+        user,
+        conversation,
+        {
+            "kind": "message",
+            "text": "Create a vacation goal",
+            "messageId": "vacation-goal",
+        },
+        "vacation-goal",
+    )
+
+    assert first.status == AgentRunStatus.INTERRUPTED.value
+    amount_interrupt = db.scalar(select(AgentInterrupt).where(
+        AgentInterrupt.run_id == first.id,
         AgentInterrupt.status == AgentInterruptStatus.OPEN.value,
     ))
-    assert budget_interrupt.reason == "tool_call"
-    budget_message = db.get(Message, proposed.final_message_id)
-    budget_widget = next(item for item in budget_message.widgets if item["type"] == "budget_progress")
-    save = next(item for item in budget_widget["actions"] if item["action"] == "save_budget")
-    assert save["payload"]["categoryId"] == str(category.id)
-    assert save["payload"]["amountMinor"] == 2_500_000
+    continuation = amount_interrupt.metadata_payload["continuation"]
+    assert continuation["customStrategy"] == "goal_amount"
+    assert continuation["customGoal"] == {
+        "schemaVersion": 1,
+        "operation": "save_goal",
+        "goalId": None,
+        "name": "Vacation",
+        "currency": "INR",
+    }
+    amount_message = db.get(Message, first.final_message_id)
+    amount_widget = next(item for item in amount_message.widgets if item["type"] == "clarification")
+    custom = next(item for item in amount_widget["actions"] if item["id"] == "custom")
 
-    saved, _live = _execute(db, user, conversation, {
+    proposed, _live = _execute(db, user, conversation, {
         "kind": "resume",
         "entries": [{
-            "interruptId": str(budget_interrupt.id),
+            "interruptId": str(amount_interrupt.id),
             "status": "resolved",
             "payload": {
                 "approved": True,
                 "editedArgs": {
-                    "widgetId": budget_widget["id"],
+                    "widgetId": amount_widget["id"],
+                    "action": custom["action"],
+                    "payload": {**custom["payload"], "customText": "₹2 lakh"},
+                    "completeWidget": True,
+                },
+            },
+        }],
+    })
+
+    assert proposed.status == AgentRunStatus.INTERRUPTED.value
+    db.refresh(amount_message)
+    updated_amount_widget = next(
+        item for item in amount_message.widgets if item["id"] == amount_widget["id"]
+    )
+    assert updated_amount_widget["data"]["lifecycle"] == "completed"
+    assert updated_amount_widget["actions"] == []
+    assert db.scalar(select(Goal)) is None
+    goal_interrupt = db.scalar(select(AgentInterrupt).where(
+        AgentInterrupt.run_id == proposed.id,
+        AgentInterrupt.status == AgentInterruptStatus.OPEN.value,
+    ))
+    goal_message = db.get(Message, proposed.final_message_id)
+    goal_widget = next(item for item in goal_message.widgets if item["type"] == "goal_progress")
+    save = next(item for item in goal_widget["actions"] if item["action"] == "save_goal")
+
+    saved, _live = _execute(db, user, conversation, {
+        "kind": "resume",
+        "entries": [{
+            "interruptId": str(goal_interrupt.id),
+            "status": "resolved",
+            "payload": {
+                "approved": True,
+                "editedArgs": {
+                    "widgetId": goal_widget["id"],
                     "action": save["action"],
                     "payload": save["payload"],
                     "completeWidget": True,
@@ -420,9 +490,25 @@ def test_category_budget_amount_resume_preserves_category_and_requires_save(db):
     })
 
     assert saved.status == AgentRunStatus.SUCCEEDED.value
-    budget = db.scalar(select(Budget))
-    assert budget.category_id == category.id
-    assert budget.amount_minor == 2_500_000
+    db.refresh(goal_message)
+    updated_goal_widget = next(
+        item for item in goal_message.widgets if item["id"] == goal_widget["id"]
+    )
+    assert updated_goal_widget["data"]["lifecycle"] == "completed"
+    assert updated_goal_widget["actions"] == []
+    terminal_message = db.get(Message, saved.final_message_id)
+    terminal_widget = next(item for item in terminal_message.widgets if item["type"] == "goal_progress")
+    assert terminal_widget["data"]["targetMinor"] == 20_000_000
+    assert terminal_widget["actions"] == []
+    assert db.scalar(select(Goal)).target_minor == 20_000_000
+    assert not list(db.scalars(
+        select(AgentInterrupt)
+        .join(AgentRun, AgentRun.id == AgentInterrupt.run_id)
+        .where(
+            AgentRun.conversation_id == conversation.id,
+            AgentInterrupt.status == AgentInterruptStatus.OPEN.value,
+        )
+    ))
 
 
 def test_compound_taxonomy_request_has_one_approval_and_executes_the_whole_path(db, monkeypatch):
@@ -1427,8 +1513,8 @@ def test_pending_interrupt_rejects_new_input_with_run_error_event(db):
         db,
         user,
         conversation,
-        {"kind": "message", "text": "Set a ₹20,000 food budget", "messageId": "pending-budget"},
-        "pending-budget",
+        {"kind": "message", "text": "Create a ₹2 lakh vacation goal", "messageId": "pending-goal"},
+        "pending-goal",
     )
     assert first.status == AgentRunStatus.INTERRUPTED.value
 
@@ -1496,8 +1582,8 @@ def test_newer_widget_action_supersedes_an_older_interrupt(db):
         db,
         user,
         conversation,
-        {"kind": "message", "text": "Set a ₹20,000 food budget", "messageId": "stale-budget"},
-        "stale-budget",
+        {"kind": "message", "text": "Create a ₹2 lakh vacation goal", "messageId": "stale-goal"},
+        "stale-goal",
     )
     stale_interrupt = db.scalar(
         select(AgentInterrupt).where(

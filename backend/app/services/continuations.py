@@ -6,7 +6,12 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from .agents import ResolvedIntentContract, TaxonomyInterpretation
-from .planning_contracts import BudgetSetupContract, BudgetSetupSeed
+from .planning_contracts import (
+    BudgetSetupContract,
+    BudgetSetupSeed,
+    GoalAmountContract,
+    GoalAmountSeed,
+)
 
 
 class _ContinuationModel(BaseModel):
@@ -38,6 +43,12 @@ class GovernedBudgetContinuation(_ContinuationModel):
     budget: BudgetSetupContract
 
 
+class GovernedGoalContinuation(_ContinuationModel):
+    kind: Literal["governed_goal"] = "governed_goal"
+    label: str = Field(min_length=1, max_length=100)
+    goal: GoalAmountContract
+
+
 class LegacyPromptContinuation(_ContinuationModel):
     """Compatibility path for workflows that do not yet expose typed slots.
 
@@ -56,6 +67,7 @@ ClarificationTransition = Annotated[
         GovernedQueryContinuation,
         GovernedTaxonomyContinuation,
         GovernedBudgetContinuation,
+        GovernedGoalContinuation,
         LegacyPromptContinuation,
     ],
     Field(discriminator="kind"),
@@ -74,8 +86,9 @@ class ClarificationContinuationEnvelope(_ContinuationModel):
     original_request: str = Field(min_length=1, max_length=20_000, alias="originalRequest")
     options: dict[str, ClarificationTransition] = Field(min_length=1, max_length=7)
     allow_custom: bool = Field(default=False, alias="allowCustom")
-    custom_strategy: Literal["route_once", "budget_amount"] = Field(default="route_once", alias="customStrategy")
+    custom_strategy: Literal["route_once", "budget_amount", "goal_amount"] = Field(default="route_once", alias="customStrategy")
     custom_budget: BudgetSetupSeed | None = Field(default=None, alias="customBudget")
+    custom_goal: GoalAmountSeed | None = Field(default=None, alias="customGoal")
     clarification_depth: int = Field(default=0, ge=0, le=2, alias="clarificationDepth")
     clarification_fingerprint: str | None = Field(
         default=None,
@@ -91,8 +104,12 @@ class ClarificationContinuationEnvelope(_ContinuationModel):
             raise ValueError("A clarification continuation requires a cancel transition")
         if self.custom_strategy == "budget_amount" and self.custom_budget is None:
             raise ValueError("A budget amount continuation requires its typed budget context")
-        if self.custom_strategy == "route_once" and self.custom_budget is not None:
+        if self.custom_strategy == "goal_amount" and self.custom_goal is None:
+            raise ValueError("A goal amount continuation requires its typed goal context")
+        if self.custom_strategy != "budget_amount" and self.custom_budget is not None:
             raise ValueError("Only a budget amount continuation may carry budget context")
+        if self.custom_strategy != "goal_amount" and self.custom_goal is not None:
+            raise ValueError("Only a goal amount continuation may carry goal context")
         return self
 
 

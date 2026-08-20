@@ -2155,18 +2155,14 @@ def test_transaction_draft_can_go_back_or_cancel_without_saving(db):
     assert db.scalar(select(Transaction)) is None
 
 
-def test_every_blocking_planning_card_declares_a_cancel_transition(db):
+def test_every_blocking_goal_card_declares_a_cancel_transition(db):
     user = default_user(db)
-    for prompt in (
-        "Set a food budget of ₹20,000",
-        "Create a vacation goal of ₹2 lakh",
-    ):
-        conversation = get_or_create_conversation(db, user)
-        response = handle_chat(db, user, conversation, prompt)
-        assert any(action.action == "cancel_pending_action" for action in response.widgets[0].actions)
-        cancel = next(action for action in response.widgets[0].actions if action.action == "cancel_pending_action")
-        cancelled = handle_action(db, user, conversation, "cancel_pending_action", cancel.payload)
-        assert cancelled.message == "Cancelled. No changes were made."
+    conversation = get_or_create_conversation(db, user)
+    response = handle_chat(db, user, conversation, "Create a vacation goal of ₹2 lakh")
+    assert any(action.action == "cancel_pending_action" for action in response.widgets[0].actions)
+    cancel = next(action for action in response.widgets[0].actions if action.action == "cancel_pending_action")
+    cancelled = handle_action(db, user, conversation, "cancel_pending_action", cancel.payload)
+    assert cancelled.message == "Cancelled. No changes were made."
 
 
 def test_blocking_widget_contract_rejects_a_forward_only_card():
@@ -2220,16 +2216,18 @@ def test_category_creation_is_a_declared_reversible_transition(db):
     assert response.widgets[0].data.get("mode") != "create"
 
 
-def test_budget_creation_requires_action_and_uses_recorded_spending(db):
+def test_complete_budget_creation_saves_once_and_uses_recorded_spending(db):
     user = default_user(db)
     conversation = get_or_create_conversation(db, user)
     response = handle_chat(db, user, conversation, "Set a food budget of ₹20,000")
     assert response.widgets[0].type == "budget_progress"
-    assert db.scalar(select(Budget)) is None
-    action = response.widgets[0].actions[0]
-    response = handle_action(db, user, conversation, action.action, action.payload)
+    assert response.pending_action is None
     assert db.scalar(select(Budget)).amount_minor == 2_000_000
     assert response.widgets[0].data["amountMinor"] == 2_000_000
+    assert {action.action for action in response.widgets[0].actions} == {
+        "edit_budget",
+        "request_delete_budget",
+    }
 
 
 def test_budget_period_year_is_not_treated_as_the_limit(db, monkeypatch):
@@ -2253,6 +2251,30 @@ def test_budget_update_and_delete_phrases_enter_the_planning_workflow():
     assert conversation_service._looks_like_planning_command("Delete my travel budget")
 
 
+def test_existing_budget_setup_without_amount_opens_prefilled_editor(db):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    travel = db.scalar(select(Category).where(Category.slug == "travel"))
+    budget = Budget(
+        user_id=user.id,
+        category_id=travel.id,
+        name="Travel budget",
+        amount_minor=3_000_000,
+        currency="INR",
+    )
+    db.add(budget)
+    db.flush()
+
+    response = handle_chat(db, user, conversation, "Set up my travel budget")
+
+    assert response.message == "Choose the new monthly amount for your travel budget."
+    assert response.pending_action.action == "save_budget"
+    assert response.widgets[0].data["amountMinor"] == 3_000_000
+    save = next(action for action in response.widgets[0].actions if action.action == "save_budget")
+    assert save.label == "Update budget"
+    assert save.payload["amountMinor"] == 3_000_000
+
+
 def test_budget_management_uses_the_deterministic_hitl_route():
     decision, extracted = conversation_service._fast_path_decision(
         "Show my travel budget",
@@ -2260,6 +2282,14 @@ def test_budget_management_uses_the_deterministic_hitl_route():
     )
 
     assert decision.tool == conversation_service.capability_for_primitive("planning.run@1")
+    assert extracted is None
+
+    decision, extracted = conversation_service._fast_path_decision(
+        "Set up my travel budget",
+        date(2026, 8, 19),
+    )
+
+    assert decision.tool == conversation_service.capability_for_primitive("budget.manage@1")
     assert extracted is None
 
 
@@ -2288,6 +2318,21 @@ def test_show_budget_does_not_fall_through_to_sql_operator(db, monkeypatch, agen
     assert {action.action for action in response.widgets[0].actions} == {"edit_budget", "request_delete_budget"}
 
 
+def test_budget_mutation_does_not_invoke_sql_operator(db, monkeypatch, agent_enabled):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    monkeypatch.setattr(
+        conversation_service,
+        "run_operator",
+        lambda *_args, **_kwargs: pytest.fail("budget mutation must use the deterministic gate"),
+    )
+
+    response = handle_chat(db, user, conversation, "Set a ₹20,000 food budget")
+
+    assert response.pending_action is None
+    assert db.scalar(select(Budget)).amount_minor == 2_000_000
+
+
 def test_category_budget_create_update_and_delete_are_governed_and_show_spend(db, monkeypatch):
     user = default_user(db)
     conversation = get_or_create_conversation(db, user)
@@ -2305,17 +2350,13 @@ def test_category_budget_create_update_and_delete_are_governed_and_show_spend(db
     ))
     db.flush()
 
-    proposal = handle_chat(db, user, conversation, "Set the August 2026 travel budget to ₹20,000")
-    assert proposal.pending_action.action == "save_budget"
-    assert proposal.widgets[0].data["spentMinor"] == 500_000
-    create = next(action for action in proposal.widgets[0].actions if action.action == "save_budget")
-
-    created = handle_action(db, user, conversation, create.action, create.payload)
+    created = handle_chat(db, user, conversation, "Set the August 2026 travel budget to ₹20,000")
+    assert created.pending_action is None
     budget = db.scalar(select(Budget))
     assert budget.amount_minor == 2_000_000
     assert created.widgets[0].data["spentMinor"] == 500_000
     assert {action.action for action in created.widgets[0].actions} == {"edit_budget", "request_delete_budget"}
-    widget_ids = [proposal.widgets[0].id, created.widgets[0].id]
+    widget_ids = [created.widgets[0].id]
 
     edit = next(action for action in created.widgets[0].actions if action.action == "edit_budget")
     editor = handle_action(db, user, conversation, edit.action, edit.payload)
@@ -2359,6 +2400,29 @@ def test_goal_creation_and_contribution_require_confirmation(db):
     assert contribution.amount_minor == 2_000_000
     assert contribution.contribution_at.tzinfo is None  # SQLite strips offsets on round-trip.
     assert contribution.contribution_at.replace(tzinfo=timezone.utc) <= datetime.now(timezone.utc)
+
+
+def test_goal_contribution_amount_keeps_the_exact_goal_in_its_continuation(db):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    goal = Goal(
+        user_id=user.id,
+        name="Vacation",
+        target_minor=20_000_000,
+        current_minor=0,
+        currency="INR",
+    )
+    db.add(goal)
+    db.flush()
+
+    response = handle_chat(db, user, conversation, "Add to my vacation goal")
+
+    assert response.message == "How much should I add to your Vacation goal?"
+    assert response.pending_action.action == "resolve_clarification"
+    continuation = response.pending_action.continuation
+    assert continuation["customStrategy"] == "goal_amount"
+    assert continuation["customGoal"]["operation"] == "contribute_goal"
+    assert continuation["customGoal"]["goalId"] == str(goal.id)
 
 
 def test_explicit_merchant_correction_is_learned_and_overrides_inference(db):

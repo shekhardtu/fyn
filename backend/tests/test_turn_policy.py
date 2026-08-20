@@ -74,6 +74,18 @@ def test_standalone_amount_keeps_the_transaction_shortcut():
     assert authorization.code == "standalone_transaction_shortcut"
 
 
+def test_explicit_budget_setup_authorizes_the_budget_mutation_capability():
+    intent = resolve_turn_intent(
+        "Set up a travel budget",
+        ContextRelationship.STANDALONE,
+    )
+
+    authorization = authorize_capability(intent, _capability("budget.manage@1"))
+
+    assert authorization.allowed
+    assert authorization.code == "explicit_mutation"
+
+
 def test_contextual_number_does_not_independently_authorize_a_transaction():
     intent = resolve_turn_intent(
         "24",
