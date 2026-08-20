@@ -110,16 +110,16 @@ rate-limited to 5/hour and lock testing out**. Read the token at use time:
 
 ```bash
 TOKEN=$(jq -r '.cookies[] | select(.name=="fyn_session") | .value' frontend/e2e/.auth/session.json)
-curl -s -H "Cookie: fyn_session=$TOKEN" http://localhost:8000/api/agent/threads/<thread_id>
+curl -s -H "Cookie: fyn_session=$TOKEN" http://localhost:8000/agent/threads/<thread_id>
 ```
 
-- `GET /api/agent/threads/{id}` — active run, latest run, open interrupts. (The
+- `GET /agent/threads/{id}` — active run, latest run, open interrupts. (The
   old `/metrics` endpoint and its `agent_observability` heuristic scores were
   removed deliberately — run outcome truth lives on `agent_runs.task_status` /
   `failure_stage` / `error_code`; do not reintroduce derived quality scores.)
-- `GET /api/conversations/{id}` — messages with widgets + citations.
-- `GET /api/agent/runs/{run_id}/events?after=N` — SSE replay of persisted events.
-- `GET /api/diagnostics/agent` — mode, models, last 20 router decisions.
+- `GET /conversations/{id}` — messages with widgets + citations.
+- `GET /agent/runs/{run_id}/events?after=N` — SSE replay of persisted events.
+- `GET /diagnostics/agent` — mode, models, last 20 router decisions.
 - There is **no JSON endpoint for raw `agent_events`** — use SQL for that.
 
 ### Known observability blind spots (check, and close if they blocked you)

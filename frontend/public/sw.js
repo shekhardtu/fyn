@@ -1,10 +1,11 @@
 /* fyn's service worker: an installable shell, never a data cache.
  *
  * Three rules decide everything below:
- *   1. /api is never touched. Financial truth comes from the network or not
- *      at all — a stale balance shown confidently is worse than an offline
- *      notice. Offline reads are the query persister's job (IndexedDB),
- *      which knows freshness; an HTTP cache does not.
+ *   1. Only navigations and immutable shell assets are intercepted. Financial
+ *      data requests stay on the network regardless of their mount path — a
+ *      stale balance shown confidently is worse than an offline notice.
+ *      Offline reads are the query persister's job (IndexedDB), which knows
+ *      freshness; an HTTP cache does not.
  *   2. Hashed build assets (/assets/) are immutable by construction, so they
  *      are cache-first forever; old versions are swept by cache-name rotation.
  *   3. Navigations are network-first with the cached shell as fallback, so a
@@ -36,7 +37,6 @@ self.addEventListener("fetch", (event) => {
   if (request.method !== "GET") return;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
-  if (url.pathname.startsWith("/api/")) return;
 
   if (request.mode === "navigate") {
     event.respondWith(
