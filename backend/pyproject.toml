@@ -96,6 +96,5 @@ module = [
   "app.services.intelligence",
   "app.services.manifest",
   "app.services.otp",
-  "app.services.recommendation",
 ]
 ignore_errors = true
