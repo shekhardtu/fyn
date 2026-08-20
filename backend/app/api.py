@@ -157,7 +157,7 @@ from .services.agui import (
 )
 
 
-router = APIRouter(prefix="/api")
+router = APIRouter()
 
 # Enough to fill the history rail past the fold on a tall screen, so the first
 # lazy page is fetched while scrolling rather than immediately on load.

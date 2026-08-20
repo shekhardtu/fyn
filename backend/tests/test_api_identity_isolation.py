@@ -67,11 +67,11 @@ def test_api_enforces_one_identity_boundary_across_user_data(db, monkeypatch):
     with TestClient(application) as client:
         # Every conversation-scoped transport has identical not-found behavior.
         foreign_id = str(other_thread.id)
-        assert client.get(f"/api/conversations/{foreign_id}").status_code == 404
-        assert client.patch(f"/api/conversations/{foreign_id}", json={"title": "Hijacked"}).status_code == 404
-        assert client.delete(f"/api/conversations/{foreign_id}").status_code == 404
-        assert client.get(f"/api/agent/threads/{foreign_id}").status_code == 404
-        assert client.post("/api/agent", json={
+        assert client.get(f"/conversations/{foreign_id}").status_code == 404
+        assert client.patch(f"/conversations/{foreign_id}", json={"title": "Hijacked"}).status_code == 404
+        assert client.delete(f"/conversations/{foreign_id}").status_code == 404
+        assert client.get(f"/agent/threads/{foreign_id}").status_code == 404
+        assert client.post("/agent", json={
             "threadId": foreign_id,
             "runId": str(uuid4()),
             "state": {},
@@ -81,7 +81,7 @@ def test_api_enforces_one_identity_boundary_across_user_data(db, monkeypatch):
             "forwardedProps": {},
         }).status_code == 404
         assert client.post(
-            "/api/imports/csv",
+            "/imports/csv",
             data={"conversation_id": foreign_id},
             files={"file": ("foreign.csv", b"date,description,debit\n2026-08-01,test,10\n", "text/csv")},
         ).status_code == 404
@@ -89,32 +89,32 @@ def test_api_enforces_one_identity_boundary_across_user_data(db, monkeypatch):
         # Rejected chat IDs must not create a replacement thread under the caller.
         assert db.scalar(select(func.count()).select_from(Conversation)) == 2
 
-        rail = client.get("/api/conversations").json()
+        rail = client.get("/conversations").json()
         assert [item["id"] for item in rail["items"]] == [str(default_thread.id)]
-        transactions = client.get("/api/transactions").json()
+        transactions = client.get("/transactions").json()
         assert [item["merchant"] for item in transactions] == ["Default Merchant"]
-        overview = client.get("/api/overview", params={"month": "2026-08-01"}).json()
+        overview = client.get("/overview", params={"month": "2026-08-01"}).json()
         assert overview["summary"]["spentMinor"] == 11_100
         assert overview["categories"][0]["label"] == "Uncategorized"
-        exported = client.get("/api/privacy/export").json()
+        exported = client.get("/privacy/export").json()
         assert exported["user"]["email"] == DEFAULT_USER_EMAIL
         assert [item["merchant_name"] for item in exported["transactions"]] == ["Default Merchant"]
         assert "other secret" not in str(exported)
 
         identity["user_id"] = other_user.id
-        assert client.get(f"/api/conversations/{default_thread.id}").status_code == 404
-        assert client.get(f"/api/conversations/{other_thread.id}").status_code == 200
-        assert [item["merchant"] for item in client.get("/api/transactions").json()] == ["Other Merchant"]
-        assert client.get("/api/overview", params={"month": "2026-08-01"}).json()["summary"]["spentMinor"] == 22_200
+        assert client.get(f"/conversations/{default_thread.id}").status_code == 404
+        assert client.get(f"/conversations/{other_thread.id}").status_code == 200
+        assert [item["merchant"] for item in client.get("/transactions").json()] == ["Other Merchant"]
+        assert client.get("/overview", params={"month": "2026-08-01"}).json()["summary"]["spentMinor"] == 22_200
 
         # Deleting the default user's complete data leaves the other identity intact.
         identity["user_id"] = default_user.id
         assert client.request(
             "DELETE",
-            "/api/privacy/data",
+            "/privacy/data",
             json={"confirmation": "DELETE MY DATA"},
         ).json() == {"deleted": True}
         identity["user_id"] = other_user.id
-        assert client.get(f"/api/conversations/{other_thread.id}").status_code == 200
-        assert [item["merchant"] for item in client.get("/api/transactions").json()] == ["Other Merchant"]
+        assert client.get(f"/conversations/{other_thread.id}").status_code == 200
+        assert [item["merchant"] for item in client.get("/transactions").json()] == ["Other Merchant"]
         assert db.get(User, other_user.id) is not None

@@ -213,7 +213,7 @@ def test_overview_api_serializes_the_frontend_contract_and_rejects_future_months
     monkeypatch.setattr("app.api.local_now", lambda _timezone: datetime(2026, 8, 13, tzinfo=timezone.utc))
 
     with TestClient(application) as client:
-        response = client.get("/api/overview", params={"month": "2026-08-01"})
+        response = client.get("/overview", params={"month": "2026-08-01"})
         assert response.status_code == 200
         payload = response.json()
         assert payload["summary"]["spentMinor"] == 125_000
@@ -223,6 +223,6 @@ def test_overview_api_serializes_the_frontend_contract_and_rejects_future_months
         assert payload["recentTransactions"][0]["merchant"] == "Test merchant"
         assert payload["accounts"] == []
 
-        future = client.get("/api/overview", params={"month": "2026-09-01"})
+        future = client.get("/overview", params={"month": "2026-09-01"})
         assert future.status_code == 422
         assert future.json()["detail"] == "Overview month cannot be in the future"

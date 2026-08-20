@@ -1,22 +1,19 @@
 import { HttpAgent, type AgentSubscriber, type Interrupt } from "@ag-ui/client";
 import { AgentCapabilitiesSchema, type AgentCapabilities, type Message as AgUiMessage } from "@ag-ui/core";
 
+import { API_MOUNT_PATH } from "@/config/api-path";
 import { environment } from "@/config/environment";
 import { agentActivityEventSchema, agentResponseSchema, agentSettingsSchema, agentThreadStateSchema, authStatusSchema, bootstrapSchema, categoryDirectoryEntrySchema, categoryDirectorySchema, categorySubcategorySchema, conversationCreatedSchema, conversationPageSchema, conversationSchema, conversationSummarySchema, dashboardDetailSchema, dashboardListSchema, importResultSchema, otpSentSchema, overviewSchema, parseActionPayload, privacyStatusSchema, profileSchema, transactionCategoryHintSchema, transactionListItemSchema, transactionListSchema, type AgentActivityEvent, type AgentInterruptOut, type AgentResponse, type AgentSettingsOut, type AgentThreadStateOut, type AuthStatusOut, type Bootstrap, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type ConversationCreatedOut, type ConversationOut, type ConversationPage, type ConversationSummary, type DashboardDetail, type DashboardSummary, type ImportResult, type OtpSentOut, type OverviewOut, type PrivacyStatusOut, type ProfileOut, type TransactionCategoryHintOut, type TransactionListItemOut, type TransactionUpdateIn, type WidgetActionId } from "@/lib/protocol";
 
 const API_URL = environment.apiUrl;
 
-/** The URL to call for an API path.
+/** The URL to call for a service-root resource path.
  *
- *  Same-origin — the default, and how dev and any single-origin deployment run
- *  — the `/api` prefix is what separates API routes from the SPA's own routes
- *  through the proxy, so it stays.
- *
- *  Against a dedicated API host it is the hostname said twice:
- *  `api.fynai.co/api/bootstrap`. There it comes off. The edge still accepts
- *  the prefixed form, so a bundle cached before this change keeps working. */
-export function apiUrl(path: string): string {
-  return API_URL ? `${API_URL}${path.replace(/^\/api(?=\/|$)/, "")}` : path;
+ * Same-origin requests need the public mount to stay separate from SPA routes.
+ * A configured dedicated API origin already provides that namespace, so its
+ * service resources remain at the backend root. */
+export function apiUrl(resourcePath: string): string {
+  return `${API_URL || API_MOUNT_PATH}${resourcePath}`;
 }
 
 const UNREACHABLE = "We can’t reach your financial data right now. Check your connection and try again.";
@@ -123,14 +120,14 @@ function conform<T>(schema: { parse: (value: unknown) => T }, payload: unknown, 
 }
 
 export async function bootstrap(): Promise<Bootstrap> {
-  const result = conform(bootstrapSchema, await request("/api/bootstrap"), "workspace");
+  const result = conform(bootstrapSchema, await request("/bootstrap"), "workspace");
   hydrateFynAgent(result.active_conversation.id, result.active_conversation.messages);
   return result;
 }
 
 export async function loadOverview(month?: string): Promise<OverviewOut> {
   const query = month ? `?month=${encodeURIComponent(`${month}-01`)}` : "";
-  const payload = await request(`/api/overview${query}`);
+  const payload = await request(`/overview${query}`);
   const compatiblePayload = payload && typeof payload === "object" && !Array.isArray(payload) && !("budgets" in payload)
     ? { ...payload, budgets: [] }
     : payload;
@@ -142,70 +139,70 @@ export async function loadOverview(month?: string): Promise<OverviewOut> {
  * data — the page never caches a stale plot beyond react-query's own window. */
 
 export async function listDashboards(): Promise<DashboardSummary[]> {
-  return conform(dashboardListSchema, await request("/api/dashboards"), "dashboard list").dashboards;
+  return conform(dashboardListSchema, await request("/dashboards"), "dashboard list").dashboards;
 }
 
 export async function loadDashboard(id: string): Promise<DashboardDetail> {
-  return conform(dashboardDetailSchema, await request(`/api/dashboards/${encodeURIComponent(id)}`), "dashboard");
+  return conform(dashboardDetailSchema, await request(`/dashboards/${encodeURIComponent(id)}`), "dashboard");
 }
 
 export async function deleteDashboardTile(dashboardId: string, tileId: string): Promise<void> {
-  await request(`/api/dashboards/${encodeURIComponent(dashboardId)}/tiles/${encodeURIComponent(tileId)}`, { method: "DELETE" });
+  await request(`/dashboards/${encodeURIComponent(dashboardId)}/tiles/${encodeURIComponent(tileId)}`, { method: "DELETE" });
 }
 
 export async function loadCategories(): Promise<CategoryDirectoryOut[]> {
-  return conform(categoryDirectorySchema, await request("/api/categories"), "category directory");
+  return conform(categoryDirectorySchema, await request("/categories"), "category directory");
 }
 
 /** Naming an existing category returns that entry — the server owns dedup. */
 export async function createCategory(name: string): Promise<CategoryDirectoryOut> {
-  return conform(categoryDirectoryEntrySchema, await request("/api/categories", {
+  return conform(categoryDirectoryEntrySchema, await request("/categories", {
     method: "POST",
     body: JSON.stringify({ name }),
   }), "created category");
 }
 
 export async function createSubcategory(categoryId: string, name: string): Promise<CategoryDirectorySubcategoryOut> {
-  return conform(categorySubcategorySchema, await request(`/api/categories/${encodeURIComponent(categoryId)}/subcategories`, {
+  return conform(categorySubcategorySchema, await request(`/categories/${encodeURIComponent(categoryId)}/subcategories`, {
     method: "POST",
     body: JSON.stringify({ name }),
   }), "created subcategory");
 }
 
 export async function renameCategory(categoryId: string, name: string): Promise<CategoryDirectoryOut> {
-  return conform(categoryDirectoryEntrySchema, await request(`/api/categories/${encodeURIComponent(categoryId)}`, {
+  return conform(categoryDirectoryEntrySchema, await request(`/categories/${encodeURIComponent(categoryId)}`, {
     method: "PATCH", body: JSON.stringify({ name }),
   }), "updated category");
 }
 
 export async function deleteCategory(categoryId: string): Promise<void> {
-  await request(`/api/categories/${encodeURIComponent(categoryId)}`, { method: "DELETE" });
+  await request(`/categories/${encodeURIComponent(categoryId)}`, { method: "DELETE" });
 }
 
 export async function renameSubcategory(categoryId: string, subcategoryId: string, name: string): Promise<CategoryDirectorySubcategoryOut> {
-  return conform(categorySubcategorySchema, await request(`/api/categories/${encodeURIComponent(categoryId)}/subcategories/${encodeURIComponent(subcategoryId)}`, {
+  return conform(categorySubcategorySchema, await request(`/categories/${encodeURIComponent(categoryId)}/subcategories/${encodeURIComponent(subcategoryId)}`, {
     method: "PATCH", body: JSON.stringify({ name }),
   }), "updated subcategory");
 }
 
 export async function deleteSubcategory(categoryId: string, subcategoryId: string): Promise<void> {
-  await request(`/api/categories/${encodeURIComponent(categoryId)}/subcategories/${encodeURIComponent(subcategoryId)}`, { method: "DELETE" });
+  await request(`/categories/${encodeURIComponent(categoryId)}/subcategories/${encodeURIComponent(subcategoryId)}`, { method: "DELETE" });
 }
 
 export async function createTransactionHint(categoryId: string, merchant: string, subcategoryId: string | null): Promise<TransactionCategoryHintOut> {
-  return conform(transactionCategoryHintSchema, await request(`/api/categories/${encodeURIComponent(categoryId)}/hints`, {
+  return conform(transactionCategoryHintSchema, await request(`/categories/${encodeURIComponent(categoryId)}/hints`, {
     method: "POST", body: JSON.stringify({ merchant, subcategoryId }),
   }), "created transaction hint");
 }
 
 export async function updateTransactionHint(categoryId: string, hintId: string, merchant: string, subcategoryId: string | null): Promise<TransactionCategoryHintOut> {
-  return conform(transactionCategoryHintSchema, await request(`/api/categories/${encodeURIComponent(categoryId)}/hints/${encodeURIComponent(hintId)}`, {
+  return conform(transactionCategoryHintSchema, await request(`/categories/${encodeURIComponent(categoryId)}/hints/${encodeURIComponent(hintId)}`, {
     method: "PATCH", body: JSON.stringify({ merchant, subcategoryId }),
   }), "updated transaction hint");
 }
 
 export async function deleteTransactionHint(categoryId: string, hintId: string): Promise<void> {
-  await request(`/api/categories/${encodeURIComponent(categoryId)}/hints/${encodeURIComponent(hintId)}`, { method: "DELETE" });
+  await request(`/categories/${encodeURIComponent(categoryId)}/hints/${encodeURIComponent(hintId)}`, { method: "DELETE" });
 }
 
 export type TransactionPageInput = {
@@ -221,81 +218,81 @@ export async function loadTransactions({ limit = 50, offset = 0, search = "", tr
   if (search.trim()) query.set("q", search.trim());
   if (transactionType) query.set("transaction_type", transactionType);
   if (!includeRemoved) query.set("include_removed", "false");
-  return conform(transactionListSchema, await request(`/api/transactions?${query}`), "transaction list");
+  return conform(transactionListSchema, await request(`/transactions?${query}`), "transaction list");
 }
 
 /** Soft-deletes one transaction: it stays in the log struck through, leaves
  *  every total, and can be restored. */
 export async function removeTransaction(id: string): Promise<TransactionListItemOut> {
-  return conform(transactionListItemSchema, await request(`/api/transactions/${encodeURIComponent(id)}`, { method: "DELETE" }), "removed transaction");
+  return conform(transactionListItemSchema, await request(`/transactions/${encodeURIComponent(id)}`, { method: "DELETE" }), "removed transaction");
 }
 
 /** Clears a removal's tombstone; the record rejoins every total at once. */
 export async function restoreTransaction(id: string): Promise<TransactionListItemOut> {
-  return conform(transactionListItemSchema, await request(`/api/transactions/${encodeURIComponent(id)}/restore`, { method: "POST" }), "restored transaction");
+  return conform(transactionListItemSchema, await request(`/transactions/${encodeURIComponent(id)}/restore`, { method: "POST" }), "restored transaction");
 }
 
 export async function createTransactionRecord(payload: TransactionUpdateIn): Promise<TransactionListItemOut> {
-  return conform(transactionListItemSchema, await request("/api/transactions", {
+  return conform(transactionListItemSchema, await request("/transactions", {
     method: "POST",
     body: JSON.stringify(payload),
   }), "created transaction");
 }
 
 export async function updateTransaction(id: string, payload: TransactionUpdateIn): Promise<TransactionListItemOut> {
-  return conform(transactionListItemSchema, await request(`/api/transactions/${encodeURIComponent(id)}`, {
+  return conform(transactionListItemSchema, await request(`/transactions/${encodeURIComponent(id)}`, {
     method: "PATCH",
     body: JSON.stringify(payload),
   }), "updated transaction");
 }
 
 export async function loadConversation(id: string): Promise<ConversationOut> {
-  const result = conform(conversationSchema, await request(`/api/conversations/${encodeURIComponent(id)}`), "conversation");
+  const result = conform(conversationSchema, await request(`/conversations/${encodeURIComponent(id)}`), "conversation");
   hydrateFynAgent(result.id, result.messages);
   return result;
 }
 
 export async function createConversation(): Promise<ConversationCreatedOut> {
-  return conform(conversationCreatedSchema, await request("/api/conversations", { method: "POST", body: "{}" }), "new conversation");
+  return conform(conversationCreatedSchema, await request("/conversations", { method: "POST", body: "{}" }), "new conversation");
 }
 
 /** One page of history for the rail. Pass the previous page's `nextCursor` to
  *  continue; a null cursor means there is nothing older to load. */
 export async function listConversations(cursor?: string | null): Promise<ConversationPage> {
-  return conform(conversationPageSchema, await request(`/api/conversations${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`), "conversation list");
+  return conform(conversationPageSchema, await request(`/conversations${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`), "conversation list");
 }
 
 /** Erases the thread and everything recorded against it. Transactions it
  *  captured are financial history and are deliberately left alone. */
 export async function renameConversation(id: string, title: string): Promise<ConversationSummary> {
-  return conform(conversationSummarySchema, await request(`/api/conversations/${encodeURIComponent(id)}`, {
+  return conform(conversationSummarySchema, await request(`/conversations/${encodeURIComponent(id)}`, {
     method: "PATCH", body: JSON.stringify({ title }),
   }), "renamed conversation");
 }
 
 export async function deleteConversation(id: string): Promise<void> {
-  await request(`/api/conversations/${id}`, { method: "DELETE" });
+  await request(`/conversations/${id}`, { method: "DELETE" });
 }
 
 /** Fire-and-forget version of the same delete, for the moment the page is going
  *  away with an undo window still open: `keepalive` lets the request outlive the
  *  document, so closing the tab doesn't quietly un-press the delete. */
 export function flushConversationDeletion(id: string): void {
-  void fetch(apiUrl(`/api/conversations/${id}`), { method: "DELETE", keepalive: true }).catch(() => undefined);
+  void fetch(apiUrl(`/conversations/${id}`), { method: "DELETE", keepalive: true }).catch(() => undefined);
 }
 
 /** The same keepalive escape hatch for taxonomy deletes still inside their
  *  undo window when the page goes away. */
 export function flushCategoryDeletion(categoryId: string): void {
-  void fetch(apiUrl(`/api/categories/${encodeURIComponent(categoryId)}`), { method: "DELETE", keepalive: true }).catch(() => undefined);
+  void fetch(apiUrl(`/categories/${encodeURIComponent(categoryId)}`), { method: "DELETE", keepalive: true }).catch(() => undefined);
 }
 
 export function flushSubcategoryDeletion(categoryId: string, subcategoryId: string): void {
-  void fetch(apiUrl(`/api/categories/${encodeURIComponent(categoryId)}/subcategories/${encodeURIComponent(subcategoryId)}`), { method: "DELETE", keepalive: true }).catch(() => undefined);
+  void fetch(apiUrl(`/categories/${encodeURIComponent(categoryId)}/subcategories/${encodeURIComponent(subcategoryId)}`), { method: "DELETE", keepalive: true }).catch(() => undefined);
 }
 
 export function flushHintDeletion(categoryId: string, hintId: string): void {
-  void fetch(apiUrl(`/api/categories/${encodeURIComponent(categoryId)}/hints/${encodeURIComponent(hintId)}`), { method: "DELETE", keepalive: true }).catch(() => undefined);
+  void fetch(apiUrl(`/categories/${encodeURIComponent(categoryId)}/hints/${encodeURIComponent(hintId)}`), { method: "DELETE", keepalive: true }).catch(() => undefined);
 }
 
 export type AgentActivity = AgentActivityEvent;
@@ -360,7 +357,7 @@ class FynHttpAgent extends HttpAgent {
   }
 
   override async getCapabilities(): Promise<AgentCapabilities> {
-    this.capabilitiesRequest ??= fetch(apiUrl(`/api/agent/capabilities`), { credentials: "include" })
+    this.capabilitiesRequest ??= fetch(apiUrl(`/agent/capabilities`), { credentials: "include" })
       .then(async (response) => {
         if (!response.ok) throw new ApiError(describe(await response.json().catch(() => null), response.status), response.status);
         return conform(AgentCapabilitiesSchema, await response.json(), "agent capability declaration");
@@ -388,7 +385,7 @@ function fynAgent(threadId: string): FynHttpAgent {
   const existing = fynAgents.get(threadId);
   if (existing) return existing;
   const agent = new FynHttpAgent({
-    url: apiUrl(`/api/agent`),
+    url: apiUrl(`/agent`),
     threadId,
     fetch: (url, init) => fetch(url, { ...init, credentials: "include" }),
   });
@@ -520,9 +517,9 @@ async function runFynAgent(
   };
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const replayUrl = apiUrl(`/api/agent/runs/${encodeURIComponent(runId)}/events${cursorState.safe ? `?after=${cursorState.safe}` : ""}`);
+    const replayUrl = apiUrl(`/agent/runs/${encodeURIComponent(runId)}/events${cursorState.safe ? `?after=${cursorState.safe}` : ""}`);
     agent.replayMode = replay;
-    agent.url = replay ? replayUrl : apiUrl(`/api/agent`);
+    agent.url = replay ? replayUrl : apiUrl(`/agent`);
     try {
       await agent.runAgent({
         runId,
@@ -637,12 +634,12 @@ export function reconnectAgentRun(
 }
 
 export async function loadAgentThreadState(conversationId: string): Promise<AgentThreadStateOut> {
-  return conform(agentThreadStateSchema, await request(`/api/agent/threads/${encodeURIComponent(conversationId)}`), "agent state");
+  return conform(agentThreadStateSchema, await request(`/agent/threads/${encodeURIComponent(conversationId)}`), "agent state");
 }
 
 
 export async function cancelAgentRun(runId: string): Promise<void> {
-  await request(`/api/agent/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST", body: "{}" });
+  await request(`/agent/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST", body: "{}" });
 }
 
 export function openInterrupts(state: AgentThreadStateOut): FynInterrupt[] {
@@ -665,7 +662,7 @@ export function uploadCsv(conversationId: string, file: File, onProgress?: (perc
   body.set("file", file);
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
-    request.open("POST", apiUrl(`/api/imports/csv`));
+    request.open("POST", apiUrl(`/imports/csv`));
     // The fetch calls carry the session through `credentials: "include"`; XHR
     // needs the same thing said its own way or the upload arrives signed out.
     request.withCredentials = true;
@@ -697,38 +694,38 @@ export type AnswerValidationMode = AgentSettingsOut["answerValidationMode"];
 export type AnswerStyle = AgentSettingsOut["answerStyle"];
 
 export async function getAgentSettings(): Promise<AgentSettingsOut> {
-  return conform(agentSettingsSchema, await request("/api/agent-settings"), "agent setting");
+  return conform(agentSettingsSchema, await request("/agent-settings"), "agent setting");
 }
 
 export async function setAnswerValidationMode(answerValidationMode: AnswerValidationMode): Promise<AgentSettingsOut> {
-  return conform(agentSettingsSchema, await request("/api/agent-settings", {
+  return conform(agentSettingsSchema, await request("/agent-settings", {
     method: "PATCH",
     body: JSON.stringify({ answerValidationMode }),
   }), "updated agent setting");
 }
 
 export async function setAnswerStyle(answerStyle: AnswerStyle): Promise<AgentSettingsOut> {
-  return conform(agentSettingsSchema, await request("/api/agent-settings", {
+  return conform(agentSettingsSchema, await request("/agent-settings", {
     method: "PATCH",
     body: JSON.stringify({ answerStyle }),
   }), "updated agent setting");
 }
 
 export async function getPrivacyStatus(): Promise<PrivacyStatus> {
-  return conform(privacyStatusSchema, await request("/api/privacy"), "privacy setting");
+  return conform(privacyStatusSchema, await request("/privacy"), "privacy setting");
 }
 
 export async function setLocationEnabled(enabled: boolean): Promise<void> {
-  await request("/api/privacy/location", { method: "PATCH", body: JSON.stringify({ enabled }) });
+  await request("/privacy/location", { method: "PATCH", body: JSON.stringify({ enabled }) });
 }
 
 export async function revokeSource(sourceType: string): Promise<void> {
-  await request(`/api/privacy/sources/${sourceType}/revoke`, { method: "POST", body: "{}" });
+  await request(`/privacy/sources/${sourceType}/revoke`, { method: "POST", body: "{}" });
 }
 
 /** Returns the filename so the drawer can confirm what was saved. */
 export async function downloadDataExport(): Promise<string> {
-  const response = await send("/api/privacy/export");
+  const response = await send("/privacy/export");
   if (!response.ok) throw new Error("Your export couldn’t be prepared. Try again in a moment.");
   const blob = await response.blob();
   if (!blob.size) throw new Error("Your export came back empty, so nothing was saved.");
@@ -747,13 +744,13 @@ export async function downloadDataExport(): Promise<string> {
 }
 
 export async function deleteAllData(): Promise<void> {
-  await request("/api/privacy/data", { method: "DELETE", body: JSON.stringify({ confirmation: "DELETE MY DATA" }) });
+  await request("/privacy/data", { method: "DELETE", body: JSON.stringify({ confirmation: "DELETE MY DATA" }) });
 }
 
 /* ── Signing in ─────────────────────────────────────────────────────────────
  * The session lives in an httpOnly cookie, so there is no token to store, read
  * or refresh here. "Am I signed in?" is a question only the server can answer,
- * and `/api/auth/session` answers it 200 either way rather than by throwing. */
+ * and `/auth/session` answers it 200 either way rather than by throwing. */
 
 export type AuthStatus = AuthStatusOut;
 export type Profile = ProfileOut;
@@ -761,18 +758,18 @@ export type OtpSent = OtpSentOut;
 export type OtpChannel = "phone" | "email";
 
 export async function getAuthStatus(): Promise<AuthStatus> {
-  return conform(authStatusSchema, await request("/api/auth/session"), "sign-in status");
+  return conform(authStatusSchema, await request("/auth/session"), "sign-in status");
 }
 
 /** Sends a sign-in code. Reveals nothing about whether an account exists. */
 export async function startSignInCode(channel: OtpChannel, value: string): Promise<OtpSent> {
-  return conform(otpSentSchema, await request("/api/auth/otp/start", {
+  return conform(otpSentSchema, await request("/auth/otp/start", {
     method: "POST", body: JSON.stringify({ channel, value }),
   }), "verification code");
 }
 
 export async function verifySignInCode(challengeId: string, code: string): Promise<AuthStatus> {
-  return conform(authStatusSchema, await request("/api/auth/otp/verify", {
+  return conform(authStatusSchema, await request("/auth/otp/verify", {
     method: "POST", body: JSON.stringify({ challengeId, code }),
   }), "sign-in status");
 }
@@ -780,35 +777,35 @@ export async function verifySignInCode(challengeId: string, code: string): Promi
 /** Exchanges the Google ID token for a session. The token is verified against
  *  Google's keys on the server; nothing here trusts what it contains. */
 export async function signInWithGoogle(credential: string): Promise<AuthStatus> {
-  return conform(authStatusSchema, await request("/api/auth/google", {
+  return conform(authStatusSchema, await request("/auth/google", {
     method: "POST", body: JSON.stringify({ credential }),
   }), "sign-in status");
 }
 
 export async function signOut(): Promise<void> {
-  await request("/api/auth/signout", { method: "POST", body: "{}" });
+  await request("/auth/signout", { method: "POST", body: "{}" });
 }
 
 /* ── Profile ─────────────────────────────────────────────────────────────── */
 
 export async function getProfile(): Promise<Profile> {
-  return conform(profileSchema, await request("/api/profile"), "profile");
+  return conform(profileSchema, await request("/profile"), "profile");
 }
 
 /** Sends a code to a number or address this account wants to claim. Throws a
  *  409 before sending when it belongs to somebody else. */
 export async function startLinkCode(channel: OtpChannel, value: string): Promise<OtpSent> {
-  return conform(otpSentSchema, await request("/api/profile/identities/otp/start", {
+  return conform(otpSentSchema, await request("/profile/identities/otp/start", {
     method: "POST", body: JSON.stringify({ channel, value }),
   }), "verification code");
 }
 
 export async function verifyLinkCode(challengeId: string, code: string): Promise<Profile> {
-  return conform(profileSchema, await request("/api/profile/identities/otp/verify", {
+  return conform(profileSchema, await request("/profile/identities/otp/verify", {
     method: "POST", body: JSON.stringify({ challengeId, code }),
   }), "profile");
 }
 
 export async function removeIdentity(identityId: string): Promise<Profile> {
-  return conform(profileSchema, await request(`/api/profile/identities/${identityId}`, { method: "DELETE" }), "profile");
+  return conform(profileSchema, await request(`/profile/identities/${identityId}`, { method: "DELETE" }), "profile");
 }

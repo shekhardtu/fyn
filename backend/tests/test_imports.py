@@ -84,7 +84,7 @@ def test_csv_is_staged_confirmed_and_idempotent(db):
 
     def upload(client):
         return client.post(
-            "/api/imports/csv",
+            "/imports/csv",
             data={"conversation_id": str(conversation.id)},
             files={"file": ("statement.csv", STATEMENT, "text/csv")},
         )
@@ -103,7 +103,7 @@ def test_csv_is_staged_confirmed_and_idempotent(db):
         assert stale_update["widget"]["data"]["lifecycle"] == "cancelled"
         db.refresh(stale_interrupt)
         assert stale_interrupt.status == AgentInterruptStatus.CANCELLED.value
-        assert client.get(f"/api/agent/threads/{conversation.id}").json()["interrupts"] == []
+        assert client.get(f"/agent/threads/{conversation.id}").json()["interrupts"] == []
         assert list(db.scalars(select(Transaction))) == []
 
         action = preview["agentResponse"]["widgets"][0]["actions"][0]

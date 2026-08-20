@@ -35,7 +35,7 @@ def client_for(db, user) -> TestClient:
 def upload(client, body: str, name: str | None = None, filename: str = "attack.csv"):
     data = {"name": name} if name else {}
     return client.post(
-        "/api/sources/spreadsheet",
+        "/sources/spreadsheet",
         files={"file": (filename, io.BytesIO(body.encode()), "text/csv")},
         data=data,
     )
@@ -159,7 +159,7 @@ def test_oversize_header_and_100kb_cell_are_accepted_and_stored(db):
     # The annotation schema caps field names at 120 chars, so the oversize
     # header is rejected with a typed 422 at the annotation endpoint.
     rejected = client.post(
-        f"/api/sources/spreadsheet/{source_id}/annotations",
+        f"/sources/spreadsheet/{source_id}/annotations",
         json={"annotations": [{"field": long_header, "statement": "too wide"}]},
     )
     assert rejected.status_code == 422
@@ -223,7 +223,7 @@ def test_100kb_annotation_statement_is_a_typed_422(db):
     ).json()["sourceId"]
 
     response = client.post(
-        f"/api/sources/spreadsheet/{source_id}/annotations",
+        f"/sources/spreadsheet/{source_id}/annotations",
         json={"annotations": [{"field": "Amount", "statement": "x" * 100_000}]},
     )
     assert response.status_code == 422

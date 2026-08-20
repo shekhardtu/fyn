@@ -13,7 +13,7 @@ compiled definitions, instructions, or revision history.
 - Each API process loads the complete catalog at startup and watches it at runtime.
 
 A reload compiles every file before atomically replacing the in-memory snapshot.
-One invalid file leaves the last-known-good catalog active and changes `/api/health`
+One invalid file leaves the last-known-good catalog active and changes `/health`
 to `degraded`. A configured managed directory that is not mounted fails startup.
 The health payload reports hashes and counts, not file content.
 

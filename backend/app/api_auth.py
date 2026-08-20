@@ -30,7 +30,7 @@ from .services.otp_delivery import OtpDeliveryError
 from .services.sessions import issue_session, revoke_session
 
 
-router = APIRouter(prefix="/api")
+router = APIRouter()
 
 
 @contextmanager

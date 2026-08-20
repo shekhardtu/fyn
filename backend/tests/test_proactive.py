@@ -531,7 +531,7 @@ def test_the_endpoint_returns_verified_insights_with_their_stamps(db):
     db.commit()
 
     with TestClient(_application(db, user)) as client:
-        response = client.get("/api/insights")
+        response = client.get("/insights")
 
     assert response.status_code == 200
     body = response.json()
@@ -562,12 +562,12 @@ def test_the_endpoint_drops_an_insight_the_data_no_longer_supports(db):
     db.commit()
 
     with TestClient(_application(db, user)) as client:
-        first = client.get("/api/insights")
+        first = client.get("/insights")
         assert [item["kind"] for item in first.json()["insights"]] == [KIND_INCOME_GAP]
 
         _income(db, user, at=_on(today - timedelta(days=1)))
         db.commit()
-        second = client.get("/api/insights")
+        second = client.get("/insights")
 
     assert second.json()["insights"] == []
     # The pass still ran and still reported when — an empty list is a result,
@@ -585,9 +585,9 @@ def test_the_endpoint_never_shows_one_users_insight_to_another(db):
     db.commit()
 
     with TestClient(_application(db, user)) as client:
-        mine = client.get("/api/insights").json()
+        mine = client.get("/insights").json()
     with TestClient(_application(db, stranger)) as client:
-        theirs = client.get("/api/insights").json()
+        theirs = client.get("/insights").json()
 
     assert len(mine["insights"]) == 1
     assert theirs["insights"] == []

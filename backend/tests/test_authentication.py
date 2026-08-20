@@ -50,11 +50,11 @@ def client(db, settings):
 
 def sign_in_with_phone(client, phone: str = PHONE) -> dict:
     """The whole passwordless round trip: ask for a code, then present it."""
-    started = client.post("/api/auth/otp/start", json={"channel": "phone", "value": phone})
+    started = client.post("/auth/otp/start", json={"channel": "phone", "value": phone})
     assert started.status_code == 200, started.text
     body = started.json()
     verified = client.post(
-        "/api/auth/otp/verify",
+        "/auth/otp/verify",
         json={"challengeId": body["challengeId"], "code": body["debugCode"]},
     )
     assert verified.status_code == 200, verified.text
@@ -62,12 +62,12 @@ def sign_in_with_phone(client, phone: str = PHONE) -> dict:
 
 
 def link_identifier(client, channel: str, value: str) -> tuple[int, dict]:
-    started = client.post("/api/profile/identities/otp/start", json={"channel": channel, "value": value})
+    started = client.post("/profile/identities/otp/start", json={"channel": channel, "value": value})
     if started.status_code != 200:
         return started.status_code, started.json()
     body = started.json()
     verified = client.post(
-        "/api/profile/identities/otp/verify",
+        "/profile/identities/otp/verify",
         json={"challengeId": body["challengeId"], "code": body["debugCode"]},
     )
     return verified.status_code, verified.json()
@@ -151,7 +151,7 @@ def test_a_channel_without_a_provider_is_refused_when_it_is_used(client, setting
     monkeypatch.setattr(current, "environment", "production")
     monkeypatch.setattr(current, "postmark_server_token", None)
 
-    refused = client.post("/api/auth/otp/start", json={"channel": "email", "value": "someone@example.com"})
+    refused = client.post("/auth/otp/start", json={"channel": "email", "value": "someone@example.com"})
 
     assert refused.status_code == 503
     assert "Email sign-in is not available" in refused.json()["detail"]
@@ -166,7 +166,7 @@ def test_the_configured_channel_still_works_when_another_has_no_provider(client,
     monkeypatch.setattr(current, "msg91_template_id", "template")
     monkeypatch.setattr("app.services.auth.deliver_code", lambda *a, **k: None)
 
-    started = client.post("/api/auth/otp/start", json={"channel": "phone", "value": PHONE})
+    started = client.post("/auth/otp/start", json={"channel": "phone", "value": PHONE})
 
     assert started.status_code == 200
 
@@ -211,13 +211,13 @@ def test_development_phone_otp_is_returned_without_sending_sms(client, settings,
 
     monkeypatch.setattr("app.services.auth.deliver_code", must_not_deliver)
 
-    started = client.post("/api/auth/otp/start", json={"channel": "phone", "value": PHONE})
+    started = client.post("/auth/otp/start", json={"channel": "phone", "value": PHONE})
 
     assert started.status_code == 200
     body = started.json()
     assert body["debugCode"]
     verified = client.post(
-        "/api/auth/otp/verify",
+        "/auth/otp/verify",
         json={"challengeId": body["challengeId"], "code": body["debugCode"]},
     )
     assert verified.status_code == 200
@@ -236,12 +236,12 @@ def test_first_phone_sign_in_adopts_the_account_that_predates_authentication(cli
     assert [item["provider"] for item in profile["identities"]] == ["phone"]
     # The placeholder address is gone rather than left as a phantom identifier.
     assert profile["email"] is None
-    assert client.get("/api/conversations").json()["items"][0]["title"] == "Recorded before sign-in existed"
+    assert client.get("/conversations").json()["items"][0]["title"] == "Recorded before sign-in existed"
 
 
 def test_returning_phone_sign_in_resolves_to_the_same_account(client, db):
     first = sign_in_with_phone(client)["profile"]
-    client.post("/api/auth/signout")
+    client.post("/auth/signout")
     second = sign_in_with_phone(client)["profile"]
 
     assert first["id"] == second["id"]
@@ -250,24 +250,24 @@ def test_returning_phone_sign_in_resolves_to_the_same_account(client, db):
 
 def test_a_second_number_gets_its_own_account(client, db):
     first = sign_in_with_phone(client)["profile"]
-    client.post("/api/auth/signout")
+    client.post("/auth/signout")
     second = sign_in_with_phone(client, OTHER_PHONE)["profile"]
 
     assert first["id"] != second["id"]
 
 
 def test_a_wrong_code_is_refused_and_the_attempts_run_out(client, settings):
-    monkeyed = client.post("/api/auth/otp/start", json={"channel": "phone", "value": PHONE}).json()
+    monkeyed = client.post("/auth/otp/start", json={"channel": "phone", "value": PHONE}).json()
     for _ in range(settings.otp_max_attempts):
         rejected = client.post(
-            "/api/auth/otp/verify",
+            "/auth/otp/verify",
             json={"challengeId": monkeyed["challengeId"], "code": "000000"},
         )
         assert rejected.status_code == 400
 
     # The correct code no longer helps once the budget is spent.
     exhausted = client.post(
-        "/api/auth/otp/verify",
+        "/auth/otp/verify",
         json={"challengeId": monkeyed["challengeId"], "code": monkeyed["debugCode"]},
     )
     assert exhausted.status_code == 400
@@ -277,16 +277,16 @@ def test_a_wrong_code_is_refused_and_the_attempts_run_out(client, settings):
 
 def test_only_the_newest_code_for_a_destination_still_works(client):
     """Resending must not widen the guessable space."""
-    first = client.post("/api/auth/otp/start", json={"channel": "phone", "value": PHONE}).json()
-    second = client.post("/api/auth/otp/start", json={"channel": "phone", "value": PHONE}).json()
+    first = client.post("/auth/otp/start", json={"channel": "phone", "value": PHONE}).json()
+    second = client.post("/auth/otp/start", json={"channel": "phone", "value": PHONE}).json()
 
     stale = client.post(
-        "/api/auth/otp/verify",
+        "/auth/otp/verify",
         json={"challengeId": first["challengeId"], "code": first["debugCode"]},
     )
     assert stale.status_code == 400
     current = client.post(
-        "/api/auth/otp/verify",
+        "/auth/otp/verify",
         json={"challengeId": second["challengeId"], "code": second["debugCode"]},
     )
     assert current.status_code == 200
@@ -294,28 +294,28 @@ def test_only_the_newest_code_for_a_destination_still_works(client):
 
 def test_codes_are_rate_limited_per_destination(client, settings, monkeypatch):
     monkeypatch.setattr(settings, "otp_resend_interval_seconds", 45)
-    client.post("/api/auth/otp/start", json={"channel": "phone", "value": PHONE})
-    throttled = client.post("/api/auth/otp/start", json={"channel": "phone", "value": PHONE})
+    client.post("/auth/otp/start", json={"channel": "phone", "value": PHONE})
+    throttled = client.post("/auth/otp/start", json={"channel": "phone", "value": PHONE})
 
     assert throttled.status_code == 429
     assert int(throttled.headers["retry-after"]) > 0
 
     monkeypatch.setattr(settings, "otp_resend_interval_seconds", 0)
     for _ in range(settings.otp_max_sends_per_hour):
-        client.post("/api/auth/otp/start", json={"channel": "phone", "value": PHONE})
-    hourly = client.post("/api/auth/otp/start", json={"channel": "phone", "value": PHONE})
+        client.post("/auth/otp/start", json={"channel": "phone", "value": PHONE})
+    hourly = client.post("/auth/otp/start", json={"channel": "phone", "value": PHONE})
     assert hourly.status_code == 429
 
 
 def test_a_typed_number_is_rejected_before_any_message_is_sent(client):
-    refused = client.post("/api/auth/otp/start", json={"channel": "phone", "value": "12"})
+    refused = client.post("/auth/otp/start", json={"channel": "phone", "value": "12"})
     assert refused.status_code == 422
 
 
 def test_google_sign_in_creates_then_recognises_one_account(client, db, monkeypatch):
     google_account(monkeypatch, subject="google-subject-1", email="Person@Gmail.com", name="Person")
 
-    first = client.post("/api/auth/google", json={"credential": "token"})
+    first = client.post("/auth/google", json={"credential": "token"})
     assert first.status_code == 200
     profile = first.json()["profile"]
     assert profile["displayName"] == "Person"
@@ -323,15 +323,15 @@ def test_google_sign_in_creates_then_recognises_one_account(client, db, monkeypa
     # The Google row reports the address, not the subject nobody can read.
     assert {item["value"] for item in profile["identities"]} == {"person@gmail.com"}
 
-    client.post("/api/auth/signout")
-    again = client.post("/api/auth/google", json={"credential": "token"}).json()["profile"]
+    client.post("/auth/signout")
+    again = client.post("/auth/google", json={"credential": "token"}).json()["profile"]
     assert again["id"] == profile["id"]
     assert db.scalar(select(User).where(User.email == "person@gmail.com")) is not None
 
 
 def test_google_sign_in_is_refused_when_the_server_has_no_client_id(client, settings, monkeypatch):
     monkeypatch.setattr(settings, "google_client_id", None)
-    refused = client.post("/api/auth/google", json={"credential": "token"})
+    refused = client.post("/auth/google", json={"credential": "token"})
     assert refused.status_code == 503
 
 
@@ -341,14 +341,14 @@ def test_google_sign_in_is_refused_when_the_server_has_no_client_id(client, sett
 def test_a_google_account_links_a_phone_number_and_both_then_sign_in(client, monkeypatch):
     """The merge the profile page promises, from the Google side."""
     google_account(monkeypatch, subject="google-subject-1", email="person@gmail.com")
-    created = client.post("/api/auth/google", json={"credential": "token"}).json()["profile"]
+    created = client.post("/auth/google", json={"credential": "token"}).json()["profile"]
 
     status, profile = link_identifier(client, "phone", PHONE)
     assert status == 200
     assert profile["phone"] == PHONE
     assert {item["provider"] for item in profile["identities"]} == {"google", "email", "phone"}
 
-    client.post("/api/auth/signout")
+    client.post("/auth/signout")
     assert sign_in_with_phone(client)["profile"]["id"] == created["id"]
 
 
@@ -360,9 +360,9 @@ def test_a_phone_account_verifies_an_email_and_a_later_google_sign_in_joins_it(c
     assert status == 200
     assert profile["email"] == "person@gmail.com"
 
-    client.post("/api/auth/signout")
+    client.post("/auth/signout")
     google_account(monkeypatch, subject="google-subject-1", email="person@gmail.com")
-    adopted = client.post("/api/auth/google", json={"credential": "token"}).json()["profile"]
+    adopted = client.post("/auth/google", json={"credential": "token"}).json()["profile"]
 
     # Adopted, not duplicated: one account now answers to phone, email and Google.
     assert adopted["id"] == created["id"]
@@ -371,7 +371,7 @@ def test_a_phone_account_verifies_an_email_and_a_later_google_sign_in_joins_it(c
 
 def test_an_identifier_held_by_another_account_cannot_be_linked(client, db):
     sign_in_with_phone(client, OTHER_PHONE)
-    client.post("/api/auth/signout")
+    client.post("/auth/signout")
     sign_in_with_phone(client, PHONE)
 
     status, body = link_identifier(client, "phone", OTHER_PHONE)
@@ -390,7 +390,7 @@ def test_deleting_the_holding_account_releases_its_identifiers(client, db, monke
     monkeypatch.setattr("app.services.user_data.export_user_memories", lambda _user_id: [])
 
     sign_in_with_phone(client, OTHER_PHONE)
-    client.request("DELETE", "/api/privacy/data", json={"confirmation": "DELETE MY DATA"})
+    client.request("DELETE", "/privacy/data", json={"confirmation": "DELETE MY DATA"})
 
     sign_in_with_phone(client, PHONE)
     status, profile = link_identifier(client, "phone", OTHER_PHONE)
@@ -411,7 +411,7 @@ def test_verifying_a_new_number_replaces_the_previous_one(client, db):
 
 def test_an_address_owned_by_google_is_not_replaced_by_a_code(client, monkeypatch):
     google_account(monkeypatch, subject="google-subject-1", email="person@gmail.com")
-    client.post("/api/auth/google", json={"credential": "token"})
+    client.post("/auth/google", json={"credential": "token"})
 
     status, body = link_identifier(client, "email", "somewhere.else@example.com")
     assert status == 409
@@ -432,9 +432,9 @@ def test_the_only_sign_in_method_cannot_be_removed(client):
     profile = sign_in_with_phone(client)["profile"]
     only = profile["identities"][0]["id"]
 
-    refused = client.delete(f"/api/profile/identities/{only}")
+    refused = client.delete(f"/profile/identities/{only}")
     assert refused.status_code == 409
-    assert client.get("/api/profile").status_code == 200
+    assert client.get("/profile").status_code == 200
 
 
 def test_one_of_two_sign_in_methods_can_be_removed(client):
@@ -442,7 +442,7 @@ def test_one_of_two_sign_in_methods_can_be_removed(client):
     _, profile = link_identifier(client, "email", EMAIL)
     email_id = next(item["id"] for item in profile["identities"] if item["provider"] == "email")
 
-    removed = client.delete(f"/api/profile/identities/{email_id}")
+    removed = client.delete(f"/profile/identities/{email_id}")
     assert removed.status_code == 200
     assert removed.json()["email"] is None
     assert {item["provider"] for item in removed.json()["identities"]} == {"phone"}
@@ -453,10 +453,10 @@ def test_a_sign_in_method_on_another_account_is_not_removable(client, db):
     stranger = db.scalar(
         select(UserIdentity).where(UserIdentity.identifier == OTHER_PHONE)
     ).id
-    client.post("/api/auth/signout")
+    client.post("/auth/signout")
     sign_in_with_phone(client, PHONE)
 
-    assert client.delete(f"/api/profile/identities/{stranger}").status_code == 404
+    assert client.delete(f"/profile/identities/{stranger}").status_code == 404
 
 
 # ── The session ──────────────────────────────────────────────────────────────
@@ -464,7 +464,7 @@ def test_a_sign_in_method_on_another_account_is_not_removable(client, db):
 
 def test_financial_routes_are_closed_until_a_session_exists(client):
     """Refusal happens in the dependency, before any route body runs."""
-    guarded = ("/api/bootstrap", "/api/categories", "/api/conversations", "/api/transactions", "/api/privacy", "/api/profile")
+    guarded = ("/bootstrap", "/categories", "/conversations", "/transactions", "/privacy", "/profile")
     for path in guarded:
         assert client.get(path).status_code == 401, path
 
@@ -474,9 +474,9 @@ def test_financial_routes_are_closed_until_a_session_exists(client):
 
 
 def test_the_session_cookie_is_not_readable_by_script(client):
-    started = client.post("/api/auth/otp/start", json={"channel": "phone", "value": PHONE}).json()
+    started = client.post("/auth/otp/start", json={"channel": "phone", "value": PHONE}).json()
     verified = client.post(
-        "/api/auth/otp/verify",
+        "/auth/otp/verify",
         json={"challengeId": started["challengeId"], "code": started["debugCode"]},
     )
     cookie = verified.headers["set-cookie"]
@@ -491,13 +491,13 @@ def test_signing_out_ends_that_session_for_good(client, db):
     token_count = db.scalar(select(UserSession).where(UserSession.revoked_at.is_(None)))
     assert token_count is not None
 
-    assert client.post("/api/auth/signout").json() == {"signedOut": True}
-    assert client.get("/api/profile").status_code == 401
-    assert client.get("/api/auth/session").json()["authenticated"] is False
+    assert client.post("/auth/signout").json() == {"signedOut": True}
+    assert client.get("/profile").status_code == 401
+    assert client.get("/auth/session").json()["authenticated"] is False
 
 
 def test_the_session_endpoint_answers_for_a_visitor_who_is_not_signed_in(client):
-    anonymous = client.get("/api/auth/session")
+    anonymous = client.get("/auth/session")
     assert anonymous.status_code == 200
     assert anonymous.json() == {
         "authenticated": False,
@@ -510,16 +510,16 @@ def test_a_deleted_account_cannot_keep_using_its_cookie(client, monkeypatch):
     monkeypatch.setattr("app.services.user_data.clear_user_memories", lambda _user_id: 0)
     sign_in_with_phone(client)
 
-    client.request("DELETE", "/api/privacy/data", json={"confirmation": "DELETE MY DATA"})
-    assert client.get("/api/profile").status_code == 401
+    client.request("DELETE", "/privacy/data", json={"confirmation": "DELETE MY DATA"})
+    assert client.get("/profile").status_code == 401
 
 
 def test_one_account_never_sees_another_accounts_profile(client, db):
     sign_in_with_phone(client, OTHER_PHONE)
-    first = client.get("/api/profile").json()
-    client.post("/api/auth/signout")
+    first = client.get("/profile").json()
+    client.post("/auth/signout")
     sign_in_with_phone(client, PHONE)
-    second = client.get("/api/profile").json()
+    second = client.get("/profile").json()
 
     assert first["id"] != second["id"]
     assert second["phone"] == PHONE

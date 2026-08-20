@@ -80,17 +80,17 @@ def test_dashboard_lifecycle_reflects_live_ledger_changes(db):
     db.flush()
     client = client_for(db, user)
 
-    created = client.post("/api/dashboards", json={"name": "Spending"})
+    created = client.post("/dashboards", json={"name": "Spending"})
     assert created.status_code == 200, created.text
     dashboard_id = created.json()["id"]
     assert created.json() == {"id": dashboard_id, "name": "Spending"}
 
-    assert client.get("/api/dashboards").json() == {
+    assert client.get("/dashboards").json() == {
         "dashboards": [{"id": dashboard_id, "name": "Spending", "tileCount": 0}],
     }
 
     added = client.post(
-        f"/api/dashboards/{dashboard_id}/tiles",
+        f"/dashboards/{dashboard_id}/tiles",
         json={"title": "Food this month", "proposal": proposal_payload(date.today())},
     )
     assert added.status_code == 200, added.text
@@ -101,9 +101,9 @@ def test_dashboard_lifecycle_reflects_live_ledger_changes(db):
         "title": "Food this month",
         "position": 0,
     }
-    assert client.get("/api/dashboards").json()["dashboards"][0]["tileCount"] == 1
+    assert client.get("/dashboards").json()["dashboards"][0]["tileCount"] == 1
 
-    first = client.get(f"/api/dashboards/{dashboard_id}")
+    first = client.get(f"/dashboards/{dashboard_id}")
     assert first.status_code == 200, first.text
     page = first.json()
     assert page["id"] == dashboard_id
@@ -122,13 +122,13 @@ def test_dashboard_lifecycle_reflects_live_ledger_changes(db):
     # The page is live: a new transaction changes the very next read.
     db.add(spend(user, food, 5_000))
     db.flush()
-    second = client.get(f"/api/dashboards/{dashboard_id}").json()
+    second = client.get(f"/dashboards/{dashboard_id}").json()
     assert sum(row["value_minor"] for row in second["tiles"][0]["chart"]["rows"]) == 25_000
 
-    assert client.delete(f"/api/dashboards/{dashboard_id}/tiles/{tile_id}").status_code == 204
-    assert client.get(f"/api/dashboards/{dashboard_id}").json()["tiles"] == []
-    assert client.get("/api/dashboards").json()["dashboards"][0]["tileCount"] == 0
-    assert client.delete(f"/api/dashboards/{dashboard_id}/tiles/{tile_id}").status_code == 404
+    assert client.delete(f"/dashboards/{dashboard_id}/tiles/{tile_id}").status_code == 204
+    assert client.get(f"/dashboards/{dashboard_id}").json()["tiles"] == []
+    assert client.get("/dashboards").json()["dashboards"][0]["tileCount"] == 0
+    assert client.delete(f"/dashboards/{dashboard_id}/tiles/{tile_id}").status_code == 404
 
 
 def test_plan_declared_view_drives_the_tile_chart(db):
@@ -138,14 +138,14 @@ def test_plan_declared_view_drives_the_tile_chart(db):
     db.flush()
     client = client_for(db, user)
 
-    dashboard_id = client.post("/api/dashboards", json={"name": "Declared"}).json()["id"]
+    dashboard_id = client.post("/dashboards", json={"name": "Declared"}).json()["id"]
     added = client.post(
-        f"/api/dashboards/{dashboard_id}/tiles",
+        f"/dashboards/{dashboard_id}/tiles",
         json={"title": "Food", "proposal": proposal_payload(date.today(), with_view=True)},
     )
     assert added.status_code == 200, added.text
 
-    tile = client.get(f"/api/dashboards/{dashboard_id}").json()["tiles"][0]
+    tile = client.get(f"/dashboards/{dashboard_id}").json()["tiles"][0]
     assert tile["error"] is None
     assert tile["chart"]["view"]["id"] == "food_by_category"
     assert tile["chart"]["lineage"]["origin"] == "dashboard"
@@ -158,9 +158,9 @@ def test_broken_tiles_degrade_without_breaking_the_page(db):
     db.flush()
     client = client_for(db, user)
 
-    dashboard_id = client.post("/api/dashboards", json={"name": "Mixed"}).json()["id"]
+    dashboard_id = client.post("/dashboards", json={"name": "Mixed"}).json()["id"]
     good = client.post(
-        f"/api/dashboards/{dashboard_id}/tiles",
+        f"/dashboards/{dashboard_id}/tiles",
         json={"title": "Good", "proposal": proposal_payload(date.today())},
     )
     assert good.status_code == 200, good.text
@@ -170,7 +170,7 @@ def test_broken_tiles_degrade_without_breaking_the_page(db):
     refused = proposal_payload(date.today())
     refused["plan"]["missing_information"] = ["the loan interest rate"]
     refusal = client.post(
-        f"/api/dashboards/{dashboard_id}/tiles",
+        f"/dashboards/{dashboard_id}/tiles",
         json={"title": "Refused", "proposal": refused},
     )
     assert refusal.status_code == 422
@@ -186,7 +186,7 @@ def test_broken_tiles_degrade_without_breaking_the_page(db):
     ))
     db.flush()
 
-    page = client.get(f"/api/dashboards/{dashboard_id}").json()
+    page = client.get(f"/dashboards/{dashboard_id}").json()
     by_title = {tile["title"]: tile for tile in page["tiles"]}
     assert by_title["Good"]["error"] is None
     assert by_title["Good"]["chart"] is not None
@@ -198,15 +198,15 @@ def test_broken_tiles_degrade_without_breaking_the_page(db):
 def test_tile_proposal_is_validated_at_creation(db):
     user = default_user(db)
     client = client_for(db, user)
-    dashboard_id = client.post("/api/dashboards", json={"name": "Strict"}).json()["id"]
+    dashboard_id = client.post("/dashboards", json={"name": "Strict"}).json()["id"]
 
     bad = client.post(
-        f"/api/dashboards/{dashboard_id}/tiles",
+        f"/dashboards/{dashboard_id}/tiles",
         json={"title": "Bad", "proposal": {"name": "x"}},
     )
     assert bad.status_code == 422
     assert "invalid_analysis_plan" in bad.json()["detail"]
-    assert client.get("/api/dashboards").json()["dashboards"][0]["tileCount"] == 0
+    assert client.get("/dashboards").json()["dashboards"][0]["tileCount"] == 0
 
 
 def test_foreign_dashboards_and_tiles_return_404(db):
@@ -215,24 +215,24 @@ def test_foreign_dashboards_and_tiles_return_404(db):
     db.add(stranger)
     db.flush()
     owner = client_for(db, user)
-    dashboard_id = owner.post("/api/dashboards", json={"name": "Private"}).json()["id"]
+    dashboard_id = owner.post("/dashboards", json={"name": "Private"}).json()["id"]
     tile_id = owner.post(
-        f"/api/dashboards/{dashboard_id}/tiles",
+        f"/dashboards/{dashboard_id}/tiles",
         json={"title": "Mine", "proposal": proposal_payload(date.today())},
     ).json()["id"]
 
     other = client_for(db, stranger)
-    assert other.get(f"/api/dashboards/{dashboard_id}").status_code == 404
+    assert other.get(f"/dashboards/{dashboard_id}").status_code == 404
     assert other.post(
-        f"/api/dashboards/{dashboard_id}/tiles",
+        f"/dashboards/{dashboard_id}/tiles",
         json={"title": "Hijack", "proposal": proposal_payload(date.today())},
     ).status_code == 404
-    assert other.delete(f"/api/dashboards/{dashboard_id}/tiles/{tile_id}").status_code == 404
-    assert other.get("/api/dashboards").json() == {"dashboards": []}
+    assert other.delete(f"/dashboards/{dashboard_id}/tiles/{tile_id}").status_code == 404
+    assert other.get("/dashboards").json() == {"dashboards": []}
 
     # A foreign tile id under the caller's own dashboard is equally invisible.
-    own_dashboard = other.post("/api/dashboards", json={"name": "Own"}).json()["id"]
-    assert other.delete(f"/api/dashboards/{own_dashboard}/tiles/{tile_id}").status_code == 404
+    own_dashboard = other.post("/dashboards", json={"name": "Own"}).json()["id"]
+    assert other.delete(f"/dashboards/{own_dashboard}/tiles/{tile_id}").status_code == 404
 
 
 # --- verification findings, pinned -------------------------------------------
@@ -247,10 +247,10 @@ def test_poisoned_tile_reports_per_tile_and_never_500s_the_page(db):
     db.flush()
     client = client_for(db, user)
     today = date.today()
-    dashboard_id = client.post("/api/dashboards", json={"name": "Ops"}).json()["id"]
+    dashboard_id = client.post("/dashboards", json={"name": "Ops"}).json()["id"]
 
     healthy = client.post(
-        f"/api/dashboards/{dashboard_id}/tiles",
+        f"/dashboards/{dashboard_id}/tiles",
         json={"title": "Healthy", "proposal": proposal_payload(today)},
     )
     assert healthy.status_code == 200
@@ -265,12 +265,12 @@ def test_poisoned_tile_reports_per_tile_and_never_500s_the_page(db):
         limit=100,
     )]
     stored = client.post(
-        f"/api/dashboards/{dashboard_id}/tiles",
+        f"/dashboards/{dashboard_id}/tiles",
         json={"title": "Poisoned", "proposal": poisoned},
     )
     assert stored.status_code == 200  # rot-after-storage belongs to the page error object
 
-    page = client.get(f"/api/dashboards/{dashboard_id}")
+    page = client.get(f"/dashboards/{dashboard_id}")
     assert page.status_code == 200
     tiles = {tile["title"]: tile for tile in page.json()["tiles"]}
     assert tiles["Healthy"]["error"] is None
@@ -283,9 +283,9 @@ def test_unexpected_execution_errors_stay_inside_their_tile(db, monkeypatch):
     user = default_user(db)
     client = client_for(db, user)
     today = date.today()
-    dashboard_id = client.post("/api/dashboards", json={"name": "Ops"}).json()["id"]
+    dashboard_id = client.post("/dashboards", json={"name": "Ops"}).json()["id"]
     client.post(
-        f"/api/dashboards/{dashboard_id}/tiles",
+        f"/dashboards/{dashboard_id}/tiles",
         json={"title": "Any", "proposal": proposal_payload(today)},
     )
 
@@ -295,7 +295,7 @@ def test_unexpected_execution_errors_stay_inside_their_tile(db, monkeypatch):
         raise RuntimeError("backend went sideways")
 
     monkeypatch.setattr(api_module, "execute_analysis_template", explode)
-    page = client.get(f"/api/dashboards/{dashboard_id}")
+    page = client.get(f"/dashboards/{dashboard_id}")
     assert page.status_code == 200
     tile = page.json()["tiles"][0]
     assert tile["error"]["code"] == "tile_execution_error"
@@ -306,12 +306,12 @@ def test_unchartable_proposals_are_refused_at_the_door(db):
     user = default_user(db)
     client = client_for(db, user)
     today = date.today()
-    dashboard_id = client.post("/api/dashboards", json={"name": "Ops"}).json()["id"]
+    dashboard_id = client.post("/dashboards", json={"name": "Ops"}).json()["id"]
 
     dedicated = dict(proposal_payload(today))
     dedicated["plan"] = dict(dedicated["plan"], analysis_type="monthly_comparison", queries=[], transforms=[])
     response = client.post(
-        f"/api/dashboards/{dashboard_id}/tiles",
+        f"/dashboards/{dashboard_id}/tiles",
         json={"title": "Dedicated", "proposal": dedicated},
     )
     assert response.status_code == 422
@@ -320,7 +320,7 @@ def test_unchartable_proposals_are_refused_at_the_door(db):
     missing = dict(proposal_payload(today))
     missing["plan"] = dict(missing["plan"], missing_information=["the interest rate"])
     response = client.post(
-        f"/api/dashboards/{dashboard_id}/tiles",
+        f"/dashboards/{dashboard_id}/tiles",
         json={"title": "Missing", "proposal": missing},
     )
     assert response.status_code == 422
@@ -331,7 +331,7 @@ def test_colliding_query_names_are_rejected_by_the_plan_contract(db):
     user = default_user(db)
     client = client_for(db, user)
     today = date.today()
-    dashboard_id = client.post("/api/dashboards", json={"name": "Ops"}).json()["id"]
+    dashboard_id = client.post("/dashboards", json={"name": "Ops"}).json()["id"]
     payload = dict(proposal_payload(today))
     payload["plan"] = dict(payload["plan"])
     first = dict(payload["plan"]["queries"][0])
@@ -339,7 +339,7 @@ def test_colliding_query_names_are_rejected_by_the_plan_contract(db):
     payload["plan"]["queries"] = [first, second]
 
     response = client.post(
-        f"/api/dashboards/{dashboard_id}/tiles",
+        f"/dashboards/{dashboard_id}/tiles",
         json={"title": "Colliding", "proposal": payload},
     )
     assert response.status_code == 422
@@ -351,14 +351,14 @@ def test_dashboards_have_a_hard_tile_cap(db):
     user = default_user(db)
     client = client_for(db, user)
     today = date.today()
-    dashboard_id = client.post("/api/dashboards", json={"name": "Ops"}).json()["id"]
+    dashboard_id = client.post("/dashboards", json={"name": "Ops"}).json()["id"]
     for index in range(MAX_TILES_PER_DASHBOARD):
         assert client.post(
-            f"/api/dashboards/{dashboard_id}/tiles",
+            f"/dashboards/{dashboard_id}/tiles",
             json={"title": f"T{index}", "proposal": proposal_payload(today)},
         ).status_code == 200
     overflow = client.post(
-        f"/api/dashboards/{dashboard_id}/tiles",
+        f"/dashboards/{dashboard_id}/tiles",
         json={"title": "Overflow", "proposal": proposal_payload(today)},
     )
     assert overflow.status_code == 422

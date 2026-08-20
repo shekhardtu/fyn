@@ -15,30 +15,30 @@ async function apiUrlWith(apiUrlValue: string) {
 }
 
 describe("apiUrl", () => {
-  it("keeps /api same-origin, where it separates API routes from SPA routes", async () => {
+  it("adds the API mount same-origin, where it separates resources from SPA routes", async () => {
     const build = await apiUrlWith("");
-    expect(build("/api/bootstrap")).toBe("/api/bootstrap");
-    expect(build("/api/agent")).toBe("/api/agent");
+    expect(build("/bootstrap")).toBe("/api/bootstrap");
+    expect(build("/agent")).toBe("/api/agent");
   });
 
-  it("drops /api against a dedicated API host, which already says it", async () => {
+  it("keeps resources at root against a dedicated API host", async () => {
     const build = await apiUrlWith("https://api.fynai.co");
-    expect(build("/api/bootstrap")).toBe("https://api.fynai.co/bootstrap");
-    expect(build("/api")).toBe("https://api.fynai.co");
+    expect(build("/bootstrap")).toBe("https://api.fynai.co/bootstrap");
+    expect(build("/agent")).toBe("https://api.fynai.co/agent");
   });
 
-  it("strips only the leading segment, never one inside the path", async () => {
-    const build = await apiUrlWith("https://api.fynai.co");
-    expect(build("/api/imports/api/csv")).toBe("https://api.fynai.co/imports/api/csv");
+  it("keeps a plausible page and resource namespace separate same-origin", async () => {
+    const build = await apiUrlWith("");
+    expect(build("/settings")).toBe("/api/settings");
   });
 
-  it("does not mistake a path that merely starts with those letters", async () => {
-    const build = await apiUrlWith("https://api.fynai.co");
-    expect(build("/apixyz/thing")).toBe("https://api.fynai.co/apixyz/thing");
+  it("adds the mount once even when a resource has api inside its path", async () => {
+    const build = await apiUrlWith("");
+    expect(build("/imports/api/csv")).toBe("/api/imports/api/csv");
   });
 
   it("carries the query string through untouched", async () => {
     const build = await apiUrlWith("https://api.fynai.co");
-    expect(build("/api/agent/runs/1/events?after=9")).toBe("https://api.fynai.co/agent/runs/1/events?after=9");
+    expect(build("/agent/runs/1/events?after=9")).toBe("https://api.fynai.co/agent/runs/1/events?after=9");
   });
 });

@@ -49,7 +49,7 @@ FYN_EDGE_PORT="${FYN_EDGE_PORT:-8000}"
 # The API's own hostname. Must stay DNS-only (grey cloud) in Cloudflare: the
 # orange proxy buffers the agent's server-sent events.
 FYN_DOMAIN="${FYN_DOMAIN:-api.fynai.co}"
-FYN_HEALTH_URL="${FYN_HEALTH_URL:-https://${FYN_DOMAIN}/api/health}"
+FYN_HEALTH_URL="${FYN_HEALTH_URL:-https://${FYN_DOMAIN}/health}"
 
 # Where the SPA is served from — the apex, built and hosted off this box.
 # Becomes CORS_ORIGINS on the server. The browser sends the session cookie

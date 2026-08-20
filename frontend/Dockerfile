@@ -24,6 +24,10 @@ ENV NODE_OPTIONS=$NODE_OPTIONS
 
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY . .
+# Nginx cannot import the browser's TypeScript constant, so render its route
+# from that same source while Node is still available in the build stage.
+RUN API_MOUNT_PATH="$(node --input-type=module -e 'import("./src/config/api-path.ts").then(module => process.stdout.write(module.API_MOUNT_PATH))')" \
+  && sed "s|__API_MOUNT_PATH__|${API_MOUNT_PATH}|g" nginx.conf.template > default.conf.template
 RUN yarn build
 
 FROM nginxinc/nginx-unprivileged:1.29-alpine AS runner
@@ -31,7 +35,7 @@ FROM nginxinc/nginx-unprivileged:1.29-alpine AS runner
 # so one image serves any deployment: set BACKEND_ORIGIN to the API's
 # internal address (e.g. http://api:8000) when running the container.
 ENV BACKEND_ORIGIN=http://localhost:8000
-COPY nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY --from=builder /app/default.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=builder --chown=101:101 /app/dist /usr/share/nginx/html
 
 EXPOSE 3000
