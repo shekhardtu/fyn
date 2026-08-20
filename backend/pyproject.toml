@@ -104,6 +104,5 @@ module = [
   "app.services.spreadsheet",
   "app.services.sql_analysis",
   "app.services.sql_gate",
-  "app.services.template_retrieval",
 ]
 ignore_errors = true

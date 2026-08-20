@@ -72,7 +72,7 @@ def _cosine_similarity(left: list[float], right: list[float]) -> float:
     if not left or not right or len(left) != len(right):
         return 0.0
     denominator = math.sqrt(sum(value * value for value in left)) * math.sqrt(sum(value * value for value in right))
-    return sum(a * b for a, b in zip(left, right, strict=True)) / denominator if denominator else 0.0
+    return sum(a * b for a, b in zip(left, right)) / denominator if denominator else 0.0
 
 
 def _retrieval_document(template: AnalysisToolTemplate) -> str:
@@ -159,7 +159,10 @@ def _ensure_embeddings(
             input=inputs,
             dimensions=512,
         )
-        for template, item in zip(missing, response.data[1:], strict=True):
+        template_embeddings = response.data[1:]
+        if len(template_embeddings) != len(missing):
+            raise ValueError("Embedding response did not match the template batch")
+        for template, item in zip(missing, template_embeddings):
             template.retrieval_embedding = item.embedding
             template.retrieval_embedding_model = settings.embedding_model
         return response.data[0].embedding
