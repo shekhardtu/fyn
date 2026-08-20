@@ -178,7 +178,10 @@ def score_match(observation: FinancialObservation, transaction: Transaction, con
         ReconciliationSignal.DESCRIPTION: description_score,
         ReconciliationSignal.DIRECTION: Decimal("1") if observation.transaction_type == transaction.transaction_type else Decimal("0"),
     }
-    score = sum(config.weights[key] * value for key, value in signals.items())
+    score = sum(
+        (config.weights[key] * value for key, value in signals.items()),
+        start=Decimal(0),
+    )
     serializable = {key.value: float(value) for key, value in signals.items()}
     serializable["date_distance_days"] = days
     return score.quantize(Decimal("0.0001")), serializable
@@ -376,14 +379,18 @@ def ingest_observation(db: Session, user_id: UUID, payload: ObservationIn, confi
     db.add(observation)
     try:
         db.flush()
-    except IntegrityError:
+    except IntegrityError as error:
         db.rollback()
         replay = _existing_observation(db, user_id, payload, source_hash)
+        if replay is None:
+            raise RuntimeError(
+                "Observation insert failed without a matching idempotent replay"
+            ) from error
         source = owned_transaction_source(
             db,
             user_id,
             TransactionSource.observation_id == replay.id,
-        ) if replay else None
+        )
         return ReconciliationResultOut(observation_id=replay.id, transaction_id=source.transaction_id if source else None, decision=ReconciliationOutcome.IDEMPOTENT_REPLAY, idempotent_replay=True)
 
     # External unique IDs are authoritative within a source.

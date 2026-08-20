@@ -97,6 +97,5 @@ module = [
   "app.services.manifest",
   "app.services.otp",
   "app.services.recommendation",
-  "app.services.reconciliation",
 ]
 ignore_errors = true
