@@ -89,6 +89,5 @@ module = [
   "app.services.auth",
   "app.services.category_prediction",
   "app.services.continuations",
-  "app.services.conversation",
 ]
 ignore_errors = true
