@@ -15,4 +15,4 @@ SERVICE="${1:-}"
 TAIL="${2:-100}"
 
 exec ssh -t "$FYN_SSH" \
-  "cd ${FYN_REMOTE_DIR} && docker compose -p ${FYN_PROJECT} -f ${FYN_COMPOSE_FILE} logs -f --tail ${TAIL} ${SERVICE}"
+  "cd ${FYN_REMOTE_DIR} && docker compose -p ${FYN_PROJECT} -f ${FYN_COMPOSE_FILE} --env-file ${FYN_ENV_FILE} logs -f --tail ${TAIL} ${SERVICE}"

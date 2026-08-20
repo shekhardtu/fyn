@@ -1184,6 +1184,11 @@ def _pending_interrupt(
         "namespace": "fyn",
         "widgetId": widget.id,
         "widgetType": widget.type.value,
+        # The interrupt and its interaction surface are one durable contract.
+        # A client may recover the thread state before the matching transcript
+        # row is hydrated, so it must not have to infer a substitute UI from
+        # an action name or response schema.
+        "widget": widget.model_dump(mode="json"),
         "action": action.action.value,
         "actionLabel": action.label,
         "proposedArgs": proposed_args,

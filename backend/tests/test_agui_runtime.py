@@ -368,6 +368,7 @@ def test_category_budget_amount_resume_preserves_category_and_requires_save(db):
     clarification_widget = next(
         item for item in clarification_message.widgets if item["type"] == "clarification"
     )
+    assert clarification_interrupt.metadata_payload["widget"] == clarification_widget
     assert clarification_widget["data"]["options"] == []
     custom = next(item for item in clarification_widget["actions"] if item["id"] == "custom")
 
