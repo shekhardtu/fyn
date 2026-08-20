@@ -205,10 +205,11 @@ def extract_transaction(text: str, today: date | None = None, default_currency: 
         )
     elif merchant:
         normalized = normalize_merchant(merchant)
-        for alias, mapping in MERCHANT_RULES.items():
-            if normalized == alias or normalized.startswith(alias + " "):
-                category_slug, subcategory_slug = mapping
-                break
+        if normalized:
+            for alias, mapping in MERCHANT_RULES.items():
+                if normalized == alias or normalized.startswith(alias + " "):
+                    category_slug, subcategory_slug = mapping
+                    break
     if transaction_type == TransactionType.EXPENSE and not category_slug:
         category_slug, subcategory_slug = infer_expense_category(text)
 

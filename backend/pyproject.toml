@@ -92,6 +92,5 @@ module = [
   "app.services.continuations",
   "app.services.conversation",
   "app.services.external_db",
-  "app.services.extraction",
 ]
 ignore_errors = true
