@@ -57,7 +57,7 @@ export function AppSettingsPanel({ onDeleted }: { onDeleted: () => void }) {
       setBusyControl(null);
       if (variables.kind === "delete") { onDeleted(); return; }
       if (variables.kind === "export") settingsSaved(`Saved ${typeof result === "string" ? result : "your export"} to your downloads.`);
-      if (variables.kind === "location") settingsSaved(variables.value ? "Location enrichment is on." : "Location enrichment is off.");
+      if (variables.kind === "location") settingsSaved(variables.value ? "Saved — nothing is captured until location capture ships." : "Location enrichment is off.");
       if (variables.kind === "revoke") { setConfirmingRevoke(null); settingsSaved(`${String(variables.value).toUpperCase()} can no longer add transactions.`); }
       await queryClient.invalidateQueries({ queryKey: ["privacy"] });
     },
@@ -96,7 +96,7 @@ export function AppSettingsPanel({ onDeleted }: { onDeleted: () => void }) {
       {privacy.isLoading ? <div role="status" aria-label="Loading privacy settings" className="space-y-3">{[0, 1, 2].map((row) => <div key={row} className="h-16 animate-pulse rounded-lg bg-line/70" />)}</div> : null}
       {privacy.data ? <SettingSwitch
         label="Location enrichment"
-        description="Records where a transaction happened — the coordinates your device reports, and the city and state they map to."
+        description="Will record where a transaction happened — the coordinates your device reports, and the city and state they map to. Nothing is captured yet, so switching this on only stores the preference."
         checked={locationEnabled}
         disabled={run.isPending}
         busy={busyControl === "location"}
