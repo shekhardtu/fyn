@@ -50,6 +50,24 @@ class SentCode:
     debug_code: str | None
 
 
+def _identity_user(db: Session, identity: UserIdentity) -> User:
+    user = db.get(User, identity.user_id)
+    if user is None:
+        raise RuntimeError("A sign-in identity references a missing user")
+    return user
+
+
+def _required_identity(
+    db: Session,
+    user: User,
+    provider: IdentityProvider,
+) -> UserIdentity:
+    identity = identity_of(db, user.id, provider)
+    if identity is None:
+        raise RuntimeError(f"Registration did not create the {provider.value} identity")
+    return identity
+
+
 def _issued(issued: IssuedChallenge, channel: OtpChannel, destination: str) -> SentCode:
     settings = get_settings()
     development_phone = settings.environment == "development" and channel is OtpChannel.PHONE
@@ -131,9 +149,9 @@ def complete_login(db: Session, challenge_id: UUID, code: str) -> User:
             identifier=challenge.destination,
             email=display,
         )
-        identity = identity_of(db, user.id, provider)
+        identity = _required_identity(db, user, provider)
     else:
-        user = db.get(User, identity.user_id)
+        user = _identity_user(db, identity)
 
     record_sign_in(db, identity)
     db.commit()
@@ -153,7 +171,7 @@ def sign_in_with_google(db: Session, credential: str) -> User:
 
     identity = identity_owner(db, IdentityProvider.GOOGLE, account.subject)
     if identity is not None:
-        user = db.get(User, identity.user_id)
+        user = _identity_user(db, identity)
         _sync_google_email(db, user, account, email.key, email.display)
         record_sign_in(db, identity)
         db.commit()
@@ -161,7 +179,7 @@ def sign_in_with_google(db: Session, credential: str) -> User:
 
     owner = identity_owner(db, IdentityProvider.EMAIL, email.key)
     if owner is not None:
-        user = db.get(User, owner.user_id)
+        user = _identity_user(db, owner)
         identity = attach_identity(
             db,
             user,
@@ -190,7 +208,7 @@ def sign_in_with_google(db: Session, credential: str) -> User:
         email=email.display,
         source=IdentitySource.GOOGLE,
     )
-    identity = identity_of(db, user.id, IdentityProvider.GOOGLE)
+    identity = _required_identity(db, user, IdentityProvider.GOOGLE)
     record_sign_in(db, identity)
     db.commit()
     return user
