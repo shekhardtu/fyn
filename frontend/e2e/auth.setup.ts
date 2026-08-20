@@ -23,7 +23,7 @@ setup("browser suite signs in", async ({ playwright }) => {
     : null;
 
   if (reuse) {
-    const session = await reuse.get("/api/auth/session");
+    const session = await reuse.get("/auth/session");
     if (session.ok() && (await session.json()).authenticated) {
       await recordSharedThread(reuse);
       await reuse.dispose();
@@ -34,7 +34,7 @@ setup("browser suite signs in", async ({ playwright }) => {
 
   const api = await playwright.request.newContext({ baseURL: API_URL });
 
-  const started = await api.post("/api/auth/otp/start", {
+  const started = await api.post("/auth/otp/start", {
     data: { channel: "phone", value: TEST_PHONE },
   });
   expect(
@@ -48,7 +48,7 @@ setup("browser suite signs in", async ({ playwright }) => {
     "The API did not return the one-time code. Set OTP_DEBUG_ECHO=true in backend/.env to run the browser suite.",
   ).toBeTruthy();
 
-  const verified = await api.post("/api/auth/otp/verify", {
+  const verified = await api.post("/auth/otp/verify", {
     data: { challengeId, code: debugCode },
   });
   expect(verified.ok(), `Sign-in failed: ${await verified.text()}`).toBeTruthy();
@@ -68,7 +68,7 @@ setup("browser suite signs in", async ({ playwright }) => {
  * fixture being wrong about it.
  */
 async function recordSharedThread(api: { get: (path: string) => Promise<{ ok: () => boolean; text: () => Promise<string>; json: () => Promise<{ active_conversation?: { id?: string } }> }> }) {
-  const opened = await api.get("/api/bootstrap");
+  const opened = await api.get("/bootstrap");
   expect(opened.ok(), `Could not open the workspace: ${await opened.text()}`).toBeTruthy();
   const { active_conversation: conversation } = await opened.json();
   expect(conversation?.id, "Bootstrap returned no conversation to share across the suite.").toBeTruthy();

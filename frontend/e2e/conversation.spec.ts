@@ -1,4 +1,5 @@
 import { expect, test, type Locator } from "@playwright/test";
+import { API_MOUNT_PATH } from "@/config/api-path";
 import { sharedThreadUrl } from "./test-thread";
 
 async function expectGroundedResultOrSafeFallback(response: Locator, expectedContent: RegExp) {
@@ -284,7 +285,7 @@ test("contextual read follow-ups remain grounded or fail safely", async ({ page 
   test.setTimeout(120_000);
   const threadStateLoaded = page.waitForResponse((response) => {
     const url = new URL(response.url());
-    return response.request().method() === "GET" && /^\/api\/agent\/threads\/[^/]+$/.test(url.pathname);
+    return response.request().method() === "GET" && new RegExp(`^${API_MOUNT_PATH}/agent/threads/[^/]+$`).test(url.pathname);
   });
   await page.goto(sharedThreadUrl());
   await threadStateLoaded;

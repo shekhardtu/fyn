@@ -51,7 +51,7 @@ server {
   # cookie first-party — required for installed-PWA standalone mode and
   # immune to third-party-cookie phase-outs. BACKEND_ORIGIN is substituted
   # by the nginx image's envsubst entrypoint at container start.
-  location /api/ {
+  location __API_MOUNT_PATH__/ {
     proxy_pass ${BACKEND_ORIGIN}/;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
