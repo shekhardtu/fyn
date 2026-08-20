@@ -37,6 +37,7 @@ from sqlalchemy.engine import Engine, URL, make_url
 from sqlalchemy.exc import ArgumentError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
+from sqlalchemy.sql.elements import ColumnClause, ColumnElement
 
 from ..config import get_settings
 from ..models import DataSource, SourceManifest, User
@@ -417,7 +418,9 @@ def build_query_statement(
         raise ValueError("value_field_required")
     limit = max(1, min(int(limit), QUERY_ROW_CAP))
 
-    columns = {name: sa.column(name) for name in known}
+    columns: dict[str, ColumnClause[Any]] = {
+        name: sa.column(name) for name in known
+    }
     relation = sa.table(table, *columns.values())
 
     def bound_value(name: str, raw: Any) -> Any:
@@ -451,11 +454,14 @@ def build_query_statement(
         else:
             conditions.append(column <= value)
 
+    aggregate: ColumnElement[Any]
     if metric == "count":
         aggregate = func.count()
     elif metric == "sum":
+        assert value_field is not None
         aggregate = func.sum(columns[value_field])
     else:
+        assert value_field is not None
         aggregate = func.avg(columns[value_field])
 
     if group_by:
@@ -552,7 +558,7 @@ def column_value_counts(
     if column not in {item["name"] for item in tables[table]["columns"]}:
         raise ValueError(f"unknown_field: {column}")
     limit = max(1, min(int(limit), QUERY_ROW_CAP))
-    target = sa.column(column)
+    target: ColumnClause[Any] = sa.column(column)
     occurrences = func.count()
     statement = (
         select(target, occurrences.label("occurrences"))

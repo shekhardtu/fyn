@@ -91,6 +91,5 @@ module = [
   "app.services.category_prediction",
   "app.services.continuations",
   "app.services.conversation",
-  "app.services.external_db",
 ]
 ignore_errors = true
