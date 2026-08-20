@@ -108,6 +108,48 @@ function documentMustNotScroll() {
     || document.documentElement.scrollHeight <= window.innerHeight + 1;
 }
 
+/** The scrolling box a field actually lives in, or null if it is pinned. */
+function scrollParent(node: HTMLElement) {
+  for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+    const overflow = getComputedStyle(parent).overflowY;
+    if ((overflow === "auto" || overflow === "scroll") && parent.scrollHeight > parent.clientHeight) return parent;
+  }
+  return null;
+}
+
+/** Keep whatever is being typed into above the keyboard.
+ *
+ *  The browser reveals a focused field before the keyboard has taken its space,
+ *  judging it against a viewport that is still full height — so a field low on
+ *  the screen looks perfectly visible and is left where it is. Shrinking the
+ *  shell to the visible rectangle then puts it behind the keys, and nothing asks
+ *  a second time. The composer never sees this because it is pinned to the
+ *  shell's own bottom edge; every field inside a panel does.
+ *
+ *  Scrolling the one box the field lives in, rather than `scrollIntoView()`,
+ *  which walks every scrollable ancestor and would take the transcript with it.
+ *  Called when the keyboard changes the rectangle and when focus moves — both
+ *  deliberate — and never on a scroll, so reading further up a form while
+ *  typing is not undone.
+ */
+function revealFocusedField() {
+  const node = document.activeElement;
+  if (!(node instanceof HTMLElement) || !node.matches("input, textarea, [contenteditable]")) return;
+  const scroller = scrollParent(node);
+  if (!scroller) return;
+  const field = node.getBoundingClientRect();
+  const box = scroller.getBoundingClientRect();
+  const margin = 12;
+  // A field taller than the space left over is aligned to its top instead:
+  // what is being typed is at the caret, and the caret starts up there.
+  if (field.height > box.height - margin * 2 || field.top < box.top + margin) {
+    scroller.scrollTop += field.top - box.top - margin;
+    return;
+  }
+  const below = field.bottom - (box.bottom - margin);
+  if (below > 0) scroller.scrollTop += below;
+}
+
 function publish(next: ViewportMetrics) {
   const previous = current;
   const open = next.keyboard >= KEYBOARD_MIN;
@@ -136,6 +178,10 @@ function publish(next: ViewportMetrics) {
 
   if (open) root.dataset.keyboard = "open";
   else delete root.dataset.keyboard;
+
+  // After the shell has been resized, not before: the field's box is only
+  // worth measuring once it is inside the rectangle it has to fit in.
+  if (open) requestAnimationFrame(revealFocusedField);
 
   for (const listener of [...listeners]) listener(next);
 }
@@ -179,6 +225,14 @@ export function initViewport() {
     if (document.visibilityState === "visible") recover();
   };
 
+  // Moving between fields under a keyboard that is already up changes no
+  // measurement, so the publish path never runs for it — but the new field can
+  // be behind the keys just the same.
+  const revealOnFocus = () => {
+    if ((current?.keyboard ?? 0) < KEYBOARD_MIN) return;
+    requestAnimationFrame(revealFocusedField);
+  };
+
   const view = window.visualViewport;
   // `scroll` is the pan; `resize` is the keyboard, the rotation and the
   // address bar. Focus moving between fields can swap one keyboard for another
@@ -194,6 +248,7 @@ export function initViewport() {
   window.addEventListener("focus", recover);
   document.addEventListener("visibilitychange", recoverWhenVisible);
   document.addEventListener("focusin", recover, true);
+  document.addEventListener("focusin", revealOnFocus, true);
   document.addEventListener("focusout", recover, true);
 
   const first = measure();
@@ -213,6 +268,7 @@ export function initViewport() {
     window.removeEventListener("focus", recover);
     document.removeEventListener("visibilitychange", recoverWhenVisible);
     document.removeEventListener("focusin", recover, true);
+    document.removeEventListener("focusin", revealOnFocus, true);
     document.removeEventListener("focusout", recover, true);
     current = null;
     keyboardSession = false;

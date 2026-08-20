@@ -172,6 +172,63 @@ describe("initViewport", () => {
     shell.remove();
   });
 
+  it("brings a focused field back above a keyboard that has just covered it", () => {
+    // A panel with a field low in it: visible at full height, behind the keys
+    // once the shell is the visible rectangle.
+    const scroller = document.createElement("div");
+    scroller.style.overflowY = "auto";
+    const field = document.createElement("input");
+    scroller.append(field);
+    document.body.append(scroller);
+    Object.defineProperty(scroller, "scrollHeight", { value: 1600, configurable: true });
+    Object.defineProperty(scroller, "clientHeight", { value: 464, configurable: true });
+    scroller.getBoundingClientRect = () => ({ top: 0, bottom: 464, height: 464 }) as DOMRect;
+    field.getBoundingClientRect = () => ({ top: 600, bottom: 640, height: 40 }) as DOMRect;
+    field.focus();
+
+    showKeyboard(336);
+    vi.advanceTimersByTime(100);
+
+    // 640 is 188 below the box's bottom margin of 452.
+    expect(scroller.scrollTop).toBe(188);
+    scroller.remove();
+  });
+
+  it("leaves a field the keyboard does not reach where it is", () => {
+    const scroller = document.createElement("div");
+    scroller.style.overflowY = "auto";
+    const field = document.createElement("input");
+    scroller.append(field);
+    document.body.append(scroller);
+    Object.defineProperty(scroller, "scrollHeight", { value: 1600, configurable: true });
+    scroller.getBoundingClientRect = () => ({ top: 0, bottom: 464, height: 464 }) as DOMRect;
+    field.getBoundingClientRect = () => ({ top: 200, bottom: 240, height: 40 }) as DOMRect;
+    field.focus();
+
+    showKeyboard(336);
+    vi.advanceTimersByTime(100);
+
+    expect(scroller.scrollTop).toBe(0);
+    scroller.remove();
+  });
+
+  it("does not scroll a composer that is pinned rather than scrolled", () => {
+    // No scrollable ancestor: the dock rides the shell's bottom edge, so there
+    // is nothing to correct and nothing that may be moved.
+    const pinned = document.createElement("div");
+    const field = document.createElement("textarea");
+    pinned.append(field);
+    document.body.append(pinned);
+    field.getBoundingClientRect = () => ({ top: 600, bottom: 640, height: 40 }) as DOMRect;
+    field.focus();
+
+    showKeyboard(336);
+    vi.advanceTimersByTime(100);
+
+    expect(pinned.scrollTop).toBe(0);
+    pinned.remove();
+  });
+
   it("follows the browser's own pan without waiting for a resize", () => {
     view.offsetTop = 90;
     view.dispatchEvent(new Event("scroll"));
