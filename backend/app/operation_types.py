@@ -12,6 +12,36 @@ class AccessMode(ValueEnum):
     UNKNOWN = "unknown"
 
 
+class ContextRelationship(ValueEnum):
+    """How the current turn relates to previously grounded conversation state."""
+
+    STANDALONE = "standalone"
+    FOLLOW_UP = "follow_up"
+    CORRECTION = "correction"
+
+
+class IntentAuthority(ValueEnum):
+    """The source allowed to bind a turn to an executable effect."""
+
+    USER_TURN = "user_turn"
+    SERVER_CONTINUATION = "server_continuation"
+
+
+class RequestedEffect(ValueEnum):
+    """The strongest data effect supported by the current user intent."""
+
+    NONE = "none"
+    DRAFT = "draft"
+    MUTATION = "mutation"
+    UNKNOWN = "unknown"
+
+
+class AuthorizationOutcome(ValueEnum):
+    ALLOW = "allow"
+    CLARIFY = "clarify"
+    DENY = "deny"
+
+
 class ValidationMode(ValueEnum):
     DETERMINISTIC = "deterministic"
     MODEL = "model"

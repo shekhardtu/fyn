@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from .agents import ResolvedIntentContract, TaxonomyInterpretation
+from .planning_contracts import BudgetSetupContract, BudgetSetupSeed
 
 
 class _ContinuationModel(BaseModel):
@@ -31,6 +32,12 @@ class GovernedTaxonomyContinuation(_ContinuationModel):
     taxonomy: TaxonomyInterpretation
 
 
+class GovernedBudgetContinuation(_ContinuationModel):
+    kind: Literal["governed_budget"] = "governed_budget"
+    label: str = Field(min_length=1, max_length=100)
+    budget: BudgetSetupContract
+
+
 class LegacyPromptContinuation(_ContinuationModel):
     """Compatibility path for workflows that do not yet expose typed slots.
 
@@ -48,6 +55,7 @@ ClarificationTransition = Annotated[
         CancelContinuation,
         GovernedQueryContinuation,
         GovernedTaxonomyContinuation,
+        GovernedBudgetContinuation,
         LegacyPromptContinuation,
     ],
     Field(discriminator="kind"),
@@ -60,13 +68,14 @@ CLARIFICATION_TRANSITION_ADAPTER: TypeAdapter[ClarificationTransition] = TypeAda
 class ClarificationContinuationEnvelope(_ContinuationModel):
     """One versioned server-owned state machine for a clarification pause."""
 
-    schema_version: Literal[3] = Field(default=3, alias="schemaVersion")
+    schema_version: Literal[3, 4] = Field(default=4, alias="schemaVersion")
     clarification_id: UUID = Field(alias="clarificationId")
     source_message_id: UUID = Field(alias="sourceMessageId")
     original_request: str = Field(min_length=1, max_length=20_000, alias="originalRequest")
     options: dict[str, ClarificationTransition] = Field(min_length=1, max_length=7)
     allow_custom: bool = Field(default=False, alias="allowCustom")
-    custom_strategy: Literal["route_once"] = Field(default="route_once", alias="customStrategy")
+    custom_strategy: Literal["route_once", "budget_amount"] = Field(default="route_once", alias="customStrategy")
+    custom_budget: BudgetSetupSeed | None = Field(default=None, alias="customBudget")
     clarification_depth: int = Field(default=0, ge=0, le=2, alias="clarificationDepth")
     clarification_fingerprint: str | None = Field(
         default=None,
@@ -80,6 +89,10 @@ class ClarificationContinuationEnvelope(_ContinuationModel):
         cancel = self.options.get("cancel")
         if not isinstance(cancel, CancelContinuation):
             raise ValueError("A clarification continuation requires a cancel transition")
+        if self.custom_strategy == "budget_amount" and self.custom_budget is None:
+            raise ValueError("A budget amount continuation requires its typed budget context")
+        if self.custom_strategy == "route_once" and self.custom_budget is not None:
+            raise ValueError("Only a budget amount continuation may carry budget context")
         return self
 
 

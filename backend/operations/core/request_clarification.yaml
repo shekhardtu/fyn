@@ -1,7 +1,7 @@
 apiVersion: fyn.ai/v1
 kind: Operation
 metadata: {id: request_clarification, version: 1, title: Request clarification, namespace: system, owner: engineering, enabled: true}
-discovery: {description: Ask for a decision only when the request explicitly contains two materially different choices or conflicting supplied values, aliases: [clarify explicit ambiguity], examples: [Compare calendar month with last month but ask whether last month means the prior calendar month or the last 30 days], negativeExamples: [Review my last three months expense pattern, Show rows and a category summary]}
+discovery: {description: Ask for bounded user input when the request contains a material conflict or an operation is missing one required value, aliases: [clarify explicit ambiguity], examples: [Compare calendar month with last month but ask whether last month means the prior calendar month or the last 30 days], negativeExamples: [Review my last three months expense pattern, Show rows and a category summary]}
 eligibility: {requiredPermissions: [], expectedEffect: draft, access: workflow}
 input:
   schema:
@@ -22,7 +22,7 @@ input:
           options:
             type: array
             maxItems: 6
-            minItems: 2
+            minItems: 0
             items:
               type: object
               additionalProperties: false
@@ -33,7 +33,7 @@ input:
                 description: {type: string, maxLength: 240}
                 resolution: {type: string, minLength: 3, maxLength: 500}
                 disposition: {type: string, enum: [continue, cancel]}
-instructions: {selection: "Use only for an explicit material conflict or two genuinely plausible supplied interpretations. Do not use merely because an otherwise valid read or analysis omits a period, filter, grouping, or optional preference; the selected operation owns safe defaults and missing-input collection."}
+instructions: {selection: "Use for an explicit material conflict, two genuinely plausible supplied interpretations, or one required value that must be supplied before the operation can continue. A required-value prompt uses zero options with allow_custom=true. Do not use merely because an otherwise valid read or analysis omits an optional period, filter, grouping, or preference; the selected operation owns safe defaults."}
 routing: {strategy: decision, bindings: {clarification: "${input.clarification}"}}
 execution: {steps: [{id: execute, uses: agent.clarify@1}], label: Preparing an interactive clarification, validation: deterministic}
 approval: {minimum: never}

@@ -315,7 +315,7 @@ export const ClarificationData = z.looseObject({
   "question": z.string().min(3).max(500),
   "reason": z.string().min(3).max(500),
   "conflictFields": z.array(z.string()).max(8).optional(),
-  "options": z.array(ClarificationOptionData).min(2).max(6),
+  "options": z.array(ClarificationOptionData).max(6).optional(),
   "allowCustom": z.boolean().default(false),
   "customLabel": z.union([z.string().max(100), z.null()]).default(null),
 });

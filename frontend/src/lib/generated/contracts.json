@@ -2377,7 +2377,6 @@
             "$ref": "#/$defs/ClarificationOptionData"
           },
           "maxItems": 6,
-          "minItems": 2,
           "title": "Options",
           "type": "array"
         },
@@ -2404,8 +2403,7 @@
         "clarificationId",
         "title",
         "question",
-        "reason",
-        "options"
+        "reason"
       ],
       "title": "ClarificationData",
       "type": "object"
@@ -10976,5 +10974,5 @@
     "approve_operation": "OperationActionPayload",
     "cancel_operation": "OperationActionPayload"
   },
-  "schemaHash": "ece9533edffb7babf2d2008257b020b7110bdde6590efc0ff52326cd3a810790"
+  "schemaHash": "ea4003a523574e02203bacd0a59fe0001f56c4a38296c4efc679fad678cd95c9"
 }

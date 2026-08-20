@@ -213,7 +213,7 @@ function Clarification({ widget, onAction, onCancel, disabled, pending }: Widget
   const completedValues = completionValues(widget);
   const [selectedId, choose] = useOptimisticChoice(str(completedValues.optionId), pending);
   const [customText, setCustomText] = useState(str(completedValues.customText));
-  const [customOpen, setCustomOpen] = useState(Boolean(completedValues.customText));
+  const [customOpen, setCustomOpen] = useState(listed.length === 0 || Boolean(completedValues.customText));
   const customInput = useRef<HTMLInputElement>(null);
   const byId = new Map(widget.actions.map((action) => [action.id, action]));
   const chooseOption = (optionId: string) => {

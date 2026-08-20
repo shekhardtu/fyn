@@ -107,6 +107,32 @@ describe("clarification HITL", () => {
     });
   });
 
+  it("opens the value field immediately when custom input is the only valid response", () => {
+    const onAction = vi.fn();
+    const amountOnly: Widget = {
+      ...widget,
+      data: {
+        ...widget.data,
+        question: "What monthly amount should I use for the Construction budget?",
+        options: [],
+        customLabel: "Enter monthly amount",
+      },
+      actions: widget.actions.filter((action) => ["custom", "cancel"].includes(action.id)),
+    };
+
+    render(<WidgetRenderer widget={amountOnly} onAction={onAction} />);
+
+    const input = screen.getByRole("textbox", { name: "Custom clarification" });
+    expect(input).toBeVisible();
+    fireEvent.change(input, { target: { value: "₹25,000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(onAction).toHaveBeenCalledWith(amountOnly.id, "resolve_clarification", {
+      clarificationId,
+      optionId: "custom",
+      customText: "₹25,000",
+    });
+  });
+
   it("keeps a quiet cancellation path beside the decision", () => {
     const onAction = vi.fn();
     render(<WidgetRenderer widget={widget} onAction={onAction} />);

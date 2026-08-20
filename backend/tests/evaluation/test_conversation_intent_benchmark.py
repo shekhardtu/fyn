@@ -1,6 +1,7 @@
 import pytest
 
-from app.services.extraction import extract_transaction, looks_like_financial_query
+from app.services.extraction import extract_transaction
+from app.services.turn_signals import looks_like_financial_query
 
 
 ENTRY_CASES = [

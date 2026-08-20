@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field, WithJsonSchema, field_validator, model_va
 
 from ..config import Settings, get_settings
 from ..domain import SpendNature, TaxonomyOperation, TransactionType
+from ..operation_types import ContextRelationship, DataEffect, RequestedEffect
 from ..validation import SEMANTIC_IDENTIFIER_PATTERN, SemanticIdentifier
 from ..visualization_contracts import RequestedVisualMark
 from ..operations import operation_catalog
@@ -58,6 +59,7 @@ from .semantic import AnalysisToolProposal, semantic_catalog
 from .sql_analysis import RUN_SQL_TOOL_NAME
 from .semantic_registry import SortDirection, TIME_GRAIN_SPECS, TimeGrain, semantic_schema_registry
 from .runtime_tools import runtime_tool_contract
+from .turn_policy import TurnIntentContract
 from .user_memory import agent_memory_manager
 
 
@@ -250,7 +252,7 @@ class ResolvedIntentContract(BaseModel):
     """
 
     schema_version: Literal[1] = 1
-    context_mode: Literal["standalone", "follow_up", "correction"] = "standalone"
+    context_mode: ContextRelationship = ContextRelationship.STANDALONE
     capability: CapabilityId
     query: QueryInterpretation
 
@@ -260,7 +262,7 @@ class ResolvedIntentContract(BaseModel):
             raise ValueError("A resolved intent may execute only a governed read capability")
         if self.query.scope_transaction_ids:
             raise ValueError("A continuation cannot persist authoritative transaction IDs")
-        if self.context_mode == "standalone" and self.query.use_active_scope:
+        if self.context_mode is ContextRelationship.STANDALONE and self.query.use_active_scope:
             raise ValueError("A standalone continuation cannot inherit the prior result set")
         return self
 
@@ -399,7 +401,7 @@ class ClarificationRequest(BaseModel):
     question: str = Field(min_length=3, max_length=500)
     reason: str = Field(min_length=3, max_length=500)
     conflict_fields: list[str] = Field(default_factory=list, max_length=8)
-    options: list[ClarificationOption] = Field(min_length=2, max_length=6)
+    options: list[ClarificationOption] = Field(default_factory=list, max_length=6)
     allow_custom: bool = False
     custom_label: str | None = Field(default=None, max_length=100)
 
@@ -410,6 +412,8 @@ class ClarificationRequest(BaseModel):
             raise ValueError("Clarification option ids must be unique")
         if self.allow_custom and "custom" in option_ids:
             raise ValueError("The custom clarification id is reserved")
+        if len(self.options) < 2 and not (self.allow_custom and not self.options):
+            raise ValueError("A clarification requires two choices or one custom input")
         return self
 
 
@@ -1149,6 +1153,22 @@ def run_operator(
         limit=runtime_settings.operation_candidate_limit,
         managed_only=False,
     ))
+    raw_intent = (workflow_context or {}).get("intentContract")
+    if isinstance(raw_intent, dict):
+        try:
+            turn_intent = TurnIntentContract.model_validate(raw_intent)
+        except ValueError:
+            turn_intent = None
+        if turn_intent and turn_intent.requested_effect is RequestedEffect.NONE:
+            # Least privilege starts before planning: a read-only turn never
+            # exposes mutation proposal tools to the model. The dispatcher
+            # repeats the effect check so deterministic and replay paths have
+            # the same invariant.
+            operation_candidates = [
+                operation
+                for operation in operation_candidates
+                if operation.derived_effect is not DataEffect.MUTATION
+            ]
     selected_presentation = presentation or answer_presentation(answer_style)
     operator = build_operator(
         categories,

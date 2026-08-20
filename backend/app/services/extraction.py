@@ -83,7 +83,6 @@ EXPENSE_TEXT_RULES = [
     (("gym", "fitness"), taxonomy_path(DefaultCategorySlug.HEALTH, "fitness")),
 ]
 
-
 def infer_expense_category(text: str) -> tuple[str | None, str | None]:
     lowered = text.lower()
     for tokens, mapping in EXPENSE_TEXT_RULES:
@@ -297,37 +296,6 @@ def normalize_merchant(value: str | None) -> str | None:
     normalized = re.sub(r"[^a-z0-9 ]+", " ", value.lower())
     normalized = re.sub(r"\b(?:online|payment|txn|purchase|pos)\b", " ", normalized)
     return re.sub(r"\s+", " ", normalized).strip()
-
-
-def looks_like_financial_query(text: str) -> bool:
-    lowered = text.lower()
-    financial_subject = re.search(
-        # A question about a connected source — an uploaded sheet, an invoice
-        # table, a vendor — is a financial question even when it never says
-        # "spend": the words a person uses for their own data are the subject.
-        r"\b(?:spend|spent|spending|savings?|breakdown|expenses?|rupees?|money|"
-        r"transactions?|income|salary|cash\s+flow|recurring|subscription|afford|"
-        r"emi|interest|sip|investment|budget|loan|invoices?|vendors?|merchants?|"
-        r"sheet|spreadsheet|upload(?:ed)?|chart|graph|plot|dashboard|category|categories)\b",
-        lowered,
-    )
-    request_signal = re.search(
-        r"^\s*(?:how|what|why|show|list|compare|can|could|which|give|tell|total|"
-        r"using|project|forecast|analy[sz]e|review|estimate|summarize)\b"
-        r"|\b(?:project|forecast|analy[sz]e|compare|calculate|estimate|summarize)\b"
-        r"|\?\s*$",
-        lowered,
-    )
-    return bool(financial_subject and request_signal) or any(
-        token in lowered
-        for token in (
-            "how much", "why did", "compare", "breakdown", "biggest expense",
-            "recurring", "subscription", "afford", "spending", "duplicate",
-            "reconciliation", "need review", "prepay", "interest save", "emi",
-            "increase my sip", "investment projection",
-            "add up to", "invoices", "budget sheet", "uploaded", "chart", "graph",
-        )
-    )
 
 
 def parse_spending_period(text: str, today: date | None = None) -> tuple[date, date, str] | None:

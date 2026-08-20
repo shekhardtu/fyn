@@ -1049,6 +1049,46 @@ html[data-focus-modality="keyboard"] :where(a, button, input, select, textarea, 
   opacity: 0.3;
 }
 
+/* An arrival while the reader is in history is a state, not just a distance.
+   The arrow keeps a quiet downward beat until that latest turn is reached;
+   ordinary history navigation shows the same control without the beat. */
+.jump-to-latest[data-unread="true"] .jump-to-latest-icon {
+  animation: unread-reply-jump 1.4s ease-in-out infinite;
+  will-change: transform;
+}
+
+.jump-to-latest-unread-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--secondary);
+  opacity: 0;
+  transform: scale(0.5);
+  transition: opacity var(--m-state) linear, transform var(--m-state) var(--ease);
+}
+
+.jump-to-latest[data-unread="true"] .jump-to-latest-unread-dot {
+  opacity: 1;
+  transform: scale(1);
+}
+
+@keyframes unread-reply-jump {
+  0%, 55%, 100% { transform: translateY(0); }
+  70% { transform: translateY(3px); }
+  82% { transform: translateY(-1px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jump-to-latest[data-unread="true"] .jump-to-latest-icon {
+    animation: none;
+  }
+
+  .jump-to-latest-unread-dot {
+    transition: none;
+  }
+}
+
 /* The line you write on. One ring for the whole card — the textarea's own
    outline is suppressed, so focus is not drawn twice, nested, and clipped. */
 .entry-card {
