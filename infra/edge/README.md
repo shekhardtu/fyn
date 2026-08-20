@@ -58,6 +58,26 @@ rather than an overcommit:
 | `fyn-backend-1` / `fyn-postgres-1` | 1G / 512M |
 | **total** | **2.5G of 3.7G** |
 
+## Applying the service rename
+
+The compose service was `caddy` until 2026-08-20 and is now `edge-caddy`, so
+edge holds itself to rule 1 rather than only asking it of others. `container_name`
+is pinned to `edge-caddy-1`, which is the name it already had and the name every
+deploy script uses, so nothing downstream moves.
+
+Applying it recreates the container, which **drops every app's ingress for a few
+seconds** — fyn and jitraa both. It is not urgent: the bare `caddy` alias only
+matters if an app ever adds a container that resolves that name. Do it alongside
+some other edge change rather than on its own:
+
+```bash
+ssh root@49.13.87.106 'cd /opt/edge && docker compose up -d --remove-orphans'
+curl -sfI https://api.fynai.co/health && curl -sfI https://jitraa.com
+```
+
+`--remove-orphans` is what clears the container registered under the old service
+name; without it Compose leaves it running and the two fight over :443.
+
 ## Files
 
 | Path | Role |

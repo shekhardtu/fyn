@@ -5,8 +5,9 @@
 #
 # Boundary contract for anything that wants a public hostname:
 #   1. Join the external `edge` network with an explicit alias `<app>-<role>`.
-#      Aliases are namespaced by hand because Compose would otherwise expose a
-#      bare service name ("web", "api") onto a network shared by every app.
+#      Name the *service* that too: Compose publishes a service's own name as an
+#      alias regardless of what else you declare, so a bare "web" or "api" or
+#      "caddy" lands on a network every app shares. Edge holds itself to this.
 #   2. Put exactly ONE container on `edge` — the app's own front door. Databases
 #      and workers stay on the app's private default network, unreachable from
 #      here and from every neighbour.
@@ -18,7 +19,14 @@
 name: edge
 
 services:
-  caddy:
+  # Named for the project, not the role. Compose publishes a service's name as
+  # an alias on every network it joins, so a service called `caddy` would put a
+  # bare `caddy` on a network shared by every app on the box — the same shape
+  # as the collision that took jitraa's API down when fyn joined with a service
+  # called `backend`. `container_name` is pinned so the name every deploy
+  # script already uses does not move.
+  edge-caddy:
+    container_name: edge-caddy-1
     image: caddy:2-alpine
     restart: unless-stopped
     # Caddy is a proxy, not a workload. A cap this low also means a runaway

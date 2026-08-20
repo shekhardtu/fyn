@@ -6,6 +6,19 @@ import { agentActivityEventSchema, agentResponseSchema, agentSettingsSchema, age
 
 const API_URL = environment.apiUrl;
 
+/** The URL to call for an API path.
+ *
+ *  Same-origin — the default, and how dev and any single-origin deployment run
+ *  — the `/api` prefix is what separates API routes from the SPA's own routes
+ *  through the proxy, so it stays.
+ *
+ *  Against a dedicated API host it is the hostname said twice:
+ *  `api.fynai.co/api/bootstrap`. There it comes off. The edge still accepts
+ *  the prefixed form, so a bundle cached before this change keeps working. */
+export function apiUrl(path: string): string {
+  return API_URL ? `${API_URL}${path.replace(/^\/api(?=\/|$)/, "")}` : path;
+}
+
 const UNREACHABLE = "We can’t reach your financial data right now. Check your connection and try again.";
 
 /** Carries the status alongside the sentence.
@@ -68,7 +81,7 @@ async function send(path: string, init?: RequestInit) {
   // keeps it; everything else gets the deadline.
   const signal = init?.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS);
   try {
-    return await fetch(`${API_URL}${path}`, { credentials: "include", ...init, signal });
+    return await fetch(apiUrl(path), { credentials: "include", ...init, signal });
   } catch (cause) {
     // An abort raised by our own deadline is unreachability, not a cancelled
     // request; a caller's own abort is passed through so the thread can tell
@@ -268,21 +281,21 @@ export async function deleteConversation(id: string): Promise<void> {
  *  away with an undo window still open: `keepalive` lets the request outlive the
  *  document, so closing the tab doesn't quietly un-press the delete. */
 export function flushConversationDeletion(id: string): void {
-  void fetch(`${API_URL}/api/conversations/${id}`, { method: "DELETE", keepalive: true }).catch(() => undefined);
+  void fetch(apiUrl(`/api/conversations/${id}`), { method: "DELETE", keepalive: true }).catch(() => undefined);
 }
 
 /** The same keepalive escape hatch for taxonomy deletes still inside their
  *  undo window when the page goes away. */
 export function flushCategoryDeletion(categoryId: string): void {
-  void fetch(`${API_URL}/api/categories/${encodeURIComponent(categoryId)}`, { method: "DELETE", keepalive: true }).catch(() => undefined);
+  void fetch(apiUrl(`/api/categories/${encodeURIComponent(categoryId)}`), { method: "DELETE", keepalive: true }).catch(() => undefined);
 }
 
 export function flushSubcategoryDeletion(categoryId: string, subcategoryId: string): void {
-  void fetch(`${API_URL}/api/categories/${encodeURIComponent(categoryId)}/subcategories/${encodeURIComponent(subcategoryId)}`, { method: "DELETE", keepalive: true }).catch(() => undefined);
+  void fetch(apiUrl(`/api/categories/${encodeURIComponent(categoryId)}/subcategories/${encodeURIComponent(subcategoryId)}`), { method: "DELETE", keepalive: true }).catch(() => undefined);
 }
 
 export function flushHintDeletion(categoryId: string, hintId: string): void {
-  void fetch(`${API_URL}/api/categories/${encodeURIComponent(categoryId)}/hints/${encodeURIComponent(hintId)}`, { method: "DELETE", keepalive: true }).catch(() => undefined);
+  void fetch(apiUrl(`/api/categories/${encodeURIComponent(categoryId)}/hints/${encodeURIComponent(hintId)}`), { method: "DELETE", keepalive: true }).catch(() => undefined);
 }
 
 export type AgentActivity = AgentActivityEvent;
@@ -347,7 +360,7 @@ class FynHttpAgent extends HttpAgent {
   }
 
   override async getCapabilities(): Promise<AgentCapabilities> {
-    this.capabilitiesRequest ??= fetch(`${API_URL}/api/agent/capabilities`, { credentials: "include" })
+    this.capabilitiesRequest ??= fetch(apiUrl(`/api/agent/capabilities`), { credentials: "include" })
       .then(async (response) => {
         if (!response.ok) throw new ApiError(describe(await response.json().catch(() => null), response.status), response.status);
         return conform(AgentCapabilitiesSchema, await response.json(), "agent capability declaration");
@@ -375,7 +388,7 @@ function fynAgent(threadId: string): FynHttpAgent {
   const existing = fynAgents.get(threadId);
   if (existing) return existing;
   const agent = new FynHttpAgent({
-    url: `${API_URL}/api/agent`,
+    url: apiUrl(`/api/agent`),
     threadId,
     fetch: (url, init) => fetch(url, { ...init, credentials: "include" }),
   });
@@ -507,9 +520,9 @@ async function runFynAgent(
   };
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const replayUrl = `${API_URL}/api/agent/runs/${encodeURIComponent(runId)}/events${cursorState.safe ? `?after=${cursorState.safe}` : ""}`;
+    const replayUrl = apiUrl(`/api/agent/runs/${encodeURIComponent(runId)}/events${cursorState.safe ? `?after=${cursorState.safe}` : ""}`);
     agent.replayMode = replay;
-    agent.url = replay ? replayUrl : `${API_URL}/api/agent`;
+    agent.url = replay ? replayUrl : apiUrl(`/api/agent`);
     try {
       await agent.runAgent({
         runId,
@@ -652,7 +665,7 @@ export function uploadCsv(conversationId: string, file: File, onProgress?: (perc
   body.set("file", file);
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
-    request.open("POST", `${API_URL}/api/imports/csv`);
+    request.open("POST", apiUrl(`/api/imports/csv`));
     // The fetch calls carry the session through `credentials: "include"`; XHR
     // needs the same thing said its own way or the upload arrives signed out.
     request.withCredentials = true;

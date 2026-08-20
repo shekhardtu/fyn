@@ -26,6 +26,19 @@
 		}
 	}
 
+	# This host serves nothing but the API, so the /api in a path is the
+	# hostname said a second time. Requests arrive without it and are put back
+	# onto the backend's canonical prefix here, at the one place that knows
+	# this hostname is API-only — the app keeps a single set of paths, and
+	# same-origin deployments keep needing the prefix to tell API routes from
+	# SPA routes.
+	#
+	# The prefixed form still passes through untouched, so a bundle cached
+	# before the client stopped sending it goes on working, as does the
+	# deploy health check on /api/health.
+	@unprefixed not path /api /api/*
+	rewrite @unprefixed /api{uri}
+
 	reverse_proxy fyn-backend:8000 {
 		# Caddy stops buffering on text/event-stream by itself; setting this
 		# explicitly means a mislabelled content type cannot reintroduce it.
