@@ -82,6 +82,5 @@ module = [
   "app.operations.catalog",
   "app.security",
   "app.services.adapters",
-  "app.services.agent_tools",
 ]
 ignore_errors = true
