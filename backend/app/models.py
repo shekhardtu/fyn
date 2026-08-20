@@ -859,6 +859,33 @@ class UserPreference(UUIDPrimaryKeyMixin, UserOwnedMixin, TimestampMixin, Base):
     __table_args__ = (UniqueConstraint("user_id", "key"),)
 
 
+class LocationLabel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """One place name per ~150m cell, shared by every user on this instance.
+
+    Not user-owned, and deliberately so: a geohash cell's name is a fact about
+    the world, not about anyone. Keying it per user would multiply identical
+    lookups against a provider whose terms require caching, and would leak the
+    same coordinates into as many rows as there are people who went there.
+
+    A lookup that found nothing is recorded too, with `display` null. Otherwise
+    every save at an unnamed cell — a highway, open water, a new development —
+    would re-ask the provider forever.
+    """
+
+    __tablename__ = "location_labels"
+    # The geohash is the natural key, but every entity here takes a UUID
+    # primary key so identity is uniform across the schema; the cell keeps its
+    # uniqueness as a constraint instead.
+    geohash: Mapped[str] = mapped_column(String(12), unique=True, index=True)
+    city: Mapped[Optional[str]] = mapped_column(String(120))
+    state: Mapped[Optional[str]] = mapped_column(String(120))
+    country: Mapped[Optional[str]] = mapped_column(String(120))
+    # What a transaction row shows. Null means the provider answered and had no
+    # name for this cell, which is different from never having asked.
+    display: Mapped[Optional[str]] = mapped_column(String(160))
+    provider: Mapped[str] = mapped_column(String(40))
+
+
 class AIAction(UUIDPrimaryKeyMixin, UserOwnedMixin, ConversationChildMixin, TimestampMixin, Base):
     __tablename__ = "ai_actions"
     action_type: Mapped[str] = mapped_column(String(80))

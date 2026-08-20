@@ -101,7 +101,19 @@ class Settings(BaseSettings):
     # Comma-separated hosts an external database source may name. Empty keeps
     # local development usable; a deployment sets it to state its answer.
     external_source_hosts: str = ""
+    # Turns the coordinates a transaction carries into a place name. Off by
+    # default because it sends those coordinates to a third party, which is a
+    # decision an operator should make rather than inherit.
     location_enrichment_enabled: bool = False
+    # "auto" resolves to Nominatim, which needs no account. Set a different
+    # name to point at another implementation, or leave enrichment off.
+    geocoding_provider: str = "auto"
+    nominatim_base_url: str = "https://nominatim.openstreetmap.org"
+    # Nominatim blocks clients that do not identify themselves. Point this at a
+    # contact address a maintainer actually reads before enabling enrichment
+    # against the public instance — it is how they reach you instead of
+    # blocking you.
+    geocoding_user_agent: str = "fyn-ai/0.1 (self-hosted; set GEOCODING_USER_AGENT)"
     # Files are the sole source of operation definitions. Core definitions are
     # shipped with the API; managed definitions may come from a shared volume.
     operations_core_dir: str = str(Path(__file__).resolve().parents[1] / "operations")

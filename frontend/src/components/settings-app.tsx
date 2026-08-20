@@ -114,7 +114,7 @@ export function AppSettingsPanel({ onDeleted }: { onDeleted: () => void }) {
       {privacy.isLoading ? <div role="status" aria-label="Loading privacy settings" className="space-y-3">{[0, 1, 2].map((row) => <div key={row} className="h-16 animate-pulse rounded-lg bg-line/70" />)}</div> : null}
       {privacy.data ? <SettingSwitch
         label="Record location"
-        description="Saves where you are when you add a transaction, as the coordinates your device reports. New entries only — editing an older one never changes where it says it happened. Your browser will ask permission the first time."
+        description="Saves where you are when you add a transaction — the coordinates your device reports, and the neighbourhood and state they turn out to be. New entries only; editing an older one never changes where it says it happened. Your browser will ask permission the first time."
         checked={locationEnabled}
         disabled={run.isPending}
         busy={busyControl === "location"}

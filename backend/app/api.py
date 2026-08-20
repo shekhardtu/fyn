@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 import hashlib
 
 from ag_ui.core import AgentCapabilities, RunAgentInput
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, Query, Response, UploadFile, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import and_, delete, func, or_, select
 from pydantic import ValidationError
@@ -133,6 +133,7 @@ from .services.reconciliation import ingest_observation
 from .services.overview import overview_snapshot
 from .services.proactive import current_insights
 from .services.taxonomy import TaxonomyRepository
+from .services.geocoding import backfill_transaction_label, needs_lookup
 from .services.transactions import (
     UNSET,
     canonical_transactions,
@@ -423,8 +424,8 @@ def delete_conversation(conversation_id: UUID, db: Session = Depends(get_db), us
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-def _agui_session_factory(db: Session) -> sessionmaker[Session]:
-    """Create worker sessions against the same engine used by this request.
+def _worker_session_factory(db: Session) -> sessionmaker[Session]:
+    """Create background-worker sessions against this request's engine.
 
     Deriving the factory from the injected session keeps the runtime compatible
     with the isolated SQLite engines used by the test suite as well as the
@@ -574,7 +575,7 @@ async def run_agent(
     )
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    session_factory = _agui_session_factory(db)
+    session_factory = _worker_session_factory(db)
 
     existing = db.scalar(select(AgentRun).where(AgentRun.id == run_id, AgentRun.user_id == user.id))
     if existing:
@@ -729,7 +730,7 @@ def replay_agent_run(
     if not run:
         raise HTTPException(status_code=404, detail="Agent run not found")
     cursor = max(after, last_event_id or 0)
-    return _agui_replay_response(_agui_session_factory(db), run.id, user.id, after=cursor)
+    return _agui_replay_response(_worker_session_factory(db), run.id, user.id, after=cursor)
 
 
 @router.post("/agent/runs/{run_id}/cancel", response_model=AgentRunOut)
@@ -1141,9 +1142,36 @@ def delete_transaction_category_hint(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+def _name_location_later(background: BackgroundTasks, db: Session, transaction: Transaction, user_id: UUID) -> None:
+    """Queue a place-name lookup for a transaction that just landed.
+
+    After the response, never during it: naming the place is a call to a third
+    party, and nobody pressing Save should wait on one. The transaction is
+    already complete without it — the name is a convenience laid over
+    coordinates that are the real record.
+
+    Skipped when the cell has been looked up before, because the save already
+    took the cached name, and when the person typed their own label, which
+    outranks anything a map service has for the place.
+    """
+    if transaction.location_source != "device" or transaction.location_label:
+        return
+    if transaction.latitude is None or transaction.longitude is None:
+        return
+    if not needs_lookup(db, float(transaction.latitude), float(transaction.longitude)):
+        return
+    background.add_task(
+        backfill_transaction_label,
+        _worker_session_factory(db),
+        transaction.id,
+        user_id,
+    )
+
+
 @router.post("/transactions", response_model=TransactionListItemOut, status_code=status.HTTP_201_CREATED)
 def create_manual_transaction(
     request: TransactionUpdateIn,
+    background: BackgroundTasks,
     db: Session = Depends(get_db),
     user: User = Depends(current_user),
 ) -> TransactionListItemOut:
@@ -1168,6 +1196,7 @@ def create_manual_transaction(
         raise HTTPException(status_code=422, detail=str(error)) from error
     db.commit()
     db.refresh(transaction)
+    _name_location_later(background, db, transaction, user.id)
     return _saved_transaction_item(db, user.id, transaction)
 
 
@@ -1175,6 +1204,7 @@ def create_manual_transaction(
 def update_transaction(
     transaction_id: UUID,
     request: TransactionUpdateIn,
+    background: BackgroundTasks,
     db: Session = Depends(get_db),
     user: User = Depends(current_user),
 ) -> TransactionListItemOut:
@@ -1210,6 +1240,7 @@ def update_transaction(
         raise HTTPException(status_code=status_code, detail=str(error)) from error
     db.commit()
     db.refresh(transaction)
+    _name_location_later(background, db, transaction, user.id)
     return _saved_transaction_item(db, user.id, transaction)
 
 

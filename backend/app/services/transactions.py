@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..domain import SpendNature, TransactionStatus, TransactionType
 from ..event_time import as_utc, now_utc
+from .geocoding import cached_label
 from .preferences import user_preference
 from ..models import Transaction, TransactionFieldValue, TransactionSource
 from ..taxonomy_catalog import DefaultCategorySlug, TRANSACTION_CATEGORY_ROOTS, category_slug_matches_transaction_type
@@ -350,6 +351,11 @@ def create_manual_transaction(
     category, subcategory = _taxonomy_path(db, user_id, category_id, subcategory_id) if kind is TransactionType.EXPENSE else (None, None)
     label = str(location or "").strip()[:160] or None
     fix = _accepted_device_fix(db, user_id, latitude, longitude, location_accuracy)
+    if fix and not label:
+        # Only what is already known for this cell. A name nobody has looked up
+        # yet is filled in afterwards, because a save must not wait on a third
+        # party — see services/geocoding.
+        label = cached_label(db, float(fix["latitude"]), float(fix["longitude"]))
     transaction = create_transaction(
         db,
         user_id=user_id,
