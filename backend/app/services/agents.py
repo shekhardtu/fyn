@@ -3,7 +3,6 @@ from __future__ import annotations
 import ast
 import re
 from datetime import date
-from enum import Enum
 import json
 from collections.abc import Callable
 from types import SimpleNamespace
@@ -176,26 +175,25 @@ class AIAssistedMatch(BaseModel):
     reason: str
 
 
-def inline_enum(enum_type: type[Enum]):
-    """An enum annotation that carries its values instead of a reference.
-
-    Pydantic renders a bare enum field as `{"$ref": ..., "default": ...}`, and
-    the model provider rejects a `$ref` that carries any sibling keyword — so a
-    single defaulted enum field makes the whole contract unusable and every call
-    on that route falls back to the deterministic path. Inlining the values
-    removes the reference, leaving the default nothing to sit beside.
-
-    Validation is unchanged: the annotation is still the enum, so a response is
-    still coerced to it and still rejected when it is not one of these values.
-    """
-    return Annotated[
-        enum_type,
-        WithJsonSchema({"type": "string", "enum": [item.value for item in enum_type]}),
-    ]
+InlineTransactionType = Annotated[
+    TransactionType,
+    WithJsonSchema({"type": "string", "enum": [item.value for item in TransactionType]}),
+]
+InlineSpendNature = Annotated[
+    SpendNature,
+    WithJsonSchema({"type": "string", "enum": [item.value for item in SpendNature]}),
+]
 
 
 class TransactionInterpretation(BaseModel):
-    transaction_type: inline_enum(TransactionType) = TransactionType.UNKNOWN
+    """Model contract with enum values inlined for provider compatibility.
+
+    Pydantic otherwise emits a default beside an enum ``$ref``, a schema shape
+    the model provider rejects. The annotations remain the concrete enums, so
+    runtime validation is unchanged.
+    """
+
+    transaction_type: InlineTransactionType = TransactionType.UNKNOWN
     amount_minor: int | None = Field(default=None, ge=1)
     currency: str | None = Field(default=None, min_length=3, max_length=3)
     merchant: str | None = None
@@ -208,7 +206,7 @@ class TransactionInterpretation(BaseModel):
     timezone: str | None = None
     location_label: str | None = Field(default=None, max_length=160)
     tags: list[str] = Field(default_factory=list, max_length=8)
-    spend_nature: inline_enum(SpendNature) = SpendNature.UNKNOWN
+    spend_nature: InlineSpendNature = SpendNature.UNKNOWN
     explicit_fields: list[str] = Field(default_factory=list)
     confidence: float = Field(default=0.5, ge=0, le=1)
 
@@ -742,21 +740,6 @@ def filesystem_operation_decision(
         })
     except (OperationInputError, ValueError):
         return None
-
-
-_PRESENTATION_UNIT_ALIASES: dict[str, set[str]] = {
-    "transaction": {"transaction", "transactions", "record", "records", "entry", "entries"},
-    "category": {"category", "categories"},
-    "subcategory": {"subcategory", "subcategories"},
-    "merchant": {"merchant", "merchants", "vendor", "vendors", "restaurant", "restaurants", "store", "stores"},
-    "account": {"account", "accounts"},
-    "transaction_type": {"type", "types", "direction", "directions"},
-    "tag": {"tag", "tags"},
-    "location": {"location", "locations", "place", "places"},
-    "spend_nature": {"nature", "essentials", "discretionary"},
-    "month": set(TIME_GRAIN_SPECS["month"].aliases),
-    "date": set(TIME_GRAIN_SPECS["day"].aliases) | {"date", "dates", "time", "timeline"},
-}
 
 
 def _bind_explicit_presentation_unit(text: str, presentation: PresentationIntent) -> PresentationIntent:
