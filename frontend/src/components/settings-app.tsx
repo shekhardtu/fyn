@@ -96,7 +96,7 @@ export function AppSettingsPanel({ onDeleted }: { onDeleted: () => void }) {
       {privacy.isLoading ? <div role="status" aria-label="Loading privacy settings" className="space-y-3">{[0, 1, 2].map((row) => <div key={row} className="h-16 animate-pulse rounded-lg bg-line/70" />)}</div> : null}
       {privacy.data ? <SettingSwitch
         label="Location enrichment"
-        description="Adds the place a transaction happened. Precise location is never stored."
+        description="Records where a transaction happened — the coordinates your device reports, and the city and state they map to."
         checked={locationEnabled}
         disabled={run.isPending}
         busy={busyControl === "location"}

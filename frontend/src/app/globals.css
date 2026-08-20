@@ -291,9 +291,38 @@
     @apply bg-surface text-ink-body;
     font-family: var(--font-body), sans-serif;
     overscroll-behavior: none;
+    /* Nothing may pan the page sideways. A single child wider than the
+       viewport — a wide table, an unbroken URL — otherwise turns every
+       horizontal drag into the whole app sliding, which reads as breakage
+       rather than as scrolling. `clip` rather than `hidden` so this never
+       silently becomes a scroll container. */
+    overflow-x: clip;
+    /* iOS paints a grey box over anything tapped; the app has its own press
+       states and does not need a second one fighting them. */
+    -webkit-tap-highlight-color: transparent;
   }
   html {
     @apply font-sans;
+    /* Without this iOS enlarges text of its own accord when the phone is
+       rotated, and the type scale stops being the type scale. */
+    -webkit-text-size-adjust: 100%;
+  }
+
+  /* A long token — a URL, a hash, an unspaced identifier — must fold rather
+     than widen its column. `anywhere` over `break-word` so it also stops the
+     token contributing its full width to the intrinsic size, which is what
+     lets a flex or grid child hold its lane. */
+  p, li, td, th, dd, dt, blockquote, figcaption {
+    overflow-wrap: anywhere;
+  }
+
+  /* Below 16px iOS zooms the page when a field takes focus, and leaves it
+     zoomed — the single most common reason a mobile web form feels broken.
+     Raised only for coarse pointers, so the desktop type scale is untouched. */
+  @media (pointer: coarse) {
+    input, textarea, select {
+      font-size: max(16px, 1em);
+    }
   }
 }
 
@@ -417,6 +446,12 @@ html[data-focus-modality="keyboard"] :where(a, button, input, select, textarea, 
   scrollbar-color: var(--line-strong) transparent;
   scrollbar-width: thin;
   overscroll-behavior: contain;
+  /* Vertical only. Anything genuinely wider than the pane — a table, a code
+     block — scrolls inside its own container (.table-scroll); the transcript
+     itself never does, so a sideways drag on a message cannot drag the
+     conversation with it. */
+  overflow-x: hidden;
+  overscroll-behavior-x: none;
   /* The pane is the size container wide tables measure themselves against:
      an expanded table takes 80cqw — 80% of the conversation pane, gutters
      included — so it tracks the real pane across every screen size instead
@@ -452,6 +487,8 @@ html[data-focus-modality="keyboard"] :where(a, button, input, select, textarea, 
   scrollbar-color: var(--line-strong) transparent;
   scrollbar-width: thin;
   overscroll-behavior: contain;
+  overflow-x: hidden;
+  overscroll-behavior-x: none;
 }
 
 /* A table embedded in the transcript keeps the same tidy scrollbars but must
@@ -462,6 +499,12 @@ html[data-focus-modality="keyboard"] :where(a, button, input, select, textarea, 
 .table-scroll {
   scrollbar-color: var(--line-strong) transparent;
   scrollbar-width: thin;
+  /* This one keeps a horizontal axis on purpose — it is where a wide table is
+     meant to scroll — but it must not hand the gesture on to the transcript
+     when it reaches its own edge. */
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  max-width: 100%;
 }
 
 .conversation-scroll::-webkit-scrollbar,
