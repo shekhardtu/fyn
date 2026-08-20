@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     # nothing else; sessions are hashed without it.
     auth_secret: str = DEVELOPMENT_AUTH_SECRET
     session_cookie_secure: bool = True
-    session_cookie_samesite: str = "lax"
+    session_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
     # Set to a shared parent (".example.com") when the app and the API are on
     # sibling subdomains, which is how this deploys behind one reverse proxy.
     session_cookie_domain: str | None = None
