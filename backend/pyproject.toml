@@ -102,6 +102,5 @@ module = [
   "app.services.semantic",
   "app.services.semantic_registry",
   "app.services.spreadsheet",
-  "app.services.sql_analysis",
 ]
 ignore_errors = true
