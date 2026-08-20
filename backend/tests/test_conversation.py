@@ -11,6 +11,7 @@ from app.config import get_settings
 from app.database import Base
 from app.models import AIAction, Account, AnalysisToolRun, AnalysisToolTemplate, Budget, Category, Conversation, DraftState, Goal, GoalContribution, Message, Subcategory, Tag, TaxonomyScope, Transaction, TransactionDraft, TransactionFieldValue, TransactionTag, User, UserAnalysisTool
 from app.operations import operation_catalog
+from app.operation_types import ContextRelationship
 from app.operations.tools import OperationProposal
 from app.seed import default_user
 from app.services.agents import ClarificationOption, ClarificationRequest, CopilotDecision, QueryBundleInterpretation, QueryInterpretation, QueryView, TaxonomyInterpretation, ToolGrounding, OperatorResult
@@ -1381,6 +1382,23 @@ def test_correction_language_is_marked_for_scope_reconciliation():
     assert not conversation_service._is_correction_followup("Show Housing expenses this month")
 
 
+def test_context_relationship_uses_one_typed_contract_and_distinguishes_amount_bounds():
+    active_state = {"query": {"transaction_type": "expense"}}
+
+    assert conversation_service._context_relationship(
+        "keep the same period",
+        active_state,
+    ) is ContextRelationship.FOLLOW_UP
+    assert conversation_service._context_relationship(
+        "No, I meant Housing expenses",
+        active_state,
+    ) is ContextRelationship.CORRECTION
+    assert conversation_service._context_relationship(
+        "show expenses above 5000",
+        active_state,
+    ) is ContextRelationship.STANDALONE
+
+
 def test_expense_pattern_savings_request_runs_contextual_governed_analysis(db, monkeypatch):
     user = default_user(db)
     conversation = get_or_create_conversation(db, user)
@@ -1739,6 +1757,190 @@ def test_fast_gate_handles_bare_amount_without_calling_llm(db, monkeypatch):
     assert "Detected a standalone amount" in next(event for event in reversed(activity) if event["id"] == "classification")["detail"]
 
 
+def test_contextual_transaction_shape_bypasses_the_stateless_fast_write_gate():
+    prompt = "same as before: expense 5000"
+
+    assert conversation_service._fast_path_decision(
+        prompt,
+        date(2026, 8, 20),
+        context_relationship=ContextRelationship.FOLLOW_UP,
+    ) is None
+
+
+def test_compound_follow_up_read_reaches_contextual_operator_without_creating_a_transaction(
+    db,
+    monkeypatch,
+    agent_enabled,
+):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    prior_query = {
+        "metric": "amount",
+        "result_mode": "summary",
+        "operation": "rank",
+        "group_by": "merchant",
+        "transaction_type": "expense",
+        "start_date": "2026-08-01",
+        "end_date": "2026-08-19",
+        "limit": 5,
+        "use_active_scope": False,
+        "scope_transaction_ids": [],
+    }
+    conversation.active_analysis_state = {
+        "sourceMessageId": str(uuid4()),
+        "answerSummary": "Prior merchant ranking.",
+        "entityType": "transaction",
+        "query": prior_query,
+        "queries": [prior_query],
+        "resultShapes": ["summary"],
+    }
+    db.commit()
+    captured_workflow = {}
+
+    def operator_runner(*args, **kwargs):
+        captured_workflow.update(kwargs.get("workflow_context") or {})
+        return OperatorResult(reply="No matching expenses were found.")
+
+    monkeypatch.setattr(conversation_service, "run_operator", operator_runner)
+    before_transactions = db.scalar(select(func.count()).select_from(Transaction))
+    before_drafts = db.scalar(select(func.count()).select_from(TransactionDraft))
+
+    response = handle_chat(
+        db,
+        user,
+        conversation,
+        "drop Swiggy, keep the same period, and show expenses above 8000",
+    )
+
+    assert response.message == "No matching expenses were found."
+    assert captured_workflow["contextRelationship"] == "follow_up"
+    assert captured_workflow["activeAnalysisState"]["query"] == prior_query
+    assert db.scalar(select(func.count()).select_from(Transaction)) == before_transactions
+    assert db.scalar(select(func.count()).select_from(TransactionDraft)) == before_drafts
+
+
+def test_effect_gate_blocks_a_model_read_to_transaction_escalation(
+    db,
+    monkeypatch,
+    agent_enabled,
+):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    monkeypatch.setattr(
+        conversation_service,
+        "run_operator",
+        lambda *args, **kwargs: _operator_proposal("create_transaction_draft", {
+            "transaction_type": "expense",
+            "amount_minor": 800_000,
+            "merchant": "Delivery",
+            "transaction_date": date.today().isoformat(),
+            "category_slug": "food",
+            "subcategory_slug": "delivery",
+        }),
+    )
+
+    response = handle_chat(
+        db,
+        user,
+        conversation,
+        "drop Swiggy, keep the same period, and show expenses above 8000",
+    )
+
+    assert response.task_status == "failed"
+    assert response.failure_stage == "effect_authorization"
+    assert response.error_code == "read_to_mutation_escalation"
+    assert db.scalar(select(Transaction)) is None
+    assert db.scalar(select(TransactionDraft)) is None
+    authorization = db.scalar(
+        select(AIAction)
+        .where(AIAction.action_type == "effect_authorization")
+        .order_by(AIAction.created_at.desc(), AIAction.id.desc())
+    )
+    assert authorization.payload_redacted["outcome"] == "deny"
+
+
+def test_plain_numeric_follow_up_cannot_enter_the_standalone_transaction_shortcut(
+    db,
+    monkeypatch,
+    agent_enabled,
+):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    db.add(Message(
+        conversation_id=conversation.id,
+        role="user",
+        content="Help me plan how long to save.",
+        widgets=[],
+        citations=[],
+    ))
+    db.flush()
+    db.add(Message(
+        conversation_id=conversation.id,
+        role="assistant",
+        content="How many months are you saving for?",
+        widgets=[],
+        citations=[],
+    ))
+    db.commit()
+    captured_workflow = {}
+
+    def operator_runner(*args, **kwargs):
+        captured_workflow.update(kwargs.get("workflow_context") or {})
+        return _operator_proposal("create_transaction_draft", {
+            "transaction_type": "expense",
+            "amount_minor": 2_400,
+            "transaction_date": date.today().isoformat(),
+            "category_slug": "other",
+            "subcategory_slug": "other",
+        })
+
+    monkeypatch.setattr(conversation_service, "run_operator", operator_runner)
+
+    response = handle_chat(db, user, conversation, "24")
+
+    assert captured_workflow["contextRelationship"] == "follow_up"
+    assert captured_workflow["intentContract"]["requested_effect"] == "unknown"
+    assert response.widgets[0].type == "clarification"
+    assert response.pending_action is not None
+    assert db.scalar(select(Transaction)) is None
+    assert db.scalar(select(TransactionDraft)) is None
+
+
+def test_model_value_question_is_persisted_as_a_durable_custom_continuation(
+    db,
+    monkeypatch,
+    agent_enabled,
+):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    monkeypatch.setattr(
+        conversation_service,
+        "_fast_path_decision",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        conversation_service,
+        "run_operator",
+        lambda *args, **kwargs: OperatorResult(
+            reply="How many months are you saving for?",
+        ),
+    )
+
+    response = handle_chat(
+        db,
+        user,
+        conversation,
+        "Calculate how much I should save each month",
+    )
+
+    assert response.message == "How many months are you saving for?"
+    assert response.widgets[0].type == "clarification"
+    assert response.widgets[0].data["options"] == []
+    assert response.widgets[0].data["allowCustom"] is True
+    assert response.pending_action.continuation["schemaVersion"] == 4
+    assert response.pending_action.continuation["customStrategy"] == "route_once"
+
+
 def test_rich_entry_is_applied_without_clarification(db):
     user = default_user(db)
     conversation = get_or_create_conversation(db, user)
@@ -2037,8 +2239,12 @@ def test_budget_period_year_is_not_treated_as_the_limit(db, monkeypatch):
 
     response = handle_chat(db, user, conversation, "Set a lower August 2026 travel budget")
 
-    assert response.widgets == []
-    assert response.message == "What monthly amount should I use for this budget?"
+    assert response.message == "What monthly amount should I use for the Travel budget?"
+    assert response.widgets[0].type == "clarification"
+    assert response.widgets[0].data["options"] == []
+    assert response.widgets[0].data["allowCustom"] is True
+    assert response.pending_action is not None
+    assert response.pending_action.continuation["customStrategy"] == "budget_amount"
     assert db.scalar(select(Budget)) is None
 
 

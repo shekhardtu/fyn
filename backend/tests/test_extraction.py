@@ -2,7 +2,8 @@ from datetime import date
 
 import pytest
 
-from app.services.extraction import extract_transaction, looks_like_financial_query, parse_amount_minor, parse_spending_period
+from app.services.extraction import extract_transaction, parse_amount_minor, parse_spending_period
+from app.services.turn_signals import expects_value_answer, has_amount_comparison, has_explicit_transaction_mutation_cue, looks_like_financial_query
 
 
 @pytest.mark.parametrize(("text", "minor"), [
@@ -81,9 +82,28 @@ def test_payment_success_phrase_is_not_part_of_merchant():
     "Show spending for the last 7 days",
     "List my transactions this month",
     "Using my income and expenses this month, project expenses to month-end and tell me projected savings.",
+    "drop Swiggy, keep the same period, and show expenses above 8000",
+    "expenses above 8000",
 ])
 def test_financial_questions_are_classified_as_queries(text):
     assert looks_like_financial_query(text)
+
+
+def test_routing_cues_separate_amount_bounds_from_transaction_mutations():
+    assert has_amount_comparison("show expenses above 5000")
+    assert not has_explicit_transaction_mutation_cue("show expenses above 5000")
+    assert not has_amount_comparison("spent 5000 at Swiggy")
+    assert has_explicit_transaction_mutation_cue("spent 5000 at Swiggy")
+
+
+@pytest.mark.parametrize("text", [
+    "How many months are you saving for?",
+    "What monthly amount should I use for this budget?",
+    "What should the target amount be?",
+    "Please provide the duration.",
+])
+def test_value_questions_keep_a_short_reply_in_context(text):
+    assert expects_value_answer(text)
 
 
 @pytest.mark.parametrize("text", [

@@ -370,9 +370,17 @@ class ClarificationData(WidgetDataBase):
     question: str = Field(min_length=3, max_length=500)
     reason: str = Field(min_length=3, max_length=500)
     conflict_fields: list[str] = Field(default_factory=list, alias="conflictFields", max_length=8)
-    options: list[ClarificationOptionData] = Field(min_length=2, max_length=6)
+    options: list[ClarificationOptionData] = Field(default_factory=list, max_length=6)
     allow_custom: bool = Field(default=False, alias="allowCustom")
     custom_label: str | None = Field(default=None, alias="customLabel", max_length=100)
+
+    @model_validator(mode="after")
+    def validate_response_choices(self) -> ClarificationData:
+        if len(self.options) >= 2:
+            return self
+        if not self.options and self.allow_custom:
+            return self
+        raise ValueError("clarification requires at least two options or custom input")
 
 
 class ChartLineage(BaseModel):

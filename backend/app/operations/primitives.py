@@ -122,7 +122,10 @@ PRIMITIVES: tuple[PrimitiveDefinition, ...] = (
     PrimitiveDefinition("transaction.record", 1, EmptyPrimitiveInput, DataEffect.MUTATION, ConfirmationPolicy.CONDITIONAL, frozenset({"transactions.write"}), False, True, True, frozenset(), None, "record_transaction"),
     PrimitiveDefinition("transaction.find_removal", 1, EmptyPrimitiveInput, DataEffect.MUTATION, ConfirmationPolicy.REQUIRED, frozenset({"transactions.write"}), False, True, True, frozenset(), None, "remove_transaction"),
     PrimitiveDefinition("taxonomy.change", 1, EmptyPrimitiveInput, DataEffect.MUTATION, ConfirmationPolicy.REQUIRED, frozenset({"taxonomy.write"}), False, True, True, frozenset(), None, "change_taxonomy"),
-    PrimitiveDefinition("planning.run", 1, EmptyPrimitiveInput, DataEffect.MUTATION, ConfirmationPolicy.REQUIRED, frozenset({"planning.write"}), False, True, True, frozenset(), None, "run_planning"),
+    # Planning only prepares a typed, user-confirmable proposal. The separate
+    # widget action is the mutation boundary, so routing a read through this
+    # mixed planner must not itself claim mutation authority.
+    PrimitiveDefinition("planning.run", 1, EmptyPrimitiveInput, DataEffect.DRAFT, ConfirmationPolicy.REQUIRED, frozenset({"planning.write"}), False, True, True, frozenset(), None, "run_planning"),
     PrimitiveDefinition("finance.query", 1, EmptyPrimitiveInput, DataEffect.NONE, ConfirmationPolicy.NEVER, frozenset({"transactions.read"}), False, True, True, frozenset(), None, "run_query"),
     PrimitiveDefinition("transaction.search", 1, EmptyPrimitiveInput, DataEffect.NONE, ConfirmationPolicy.NEVER, frozenset({"transactions.read"}), False, True, True, frozenset(), None, "search_transactions"),
     PrimitiveDefinition("calculator.loan", 1, EmptyPrimitiveInput, DataEffect.NONE, ConfirmationPolicy.NEVER, frozenset(), False, True, True, frozenset(), None, "run_query"),

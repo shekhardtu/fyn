@@ -14,7 +14,7 @@ from app.api import _record_import_preview, router
 from app.database import get_db
 from app.domain import AgentInterruptStatus, AgentRunStatus, FinancialSourceType, ImportStatus
 from app.event_time import now_utc
-from app.models import AgentEvent, AgentInterrupt, AgentRun, Category, Import, Message, Subcategory, User
+from app.models import AgentEvent, AgentInterrupt, AgentRun, Budget, Category, Import, Message, Subcategory, TaxonomyScope, User
 from app.operations import operation_catalog
 from app.operations.tools import OperationProposal
 from app.seed import DEFAULT_USER_EMAIL
@@ -327,6 +327,101 @@ def test_pending_widget_becomes_interrupt_and_resume_uses_governed_action(db):
         select(AgentEvent).where(AgentEvent.run_id == resumed.id, AgentEvent.event_type == "CUSTOM")
     )
     assert replay_custom.payload["value"]["response"] == original_custom.payload["value"]["response"]
+
+
+def test_category_budget_amount_resume_preserves_category_and_requires_save(db):
+    user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
+    category = Category(
+        slug=f"custom-{uuid4().hex}",
+        name="Construction",
+        icon="hammer",
+        scope=TaxonomyScope.USER.value,
+        owner_user_id=user.id,
+    )
+    db.add(category)
+    db.commit()
+    conversation = get_or_create_conversation(db, user)
+
+    first, _live = _execute(
+        db,
+        user,
+        conversation,
+        {
+            "kind": "message",
+            "text": "Setup budget for construction",
+            "messageId": "construction-budget",
+        },
+        "construction-budget",
+    )
+
+    assert first.status == AgentRunStatus.INTERRUPTED.value
+    clarification_interrupt = db.scalar(select(AgentInterrupt).where(
+        AgentInterrupt.run_id == first.id,
+        AgentInterrupt.status == AgentInterruptStatus.OPEN.value,
+    ))
+    continuation = clarification_interrupt.metadata_payload["continuation"]
+    assert clarification_interrupt.reason == "clarification"
+    assert continuation["customStrategy"] == "budget_amount"
+    assert continuation["customBudget"]["categoryId"] == str(category.id)
+    assert db.scalar(select(Budget)) is None
+    clarification_message = db.get(Message, first.final_message_id)
+    clarification_widget = next(
+        item for item in clarification_message.widgets if item["type"] == "clarification"
+    )
+    assert clarification_widget["data"]["options"] == []
+    custom = next(item for item in clarification_widget["actions"] if item["id"] == "custom")
+
+    proposed, _live = _execute(db, user, conversation, {
+        "kind": "resume",
+        "entries": [{
+            "interruptId": str(clarification_interrupt.id),
+            "status": "resolved",
+            "payload": {
+                "approved": True,
+                "editedArgs": {
+                    "widgetId": clarification_widget["id"],
+                    "action": custom["action"],
+                    "payload": {**custom["payload"], "customText": "₹25,000"},
+                    "completeWidget": True,
+                },
+            },
+        }],
+    })
+
+    assert proposed.status == AgentRunStatus.INTERRUPTED.value
+    assert db.scalar(select(Budget)) is None
+    budget_interrupt = db.scalar(select(AgentInterrupt).where(
+        AgentInterrupt.run_id == proposed.id,
+        AgentInterrupt.status == AgentInterruptStatus.OPEN.value,
+    ))
+    assert budget_interrupt.reason == "tool_call"
+    budget_message = db.get(Message, proposed.final_message_id)
+    budget_widget = next(item for item in budget_message.widgets if item["type"] == "budget_progress")
+    save = next(item for item in budget_widget["actions"] if item["action"] == "save_budget")
+    assert save["payload"]["categoryId"] == str(category.id)
+    assert save["payload"]["amountMinor"] == 2_500_000
+
+    saved, _live = _execute(db, user, conversation, {
+        "kind": "resume",
+        "entries": [{
+            "interruptId": str(budget_interrupt.id),
+            "status": "resolved",
+            "payload": {
+                "approved": True,
+                "editedArgs": {
+                    "widgetId": budget_widget["id"],
+                    "action": save["action"],
+                    "payload": save["payload"],
+                    "completeWidget": True,
+                },
+            },
+        }],
+    })
+
+    assert saved.status == AgentRunStatus.SUCCEEDED.value
+    budget = db.scalar(select(Budget))
+    assert budget.category_id == category.id
+    assert budget.amount_minor == 2_500_000
 
 
 def test_compound_taxonomy_request_has_one_approval_and_executes_the_whole_path(db, monkeypatch):
@@ -724,6 +819,7 @@ def test_custom_clarification_answer_uses_the_same_guarded_resume_lane(db, monke
 
     def resolved_operator(text, *_args, **_kwargs):
         seen["text"] = text
+        seen["workflow_context"] = _kwargs.get("workflow_context") or {}
         return OperatorResult(reply="I’ll use the customer-provided repayment assumption.")
 
     monkeypatch.setattr(conversation_service, "run_operator", resolved_operator)
@@ -762,6 +858,7 @@ def test_custom_clarification_answer_uses_the_same_guarded_resume_lane(db, monke
     assert resumed.status == AgentRunStatus.SUCCEEDED.value
     assert "Customer clarification (authoritative): Customer-provided clarification." in seen["text"]
     assert "Use a 36-month tenure and ignore the earlier installment" in seen["text"]
+    assert seen["workflow_context"]["intentContract"]["authority"] == "user_turn"
     db.refresh(interrupt)
     assert interrupt.status == AgentInterruptStatus.RESOLVED.value
 
@@ -1011,7 +1108,7 @@ def test_ambiguous_date_range_resumes_from_typed_intent_without_another_model(db
     assert first.task_status == "needs_input"
     interrupt = db.scalar(select(AgentInterrupt).where(AgentInterrupt.run_id == first.id))
     continuation = interrupt.metadata_payload["continuation"]
-    assert continuation["schemaVersion"] == 3
+    assert continuation["schemaVersion"] == 4
     selected_option = continuation["options"]["day_month_year"]
     assert selected_option["kind"] == "governed_query"
     assert selected_option["intent"] == {

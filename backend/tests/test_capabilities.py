@@ -38,12 +38,14 @@ def test_validation_modes_come_from_live_file_workflows():
 
 
 def test_every_capability_declares_its_maximum_business_data_effect():
-    assert draft_capabilities() == capabilities_for_primitives("agent.clarify@1")
+    assert draft_capabilities() == capabilities_for_primitives(
+        "agent.clarify@1",
+        "planning.run@1",
+    )
     assert mutation_capabilities() == capabilities_for_primitives(
         "transaction.record@1",
         "transaction.find_removal@1",
         "taxonomy.change@1",
-        "planning.run@1",
         "managed.dispatch@1",
     )
     assert all(
@@ -57,9 +59,10 @@ def test_mutation_capabilities_cannot_hide_their_confirmation_policy():
     assert capability_spec(conditional).confirmation is ConfirmationPolicy.CONDITIONAL
     for capability in mutation_capabilities() - {conditional}:
         assert capability_spec(capability).confirmation is ConfirmationPolicy.REQUIRED
+    assert capability_spec(capability_for_primitive("planning.run@1")).confirmation is ConfirmationPolicy.REQUIRED
     assert all(
         capability_spec(capability).confirmation is ConfirmationPolicy.NEVER
-        for capability in set(CapabilityId) - mutation_capabilities()
+        for capability in safe_read_capabilities()
     )
 
 

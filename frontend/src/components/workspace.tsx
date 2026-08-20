@@ -20,6 +20,7 @@ import { environment } from "@/config/environment";
 import { bootstrap, cancelAgentRun, createConversation, deleteConversation, flushConversationDeletion, isUnauthorized, listConversations, loadAgentThreadState, loadConversation, renameConversation, openInterrupts, reconnectAgentRun, resumeAgentInterrupt, sendAgentAction, sendAgentMessage, uploadCsv, type AgentActivity, type AgentRunPhase, type FynInterrupt } from "@/lib/api";
 import { formatBytes, formatMoney, readComposerEntry } from "@/lib/format";
 import { takeSharedText } from "@/lib/share-target";
+import { transcriptElementOffset } from "@/lib/transcript-scroll";
 import { widgetTypeIds, type AgentResponse, type Bootstrap, type ConversationOut, type ConversationPage, type ConversationSummary, type Message, type Widget, type WidgetActionId } from "@/lib/protocol";
 import { useWorkspaceOverlay } from "@/components/ui/overlay";
 import { useScrollEdges } from "@/lib/scroll-edges";
@@ -707,7 +708,7 @@ const MessageArticle = memo(function MessageArticle({ message, activeWidget, can
 /** The thread itself, held behind the same boundary and for the same reason.
  *  Every prop it takes is either state that does not move while you type or a
  *  callback held stable by the workspace, so a keystroke stops here. */
-const Transcript = memo(function Transcript({ messages, agentRun, reasoningSummary, streamingText, streaming, busy, usedWidgets, pendingWidget, openCitations, activeWidget, cancelWidget, activeWidgetFocusKey, error, retry, followEnd, onAction, onCancelWidget, onActiveWidgetFocus, onToggleCitations, onRetry, onPostPrompt, scrollRef }: {
+const Transcript = memo(function Transcript({ messages, agentRun, reasoningSummary, streamingText, streaming, busy, usedWidgets, pendingWidget, openCitations, activeWidget, cancelWidget, activeWidgetFocusKey, error, retry, followEnd, onAction, onCancelWidget, onActiveWidgetReveal, onToggleCitations, onRetry, onPostPrompt, scrollRef }: {
   messages: Message[];
   agentRun: LiveAgentRun;
   reasoningSummary: string;
@@ -726,7 +727,7 @@ const Transcript = memo(function Transcript({ messages, agentRun, reasoningSumma
   onAction: WidgetAction;
   onPostPrompt: (text: string) => void;
   onCancelWidget: (widgetId: string) => void;
-  onActiveWidgetFocus: () => void;
+  onActiveWidgetReveal: (target: HTMLElement) => boolean;
   onToggleCitations: (messageId: string) => void;
   onRetry: () => void;
   scrollRef: RefObject<HTMLDivElement | null>;
@@ -790,13 +791,18 @@ const Transcript = memo(function Transcript({ messages, agentRun, reasoningSumma
   const previousFocusKey = useRef(activeWidgetFocusKey);
   const focusFrame = useRef(0);
   useLayoutEffect(() => {
+    cancelAnimationFrame(focusFrame.current);
+    // A reply arriving while the reader is in history is announced by the
+    // workspace's "Jump to latest" control. It must not steal their viewport
+    // or keyboard focus merely because the reply contains an actionable card.
+    if (!followEnd) return;
     const changed = previousFocusKey.current !== activeWidgetFocusKey;
     previousFocusKey.current = activeWidgetFocusKey;
-    cancelAnimationFrame(focusFrame.current);
     if (!changed || !activeWidgetFocusKey || !activeWidget) return;
 
     const rowIndex = messages.length - 1;
     let attempts = 0;
+    let stableFrames = 0;
     const reveal = () => {
       const scroller = scrollRef.current;
       if (!scroller) return;
@@ -807,17 +813,25 @@ const Transcript = memo(function Transcript({ messages, agentRun, reasoningSumma
         return;
       }
 
-      // Respect a widget that deliberately focused one of its own fields (for
-      // example, a newly opened category-name input).
-      onActiveWidgetFocus();
-      if (!(document.activeElement instanceof HTMLElement) || !target.contains(document.activeElement)) {
-        target.focus({ preventScroll: true });
-      }
-      target.scrollIntoView({ block: "start", inline: "nearest", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+      // The virtualizer remains the sole writer of this scroller's position.
+      // A native smooth `scrollIntoView` captures coordinates before the old
+      // HITL card has collapsed and the new row has been measured; its target
+      // is stale as soon as either happens. Re-resolve the exact widget offset
+      // for two stable frames instead. This also limits movement to the thread
+      // scroller rather than every scrollable ancestor.
+      // Reader intent can arrive between this animation frame being scheduled
+      // and executed. The workspace rejects the reveal synchronously in that
+      // case, before the virtualizer writes another scroll position.
+      if (!onActiveWidgetReveal(target)) return;
+      const offset = transcriptElementOffset(scroller, target);
+      const aligned = Math.abs(scroller.scrollTop - offset) <= 1;
+      if (!aligned) virtualizer.scrollToOffset(offset, { behavior: "auto" });
+      stableFrames = aligned ? stableFrames + 1 : 0;
+      if (++attempts < 12 && stableFrames < 2) focusFrame.current = requestAnimationFrame(reveal);
     };
     focusFrame.current = requestAnimationFrame(reveal);
     return () => cancelAnimationFrame(focusFrame.current);
-  }, [activeWidget, activeWidgetFocusKey, messages, onActiveWidgetFocus, scrollRef, virtualizer]);
+  }, [activeWidget, activeWidgetFocusKey, followEnd, messages, onActiveWidgetReveal, scrollRef, virtualizer]);
 
   // Which rows open a day. A thread is read back long after it was written —
   // often across several sittings — so the transcript is dated: the first entry
@@ -930,8 +944,15 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   // A share from the platform sheet lands as a navigation to "/" carrying the
   // text. Seeded, never sent: the person sees what arrived and decides.
   useEffect(() => {
-    const shared = takeSharedText();
-    if (shared) setInput((current) => current || shared);
+    // Read inside cancellable scheduled work. Development Strict Mode tears
+    // down the first effect before this frame, so the URL is consumed only by
+    // the surviving mount; scheduling also avoids a synchronous state cascade
+    // inside the effect itself.
+    const frame = requestAnimationFrame(() => {
+      const shared = takeSharedText();
+      if (shared) setInput((current) => current || shared);
+    });
+    return () => cancelAnimationFrame(frame);
   }, []);
   const [linkCopied, setLinkCopied] = useState(false);
   const switchingConversation = switching;
@@ -993,6 +1014,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   });
   if (threadChanged || loadingChanged || adoptServerTranscript) {
     const changedThread = seeded.id !== conversationId;
+    const resetViewport = changedThread || loadingChanged;
     setSeeded({
       id: conversationId,
       loading: Boolean(loadingThread),
@@ -1013,7 +1035,12 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     setStreamingText("");
     setOpenCitations(new Set());
     setUpload(null);
-    setAtBottom(true);
+    // A background refetch of this same transcript is reconciliation, not
+    // navigation. Preserve an off-bottom reader's ownership; resetting follow
+    // here made every successfully persisted reply jump to the end a second
+    // time when the invalidated conversation query returned. A genuinely new
+    // or newly loaded thread still opens at its latest turn.
+    if (resetViewport) setAtBottom(true);
     setAnnouncement("");
     setLinkCopied(false);
     if (changedThread) setInput("");
@@ -1044,6 +1071,15 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   // not land on top of it and snap the movement it exists to smooth.
   const followScroll = useRef<{ smooth: boolean } | null>(null);
   const followSettleTimer = useRef<number | undefined>(undefined);
+  // A HITL card is positioned by the transcript virtualizer. Its scroll
+  // events are programmatic even though the destination is intentionally not
+  // the physical bottom, so they must never be mistaken for reader navigation.
+  const widgetRevealActive = useRef(false);
+  const widgetRevealSettleTimer = useRef<number | undefined>(undefined);
+  // A turn that landed while the reader owned the viewport. Unlike the normal
+  // distance-based jump affordance, this remains set through row measurements
+  // and partial scrolling until the latest turn is actually reached.
+  const unseenLatest = useRef(false);
   // Which transcript was last placed on screen; reset when the thread changes.
   const arrivals = useRef<string | null>(null);
   // One controller for everything this thread is currently listening to.
@@ -1069,6 +1105,9 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
       window.clearTimeout(copiedTimer.current);
       window.clearTimeout(scrollSettleTimer.current);
       window.clearTimeout(followSettleTimer.current);
+      window.clearTimeout(widgetRevealSettleTimer.current);
+      widgetRevealActive.current = false;
+      unseenLatest.current = false;
       controller.abort();
       inFlight.current = null;
       // The next thread is a new transcript, so it is placed at its end rather
@@ -1303,20 +1342,55 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   const updateJumpControl = useCallback((visible: boolean, scrolling = false) => {
     const control = jumpToLatestRef.current;
     if (!control) return;
-    control.dataset.visible = String(visible);
-    control.dataset.scrolling = String(visible && scrolling);
-    control.inert = !visible;
-    control.setAttribute("aria-hidden", String(!visible));
+    const resolvedVisible = visible || unseenLatest.current;
+    control.dataset.visible = String(resolvedVisible);
+    control.dataset.scrolling = String(resolvedVisible && scrolling);
+    control.dataset.unread = String(unseenLatest.current);
+    control.inert = !resolvedVisible;
+    control.setAttribute("aria-hidden", String(!resolvedVisible));
   }, []);
-  const stopFollowingForHitl = useCallback(() => {
-    readerScrolled.current = true;
+
+  const revealActiveWidget = useCallback((target: HTMLElement) => {
+    if (readerScrolled.current) return false;
+    // This hand-off is application navigation, not evidence that the reader
+    // took over the scrollbar. Keep it distinct so the scroll events emitted
+    // by virtualizer alignment cannot permanently disable response following.
+    readerScrolled.current = false;
     followScroll.current = null;
     window.clearTimeout(followSettleTimer.current);
+    widgetRevealActive.current = true;
+    window.clearTimeout(widgetRevealSettleTimer.current);
+    widgetRevealSettleTimer.current = window.setTimeout(() => {
+      widgetRevealActive.current = false;
+    }, SCROLL_SETTLE_MS);
+    unseenLatest.current = false;
     setAtBottom(false);
+    updateJumpControl(false);
+    // Respect a widget that deliberately focused one of its own fields (for
+    // example, a newly opened category-name input).
+    if (!(document.activeElement instanceof HTMLElement) || !target.contains(document.activeElement)) {
+      target.focus({ preventScroll: true });
+    }
+    return true;
+  }, [updateJumpControl]);
+
+  const followNextResponse = useCallback(() => {
+    // Once the reader answers the active card, their attention transfers to
+    // the response it resumes. Re-arm following before the old card compacts,
+    // so that height change and the appended row are one anchored transition.
+    window.clearTimeout(widgetRevealSettleTimer.current);
+    widgetRevealActive.current = false;
+    unseenLatest.current = false;
+    readerScrolled.current = false;
+    followScroll.current = null;
+    setAtBottom(true);
     updateJumpControl(false);
   }, [updateJumpControl]);
 
-  useLayoutEffect(() => updateJumpControl(false), [conversationId, updateJumpControl]);
+  useLayoutEffect(() => {
+    unseenLatest.current = false;
+    updateJumpControl(false);
+  }, [conversationId, updateJumpControl]);
 
   const stopAgent = useCallback(() => {
     if (!activeRunId || stoppingRun) return;
@@ -1351,6 +1425,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     if (!text || chatPending || actionPending || uploadPending || agentRunning || pausedForInterrupt) return;
     setInput(""); setError(null); setRetry(null);
     readerScrolled.current = false;
+    unseenLatest.current = false;
     setAtBottom(true);
     updateJumpControl(false);
     const deliveredAt = new Date().toISOString();
@@ -1369,6 +1444,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     if (problem) { failed(new Error(problem), null); return; }
     setError(null);
     readerScrolled.current = false;
+    unseenLatest.current = false;
     setAtBottom(true);
     updateJumpControl(false);
     startUpload(file);
@@ -1380,24 +1456,28 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     const markUsed = options?.markUsed !== false;
     if (widgetId !== activeInteractionWidgetId || pendingWidget || (markUsed && usedWidgets.has(widgetId))) return;
     setError(null);
+    followNextResponse();
     setPendingWidget(widgetId);
     startAction({ widgetId, action, payload, markUsed });
-  }, [activeInteractionWidgetId, pendingWidget, usedWidgets, startAction]);
+  }, [activeInteractionWidgetId, pendingWidget, usedWidgets, followNextResponse, startAction]);
 
   const cancelWidgetInterrupt = useCallback((widgetId: string) => {
     if (interruptPending) return;
     const current = availableInterrupts.find((interrupt) => interrupt.widgetId === widgetId);
-    if (current) resolveInterrupt({ interrupt: current, response: { status: "cancelled" } });
-  }, [availableInterrupts, interruptPending, resolveInterrupt]);
+    if (current) {
+      followNextResponse();
+      resolveInterrupt({ interrupt: current, response: { status: "cancelled" } });
+    }
+  }, [availableInterrupts, followNextResponse, interruptPending, resolveInterrupt]);
 
   const retryLast = useCallback(() => {
     if (!retry) return;
     setError(null);
     if (retry.kind === "chat") sendPrompt(retry.text);
-    if (retry.kind === "action") { setPendingWidget(retry.widgetId); startAction(retry); }
+    if (retry.kind === "action") { followNextResponse(); setPendingWidget(retry.widgetId); startAction(retry); }
     if (retry.kind === "upload") startUpload(retry.file);
     setRetry(null);
-  }, [retry, sendPrompt, startAction, startUpload]);
+  }, [retry, followNextResponse, sendPrompt, startAction, startUpload]);
 
   // Whether the reader is following the conversation, which is not the same as
   // where the scrollbar happens to be. Rows measure themselves after they mount
@@ -1413,6 +1493,8 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     // with it rather than letting the settle check drag them back down.
     followScroll.current = null;
     window.clearTimeout(followSettleTimer.current);
+    widgetRevealActive.current = false;
+    window.clearTimeout(widgetRevealSettleTimer.current);
     setAtBottom(false);
   };
 
@@ -1436,6 +1518,18 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
 
   const noteScrollKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home") takeScrollControl();
+  };
+
+  const noteScrollbarPointer = (event: React.PointerEvent<HTMLDivElement>) => {
+    const node = event.currentTarget;
+    if (event.target !== node) return;
+    const rect = node.getBoundingClientRect();
+    // Native scrollbar drags do not emit a dedicated intent event. A press in
+    // its edge gutter is the one reliable signal available before `scroll`;
+    // the small fallback also covers overlay scrollbars whose layout width is
+    // reported as zero.
+    const gutter = Math.max(node.offsetWidth - node.clientWidth, 16);
+    if (event.clientX >= rect.right - gutter) takeScrollControl();
   };
 
   // Closes the gap a follow scroll leaves when its animation settles short of
@@ -1481,23 +1575,35 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     window.clearTimeout(followSettleTimer.current);
     updateHeaderForScroll(node.scrollTop, readerScrolled.current);
     const distanceFromBottom = Math.max(0, node.scrollHeight - node.scrollTop - node.clientHeight);
-    const viewportHeight = typeof window === "undefined" ? node.clientHeight : window.innerHeight;
-    const jumpVisible = Boolean(
-      readerScrolled.current
-      && distanceFromBottom > viewportHeight * JUMP_TO_LATEST_VIEWPORT_RATIO
-    );
-    updateJumpControl(jumpVisible, true);
-    scrollSettleTimer.current = window.setTimeout(
-      () => updateJumpControl(jumpVisible),
-      SCROLL_SETTLE_MS,
-    );
+    // The active-widget reveal deliberately stops above the physical bottom.
+    // Its virtualizer-owned scroll events are not a scrollbar drag and must
+    // not flip the thread into reader-owned mode while its row settles.
+    if (widgetRevealActive.current) {
+      updateJumpControl(false);
+      return;
+    }
+    // Resolve the terminal state before scheduling any visual settle callback.
+    // Previously a frame near the end captured `jumpVisible=true`, the exact
+    // bottom hid the control, and that older timer showed it again 150ms later
+    // without an unread dot.
     if (distanceFromBottom <= AT_END_SLACK_PX) {
+      unseenLatest.current = false;
       followScroll.current = null;
       readerScrolled.current = false;
       setAtBottom(true);
       updateJumpControl(false);
       return;
     }
+    const viewportHeight = typeof window === "undefined" ? node.clientHeight : window.innerHeight;
+    const jumpVisible = Boolean(
+      unseenLatest.current
+      || (readerScrolled.current && distanceFromBottom > viewportHeight * JUMP_TO_LATEST_VIEWPORT_RATIO)
+    );
+    updateJumpControl(jumpVisible, true);
+    scrollSettleTimer.current = window.setTimeout(
+      () => updateJumpControl(jumpVisible),
+      SCROLL_SETTLE_MS,
+    );
     // Reader intent has priority over the generous follow zone. Previously a
     // turn could remain `atBottom` for the first 120px of an upward scroll, so
     // a row measurement or late chart resize pulled it back toward the dock.
@@ -1513,16 +1619,25 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
       followSettleTimer.current = window.setTimeout(followSettle, SCROLL_SETTLE_MS);
       return;
     }
-    // A scroll neither this thread started nor the reader's gestures announced
-    // — dragging the scrollbar is the one input with no event of its own.
-    // Treat it as the reader taking over. Button visibility is intentionally
-    // separate and uses the 90vh gap.
-    setAtBottom(false);
+    // A scroll with no announced owner can be a virtualizer correction after a
+    // row measurement. Inferring reader intent here would disable following
+    // just before the next card is focused. Wheel, touch, keyboard and native
+    // scrollbar pointer intent are all captured before their scroll events.
   }
 
   function jumpToLatest() {
     readerScrolled.current = false;
-    updateJumpControl(false);
+    const node = scrollRef.current;
+    if (node && node.scrollHeight - node.scrollTop - node.clientHeight <= AT_END_SLACK_PX) {
+      unseenLatest.current = false;
+      setAtBottom(true);
+      updateJumpControl(false);
+      return;
+    }
+    // Keep an unseen-reply indicator present while the smooth jump travels.
+    // `trackScroll` retires it only when the physical latest edge is reached;
+    // an active widget reveal retires it when that exact reply is positioned.
+    updateJumpControl(true, true);
     scrollToEnd(prefersReducedMotion() ? "auto" : "smooth");
   }
 
@@ -1578,8 +1693,6 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
 
   const focusedArrival = useRef(activeWidgetFocusKey);
   useLayoutEffect(() => {
-    const node = scrollRef.current;
-    if (!node || !atBottom) return;
     // Only a turn landing earns a glide. Activity ticks and streaming growth
     // re-run this effect too, but they arrive several times a second — easing
     // toward each one restarts the animation mid-flight and reads as stutter,
@@ -1587,13 +1700,25 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     const transcript = `${messages.length}:${messages[messages.length - 1]?.id ?? ""}`;
     const arrived = arrivals.current !== null && arrivals.current !== transcript;
     arrivals.current = transcript;
+    const node = scrollRef.current;
+    if (!node) return;
+    if (!atBottom) {
+      // The viewport belongs to the reader. Keep it anchored and announce that
+      // a new turn is waiting, even when the gap is smaller than the normal
+      // 90vh history-navigation threshold.
+      if (arrived) {
+        unseenLatest.current = true;
+        updateJumpControl(true);
+      }
+      return;
+    }
     const hitlArrived = Boolean(activeWidgetFocusKey && focusedArrival.current !== activeWidgetFocusKey);
     focusedArrival.current = activeWidgetFocusKey;
     // `Transcript` aligns a new HITL widget itself. Following the generic end
     // here as well would win the same layout pass and hide the widget's top.
     if (hitlArrived) return;
     scrollToEnd(arrived && !prefersReducedMotion() ? "smooth" : "auto");
-  }, [messages, agentRun, activeWidgetFocusKey, atBottom, loadingThread, scrollToEnd]);
+  }, [messages, agentRun, activeWidgetFocusKey, atBottom, loadingThread, scrollToEnd, updateJumpControl]);
 
   function applyStarter(text: string) {
     setInput(text);
@@ -1637,6 +1762,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
           onWheel={noteWheelScroll}
           onTouchMove={takeScrollControl}
           onKeyDown={noteScrollKey}
+          onPointerDown={noteScrollbarPointer}
           className="conversation-scroll min-h-0 flex-1 overflow-y-auto"
         >
           <SiteHeader
@@ -1677,7 +1803,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
               onAction={handleWidgetAction}
               onPostPrompt={sendPrompt}
               onCancelWidget={cancelWidgetInterrupt}
-              onActiveWidgetFocus={stopFollowingForHitl}
+              onActiveWidgetReveal={revealActiveWidget}
               onToggleCitations={toggleCitations}
               onRetry={retryLast}
               scrollRef={scrollRef}
@@ -1691,9 +1817,12 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
           {/* Sits just above the composer rather than inside it, so appearing
               cannot change the composer's height and jolt the very scroll
               position it exists to restore. */}
-          <div ref={jumpToLatestRef} data-visible="false" data-scrolling="false" aria-hidden="true" inert style={{ bottom: `calc(var(--dock-h) + 0.75rem)` }} className="jump-to-latest pointer-events-none absolute inset-x-0 z-20 flex justify-center px-3 sm:px-6"><Button type="button" onClick={jumpToLatest} variant="outline" className="pointer-events-auto rounded-full shadow-[var(--shadow-overlay)]"><ArrowDown size={14} /> Jump to latest</Button></div>
+          <div ref={jumpToLatestRef} data-visible="false" data-scrolling="false" data-unread="false" aria-hidden="true" inert style={{ bottom: `calc(var(--dock-h) + 0.75rem)` }} className="jump-to-latest pointer-events-none absolute inset-x-0 z-20 flex justify-center px-3 sm:px-6"><Button type="button" onClick={jumpToLatest} variant="outline" className="pointer-events-auto rounded-full shadow-[var(--shadow-overlay)]"><ArrowDown size={14} className="jump-to-latest-icon" /> Jump to latest<span aria-hidden className="jump-to-latest-unread-dot" /></Button></div>
           <div ref={dockRef} className="entry-dock z-20 shrink-0 px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6 sm:pt-4 sm:pb-4">
-            {fallbackInterrupt ? <InterruptFallback interrupt={fallbackInterrupt} busy={interruptPending} onResolve={(response) => resolveInterrupt({ interrupt: fallbackInterrupt, response })} /> : null}
+            {fallbackInterrupt ? <InterruptFallback interrupt={fallbackInterrupt} busy={interruptPending} onResolve={(response) => {
+              followNextResponse();
+              resolveInterrupt({ interrupt: fallbackInterrupt, response });
+            }} /> : null}
             <Composer variant="docked" value={input} onValueChange={setInput} onSubmit={submit} onStop={stopAgent} textRef={textRef} fileRef={fileRef} onAttach={attach} busy={busy} sending={chatPending} running={agentRunning} stopping={stoppingRun} paused={pausedForInterrupt} disabled={switchingConversation} dragging={dragging} upload={upload} />
           </div>
         </> : null}

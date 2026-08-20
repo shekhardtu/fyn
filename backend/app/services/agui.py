@@ -73,9 +73,12 @@ from .continuations import (
     CancelContinuation,
     ClarificationContinuationEnvelope,
     ClarificationTransition,
+    GovernedBudgetContinuation,
     GovernedQueryContinuation,
     LegacyPromptContinuation,
 )
+from .extraction import parse_amount_minor
+from .planning_contracts import BudgetSetupContract
 
 
 FYN_RESPONSE_EVENT = "fyn.response.v1"
@@ -948,7 +951,7 @@ def _resume_response(
         transition_payload = None
         transition_cancels = False
         schema_version = continuation.get("schemaVersion")
-        if schema_version == 3:
+        if schema_version in {3, 4}:
             try:
                 envelope = ClarificationContinuationEnvelope.model_validate(continuation)
             except ValueError as error:
@@ -960,10 +963,25 @@ def _resume_response(
                 custom_text = str(selected.get("customText") or "").strip()
                 if not envelope.allow_custom or not custom_text:
                     raise ProtocolRunError("Enter the clarification you want fyn AI to use.", "invalid_resume_payload")
-                transition = LegacyPromptContinuation(
-                    label="Customer-provided clarification",
-                    resolution=custom_text,
-                )
+                if envelope.custom_strategy == "budget_amount":
+                    amount_minor = parse_amount_minor(custom_text)
+                    if amount_minor is None or amount_minor <= 0 or envelope.custom_budget is None:
+                        raise ProtocolRunError(
+                            "Enter a valid monthly budget amount.",
+                            "invalid_resume_payload",
+                        )
+                    transition = GovernedBudgetContinuation(
+                        label="Customer-provided monthly amount",
+                        budget=BudgetSetupContract(
+                            **envelope.custom_budget.model_dump(),
+                            amount_minor=amount_minor,
+                        ),
+                    )
+                else:
+                    transition = LegacyPromptContinuation(
+                        label="Customer-provided clarification",
+                        resolution=custom_text,
+                    )
             else:
                 stored_transition = envelope.options.get(option_id)
                 if stored_transition is None:

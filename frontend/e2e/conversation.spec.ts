@@ -73,6 +73,44 @@ test("agent activity streams the selected path with individual and cumulative ti
   await expect(selectedTool.last()).toBeVisible();
 });
 
+test("a new reply does not displace a reader who moved into history", async ({ page }) => {
+  test.setTimeout(90_000);
+  const threadStateLoaded = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return response.request().method() === "GET" && new RegExp(`^${API_MOUNT_PATH}/agent/threads/[^/]+$`).test(url.pathname);
+  });
+  await page.goto(sharedThreadUrl());
+  await threadStateLoaded;
+  const input = page.getByLabel("Message fyn AI");
+  const pending = page.getByRole("group", { name: /^Action required:/ });
+  if (await pending.count()) {
+    const cancel = pending.last().getByRole("button", { name: /^Cancel(?:\s|$)/ }).last();
+    if (await cancel.count()) await cancel.click();
+  }
+  await expect(input).toBeEnabled();
+  await input.fill("Summarize my spending this month by category");
+  await input.press("Enter");
+  await expect(page.getByText("fyn AI is working").last()).toBeVisible({ timeout: 30_000 });
+
+  const transcriptScroller = page.locator(".conversation-scroll");
+  await transcriptScroller.hover();
+  await page.mouse.wheel(0, -10_000);
+  const distanceFromLatest = () => transcriptScroller.evaluate(
+    (node) => node.scrollHeight - node.scrollTop - node.clientHeight,
+  );
+  await expect.poll(distanceFromLatest).toBeGreaterThan(500);
+
+  await expect(page.getByText("fyn AI is working")).toHaveCount(0, { timeout: 60_000 });
+  await expect.poll(distanceFromLatest).toBeGreaterThan(500);
+  await expect(page.getByRole("button", { name: "Jump to latest" })).toBeVisible();
+  await expect(page.locator(".jump-to-latest")).toHaveAttribute("data-unread", "true");
+  await expect(page.locator(".jump-to-latest-unread-dot")).toHaveCSS("opacity", "1");
+  await page.getByRole("button", { name: "Jump to latest" }).click();
+  await expect.poll(distanceFromLatest).toBeLessThanOrEqual(4);
+  await expect(page.getByRole("button", { name: "Jump to latest" })).not.toBeVisible();
+  await expect(page.locator(".jump-to-latest")).toHaveAttribute("data-unread", "false");
+});
+
 test("bare amount follows clarification, auto-save, edit/remove controls, and refresh persistence", async ({ page }) => {
   await page.goto(sharedThreadUrl());
   await expect(page.getByLabel("Message fyn AI")).toBeVisible();
@@ -95,12 +133,16 @@ test("bare amount follows clarification, auto-save, edit/remove controls, and re
   await expect(subcategoryStep).toBeFocused();
   await expect(subcategoryStep).toBeInViewport();
   await subcategoryStep.getByRole("button", { name: /^Dining(?:\s|$)/ }).click();
-  await expect(page.getByText(/Added ₹1,234 Dining expense/).last()).toBeVisible();
-  const transactionArticle = page.locator("article").filter({ hasText: "Added ₹1,234 Dining expense" }).last();
+  const addedResult = page.getByText(/Added ₹1,234 expense under Food → Dining/).last();
+  await expect(addedResult).toBeVisible();
+  // Resolving the prior card compacts that virtual row while this answer is
+  // appended. The response, not the old measured offset, must remain on screen.
+  await expect(addedResult).toBeInViewport();
+  const transactionArticle = page.locator("article").filter({ hasText: /Added ₹1,234 expense under Food → Dining/ }).last();
   await expect(transactionArticle.getByRole("button", { name: "Edit", exact: true })).toBeVisible();
   await expect(transactionArticle.getByRole("button", { name: "Remove", exact: true })).toBeVisible();
   await page.reload();
-  await expect(page.getByText(/Added ₹1,234 Dining expense/).last()).toBeVisible();
+  await expect(page.getByText(/Added ₹1,234 expense under Food → Dining/).last()).toBeVisible();
 });
 
 test("ambiguous add request becomes a HITL draft instead of a validator dead end", async ({ page }) => {
