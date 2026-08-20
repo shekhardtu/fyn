@@ -1010,6 +1010,31 @@ html[data-focus-modality="keyboard"] :where(a, button, input, select, textarea, 
   }
 }
 
+/* ── The app shell and the software keyboard ──────────────────────────────
+   The shell is exactly the rectangle the reader can see, which on a phone is
+   not the same thing as the viewport. `src/lib/viewport.ts` measures the
+   visual viewport and publishes the three values below; the fallbacks here
+   are what the first paint uses before it has, and what a browser without
+   `visualViewport` keeps.
+
+   Fixed rather than in flow, and offset by the browser's own pan, so that
+   neither a document scroll nor an iOS keyboard pan can slide the composer
+   up off the bottom edge and leave it stranded mid-screen. */
+:root {
+  --app-height: 100dvh;
+  --viewport-offset: 0px;
+  --keyboard-inset: 0px;
+}
+
+.app-shell {
+  position: fixed;
+  top: var(--viewport-offset);
+  left: 0;
+  right: 0;
+  height: var(--app-height);
+  overflow: hidden;
+}
+
 /* ── The entry dock ───────────────────────────────────────────────────────
    Whatever has not been written yet belongs below the transcript's closing
    rule, so the composer sits there and the transcript stops at it. The band
@@ -1029,6 +1054,13 @@ html[data-focus-modality="keyboard"] :where(a, button, input, select, textarea, 
 .entry-dock {
   border-top: 1px solid var(--line);
   background: var(--surface);
+}
+
+/* The bottom inset is there for the home indicator, and a keyboard is already
+   covering it. Holding the gap open would push the composer's own edge that
+   much further above the keys for no reason anyone can see. */
+html[data-keyboard="open"] .entry-dock {
+  padding-bottom: 0.75rem;
 }
 
 /* Scroll feedback is written directly to this composited overlay. Keeping it

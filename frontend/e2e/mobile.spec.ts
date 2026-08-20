@@ -107,6 +107,61 @@ test("the conversation composer is present and usable on a phone", async ({ page
   await expectNothingPannable(page);
 });
 
+/**
+ * The composer belongs to the bottom edge of what the reader can see, and on a
+ * phone that edge is not the bottom of the viewport. A software keyboard slides
+ * over the page on iOS without resizing anything, and the browser pans the page
+ * up to reveal the field it just covered — a pan it often forgets to take back,
+ * which is what leaves the composer stranded mid-screen with dead space below.
+ *
+ * Playwright cannot raise a real keyboard, so the two halves are exercised
+ * separately: a browser that resizes its own layout viewport (Android Chrome,
+ * Safari 26 with interactive-widget=resizes-content), and the iOS shape, where
+ * the visible rectangle is published as `--app-height` over a `--viewport-offset`
+ * pan. In both the dock must finish exactly on the visible bottom edge.
+ */
+test("the composer holds the bottom edge of what the phone can see", async ({ page }) => {
+  await page.goto(sharedThreadUrl());
+  await expect(page.getByRole("textbox").first()).toBeVisible();
+  const dock = page.locator(".entry-dock");
+  await expect(dock).toBeVisible();
+
+  const visibleBottom = () => page.evaluate(() => {
+    const root = getComputedStyle(document.documentElement);
+    const offset = Number.parseFloat(root.getPropertyValue("--viewport-offset")) || 0;
+    const height = Number.parseFloat(root.getPropertyValue("--app-height")) || window.innerHeight;
+    return {
+      edge: offset + height,
+      dock: document.querySelector(".entry-dock")!.getBoundingClientRect().bottom,
+      // A document that can scroll is a document the browser can leave
+      // scrolled, which is the stranded composer by another route.
+      pageScroll: document.documentElement.scrollHeight - window.innerHeight,
+    };
+  });
+
+  const resting = await visibleBottom();
+  expect(resting.dock).toBeCloseTo(resting.edge, 0);
+  expect(resting.pageScroll).toBeLessThanOrEqual(1);
+
+  // The layout viewport shrinking under the app, which is what a keyboard does
+  // on Android Chrome and on Safari 26.
+  await page.setViewportSize({ width: 412, height: 460 });
+  const resized = await visibleBottom();
+  expect(resized.edge).toBeCloseTo(460, 0);
+  expect(resized.dock).toBeCloseTo(resized.edge, 0);
+  expect(resized.pageScroll).toBeLessThanOrEqual(1);
+
+  // And the iOS shape: the visible rectangle is a short window panned down a
+  // layout viewport that never changed size.
+  await page.evaluate(() => {
+    document.documentElement.style.setProperty("--app-height", "300px");
+    document.documentElement.style.setProperty("--viewport-offset", "80px");
+  });
+  const panned = await visibleBottom();
+  expect(panned.edge).toBeCloseTo(380, 0);
+  expect(panned.dock).toBeCloseTo(380, 0);
+});
+
 test("settings borrows the rail and hands it back", async ({ page }) => {
   await page.goto("/settings/agent");
   await expect(page.getByRole("heading", { name: "Agent settings" })).toBeVisible();

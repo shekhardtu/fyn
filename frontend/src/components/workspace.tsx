@@ -26,6 +26,7 @@ import { useWorkspaceOverlay } from "@/components/ui/overlay";
 import { useScrollEdges } from "@/lib/scroll-edges";
 import { usePlainKey } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
+import { subscribeToViewport } from "@/lib/viewport";
 import { contractLimits } from "@/lib/generated/contracts";
 import { activeWidgetId, completedWidgetIds, mergeAgentResponse, reconcileUsedWidgetIds, shouldAdoptServerTranscript, transcriptRevision } from "@/lib/widget-state";
 import { interruptActionResolution, recoverInterruptWidget } from "@/lib/interrupt-widget";
@@ -276,7 +277,7 @@ const ConversationRail = memo(function ConversationRail({ conversations, activeI
     id="conversation-rail"
     aria-label="Workspace navigation"
     inert={!docked && !open}
-    className={cn("ledger fixed inset-y-0 left-0 z-40 flex min-h-0 w-[min(var(--rail-w),85vw)] flex-col border-r border-line bg-ground transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] md:static md:h-full md:w-auto md:translate-x-0 md:transition-none", open ? "translate-x-0 shadow-[var(--shadow-overlay)]" : "-translate-x-full")}
+    className={cn("ledger fixed top-[var(--viewport-offset)] left-0 z-40 flex h-[var(--app-height)] min-h-0 w-[min(var(--rail-w),85vw)] flex-col border-r border-line bg-ground transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] md:static md:h-full md:w-auto md:translate-x-0 md:transition-none", open ? "translate-x-0 shadow-[var(--shadow-overlay)]" : "-translate-x-full")}
   >
     <RailHeader creating={switching} onNew={onNew} onClose={onClose} />
 
@@ -1662,6 +1663,20 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     return () => observer.disconnect();
   }, [focusedMode, atBottom, scrollToEnd]);
 
+  // A keyboard opening takes half the screen from the transcript without
+  // changing a single row in it, so nothing above notices: the scroller simply
+  // becomes shorter around the same scrollTop and the turn the reader was
+  // reading slides out under the keys. Same on the way back. A reader who was
+  // following the end is put back on it, instantly — this is the viewport
+  // being resized around them, not something arriving to watch.
+  useEffect(() => {
+    if (focusedMode) return;
+    return subscribeToViewport(() => {
+      if (!scrollRef.current || !atBottom || readerScrolled.current) return;
+      scrollToEnd("auto");
+    });
+  }, [focusedMode, atBottom, scrollToEnd]);
+
   const focusedArrival = useRef(activeWidgetFocusKey);
   useLayoutEffect(() => {
     // Only a turn landing earns a glide. Activity ticks and streaming growth
@@ -2025,7 +2040,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
 
   return <ToastProvider toastManager={toast} limit={5}>
     <ShellContext.Provider value={{ navOpen: sidebarOpen, openNav, switching, dragging, handleRef: thread, conversations, renameThread }}>
-    <div className="h-dvh overflow-hidden bg-ground text-ink" onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDragging(true); } }} onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }} onDrop={(event) => { if (!event.dataTransfer.files.length) return; event.preventDefault(); setDragging(false); thread.current?.attach(event.dataTransfer.files[0]); }}>
+    <div className="app-shell bg-ground text-ink" onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDragging(true); } }} onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }} onDrop={(event) => { if (!event.dataTransfer.files.length) return; event.preventDefault(); setDragging(false); thread.current?.attach(event.dataTransfer.files[0]); }}>
       <div className="relative mx-auto grid h-full max-w-[1600px] md:grid-cols-[var(--rail-w)_1fr]">
         <button type="button" tabIndex={-1} aria-hidden onClick={() => setSidebarOpen(false)} className={cn("fixed inset-0 z-30 bg-scrim/25 backdrop-blur-[2px] transition-opacity duration-300 md:hidden", sidebarOpen ? "opacity-100" : "pointer-events-none opacity-0")} />
         <ConversationRail

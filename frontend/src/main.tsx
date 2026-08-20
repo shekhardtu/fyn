@@ -6,9 +6,11 @@ import { RouterProvider } from "react-router/dom";
 import { appRouter } from "@/app/router";
 import { setupServiceWorker } from "@/lib/service-worker";
 import { initTheme } from "@/lib/theme";
+import { initViewport } from "@/lib/viewport";
 import "@/app/globals.css";
 
 initTheme();
+initViewport();
 setupServiceWorker();
 
 const root = document.getElementById("root");
