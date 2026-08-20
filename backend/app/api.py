@@ -7,7 +7,6 @@ import io
 from uuid import UUID, uuid4
 
 import hashlib
-import json
 
 from ag_ui.core import AgentCapabilities, RunAgentInput
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Response, UploadFile, status
@@ -20,7 +19,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from .database import get_db
 from .event_time import as_utc, local_date_string, local_now, now_utc
 from .config import CSV_UPLOAD_MAX_BYTES, get_settings
-from .domain import AgentInterruptStatus, AgentRunStatus, ExecutionStatus, FinancialSourceType, ImportRecordStatus, ImportStatus, REVOCABLE_SOURCE_TYPES, ReconciliationOutcome, TransactionType, WidgetActionId
+from .domain import AgentInterruptStatus, AgentRunStatus, FinancialSourceType, ImportRecordStatus, ImportStatus, REVOCABLE_SOURCE_TYPES, ReconciliationOutcome, TransactionType, WidgetActionId
 from .models import (
     AIAction,
     AgentEvent,
@@ -53,7 +52,6 @@ from .schemas import (
     AgentThreadStateOut,
     AffordabilityIn,
     AgentDiagnosticsOut,
-    AgentResponse,
     AgentSettingsIn,
     AgentSettingsOut,
     BootstrapResponse,
@@ -136,6 +134,7 @@ from .services.overview import overview_snapshot
 from .services.proactive import current_insights
 from .services.taxonomy import TaxonomyRepository
 from .services.transactions import (
+    UNSET,
     canonical_transactions,
     create_manual_transaction as record_manual_transaction,
     remove_transaction as remove_active_transaction,
@@ -315,7 +314,11 @@ def insights(
                     computed_at=row.lineage["computedAt"],
                 ),
                 recompute_key=row.recompute_key,
-                verified_at=as_utc(row.verified_at).isoformat(),
+                # The column is nullable, but `current_insights` stamps every
+                # row it returns with the timestamp it was handed. Falling back
+                # to that same value states the invariant instead of assuming
+                # it, and invents nothing if the guarantee ever moves.
+                verified_at=as_utc(row.verified_at or verified_at).isoformat(),
             )
             for row in verified
         ],
@@ -1175,21 +1178,33 @@ def update_transaction(
     db: Session = Depends(get_db),
     user: User = Depends(current_user),
 ) -> TransactionListItemOut:
+    # Written out rather than splatted from a dict. A `**changes` call is
+    # uncheckable — nothing relates its keys to the parameters on the other
+    # side — which is how three fields were once accepted by this endpoint's
+    # schema and silently dropped before the row was written. Named arguments
+    # make that a type error instead of a quiet omission.
+    expense = request.transaction_type == TransactionType.EXPENSE
     try:
-        changes = {
-            "amount_minor": request.amount_minor,
-            "merchant": request.merchant,
-            "transaction_at": request.transaction_at,
-            "transaction_type": request.transaction_type,
-            "spend_nature": request.spend_nature,
-            "location": request.location,
-            "latitude": request.latitude,
-            "longitude": request.longitude,
-            "location_accuracy": request.location_accuracy,
-        }
-        if request.transaction_type == TransactionType.EXPENSE:
-            changes.update(category_id=request.category_id, subcategory_id=request.subcategory_id)
-        transaction = apply_transaction_update(db, user.id, transaction_id, **changes)
+        transaction = apply_transaction_update(
+            db,
+            user.id,
+            transaction_id,
+            amount_minor=request.amount_minor,
+            merchant=request.merchant,
+            transaction_at=request.transaction_at,
+            transaction_type=request.transaction_type,
+            spend_nature=request.spend_nature,
+            location=request.location,
+            latitude=request.latitude,
+            longitude=request.longitude,
+            location_accuracy=request.location_accuracy,
+            # Category payloads are meaningful only for expenses. UNSET for
+            # every other direction leaves the stored taxonomy to be normalized
+            # from the new type, so a stale hidden form value cannot preserve
+            # the prior expense category through a type change.
+            category_id=request.category_id if expense else UNSET,
+            subcategory_id=request.subcategory_id if expense else UNSET,
+        )
     except ValueError as error:
         status_code = 404 if str(error) == "Unknown transaction" else 422
         raise HTTPException(status_code=status_code, detail=str(error)) from error
@@ -1425,6 +1440,11 @@ def annotate_spreadsheet_source(
             if "unknown_source" in str(error):
                 raise HTTPException(status_code=404, detail="Source not found") from error
             raise HTTPException(status_code=422, detail=str(error)) from error
+    if manifest is None:
+        # Unreachable while SourceAnnotationsIn requires at least one
+        # annotation. Stated here anyway: the loop below is the only thing that
+        # binds `manifest`, and that requirement lives in another file.
+        raise HTTPException(status_code=422, detail="At least one annotation is required")
     return SourceAnnotationsOut(
         source_id=source_id,
         manifest_version=manifest.version,
@@ -1579,7 +1599,7 @@ def list_dashboards(
     db: Session = Depends(get_db),
     user: User = Depends(current_user),
 ) -> DashboardListOut:
-    tile_counts = dict(db.execute(
+    tile_counts: dict[UUID, int] = dict(db.execute(  # type: ignore[arg-type]  # Row is a tuple at runtime; the annotation is the real shape
         select(DashboardTile.dashboard_id, func.count(DashboardTile.id))
         .where(DashboardTile.user_id == user.id)
         .group_by(DashboardTile.dashboard_id)

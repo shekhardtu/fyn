@@ -1,6 +1,6 @@
 VENV := ../.venv/bin
 
-.PHONY: dev backend frontend db migrate prod deploy deploy-status deploy-logs deploy-setup
+.PHONY: dev backend frontend db migrate check prod deploy deploy-status deploy-logs deploy-setup
 
 ## Start Postgres, run migrations, then run backend + frontend dev servers.
 dev: db migrate
@@ -23,6 +23,13 @@ db:
 
 migrate:
 	cd backend && $(VENV)/alembic upgrade head
+
+## Everything CI would run against the backend. See backend/pyproject.toml for
+## what ruff and mypy are scoped to and why.
+check:
+	cd backend && $(VENV)/ruff check app
+	cd backend && $(VENV)/mypy app
+	cd backend && $(VENV)/python -m pytest -q
 
 ## Full production-style stack in containers.
 prod:

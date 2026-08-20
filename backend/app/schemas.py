@@ -10,7 +10,6 @@ from .config import DEFAULT_CURRENCY
 from .domain import CONVERSATION_TITLE_MAX, ExecutionStatus, FinancialSourceType, IdentityProvider, IdentitySource, ImportStatus, MESSAGE_SOURCE_TYPES, OtpChannel, ReconciliationOutcome, SpendNature, TaxonomyOperation, TransactionStatus, TransactionType, ValueEnum, WidgetActionId
 from .event_time import as_utc, from_local_parts, now_utc
 from .services.tool_models import AffordabilityInput, InvestmentProjectionInput, LoanWithPrepaymentInput
-from .validation import DataFieldKey
 from .visualization_contracts import VisualizationView
 
 

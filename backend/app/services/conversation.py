@@ -10,13 +10,12 @@ import re
 from datetime import date, datetime
 from decimal import Decimal
 from time import perf_counter
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID, uuid4
 
-from sqlalchemy import String, func, select, tuple_
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
-from pydantic import ValidationError as PydanticValidationError
 
 from ..config import get_settings
 from ..event_time import as_utc, from_local_parts, local_date, local_now, now_utc, resolve_event_time, utc_range_for_local_dates
@@ -80,11 +79,11 @@ from .intelligence import expense_summary
 from .markdown_views import join_blocks, markdown_section, markdown_table, money
 from .accounts import AccountRepository
 from .adapters import import_summary
-from .agents import GROUPED_QUERY_OPERATIONS, RECENT_CONTEXT_TURN_LIMIT, ClarificationRequest, CompilationAssumption, CopilotDecision, QueryInterpretation, ResolvedIntentContract, TaxonomyInterpretation, ToolGrounding, contains_internal_analysis_diagnostic, filesystem_operation_decision, releases_prior_scope, repair_grounded_answer, run_operator, suggest_related_questions
+from .agents import GROUPED_QUERY_OPERATIONS, RECENT_CONTEXT_TURN_LIMIT, ClarificationRequest, CompilationAssumption, CopilotDecision, QueryInterpretation, ResolvedIntentContract, TaxonomyInterpretation, contains_internal_analysis_diagnostic, filesystem_operation_decision, releases_prior_scope, repair_grounded_answer, run_operator, suggest_related_questions
 from .analysis_harness import AnalysisTraceStage, HarnessValidationError, ReplayDisposition, bind_repeat_analysis, execute_analysis_template
 from .answer_validation import compile_answer_contract, contains_financial_claim, validate_coverage, validate_evidence
 from .answer_presentation import answer_presentation as build_answer_presentation
-from .calculators import investment_projection, loan_amortization_schedule, loan_with_prepayment
+from .calculators import investment_projection, loan_with_prepayment
 from .cdp import get_traits, traits_context_line
 from .capabilities import (
     CapabilityId,
@@ -103,7 +102,7 @@ from .continuations import (
     parse_clarification_transition,
 )
 from .proactive import current_insights, insights_context_line
-from .preferences import AnswerStyle, AnswerValidationMode, answer_style, answer_validation_mode
+from .preferences import AnswerValidationMode, answer_style, answer_validation_mode
 from .recommendation import (
     AMOUNT,
     AREA,
@@ -125,7 +124,7 @@ from .runtime_tools import build_runtime_tools, capability_notes
 from .semantic import AnalysisPlan, AnalysisToolProposal, AnalysisTransform, FinanceFilter, FinanceQueryPlan
 from .tags import TagRepository
 from .taxonomy import TaxonomyRepository, agent_taxonomy as _agent_taxonomy
-from .transactions import active_transaction, canonical_transactions, create_transaction, expense_transactions, owned_transaction_source, update_saved_transaction
+from .transactions import active_transaction, canonical_transactions, create_transaction, owned_transaction_source, update_saved_transaction
 from .user_memory import remember_taxonomy_mapping
 
 
@@ -3649,7 +3648,6 @@ def _transaction_search_parts(db: Session, user: User, query: QueryInterpretatio
                 content = f"You {verb} {format_money_minor(int(total_minor), user.currency)}{qualifier} {period_for_copy}, across {count} transaction{'s' if count != 1 else ''}."
         resolved_end = min(query.end_date or _local_today(user), _local_today(user))
         resolved_start = query.start_date
-        period = f"{resolved_start.strftime('%b %d') if resolved_start else 'Beginning'} – {resolved_end.strftime('%b %d')}"
         period_title = _period_title(resolved_start, resolved_end, _local_today(user)) if resolved_start else "All time"
         direction_title = "Spending" if (query.transaction_type or "expense") == "expense" else (query.transaction_type or "transactions").replace("_", " ").title()
         scope_title = (subcategory.name if subcategory else None) or (category.name if category else None) or query.merchant
@@ -4396,6 +4394,29 @@ class _ConversationPrimitiveRuntime:
         )
 
 
+class ActivityEmitter(Protocol):
+    """The shape of the activity callback the dispatcher is handed.
+
+    A `Callable[[...], None]` cannot express a default, so the annotation this
+    replaces declared all eight parameters required — and every one of its
+    callers passed four or five, contradicting it. It also typed `status` as
+    `str` where the implementation accepts the enum. An annotation nobody can
+    satisfy documents nothing; this one is the function's real signature.
+    """
+
+    def __call__(
+        self,
+        stage: str,
+        label: str,
+        status: ExecutionStatus | str,
+        tool: str | None = None,
+        detail: str | None = None,
+        badge: str | None = None,
+        input_payload: Any | None = None,
+        output_payload: Any | None = None,
+    ) -> None: ...
+
+
 def _dispatch_decision(
     db: Session,
     user: User,
@@ -4403,10 +4424,7 @@ def _dispatch_decision(
     text: str,
     decision: CopilotDecision,
     execute: Callable[[str, str, Callable[[], AgentResponse], Any | None], AgentResponse],
-    emit: Callable[
-        [str, str, str, str | None, str | None, str | None, Any | None, Any | None],
-        None,
-    ],
+    emit: ActivityEmitter,
     *,
     extracted: ExtractedTransaction | None = None,
 ) -> AgentResponse:

@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import ast
 import re
-from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date
 from enum import Enum
 import json
 from collections.abc import Callable
 from types import SimpleNamespace
-from typing import Annotated, Any, Literal, Optional, Union
+from typing import Annotated, Any, Literal, Union
 from uuid import UUID
 
 from agno.agent import Agent
@@ -21,12 +20,10 @@ from agno.run.agent import (
     RunOutput,
     ToolCallCompletedEvent,
 )
-from agno.tools.function import Function
 from pydantic import BaseModel, Field, WithJsonSchema, field_validator, model_validator
 
 from ..config import Settings, get_settings
-from ..domain import SpendNature, TaxonomyOperation, TransactionType, ValueEnum
-from ..event_time import local_now as current_local_time
+from ..domain import SpendNature, TaxonomyOperation, TransactionType
 from ..validation import SEMANTIC_IDENTIFIER_PATTERN, SemanticIdentifier
 from ..visualization_contracts import RequestedVisualMark
 from ..operations import operation_catalog
@@ -41,7 +38,6 @@ from ..operations.tools import (
     build_operation_proposal_tools,
     proposal_from_tool_execution,
 )
-from .agent_tools import bind_existing_tool
 from .agent_policies import AgentMode, policy_instructions, policy_name
 from .agent_run_metrics import record_agno_run_metrics
 from .answer_presentation import (

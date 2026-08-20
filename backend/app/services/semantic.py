@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta
 import re
 from typing import Annotated, Any, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import AfterValidator, BaseModel, Field, model_validator
-from sqlalchemy import DateTime, Integer, String, and_, case, cast, func, literal, or_, select
+from sqlalchemy import DateTime, Integer, and_, case, cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..domain import TransactionType
@@ -381,19 +381,19 @@ def _event_date_column(entity: str):
     return getattr(MODEL_BINDINGS[entity], registry_entity.event_date_key)
 
 
-def _event_time_column(entity: str, dialect: str, timezone: str):
+def _event_time_column(entity: str, dialect: str, timezone_name: str):
     if entity != "transactions":
         raise SemanticValidationError(f"Entity {entity} has no governed sub-day event time")
-    return _transaction_datetime_expression(dialect, timezone)
+    return _transaction_datetime_expression(dialect, timezone_name)
 
 
-def _time_bucket_expression(entity: str, grain: str, dialect: str, timezone: str):
+def _time_bucket_expression(entity: str, grain: str, dialect: str, timezone_name: str):
     if grain in SUBDAY_TIME_GRAINS:
-        column = _event_time_column(entity, dialect, timezone)
+        column = _event_time_column(entity, dialect, timezone_name)
     else:
         column = _event_date_column(entity)
         if isinstance(column.property.columns[0].type, DateTime):
-            column = _local_datetime_expression(column, dialect, timezone)
+            column = _local_datetime_expression(column, dialect, timezone_name)
     if dialect == "sqlite":
         if grain == "quarter":
             quarter = cast((cast(func.strftime("%m", column), Integer) + 2) / 3, Integer)
@@ -402,13 +402,13 @@ def _time_bucket_expression(entity: str, grain: str, dialect: str, timezone: str
     return func.to_char(column, TIME_GRAIN_SPECS[grain].postgres_format)
 
 
-def _time_component_expression(entity: str, component: str, dialect: str, timezone: str):
+def _time_component_expression(entity: str, component: str, dialect: str, timezone_name: str):
     if component == "hour_of_day":
-        column = _event_time_column(entity, dialect, timezone)
+        column = _event_time_column(entity, dialect, timezone_name)
         return func.strftime("%H", column) if dialect == "sqlite" else func.to_char(column, "HH24")
     column = _event_date_column(entity)
     if isinstance(column.property.columns[0].type, DateTime):
-        column = _local_datetime_expression(column, dialect, timezone)
+        column = _local_datetime_expression(column, dialect, timezone_name)
     if dialect == "sqlite":
         formats = {"day_of_week": "%w", "day_of_month": "%d", "month_of_year": "%m"}
         return func.strftime(formats[component], column)
