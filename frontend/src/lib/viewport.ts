@@ -93,6 +93,21 @@ function measure(): ViewportMetrics | null {
   return { height, offset, keyboard: Math.max(0, Math.round(layout - height)) };
 }
 
+/** Whether putting the page back at its origin can destroy anything.
+ *
+ *  The shell pins itself over the whole screen and nothing beneath it scrolls
+ *  the document, so with it mounted the origin is always the right place to be.
+ *  Asking the document its own height is the fallback rather than the test:
+ *  WebKit can report a `scrollHeight` inflated by the keyboard it just opened,
+ *  and a repair conditioned on that number is skipped exactly when it is
+ *  needed. Pages that genuinely scroll — sign-in — have no shell and keep
+ *  their scroll position.
+ */
+function documentMustNotScroll() {
+  return document.querySelector(".app-shell") !== null
+    || document.documentElement.scrollHeight <= window.innerHeight + 1;
+}
+
 function publish(next: ViewportMetrics) {
   const previous = current;
   const open = next.keyboard >= KEYBOARD_MIN;
@@ -102,7 +117,7 @@ function publish(next: ViewportMetrics) {
   // its final height. Retry the page-origin repair on every settling read until
   // both the shrink and pan are gone; an early scrollTo is harmless, while a
   // single early attempt is exactly what leaves installed WebKit apps stuck.
-  if (!open && keyboardSession && document.documentElement.scrollHeight <= window.innerHeight + 1) {
+  if (!open && keyboardSession && documentMustNotScroll()) {
     document.documentElement.scrollTop = 0;
     document.body.scrollTop = 0;
     window.scrollTo(0, 0);
