@@ -1,16 +1,94 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import { sharedThreadUrl } from "./test-thread";
 
 /** The phone contract: one column, a drawer for navigation, and no page-level
  *  sideways scroll — the layout rules that desktop testing never touches. */
+
+/**
+ * Puts content on the page that *will* pan it sideways unless the containment
+ * rules hold: a table far wider than any phone, and a token with nowhere to
+ * break.
+ *
+ * Without this the sideways-scroll assertions are vacuous. They measure a page
+ * that happens to contain only ordinary prose, so they pass whether or not
+ * `overflow-x: clip` and `overflow-wrap: anywhere` are there at all — which is
+ * exactly how they passed throughout the pan bug they exist to catch. Supplying
+ * the hostile content is what makes the measurement mean something.
+ *
+ * Returns the probe's natural width so the caller can assert the probe really
+ * is wider than the viewport, and the test cannot quietly go vacuous again.
+ */
+async function addOverflowProbe(page: Page, container: string) {
+  const probe = await page.evaluate((selector) => {
+    const host = document.querySelector(selector) ?? document.body;
+    const block = document.createElement("div");
+    block.id = "overflow-probe";
+
+    // A width no phone has, and one that cannot be negotiated away. A table
+    // built from cells was the first attempt and it shrank itself to 372px on
+    // a 412px screen, proving nothing — the point is a child that stays wider
+    // than the viewport, which is what a real chart or a nowrap table is.
+    const wide = document.createElement("div");
+    wide.style.cssText = "width:1200px;height:8px";
+
+    const token = document.createElement("p");
+    token.textContent = "unbreakabletoken".repeat(30);
+
+    block.append(wide, token);
+    host.appendChild(block);
+    return {
+      natural: wide.getBoundingClientRect().width,
+      tokenOverflow: token.scrollWidth - token.clientWidth,
+      viewport: document.documentElement.clientWidth,
+    };
+  }, container);
+  // If this ever fails the probe stopped being hostile, and every assertion
+  // that leans on it stopped testing anything.
+  expect(probe.natural, "the probe must be wider than the phone to prove anything").toBeGreaterThan(probe.viewport);
+  expect(probe.tokenOverflow, "a long token must fold rather than widen its column").toBeLessThanOrEqual(1);
+  return probe;
+}
+
+/**
+ * No ancestor of the over-wide content may be something the user can pan.
+ *
+ * Checking only `document.documentElement` is not enough, and that is the trap
+ * the earlier version fell into: the shell clips at three levels, so the page
+ * never overflows no matter what the transcript does. The bug was one level
+ * down — a container holding content wider than itself and handing every
+ * horizontal drag to the user, so the whole transcript slid instead of the
+ * table scrolling inside its own box.
+ *
+ * `hidden` and `clip` contain the overflow and are correct. `auto` and
+ * `scroll` are pannable. `visible` is worse still: the overflow escapes to the
+ * next ancestor and becomes someone else's problem. `.table-scroll` is the one
+ * exemption — it is the box a wide table is *meant* to scroll in.
+ */
+async function expectNothingPannable(page: Page) {
+  const offenders = await page.evaluate(() => {
+    const found: string[] = [];
+    for (let node = document.getElementById("overflow-probe")?.parentElement; node; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      if (node.scrollWidth - node.clientWidth <= 1) continue;
+      if (node.classList.contains("table-scroll")) continue;
+      if (style.overflowX === "hidden" || style.overflowX === "clip") continue;
+      found.push(`${node.tagName}.${String(node.className).split(" ")[0]} overflow-x:${style.overflowX} (${node.scrollWidth} in ${node.clientWidth})`);
+    }
+    return found;
+  });
+  expect(offenders, "content wider than the phone must be contained, never pannable").toEqual([]);
+
+  const pageOverflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(pageOverflow, "page-level horizontal overflow").toBeLessThanOrEqual(1);
+}
 
 test("the ledger fits a phone and navigation folds into a drawer", async ({ page }) => {
   await page.goto("/transactions");
   await expect(page.getByRole("heading", { name: "Recent transactions" })).toBeVisible();
 
   // Wide content must scroll inside its own container, never the page.
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-  expect(overflow).toBeLessThanOrEqual(1);
+  await addOverflowProbe(page, ".panel-scroll, main");
+  await expectNothingPannable(page);
 
   // The rail is behind the hamburger at this size.
   const openNav = page.getByRole("button", { name: "Open navigation" }).first();
@@ -23,15 +101,17 @@ test("the ledger fits a phone and navigation folds into a drawer", async ({ page
 test("the conversation composer is present and usable on a phone", async ({ page }) => {
   await page.goto(sharedThreadUrl());
   await expect(page.getByRole("textbox").first()).toBeVisible();
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-  expect(overflow).toBeLessThanOrEqual(1);
+  // The transcript is where the bug appeared: a wide table in one answer made
+  // every horizontal drag slide the whole app instead of the table.
+  await addOverflowProbe(page, ".conversation-scroll");
+  await expectNothingPannable(page);
 });
 
 test("settings borrows the rail and hands it back", async ({ page }) => {
   await page.goto("/settings/agent");
   await expect(page.getByRole("heading", { name: "Agent settings" })).toBeVisible();
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-  expect(overflow).toBeLessThanOrEqual(1);
+  await addOverflowProbe(page, ".panel-scroll, main");
+  await expectNothingPannable(page);
 
   // The boundaries with no switch are on the page, not folded behind anything.
   await expect(page.getByRole("heading", { name: "Fixed, whatever you choose" })).toBeVisible();
