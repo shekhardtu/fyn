@@ -45,6 +45,7 @@ dev = [
   "pytest>=8.3,<9",
   "ruff>=0.16,<1",
   "mypy>=1.19,<2",
+  "types-dateparser>=1.2,<2",
 ]
 
 [tool.pytest.ini_options]
@@ -92,6 +93,5 @@ module = [
   "app.services.conversation",
   "app.services.external_db",
   "app.services.extraction",
-  "app.services.finance_time",
 ]
 ignore_errors = true
