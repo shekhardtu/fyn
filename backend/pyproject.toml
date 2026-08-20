@@ -84,6 +84,5 @@ module = [
   "app.services.adapters",
   "app.services.agent_tools",
   "app.services.agents",
-  "app.services.agui",
 ]
 ignore_errors = true
