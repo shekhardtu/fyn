@@ -26,13 +26,6 @@
 		}
 	}
 
-	# The service owns root paths on this API-only host. Keep stripping the old
-	# /api spelling during the bundle migration; once every deployed client
-	# sends resource paths, this compatibility mapping can be removed by a
-	# later, independently deployable commit.
-	@legacy path /api /api/*
-	uri @legacy strip_prefix /api
-
 	reverse_proxy fyn-backend:8000 {
 		# Caddy stops buffering on text/event-stream by itself; setting this
 		# explicitly means a mislabelled content type cannot reintroduce it.
