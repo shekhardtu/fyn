@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from typing import Iterable, Protocol
+from typing import Iterable, Protocol, Sequence
 
 from ..config import DEFAULT_CURRENCY
 from ..event_time import from_local_parts, local_now, now_utc, resolve_event_time
@@ -132,7 +132,7 @@ class CSVAdapter:
                 continue
         raise ValueError(f"Unsupported date: {value}")
 
-    def _column(self, headers: list[str], logical: str) -> str | None:
+    def _column(self, headers: Sequence[str], logical: str) -> str | None:
         normalized = {header.strip().lower(): header for header in headers}
         return next((normalized[name] for name in self.aliases[logical] if name in normalized), None)
 
@@ -149,7 +149,7 @@ class CSVAdapter:
         external_col = self._column(headers, "external_id")
         if not date_col or not description_col or not (amount_col or debit_col or credit_col):
             raise ValueError("CSV needs date, description, and amount/debit/credit columns")
-        results = []
+        results: list[tuple[int, ObservationIn | None, list[str]]] = []
         file_digest = hashlib.sha256(content).hexdigest()[:16]
         for row_number, row in enumerate(reader, start=2):
             try:
