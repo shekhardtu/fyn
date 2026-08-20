@@ -87,6 +87,5 @@ module = [
   "app.services.agui",
   "app.services.analysis_harness",
   "app.services.auth",
-  "app.services.category_prediction",
 ]
 ignore_errors = true
