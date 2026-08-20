@@ -82,6 +82,58 @@ async function expectNothingPannable(page: Page) {
   expect(pageOverflow, "page-level horizontal overflow").toBeLessThanOrEqual(1);
 }
 
+async function readVisibleBottom(page: Page) {
+  return page.evaluate(() => {
+    const root = getComputedStyle(document.documentElement);
+    const offset = Number.parseFloat(root.getPropertyValue("--viewport-offset")) || 0;
+    const height = Number.parseFloat(root.getPropertyValue("--app-height")) || window.innerHeight;
+    return {
+      edge: offset + height,
+      height,
+      offset,
+      dock: document.querySelector(".entry-dock")!.getBoundingClientRect().bottom,
+      keyboard: document.documentElement.dataset.keyboard,
+      // A document that can scroll is a document the browser can leave
+      // scrolled, which is the stranded composer by another route.
+      pageScroll: document.documentElement.scrollHeight - window.innerHeight,
+    };
+  });
+}
+
+/** Install before the app boots so its real viewport coordinator subscribes
+ *  to this controllable stand-in rather than letting the test bypass that
+ *  coordinator by writing its CSS output directly. */
+async function installTestVisualViewport(page: Page) {
+  await page.addInitScript(() => {
+    const view = Object.assign(new EventTarget(), {
+      height: window.innerHeight,
+      offsetTop: 0,
+      pageTop: 0,
+      scale: 1,
+    });
+    Object.defineProperty(window, "visualViewport", { configurable: true, value: view });
+  });
+}
+
+async function setTestVisualViewport(
+  page: Page,
+  metrics: { height: number; offset: number },
+  event?: "resize" | "scroll",
+) {
+  await page.evaluate(({ height, offset, event }) => {
+    const view = window.visualViewport as unknown as {
+      height: number;
+      offsetTop: number;
+      pageTop: number;
+      dispatchEvent: (event: Event) => boolean;
+    };
+    view.height = height;
+    view.offsetTop = offset;
+    view.pageTop = offset;
+    if (event) view.dispatchEvent(new Event(event));
+  }, { ...metrics, event });
+}
+
 test("the ledger fits a phone and navigation folds into a drawer", async ({ page }) => {
   await page.goto("/transactions");
   await expect(page.getByRole("heading", { name: "Recent transactions" })).toBeVisible();
@@ -105,6 +157,85 @@ test("the conversation composer is present and usable on a phone", async ({ page
   // every horizontal drag slide the whole app instead of the table.
   await addOverflowProbe(page, ".conversation-scroll");
   await expectNothingPannable(page);
+});
+
+/**
+ * The composer belongs to the bottom edge of what the reader can see, and on a
+ * phone that edge is not the bottom of the viewport. A software keyboard slides
+ * over the page on iOS without resizing anything, and the browser pans the page
+ * up to reveal the field it just covered — a pan it often forgets to take back,
+ * which is what leaves the composer stranded mid-screen with dead space below.
+ *
+ * Playwright cannot raise a real keyboard, so the two browser shapes are
+ * exercised separately: Chrome resizing its layout viewport, and WebKit
+ * shrinking and panning only its visual viewport. In both the dock must finish
+ * exactly on the visible bottom edge.
+ */
+test("the composer follows a phone layout viewport resize", async ({ page }) => {
+  await page.goto(sharedThreadUrl());
+  await expect(page.getByRole("textbox").first()).toBeVisible();
+  const dock = page.locator(".entry-dock");
+  await expect(dock).toBeVisible();
+
+  const resting = await readVisibleBottom(page);
+  expect(resting.dock).toBeCloseTo(resting.edge, 0);
+  expect(resting.pageScroll).toBeLessThanOrEqual(1);
+
+  // Chrome honours interactive-widget=resizes-content, so the layout and
+  // visual viewports shrink together.
+  await page.setViewportSize({ width: 412, height: 460 });
+  await expect.poll(async () => (await readVisibleBottom(page)).edge).toBeCloseTo(460, 0);
+  const resized = await readVisibleBottom(page);
+  expect(resized.edge).toBeCloseTo(460, 0);
+  expect(resized.dock).toBeCloseTo(resized.edge, 0);
+  expect(resized.pageScroll).toBeLessThanOrEqual(1);
+});
+
+test("the composer recovers when WebKit finishes keyboard dismissal without a final event", async ({ page }) => {
+  await installTestVisualViewport(page);
+  await page.goto(sharedThreadUrl());
+  const textbox = page.getByRole("textbox").first();
+  await expect(textbox).toBeVisible();
+
+  const layoutHeight = await page.evaluate(() => window.innerHeight);
+  const keyboardHeight = 336;
+  const pan = 260;
+  await setTestVisualViewport(page, { height: layoutHeight - keyboardHeight, offset: pan }, "resize");
+
+  await expect.poll(async () => (await readVisibleBottom(page)).keyboard).toBe("open");
+  const opened = await readVisibleBottom(page);
+  expect(opened.height).toBeCloseTo(layoutHeight - keyboardHeight, 0);
+  expect(opened.offset).toBeCloseTo(pan, 0);
+  expect(opened.dock).toBeCloseTo(opened.edge, 0);
+
+  await textbox.focus();
+  await textbox.evaluate((node) => node.blur());
+
+  // WebKit can emit the close resize while still exposing the old rectangle,
+  // then silently update the fields after that event and its short trailing
+  // read. The focusout recovery measurement must observe the eventual state.
+  await page.evaluate(({ height, delay }) => {
+    const view = window.visualViewport as unknown as {
+      height: number;
+      offsetTop: number;
+      pageTop: number;
+      dispatchEvent: (event: Event) => boolean;
+    };
+    view.dispatchEvent(new Event("resize"));
+    window.setTimeout(() => {
+      view.height = height;
+      view.offsetTop = 0;
+      view.pageTop = 0;
+    }, delay);
+  }, { height: layoutHeight, delay: 120 });
+
+  await expect.poll(async () => (await readVisibleBottom(page)).offset).toBe(0);
+  const closed = await readVisibleBottom(page);
+  expect(closed.height).toBeCloseTo(layoutHeight, 0);
+  expect(closed.dock).toBeCloseTo(layoutHeight, 0);
+  expect(closed.keyboard).toBeUndefined();
+  await textbox.fill("Composer remains interactive after keyboard dismissal");
+  await expect(textbox).toHaveValue("Composer remains interactive after keyboard dismissal");
 });
 
 test("settings borrows the rail and hands it back", async ({ page }) => {
