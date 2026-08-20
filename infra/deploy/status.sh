@@ -29,7 +29,7 @@ printf "  public   %s -> " "${FYN_HEALTH_URL}"
 curl -fsS --max-time 15 "${FYN_HEALTH_URL}" 2>/dev/null | head -c 300 || echo "unreachable"
 echo ""
 printf "  internal %s:%s -> " "${FYN_EDGE_ALIAS}" "${FYN_EDGE_PORT}"
-fyn_internal_curl /api/health 2>/dev/null | head -c 300 || echo "unreachable"
+fyn_internal_curl /health 2>/dev/null | head -c 300 || echo "unreachable"
 echo ""
 
 echo ""

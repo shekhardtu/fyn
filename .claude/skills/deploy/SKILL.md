@@ -94,7 +94,7 @@ Migrations:   <Yes — list alembic/versions files new since the live SHA / None
 Scope:        <all | api>
 
 Command:      ./infra/deploy/deploy.sh <target>
-Health:       https://api.fynai.co/api/health
+Health:       https://api.fynai.co/health
 
 Steps:        ssh → git reset --hard origin/main
               → docker compose build
@@ -196,7 +196,7 @@ If the deploy touched agent or streaming paths, watch a run's SSE for a minute:
 
 Look for tracebacks, `RUN_ERROR`, and restart loops.
 
-> **Known gap:** `/api/health` reports no version or commit, so the health
+> **Known gap:** `/health` reports no version or commit, so the health
 > response cannot by itself prove which code is live — `status.sh` uses the
 > server's git SHA instead. Threading a `GIT_SHA` build arg into the image and
 > adding it to `HealthOut` would make the health response self-proving. Not
@@ -236,7 +236,7 @@ Commit:     <sha> — <subject>
 Scope:      <all | api | web>
 Migrations: <Ran N: names / None>
 Duration:   <elapsed>
-Health:     ok (https://api.fynai.co/api/health)
+Health:     ok (https://api.fynai.co/health)
 Containers: fyn-backend-1 Up (healthy), fyn-postgres-1 Up (healthy)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

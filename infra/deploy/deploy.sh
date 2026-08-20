@@ -125,8 +125,8 @@ else
   # Nothing is published to a host port, so the only way to reach the app is
   # from inside the shared network. This separates "the app is broken" from
   # "DNS is not pointed here yet".
-  if body=$(fyn_internal_curl /api/health 2>/dev/null); then
-    echo "    ${FYN_EDGE_ALIAS}:${FYN_EDGE_PORT}/api/health -> $(printf '%s' "$body" | head -c 200)"
+  if body=$(fyn_internal_curl /health 2>/dev/null); then
+    echo "    ${FYN_EDGE_ALIAS}:${FYN_EDGE_PORT}/health -> $(printf '%s' "$body" | head -c 200)"
     echo "    the app is up; the public hostname is what is not wired."
     echo "    Point ${FYN_DOMAIN} at ${FYN_HOST} (DNS-only, grey cloud) and it will serve."
   else
