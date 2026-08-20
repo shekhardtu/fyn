@@ -19,6 +19,7 @@ import { MessageIdentifier } from "@/components/message-identifier";
 import { environment } from "@/config/environment";
 import { bootstrap, cancelAgentRun, createConversation, deleteConversation, flushConversationDeletion, isUnauthorized, listConversations, loadAgentThreadState, loadConversation, renameConversation, openInterrupts, reconnectAgentRun, resumeAgentInterrupt, sendAgentAction, sendAgentMessage, uploadCsv, type AgentActivity, type AgentRunPhase, type FynInterrupt } from "@/lib/api";
 import { formatBytes, formatMoney, readComposerEntry } from "@/lib/format";
+import { takeSharedText } from "@/lib/share-target";
 import { widgetTypeIds, type AgentResponse, type Bootstrap, type ConversationOut, type ConversationPage, type ConversationSummary, type Message, type Widget, type WidgetActionId } from "@/lib/protocol";
 import { useWorkspaceOverlay } from "@/components/ui/overlay";
 import { useScrollEdges } from "@/lib/scroll-edges";
@@ -926,6 +927,12 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   const [messages, setMessages] = useState<Message[]>(serverMessages);
   const conversationId = initialData.active_conversation.id;
   const [input, setInput] = useState("");
+  // A share from the platform sheet lands as a navigation to "/" carrying the
+  // text. Seeded, never sent: the person sees what arrived and decides.
+  useEffect(() => {
+    const shared = takeSharedText();
+    if (shared) setInput((current) => current || shared);
+  }, []);
   const [linkCopied, setLinkCopied] = useState(false);
   const switchingConversation = switching;
   const [usedWidgets, setUsedWidgets] = useState<Set<string>>(() => completedWidgetIds(initialData.active_conversation.messages));

@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, Download, Loader2, MapPin, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { NotLiveStamp, PanelHeading, SettingSwitch, SettingsGroup, settingsProblem, settingsSaved } from "@/components/settings-parts";
+import { InstallAppSetting } from "@/components/install-app";
 import { primeLocationPermission } from "@/lib/device-location";
 import { Button } from "@/components/ui/button";
 import { deleteAllData, downloadDataExport, getPrivacyStatus, revokeSource, setLocationEnabled } from "@/lib/api";
@@ -85,6 +86,10 @@ export function AppSettingsPanel({ onDeleted }: { onDeleted: () => void }) {
 
     <SettingsGroup title="Appearance" description="System follows your device; Light and Dark stay put.">
       <AppearanceControl />
+    </SettingsGroup>
+
+    <SettingsGroup title="Install" description="fyn runs as an app on phones, tablets and desktops — same account, same data, no store.">
+      <InstallAppSetting />
     </SettingsGroup>
 
     <SettingsGroup title="Notifications" stamp={<NotLiveStamp />} description="What fyn would tell you about outside a conversation. Nothing is sent yet and these switches aren’t stored.">

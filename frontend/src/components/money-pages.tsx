@@ -313,7 +313,8 @@ export function TransactionsPage() {
   const hideRemoved = params.get("removed") === "hidden";
   const [search, setSearch] = useState(urlQuery);
   const [settledSearch, setSettledSearch] = useState(urlQuery);
-  const [editing, setEditing] = useState<TransactionListItemOut | "new" | null>(null);
+  // The "Add transaction" app shortcut lands here with ?new=1.
+  const [editing, setEditing] = useState<TransactionListItemOut | "new" | null>(params.get("new") === "1" ? "new" : null);
   const [notice, setNotice] = useState<string | null>(null);
   const { headerVisible, updateHeaderForScroll } = useAutoHideSiteHeader();
   const mainRef = useRef<HTMLElement>(null);
@@ -321,6 +322,17 @@ export function TransactionsPage() {
   const filterType = kind === "all" ? null : kind as TransactionListItemOut["transactionType"];
 
   usePlainKey("/", useCallback(() => searchRef.current?.focus(), []));
+
+  // Consume the shortcut's parameter, so closing the drawer and refreshing
+  // does not reopen it, and neither does Back.
+  useEffect(() => {
+    if (params.get("new") !== "1") return;
+    setParams((previous) => {
+      const merged = new URLSearchParams(previous);
+      merged.delete("new");
+      return merged;
+    }, { replace: true });
+  }, [params, setParams]);
 
   function setKind(next: string) {
     setParams((previous) => {

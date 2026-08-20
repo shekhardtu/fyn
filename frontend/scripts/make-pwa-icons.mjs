@@ -64,6 +64,46 @@ function mark({ size, scale = 1 }) {
 </svg>`;
 }
 
+/**
+ * Glyphs for the manifest's app shortcuts — the long-press menu on Android and
+ * the jump list on desktop. Same plate and same white strokes as the app mark,
+ * so the menu reads as one family rather than three borrowed pictograms.
+ */
+function shortcut({ size, glyph }) {
+  const u = Math.round(size * 0.085);
+  const mid = size / 2;
+  const arm = u * 3.4;
+  const white = `fill="${WHITE}"`;
+  const art = {
+    // A plus: adding an entry.
+    add: `<rect x="${mid - u / 2}" y="${mid - arm}" width="${u}" height="${arm * 2}" rx="${u / 2}" ${white}/>
+    <rect x="${mid - arm}" y="${mid - u / 2}" width="${arm * 2}" height="${u}" rx="${u / 2}" ${white}/>`,
+    // Three rising columns: the overview.
+    overview: [0.55, 1.0, 1.5].map((height, index) => {
+      const columnWidth = u * 1.15;
+      const gap = u * 0.85;
+      const span = columnWidth * 3 + gap * 2;
+      const x = mid - span / 2 + index * (columnWidth + gap);
+      const tall = arm * height;
+      return `<rect x="${x}" y="${mid + arm * 0.75 - tall}" width="${columnWidth}" height="${tall}" rx="${u / 2}" ${white}/>`;
+    }).join("\n    "),
+    // Two stacked rules: a thread of conversation.
+    ask: `<rect x="${mid - arm}" y="${mid - u * 1.9}" width="${arm * 2}" height="${u}" rx="${u / 2}" ${white}/>
+    <rect x="${mid - arm}" y="${mid + u * 0.4}" width="${arm * 1.3}" height="${u}" rx="${u / 2}" ${white}/>`,
+  }[glyph];
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" role="img" aria-label="${glyph}">
+  <rect width="${size}" height="${size}" rx="${size * 0.22}" fill="${INDIGO}"/>
+  ${art}
+</svg>`;
+}
+
+const SHORTCUTS = [
+  { file: "shortcut-add.png", glyph: "add" },
+  { file: "shortcut-overview.png", glyph: "overview" },
+  { file: "shortcut-ask.png", glyph: "ask" },
+];
+
 const TARGETS = [
   { file: "favicon-16.png", size: 16 },
   { file: "favicon-32.png", size: 32 },
@@ -140,6 +180,14 @@ for (const target of TARGETS) {
   await page.screenshot({ path: resolve(out, target.file) });
   await page.close();
   console.log(`wrote public/icons/${target.file} (${target.size}px)`);
+}
+for (const { file, glyph } of SHORTCUTS) {
+  const size = 192;
+  const page = await browser.newPage({ viewport: { width: size, height: size }, deviceScaleFactor: 1 });
+  await page.setContent(`<body style="margin:0;width:${size}px;height:${size}px">${shortcut({ size, glyph })}</body>`);
+  await page.screenshot({ path: resolve(out, file), omitBackground: true });
+  await page.close();
+  console.log(`wrote public/icons/${file} (${size}px)`);
 }
 for (const device of SPLASH) {
   const page = await browser.newPage({ viewport: { width: device.w, height: device.h }, deviceScaleFactor: 1 });
