@@ -105,6 +105,5 @@ module = [
   "app.services.sql_analysis",
   "app.services.sql_gate",
   "app.services.template_retrieval",
-  "app.services.transactions",
 ]
 ignore_errors = true

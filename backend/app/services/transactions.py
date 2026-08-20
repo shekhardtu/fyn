@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, TypedDict
 from uuid import UUID
 
 from sqlalchemy import Select, select
@@ -167,7 +167,7 @@ def owned_transaction_source(
     )
 
 
-def _spend_nature_or_unknown(value: SpendNature | str | None) -> SpendNature:
+def _spend_nature_or_unknown(value: object | None) -> SpendNature:
     """Normalize optional transport values without weakening enum validation.
 
     Older persisted chat widgets can submit a present field as JSON ``null``.
@@ -262,7 +262,7 @@ def create_transaction(db: Session, /, **values: Any) -> Transaction:
 UNSET = object()
 
 
-def _taxonomy_path(db: Session, user_id: UUID, category_id: UUID | str | None, subcategory_id: UUID | str | None):
+def _taxonomy_path(db: Session, user_id: UUID, category_id: object | None, subcategory_id: object | None):
     taxonomy = TaxonomyRepository(db, user_id)
     category = taxonomy.category(UUID(str(category_id)), expense_only=True) if category_id else None
     if category_id and not category:
@@ -274,11 +274,13 @@ def _taxonomy_path(db: Session, user_id: UUID, category_id: UUID | str | None, s
 
 
 def _canonicalize_merchant(db: Session, user_id: UUID, transaction: Transaction) -> None:
-    normalized = normalize_merchant(transaction.merchant_name)
+    merchant_name = transaction.merchant_name
+    normalized = normalize_merchant(merchant_name)
     if not normalized:
         transaction.merchant_id = None
         return
-    canonical = MerchantRepository(db, user_id).get_or_create(transaction.merchant_name, normalized)
+    assert merchant_name is not None
+    canonical = MerchantRepository(db, user_id).get_or_create(merchant_name, normalized)
     transaction.merchant_id = canonical.id
     transaction.merchant_name = canonical.canonical_name
 
@@ -297,13 +299,19 @@ def _record_user_values(db: Session, transaction_id: UUID, values: dict[str, obj
     ])
 
 
+class DeviceFix(TypedDict):
+    latitude: Decimal
+    longitude: Decimal
+    location_accuracy: int | None
+
+
 def _accepted_device_fix(
     db: Session,
     user_id: UUID,
     latitude: float | None,
     longitude: float | None,
     accuracy: int | None,
-) -> dict[str, object] | None:
+) -> DeviceFix | None:
     """The coordinates a transaction may keep, or None if it may keep none.
 
     The preference is read here rather than trusted from the request. A client
@@ -319,7 +327,11 @@ def _accepted_device_fix(
     preference = user_preference(db, user_id, "location:enabled")
     if not (preference and (preference.value or {}).get("enabled") is True):
         return None
-    return {"latitude": latitude, "longitude": longitude, "location_accuracy": accuracy}
+    return {
+        "latitude": Decimal(str(latitude)),
+        "longitude": Decimal(str(longitude)),
+        "location_accuracy": accuracy,
+    }
 
 
 def _typed_location_source(label: str | None) -> str | None:
@@ -351,6 +363,7 @@ def create_manual_transaction(
     category, subcategory = _taxonomy_path(db, user_id, category_id, subcategory_id) if kind is TransactionType.EXPENSE else (None, None)
     label = str(location or "").strip()[:160] or None
     fix = _accepted_device_fix(db, user_id, latitude, longitude, location_accuracy)
+    fix_values: dict[str, object] = {**fix} if fix else {}
     if fix and not label:
         # Only what is already known for this cell. A name nobody has looked up
         # yet is filled in afterwards, because a save must not wait on a third
@@ -368,7 +381,7 @@ def create_manual_transaction(
         transaction_at=as_utc(transaction_at),
         posted_at=as_utc(transaction_at),
         location_label=label,
-        **(fix or {}),
+        **fix_values,
         # A fix outranks a typed label: the coordinates are the stronger claim
         # about where this happened, whatever the person calls the place.
         location_source="device" if fix else _typed_location_source(label),
@@ -494,7 +507,11 @@ def update_saved_transaction(
         transaction.spend_nature = canonical_nature.value
         changed_fields["spend_nature"] = canonical_nature.value
     if tags is not UNSET:
-        raw_tags = tags if isinstance(tags, list) else str(tags or "").split(",")
+        raw_tags: list[object] = (
+            [item for item in tags]
+            if isinstance(tags, list)
+            else [item for item in str(tags or "").split(",")]
+        )
         changed_fields["tags"] = TagRepository(db, user_id).replace_transaction_tags(
             transaction.id,
             raw_tags,
