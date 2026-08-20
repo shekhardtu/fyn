@@ -13,7 +13,7 @@ class CategoryScore:
     reasons: list[str] = field(default_factory=list)
 
 
-BASE_PRIORS = {
+BASE_PRIORS: dict[str, float] = {
     DefaultCategorySlug.FOOD: 0.30,
     DefaultCategorySlug.TRAVEL: 0.24,
     DefaultCategorySlug.SHOPPING: 0.18,

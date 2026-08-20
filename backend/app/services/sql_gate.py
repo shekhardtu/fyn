@@ -31,6 +31,7 @@ from sqlglot import exp
 from sqlglot.errors import ParseError
 from sqlglot.optimizer.qualify import qualify
 from sqlalchemy import text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from .manifest import scan_native_schema
@@ -109,7 +110,7 @@ class GatedSql:
 
 
 @lru_cache(maxsize=1)
-def _manifest_schema() -> dict[str, dict[str, str]]:
+def _manifest_schema() -> dict[str, object]:
     """Physical table -> column -> type, from the native manifest scan."""
     return {
         entity["table"]: {column["name"]: column["type"] for column in entity["columns"]}
@@ -136,7 +137,7 @@ def _reject_forbidden_nodes(expression: exp.Expression) -> None:
                 )
 
 
-def _reject_unknown_tables(expression: exp.Expression, schema: dict[str, dict[str, str]]) -> frozenset[str]:
+def _reject_unknown_tables(expression: exp.Expression, schema: dict[str, object]) -> frozenset[str]:
     cte_names = {cte.alias_or_name for cte in expression.find_all(exp.CTE)}
     referenced: set[str] = set()
     for table in expression.find_all(exp.Table):
@@ -309,7 +310,7 @@ def execute_governed_sql(db: Session, user_id: UUID, sql: str) -> dict[str, Any]
     gated = gate_sql(sql, execution_dialect="postgres" if dialect == "postgresql" else dialect)
 
     if dialect == "postgresql":
-        engine = getattr(bind, "engine", bind)
+        engine = bind if isinstance(bind, Engine) else bind.engine
         with engine.connect() as connection:
             transaction = connection.begin()
             prepared_name: str | None = None

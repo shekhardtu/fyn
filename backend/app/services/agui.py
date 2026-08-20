@@ -27,6 +27,7 @@ from ag_ui.core import (
     RunStartedEvent,
     StateDeltaEvent,
     StateSnapshotEvent,
+    TextInputContent,
     TextMessageContentEvent,
     TextMessageEndEvent,
     TextMessageStartEvent,
@@ -71,6 +72,7 @@ from .runtime_tools import capability_notes
 from .continuations import (
     CancelContinuation,
     ClarificationContinuationEnvelope,
+    ClarificationTransition,
     GovernedQueryContinuation,
     LegacyPromptContinuation,
 )
@@ -539,7 +541,7 @@ def normalize_run_input(value: RunAgentInput) -> tuple[dict[str, Any], str | Non
     else:
         text_parts: list[str] = []
         for part in content:
-            if getattr(part, "type", None) != "text":
+            if not isinstance(part, TextInputContent):
                 raise InvalidAgentInput("This Fyn endpoint does not yet accept non-text AG-UI message parts")
             text_parts.append(str(part.text))
         text = "\n".join(text_parts)
@@ -953,6 +955,7 @@ def _resume_response(
                 raise ProtocolRunError("The clarification continuation is invalid.", "invalid_resume") from error
             if selected.get("clarificationId") != str(envelope.clarification_id):
                 raise ProtocolRunError("The clarification response targets a different request.", "invalid_resume")
+            transition: ClarificationTransition
             if option_id == "custom":
                 custom_text = str(selected.get("customText") or "").strip()
                 if not envelope.allow_custom or not custom_text:
@@ -962,9 +965,10 @@ def _resume_response(
                     resolution=custom_text,
                 )
             else:
-                transition = envelope.options.get(option_id)
-                if transition is None:
+                stored_transition = envelope.options.get(option_id)
+                if stored_transition is None:
                     raise ProtocolRunError("Choose one of the available clarification options.", "invalid_resume_payload")
+                transition = stored_transition
             selected_label = transition.label
             resolution = transition.resolution if isinstance(transition, LegacyPromptContinuation) else ""
             resolved_intent = (
@@ -1010,7 +1014,11 @@ def _resume_response(
             except ValueError as error:
                 raise ProtocolRunError("The original request is unavailable.", "invalid_resume") from error
             original_request = str(continuation.get("originalRequest") or "")
-            transition_cancels = option_id != "custom" and _clarification_option_cancels(option_id, option)
+            transition_cancels = (
+                option_id != "custom"
+                and isinstance(option, dict)
+                and _clarification_option_cancels(option_id, option)
+            )
             clarification_depth = 0
             clarification_fingerprint = None
         origin = prepare_widget_action(
@@ -1019,6 +1027,8 @@ def _resume_response(
             interrupt.widget_id,
             WidgetActionId.RESOLVE_CLARIFICATION.value,
         )
+        if origin is None:
+            raise RuntimeError("A validated clarification widget has no origin")
         if transition_cancels:
             response = persist_agent_response(
                 db,
@@ -2281,7 +2291,7 @@ def recover_agent_runs(
         )
         if work is None:
             break
-        if work.executable:
+        if work.run_id is not None and work.user_id is not None:
             queued.append((work.run_id, work.user_id, work.last_sequence))
     return queued
 

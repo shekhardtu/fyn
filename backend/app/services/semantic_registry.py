@@ -4,9 +4,10 @@ from dataclasses import dataclass
 from functools import lru_cache
 import hashlib
 import json
-from typing import get_args, Literal
+from typing import cast, get_args, Literal
 
 from pydantic import BaseModel, Field
+from sqlalchemy import Table
 
 from .. import models as _models  # noqa: F401 - registers every SQLAlchemy mapper
 from ..database import Base
@@ -202,7 +203,7 @@ def _field(name: str, column: str, data_type: str, semantic_type: str, descripti
 
 
 MODEL_BINDINGS = {
-    mapper.local_table.name: mapper.class_
+    cast(Table, mapper.local_table).name: mapper.class_
     for mapper in Base.registry.mappers
 }
 

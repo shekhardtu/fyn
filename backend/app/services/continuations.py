@@ -52,7 +52,9 @@ ClarificationTransition = Annotated[
     ],
     Field(discriminator="kind"),
 ]
-CLARIFICATION_TRANSITION_ADAPTER = TypeAdapter(ClarificationTransition)
+CLARIFICATION_TRANSITION_ADAPTER: TypeAdapter[ClarificationTransition] = TypeAdapter(
+    ClarificationTransition
+)
 
 
 class ClarificationContinuationEnvelope(_ContinuationModel):

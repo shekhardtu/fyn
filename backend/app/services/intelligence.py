@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import calendar
 import re
+from collections.abc import Sequence
 from calendar import monthrange
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
+from typing import TypedDict, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import case, func, select
@@ -40,6 +42,30 @@ class IntelligenceResult:
     # Chart specs that failed a deterministic check: the analysis stands, the
     # chart does not, and the refusal is recorded instead of silently passed.
     chart_notes: list[dict] = field(default_factory=list)
+
+
+class LoanStrategyBranch(TypedDict, total=False):
+    emi_minor: int
+    interest_saved_minor: int
+    months_saved: int
+
+
+class LoanStrategyOption(TypedDict):
+    prepayment_minor: int
+    fee_minor: int
+    lower_emi: LoanStrategyBranch
+    shorter_tenure: LoanStrategyBranch
+
+
+class LoanStrategySummary(TypedDict):
+    loanId: str
+    name: str
+    lender: str | None
+    principalMinor: int
+    currency: str
+    annualRatePercent: float
+    tenureMonths: int
+    options: list[LoanStrategyOption]
 
 
 def _active_loans(db: Session, user_id: UUID, currency: str) -> list[Loan]:
@@ -279,9 +305,9 @@ def transaction_rows(
         "id": str(item.id),
         "merchant": item.merchant_name or item.transaction_type.replace("_", " ").title(),
         "transaction_type": item.transaction_type,
-        "category": categories.get(item.category_id),
-        "subcategory": subcategories.get(item.subcategory_id),
-        "account": accounts.get(item.account_id),
+        "category": categories.get(item.category_id) if item.category_id else None,
+        "subcategory": subcategories.get(item.subcategory_id) if item.subcategory_id else None,
+        "account": accounts.get(item.account_id) if item.account_id else None,
         "tags": tags_by_transaction.get(item.id, []),
         "transaction_at": as_utc(item.transaction_at).isoformat(),
         "transaction_date": local_date(item.transaction_at, timezone_name).isoformat(),
@@ -343,10 +369,14 @@ def _apply_transform(
     source = next(result for result in results if result["name"] == transform.query_name)
     primary_total = sum(int(row["value"]) for row in source["rows"])
     if transform.operation == "prorate":
+        target_start = transform.target_start_date
+        target_end = transform.target_end_date
+        if target_start is None or target_end is None:
+            raise ValueError("prorate requires a target date range")
         source_start = date.fromisoformat(source["start"])
         source_end = date.fromisoformat(source["end"])
         source_days = (source_end - source_start).days + 1
-        target_days = (transform.target_end_date - transform.target_start_date).days + 1
+        target_days = (target_end - target_start).days + 1
         value = int(
             (Decimal(primary_total) * Decimal(target_days) / Decimal(source_days)).quantize(
                 Decimal("1"), rounding=ROUND_HALF_UP
@@ -361,8 +391,8 @@ def _apply_transform(
             "sourceStartDate": source_start.isoformat(),
             "sourceEndDate": source_end.isoformat(),
             "sourceDays": source_days,
-            "targetStartDate": transform.target_start_date.isoformat(),
-            "targetEndDate": transform.target_end_date.isoformat(),
+            "targetStartDate": target_start.isoformat(),
+            "targetEndDate": target_end.isoformat(),
             "targetDays": target_days,
             "value": value,
             "values": [{"label": transform.name, "value": value}],
@@ -377,6 +407,8 @@ def _apply_transform(
             secondary_total = int(secondary["value"])
             secondary_name = transform.secondary_transform_name
         else:
+            if transform.secondary_query_name is None:
+                raise ValueError(f"{transform.operation} requires a secondary query")
             secondary = next(
                 result for result in results if result["name"] == transform.secondary_query_name
             )
@@ -403,8 +435,8 @@ def _apply_transform(
         for row in source["rows"]:
             period = str(row.get(transform.period_dimension, "Unknown"))
             driver = str(row.get(transform.dimension, "Unknown"))
-            values = by_period.setdefault(period, {})
-            values[driver] = values.get(driver, 0) + int(row["value"])
+            period_values = by_period.setdefault(period, {})
+            period_values[driver] = period_values.get(driver, 0) + int(row["value"])
         periods = sorted(by_period)
         output = {
             "name": transform.name,
@@ -417,16 +449,22 @@ def _apply_transform(
             "values": [],
         }
         if len(periods) >= 2:
-            first, last = periods[0], periods[-1]
-            drivers = set(by_period[first]) | set(by_period[last])
+            first_period, last_period = periods[0], periods[-1]
+            drivers = set(by_period[first_period]) | set(by_period[last_period])
             changes = [
-                {"label": driver, "fromValue": by_period[first].get(driver, 0), "toValue": by_period[last].get(driver, 0), "value": by_period[last].get(driver, 0) - by_period[first].get(driver, 0)}
+                {"label": driver, "fromValue": by_period[first_period].get(driver, 0), "toValue": by_period[last_period].get(driver, 0), "value": by_period[last_period].get(driver, 0) - by_period[first_period].get(driver, 0)}
                 for driver in drivers
             ]
-            changes.sort(key=lambda item: (item["value"], abs(item["value"])), reverse=True)
+            changes.sort(
+                key=lambda item: (
+                    cast(int, item["value"]),
+                    abs(cast(int, item["value"])),
+                ),
+                reverse=True,
+            )
             output["values"] = changes[:transform.limit]
-            output["from"] = first
-            output["to"] = last
+            output["from"] = first_period
+            output["to"] = last_period
         return output
     grouped: dict[str, int] = {}
     display: dict[str, str] = {}
@@ -449,7 +487,7 @@ def _apply_transform(
     }
     if transform.operation in WINDOW_TRANSFORM_OPERATIONS:
         chronological = sorted(grouped.items())
-        values = []
+        transform_values = []
         running = 0
         for index, (label, value) in enumerate(chronological):
             if transform.operation == "cumulative_sum":
@@ -458,8 +496,8 @@ def _apply_transform(
             else:
                 window_values = [item[1] for item in chronological[max(0, index - transform.window + 1):index + 1]]
                 rendered = round(sum(window_values) / len(window_values))
-            values.append({"label": label, "value": rendered, "raw_value": value})
-        output["values"] = values
+            transform_values.append({"label": label, "value": rendered, "raw_value": value})
+        output["values"] = transform_values
         output["window"] = transform.window if transform.operation == "moving_average" else None
     elif transform.operation == "compare_totals":
         selected = ranked[:transform.limit]
@@ -480,13 +518,13 @@ def _apply_transform(
         chronological = sorted(grouped.items())
         output["values"] = [{"label": label, "value": value} for label, value in chronological]
         if len(chronological) >= 2:
-            first, last = chronological[0], chronological[-1]
-            difference = last[1] - first[1]
+            first_entry, last_entry = chronological[0], chronological[-1]
+            difference = last_entry[1] - first_entry[1]
             output.update({
-                "from": first[0],
-                "to": last[0],
+                "from": first_entry[0],
+                "to": last_entry[0],
                 "difference": difference,
-                "changeBasisPoints": round(difference * 10_000 / first[1]) if first[1] else None,
+                "changeBasisPoints": round(difference * 10_000 / first_entry[1]) if first_entry[1] else None,
             })
     return output
 
@@ -813,8 +851,8 @@ def _semantic_message(results: list[dict], transforms: list[dict]) -> str:
         if transform["operation"] == "rank" and values:
             return f"The largest result is {values[0]['label']} at {render(values[0]['value'])}."
         if transform["operation"] == "share_of_total" and values:
-            share = Decimal(values[0]["basis_points"]) / Decimal(100)
-            return f"{values[0]['label']} is the largest share at {share}% ({render(values[0]['value'])})."
+            share_percentage = Decimal(values[0]["basis_points"]) / Decimal(100)
+            return f"{values[0]['label']} is the largest share at {share_percentage}% ({render(values[0]['value'])})."
         if transform["operation"] == "period_change" and len(values) >= 2:
             direction = "increased" if transform["difference"] >= 0 else "decreased"
             return f"The result {direction} by {render(abs(transform['difference']))} from {transform['from']} to {transform['to']}."
@@ -882,7 +920,7 @@ def _semantic_message(results: list[dict], transforms: list[dict]) -> str:
     return f"I found {len(rows)} grouped results for {readable_name}; the grounded values are shown below."
 
 
-def _load_context(db: Session, user_id: UUID, currency: str, today: date, sources: list[str]) -> tuple[dict, list[DataReference]]:
+def _load_context(db: Session, user_id: UUID, currency: str, today: date, sources: Sequence[str]) -> tuple[dict, list[DataReference]]:
     context: dict[str, list[dict]] = {}
     citations: list[DataReference] = []
     start, end = month_bounds(today)
@@ -1038,7 +1076,7 @@ def avoidable_expense_candidates(db: Session, user_id: UUID, currency: str, toda
         })
     candidates.sort(key=lambda item: (item["confidence"], item["amountMinor"]), reverse=True)
     candidates = candidates[:20]
-    potential = sum(item["amountMinor"] for item in candidates)
+    potential = sum(cast(int, item["amountMinor"]) for item in candidates)
     message = (
         f"I found {len(candidates)} expense{'s' if len(candidates) != 1 else ''} worth {format_money_minor(potential, currency)} that may be worth reviewing. Nothing is labelled avoidable until you decide."
         if candidates else
@@ -1088,16 +1126,23 @@ def loan_strategy(db: Session, user_id: UUID, currency: str) -> IntelligenceResu
             [widget],
             [DataReference(label="No active saved loan profile was available", entity_type="loan")],
         )
-    strategies = []
+    strategies: list[LoanStrategySummary] = []
     for loan in loans:
         candidate_amounts = sorted({loan.current_emi_minor or 0, loan.outstanding_principal_minor // 20, loan.outstanding_principal_minor // 10})
-        options = [loan_strategy_options(
-            loan.outstanding_principal_minor,
-            float(loan.annual_rate_percent),
-            loan.remaining_tenure_months,
-            amount,
-            float(loan.prepayment_fee_percent),
-        ) for amount in candidate_amounts if amount > 0]
+        options = [
+            cast(
+                LoanStrategyOption,
+                loan_strategy_options(
+                    loan.outstanding_principal_minor,
+                    float(loan.annual_rate_percent),
+                    loan.remaining_tenure_months,
+                    amount,
+                    float(loan.prepayment_fee_percent),
+                ),
+            )
+            for amount in candidate_amounts
+            if amount > 0
+        ]
         strategies.append({
             "loanId": str(loan.id), "name": loan.name, "lender": loan.lender,
             "principalMinor": loan.outstanding_principal_minor, "currency": loan.currency,
@@ -1256,16 +1301,16 @@ def _chart_widgets_for_plan(
     notes: list[dict] = []
     for view in plan.visualizations:
         try:
-            result = by_dataset.get(view.dataset)
-            if result is None:
+            selected_result = by_dataset.get(view.dataset)
+            if selected_result is None:
                 raise ChartSpecError(
                     f"View {view.id} references dataset {view.dataset}, which matches no plan query",
                     code="unknown_dataset",
                 )
             widgets.append(build_chart_widget(
                 view,
-                tool_facing_rows(result),
-                result.get("currency") or currency,
+                tool_facing_rows(selected_result),
+                selected_result.get("currency") or currency,
                 lineage,
             ))
         except ChartSpecError as error:

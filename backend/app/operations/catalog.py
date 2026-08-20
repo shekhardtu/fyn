@@ -414,26 +414,26 @@ class OperationCatalogManager:
                 self._snapshot = snapshot
                 self._health = CatalogHealth(
                     status="ok",
-                    catalogHash=catalog_hash,
+                    catalog_hash=catalog_hash,
                     generation=generation,
-                    coreCount=sum(item.source == "core" for item in compiled.values()),
-                    managedCount=sum(item.source == "managed" for item in compiled.values()),
-                    lastLoadedAt=snapshot.loaded_at.isoformat(),
+                    core_count=sum(item.source == "core" for item in compiled.values()),
+                    managed_count=sum(item.source == "managed" for item in compiled.values()),
+                    last_loaded_at=snapshot.loaded_at.isoformat(),
                 )
                 return snapshot
         except Exception as exc:
             error = exc if isinstance(exc, OperationCatalogError) else OperationCatalogError("catalog_load_failed", str(exc))
             with self._lock:
-                previous = self._health
+                previous_health = self._health
                 self._health = CatalogHealth(
                     status="degraded" if self._snapshot else "uninitialized",
-                    catalogHash=previous.catalog_hash,
-                    generation=previous.generation,
-                    coreCount=previous.core_count,
-                    managedCount=previous.managed_count,
-                    lastLoadedAt=previous.last_loaded_at,
-                    lastErrorAt=_now().isoformat(),
-                    lastErrorCode=error.code,
+                    catalog_hash=previous_health.catalog_hash,
+                    generation=previous_health.generation,
+                    core_count=previous_health.core_count,
+                    managed_count=previous_health.managed_count,
+                    last_loaded_at=previous_health.last_loaded_at,
+                    last_error_at=_now().isoformat(),
+                    last_error_code=error.code,
                 )
             if initial or self._snapshot is None:
                 raise error

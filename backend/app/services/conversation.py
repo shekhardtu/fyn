@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import func, select, tuple_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.sql.elements import ColumnElement
 
 from ..config import get_settings
 from ..event_time import as_utc, from_local_parts, local_date, local_now, now_utc, resolve_event_time, utc_range_for_local_dates
@@ -96,6 +97,7 @@ from .capabilities import (
 from .continuations import (
     CancelContinuation,
     ClarificationContinuationEnvelope,
+    ClarificationTransition,
     GovernedQueryContinuation,
     GovernedTaxonomyContinuation,
     LegacyPromptContinuation,
@@ -124,7 +126,7 @@ from .runtime_tools import build_runtime_tools, capability_notes
 from .semantic import AnalysisPlan, AnalysisToolProposal, AnalysisTransform, FinanceFilter, FinanceQueryPlan
 from .tags import TagRepository
 from .taxonomy import TaxonomyRepository, agent_taxonomy as _agent_taxonomy
-from .transactions import active_transaction, canonical_transactions, create_transaction, owned_transaction_source, update_saved_transaction
+from .transactions import UNSET, active_transaction, canonical_transactions, create_transaction, owned_transaction_source, update_saved_transaction
 from .user_memory import remember_taxonomy_mapping
 
 
@@ -285,11 +287,12 @@ def resolve_widget_action(
                 item for item in taxonomy.expense_categories()
                 if item.name.casefold() == requested_name.casefold()
             ), None)
-            requested_children = [
-                str(item) for item in (
-                    safe_payload.get("subcategories") or widget.data.get("subcategories") or []
-                )
-            ]
+            raw_children = safe_payload.get("subcategories") or widget.data.get("subcategories") or []
+            requested_children = (
+                [str(item) for item in raw_children]
+                if isinstance(raw_children, list)
+                else []
+            )
             canonical_children = (
                 [
                     item for item in taxonomy.subcategories(canonical.id)
@@ -335,7 +338,7 @@ def resolve_widget_action(
     # JSON columns do not detect nested mutations; assigning a fresh list is
     # what makes the receipt durable.
     message.widgets = widgets
-    return WidgetUpdate(widgetId=widget.id, widget=resolved)
+    return WidgetUpdate(widget_id=widget.id, widget=resolved)
 
 
 def _grounded_states(message: Message) -> tuple[dict | None, dict | None]:
@@ -393,7 +396,9 @@ def _message_context_entry(message: Message) -> dict[str, Any]:
     for widget in (message.widgets or [])[:4]:
         if not isinstance(widget, dict) or widget.get("type") == WidgetType.AGENT_ACTIVITY:
             continue
-        data = widget.get("data") if isinstance(widget.get("data"), dict) else {}
+        data: dict[str, Any] = (
+            widget["data"] if isinstance(widget.get("data"), dict) else {}
+        )
         response_surfaces.append({
             "type": widget.get("type"),
             "title": data.get("title"),
@@ -579,7 +584,7 @@ def _recent_complete_turn_context(
             .where(
                 Message.conversation_id == conversation.id,
                 Message.id != current_user_message.id,
-                tuple_(Message.created_at, Message.id) >= tuple_(oldest.created_at, oldest.id),
+                tuple_(Message.created_at, Message.id) >= (oldest.created_at, oldest.id),
                 *_history_only(),
             )
             .order_by(Message.created_at, Message.id)
@@ -628,7 +633,7 @@ def _recent_complete_turn_snapshot(
             select(Message)
             .where(
                 Message.conversation_id == conversation.id,
-                tuple_(Message.created_at, Message.id) >= tuple_(oldest.created_at, oldest.id),
+                tuple_(Message.created_at, Message.id) >= (oldest.created_at, oldest.id),
             )
             .order_by(Message.created_at, Message.id)
         )
@@ -911,7 +916,11 @@ def _normalize_compound_taxonomy_decision(
         for value in (taxonomy.name, taxonomy.parent_category)
         if value
     }
-    compiled_names = {compiled.name.casefold(), *(item.casefold() for item in compiled.subcategories)}
+    compiled_names = {
+        item.casefold()
+        for item in (compiled.name, *compiled.subcategories)
+        if item
+    }
     if known_names and not known_names <= compiled_names:
         return decision
     return decision.model_copy(update={
@@ -1257,6 +1266,7 @@ def _clarification_response(
             clarification,
             option.resolution,
         )
+        transition: ClarificationTransition
         if option.disposition == "cancel":
             transition = CancelContinuation(label=option.label)
         elif option.taxonomy is not None:
@@ -1275,13 +1285,13 @@ def _clarification_response(
     transitions["cancel"] = CancelContinuation(label="Cancel")
     resume_guard = _clarification_resume_guard.get() or {}
     continuation = ClarificationContinuationEnvelope(
-        clarificationId=clarification_id,
-        sourceMessageId=source_message.id,
-        originalRequest=original_request,
+        clarification_id=clarification_id,
+        source_message_id=source_message.id,
+        original_request=original_request,
         options=transitions,
-        allowCustom=clarification.allow_custom,
-        clarificationDepth=int(resume_guard.get("depth", -1)) + 1,
-        clarificationFingerprint=_clarification_fingerprint(clarification),
+        allow_custom=clarification.allow_custom,
+        clarification_depth=int(resume_guard.get("depth", -1)) + 1,
+        clarification_fingerprint=_clarification_fingerprint(clarification),
     ).model_dump(mode="json", by_alias=True)
     return persist_agent_response(
         db,
@@ -1352,8 +1362,10 @@ def _explicit_taxonomy_match(
                     matches.append((len(normalized_term) + 1, category, subcategory, term))
     if not matches:
         return None
-    _, category, subcategory, term = max(matches, key=lambda item: item[0])
-    return category, subcategory, term
+    _, selected_category, selected_subcategory, selected_term = max(
+        matches, key=lambda item: item[0]
+    )
+    return selected_category, selected_subcategory, selected_term
 
 
 def _apply_explicit_taxonomy(
@@ -1538,7 +1550,7 @@ def _taxonomy_editor_widget(
         if action_id is WidgetActionId.CREATE_SUBCATEGORY
         else "Add category"
     )
-    action_payload = {
+    action_payload: dict[str, Any] = {
         "draftId": str(draft.id) if draft else None,
         "categoryId": str(parent.id) if parent else None,
     }
@@ -1580,6 +1592,8 @@ def _taxonomy_editor_widget(
 
 
 def _subcategory_selector(db: Session, draft: TransactionDraft) -> Widget:
+    if draft.category_id is None:
+        raise ValueError("Unknown category")
     category = TaxonomyRepository(db, draft.user_id).category(draft.category_id)
     if not category:
         raise ValueError("Unknown category")
@@ -2584,6 +2598,10 @@ def _tool_grounded_response(
                     "question, so I stopped instead of presenting a partial answer. Please try again."
                 )
             elif coverage_validation is not None and coverage_validation.missing_answer:
+                if evidence_validation is None:
+                    raise RuntimeError(
+                        "Coverage validation requires typed evidence validation"
+                    )
                 repaired = None
                 repair_error = None
                 try:
@@ -2652,6 +2670,8 @@ def _tool_grounded_response(
                     validation_trace_status,
                     validation_trace_detail,
                 )
+    if content is None:
+        raise RuntimeError("A grounded response requires reply content")
     return persist_agent_response(
         db,
         conversation,
@@ -2691,6 +2711,7 @@ def _taxonomy_response(db: Session, user: User, conversation: Conversation, deci
             f"{child_label} as its subcategor{'y' if len(taxonomy.subcategories) == 1 else 'ies'}."
         )
     elif taxonomy.operation is WidgetActionId.CREATE_SUBCATEGORY:
+        assert parent is not None
         content = f"What should the new subcategory under {parent.name} be called?" if not taxonomy.name else f"Review the new {parent.name} subcategory before adding it."
     else:
         content = "What should the new category be called?" if not taxonomy.name else "Review the new category before adding it."
@@ -3309,8 +3330,8 @@ def _compile_known_analysis(db: Session, user: User, text: str) -> CopilotDecisi
             if any(token in lowered for token in ("last three months", "last 3 months", "three months", "3 months")):
                 start = shift_month(today.replace(day=1), -2)
             else:
-                parsed = parse_spending_period(text, today)
-                start = parsed[0] if parsed else today.replace(day=1)
+                parsed_period = parse_spending_period(text, today)
+                start = parsed_period[0] if parsed_period else today.replace(day=1)
             dimensions = list(MONTH_CATEGORY_DIMENSIONS) if "month" in lowered else ["category"]
             query = FinanceQueryPlan(
                 name="Category spending comparison",
@@ -3498,7 +3519,7 @@ def _transaction_removal_response(db: Session, user: User, conversation: Convers
         # listed as markdown and the user names one in their own words. The
         # single-match branch above still owns the confirmation HITL, so no
         # record is ever removed straight from this list.
-        candidates = "\n".join(
+        candidate_lines = "\n".join(
             f"{index}. {format_money_minor(item.amount_minor, item.currency)} at "
             f"{item.merchant_name or item.transaction_type.replace('_', ' ')} on "
             f"{local_date(item.transaction_at, user.timezone).strftime('%b %d, %Y')}"
@@ -3507,7 +3528,7 @@ def _transaction_removal_response(db: Session, user: User, conversation: Convers
         content = join_blocks(
             f"I found {len(matches)} matching {label.title() if label else ''}".replace("  ", " ").strip()
             + f" transaction{'s' if len(matches) != 1 else ''}. Tell me which one to remove.",
-            candidates,
+            candidate_lines,
         )
         widgets = []
         pending = None
@@ -3582,8 +3603,11 @@ def _transaction_search_parts(db: Session, user: User, query: QueryInterpretatio
             select(func.coalesce(func.sum(Transaction.amount_minor), 0), func.count(Transaction.id))
             .join(filtered_ids, filtered_ids.c.id == Transaction.id)
         ).one()
-        group_label = func.coalesce(Category.name, "Other")
-        group_join = (Category, Category.id == Transaction.category_id)
+        group_label: ColumnElement[str] = func.coalesce(Category.name, "Other")
+        group_join: tuple[
+            type[Category] | type[Subcategory] | type[Account],
+            ColumnElement[bool],
+        ] | None = (Category, Category.id == Transaction.category_id)
         if query.group_by == "subcategory":
             group_label = func.coalesce(Subcategory.name, "Other")
             group_join = (Subcategory, Subcategory.id == Transaction.subcategory_id)
@@ -4305,8 +4329,11 @@ class _ConversationPrimitiveRuntime:
         )
 
     def clarify(self, _arguments: dict[str, Any]) -> AgentResponse:
+        clarification = self.decision.clarification
+        if clarification is None:
+            raise RuntimeError("The clarification capability has no clarification contract")
         return _clarification_response(
-            self.db, self.conversation, self.text, self.decision.clarification
+            self.db, self.conversation, self.text, clarification
         )
 
     def unknown(self, _arguments: dict[str, Any]) -> AgentResponse:
@@ -4666,6 +4693,7 @@ def handle_clarification_resolution(
             parsed_transition.resolution,
             previous_clarification,
         ) or parsed_transition
+    intent_contract: ResolvedIntentContract | None
     if isinstance(parsed_transition, GovernedQueryContinuation):
         selected_label = parsed_transition.label
         intent_contract = parsed_transition.intent
@@ -5006,7 +5034,10 @@ def _run_turn(
                 active_draft.category_id = category.id
                 _set_ready_if_complete(active_draft)
                 return execute(WidgetActionId.UPDATE_TRANSACTION_DRAFT.value, "Updating transaction draft", lambda: _draft_or_commit(db, user, conversation, active_draft))
-        elif active_draft.missing_fields[0] == "subcategory":
+        elif (
+            active_draft.missing_fields[0] == "subcategory"
+            and active_draft.category_id is not None
+        ):
             subcategory = next((
                 item for item in _subcategories_for_user(db, user.id, active_draft.category_id)
                 if item.name.casefold() == answer.casefold()
@@ -5163,19 +5194,19 @@ def _run_turn(
             for case in exact_operation.definition.tests
             if " ".join(case.request.casefold().split()) == normalized_operation_request
         ), None)
-        decision = filesystem_operation_decision(
+        exact_decision = filesystem_operation_decision(
             exact_operation.id,
             matching_contract.expected_inputs if matching_contract and matching_contract.expected_inputs else {},
             confidence=1.0,
             reason="Exact filesystem operation example or alias match.",
         )
-        if decision is not None:
+        if exact_decision is not None:
             return _dispatch_decision(
                 db,
                 user,
                 conversation,
                 text,
-                decision,
+                exact_decision,
                 execute,
                 emit,
             )
@@ -5284,13 +5315,16 @@ def _run_turn(
             capability_for_primitive("agent.clarify@1").value,
             calculator_clarification.reason,
         )
+        clarification = calculator_clarification.clarification
+        if clarification is None:
+            raise RuntimeError("Calculator conflict policy produced no clarification")
         db.add(AIAction(
             user_id=user.id,
             conversation_id=conversation.id,
             action_type="calculator_conflict_policy",
             payload_redacted={
                 "tool": capability_for_primitive("agent.clarify@1").value,
-                "conflictFields": calculator_clarification.clarification.conflict_fields,
+                "conflictFields": clarification.conflict_fields,
             },
             status=ExecutionStatus.COMPLETED,
         ))
@@ -5572,7 +5606,7 @@ def _run_turn(
                             code="correction_scope_reconciled",
                             detail=(
                                 "I reconciled this correction with the matching prior all-time filters."
-                                if query.start_date is None
+                                if query.start_date is None or query.end_date is None
                                 else (
                                     "I reconciled this correction with the matching prior period, "
                                     f"{query.start_date.isoformat()} through {query.end_date.isoformat()}."
@@ -5824,15 +5858,15 @@ def _run_turn(
             )
 
     superseded_scope = conversation.active_data_scope if releases_prior_scope(text) else None
-    decision = operator_decision
-    if decision is not None:
+    final_decision = operator_decision
+    if final_decision is not None:
         # Strict proposal validation, tenancy scoping, and — for mutations —
         # the HITL approval widget govern typed operations; no model critic
         # reviews a decision the machine can check.
-        decision = _normalize_compound_taxonomy_decision(text, decision)
-        decision = _normalize_operation_decision(text, decision, conversation, emit)
-        if not decision.validated_by:
-            decision = decision.model_copy(update={
+        final_decision = _normalize_compound_taxonomy_decision(text, final_decision)
+        final_decision = _normalize_operation_decision(text, final_decision, conversation, emit)
+        if not final_decision.validated_by:
+            final_decision = final_decision.model_copy(update={
                 "validated_by": "deterministic_contract_policy",
                 "validation_confidence": 1.0,
             })
@@ -5843,11 +5877,11 @@ def _run_turn(
             "deterministic_contract_policy",
             "Typed proposal validation, tenant scoping, and HITL approval govern this operation.",
         )
-    if decision and superseded_scope:
+    if final_decision and superseded_scope:
         # Widening away from the records on screen is a change the user should
         # read in the answer, not infer from a different-looking chart.
-        decision = decision.model_copy(update={"assumptions": [
-            *decision.assumptions,
+        final_decision = final_decision.model_copy(update={"assumptions": [
+            *final_decision.assumptions,
             CompilationAssumption(
                 code="scope_released",
                 detail=(
@@ -5856,63 +5890,63 @@ def _run_turn(
                 ),
             ),
         ]})
-    model_tool = decision.tool if decision else None
+    model_tool = final_decision.tool if final_decision else None
     override_detail = None
     if _is_bare_amount(text) and (
-        not decision
-        or capability_invokes(decision.tool, "agent.respond@1")
-        or capability_invokes(decision.tool, "agent.unknown@1")
+        not final_decision
+        or capability_invokes(final_decision.tool, "agent.respond@1")
+        or capability_invokes(final_decision.tool, "agent.unknown@1")
     ):
-        decision = CopilotDecision(
+        final_decision = CopilotDecision(
             tool=capability_for_primitive("transaction.record@1"),
-            confidence=max(decision.confidence if decision else 0.0, 0.7),
+            confidence=max(final_decision.confidence if final_decision else 0.0, 0.7),
             reason="Bare currency amounts enter the minimal transaction clarification workflow.",
         )
         override_detail = (
             f"Domain guardrail corrected {model_tool or 'no route'} → "
             f"{capability_for_primitive('transaction.record@1').value}"
         )
-    if decision:
-        payload = {"tool": decision.tool, "confidence": decision.confidence}
-        if decision.query:
+    if final_decision:
+        payload = {"tool": final_decision.tool, "confidence": final_decision.confidence}
+        if final_decision.query:
             payload["queryShape"] = {
-                "metric": decision.query.metric,
-                "resultMode": decision.query.result_mode,
-                "operation": decision.query.operation,
-                "groupBy": decision.query.group_by,
-                "sortDirection": decision.query.sort_direction,
-                "limit": decision.query.limit,
-                "usesActiveScope": decision.query.use_active_scope,
+                "metric": final_decision.query.metric,
+                "resultMode": final_decision.query.result_mode,
+                "operation": final_decision.query.operation,
+                "groupBy": final_decision.query.group_by,
+                "sortDirection": final_decision.query.sort_direction,
+                "limit": final_decision.query.limit,
+                "usesActiveScope": final_decision.query.use_active_scope,
                 "filterFields": [key for key, value in {
-                    "transactionType": decision.query.transaction_type,
-                    "merchant": decision.query.merchant,
-                    "category": decision.query.category_slug,
-                    "subcategory": decision.query.subcategory_slug,
-                    "account": decision.query.account,
-                    "tag": decision.query.tag,
-                    "minimumAmount": decision.query.min_amount_minor,
-                    "maximumAmount": decision.query.max_amount_minor,
-                    "startDate": decision.query.start_date,
-                    "endDate": decision.query.end_date,
+                    "transactionType": final_decision.query.transaction_type,
+                    "merchant": final_decision.query.merchant,
+                    "category": final_decision.query.category_slug,
+                    "subcategory": final_decision.query.subcategory_slug,
+                    "account": final_decision.query.account,
+                    "tag": final_decision.query.tag,
+                    "minimumAmount": final_decision.query.min_amount_minor,
+                    "maximumAmount": final_decision.query.max_amount_minor,
+                    "startDate": final_decision.query.start_date,
+                    "endDate": final_decision.query.end_date,
                 }.items() if value is not None],
             }
-        if decision.validated_by:
-            payload.update({"validatedBy": decision.validated_by, "validationConfidence": decision.validation_confidence})
-        if decision.tool_grounding:
-            payload["groundedTools"] = [item.name for item in decision.tool_grounding]
-        if model_tool and model_tool != decision.tool:
+        if final_decision.validated_by:
+            payload.update({"validatedBy": final_decision.validated_by, "validationConfidence": final_decision.validation_confidence})
+        if final_decision.tool_grounding:
+            payload["groundedTools"] = [item.name for item in final_decision.tool_grounding]
+        if model_tool and model_tool != final_decision.tool:
             payload["modelTool"] = model_tool
         db.add(AIAction(user_id=user.id, conversation_id=conversation.id, action_type="operator_decision", payload_redacted=payload, status=ExecutionStatus.COMPLETED))
     # Model self-reported confidence is not a measurement; the raw values stay
     # in the ai_actions decision log for diagnostics but are never rendered as
     # a user-facing percentage.
     reasoning_detail = None
-    if decision and decision.safe_reasoning_summary:
-        reasoning_detail = " → ".join(decision.safe_reasoning_summary)
-        if decision.validated_by:
-            reasoning_detail += f" → Validated by {decision.validated_by}"
+    if final_decision and final_decision.safe_reasoning_summary:
+        reasoning_detail = " → ".join(final_decision.safe_reasoning_summary)
+        if final_decision.validated_by:
+            reasoning_detail += f" → Validated by {final_decision.validated_by}"
     if (
-        decision is None
+        final_decision is None
         and sql_only_analysis
         and looks_like_financial_query(text)
     ):
@@ -5953,15 +5987,15 @@ def _run_turn(
         )
     emit(
         "classification",
-        ("The governed pipeline completed its reasoning plan" if deep_reasoning else "The governed pipeline selected a capability") if decision else "Deterministic fallback selected",
+        ("The governed pipeline completed its reasoning plan" if deep_reasoning else "The governed pipeline selected a capability") if final_decision else "Deterministic fallback selected",
         "completed",
-        decision.tool if decision else "deterministic_fallback",
-        override_detail or reasoning_detail or (None if decision else "The model was unavailable or returned no valid route"),
+        final_decision.tool if final_decision else "deterministic_fallback",
+        override_detail or reasoning_detail or (None if final_decision else "The model was unavailable or returned no valid route"),
         input_payload={"currentUserMessage": text},
-        output_payload=decision.model_dump(mode="json", by_alias=True, exclude_none=True) if decision else None,
+        output_payload=final_decision.model_dump(mode="json", by_alias=True, exclude_none=True) if final_decision else None,
     )
-    if decision:
-        return _dispatch_decision(db, user, conversation, text, decision, execute, emit)
+    if final_decision:
+        return _dispatch_decision(db, user, conversation, text, final_decision, execute, emit)
 
     # A provider outage must not turn an interpretive replay into a generic
     # analysis summary. Execute the already validated plan, then let the same
@@ -6069,9 +6103,12 @@ def _commit_draft(db: Session, user: User, draft: TransactionDraft) -> Transacti
     if draft.state != DraftState.READY_FOR_CONFIRMATION.value:
         raise ValueError("Draft is not ready for confirmation")
     merchant = None
-    normalized = normalize_merchant(draft.merchant_name)
+    merchant_name = draft.merchant_name
+    normalized = normalize_merchant(merchant_name)
     if normalized:
-        merchant = MerchantRepository(db, user.id).get_or_create(draft.merchant_name, normalized)
+        if merchant_name is None:
+            raise RuntimeError("A normalized merchant must retain its display name")
+        merchant = MerchantRepository(db, user.id).get_or_create(merchant_name, normalized)
     source_account = None
     destination_account = None
     accounts = AccountRepository(db, user.id)
@@ -6449,39 +6486,43 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
             return _draft_or_commit(db, user, conversation, draft)
         if existing:
             return _conversation_response(db, conversation, f"{existing.name} already exists in your categories.")
-        category = taxonomy.create_category(name, "circle-ellipsis", f"custom-{uuid4().hex}")
-        subcategory = taxonomy.create_subcategory(category, "Other", "other")
+        custom_category = taxonomy.create_category(name, "circle-ellipsis", f"custom-{uuid4().hex}")
+        custom_subcategory = taxonomy.create_subcategory(custom_category, "Other", "other")
         if draft:
-            draft.category_id = category.id
-            draft.subcategory_id = subcategory.id
+            draft.category_id = custom_category.id
+            draft.subcategory_id = custom_subcategory.id
             draft.inferred_fields = _without_inferred_fields(draft.inferred_fields, TAXONOMY_INFERENCE_FIELDS)
             _set_ready_if_complete(draft)
             return _draft_or_commit(db, user, conversation, draft)
-        return _conversation_response(db, conversation, f"Added {category.name} to your categories.")
+        return _conversation_response(db, conversation, f"Added {custom_category.name} to your categories.")
     if action is WidgetActionId.CREATE_SUBCATEGORY:
         name = str(payload.get("name") or "").strip()
         category_id = payload.get("categoryId")
-        category = taxonomy.category(UUID(str(category_id)), expense_only=True) if category_id else None
+        parent_category = taxonomy.category(UUID(str(category_id)), expense_only=True) if category_id else None
         if not name or len(name) > 80:
             raise ValueError("Subcategory name must be between 1 and 80 characters")
-        if not category:
+        if not parent_category:
             raise ValueError("Unknown parent category")
-        existing = next((item for item in _subcategories_for_user(db, user.id, category.id) if item.name.casefold() == name.casefold()), None)
-        if not existing:
-            existing = taxonomy.create_subcategory(category, name, f"custom-{uuid4().hex}")
+        existing_subcategory = next((
+            item
+            for item in _subcategories_for_user(db, user.id, parent_category.id)
+            if item.name.casefold() == name.casefold()
+        ), None)
+        if not existing_subcategory:
+            existing_subcategory = taxonomy.create_subcategory(parent_category, name, f"custom-{uuid4().hex}")
         if draft:
-            if draft.category_id != category.id:
+            if draft.category_id != parent_category.id:
                 raise ValueError("Subcategory does not belong to the draft category")
-            draft.subcategory_id = existing.id
+            draft.subcategory_id = existing_subcategory.id
             draft.inferred_fields = _without_inferred_fields(draft.inferred_fields, SUBCATEGORY_INFERENCE_FIELDS)
             _set_ready_if_complete(draft)
             return _draft_or_commit(db, user, conversation, draft)
-        return _conversation_response(db, conversation, f"Added {existing.name} under {category.name}.")
+        return _conversation_response(db, conversation, f"Added {existing_subcategory.name} under {parent_category.name}.")
     if action is WidgetActionId.SELECT_CATEGORY and draft:
-        category = taxonomy.category(UUID(payload["categoryId"]))
-        if not category:
+        selected_category = taxonomy.category(UUID(payload["categoryId"]))
+        if not selected_category:
             raise ValueError("Unknown category")
-        draft.category_id = category.id
+        draft.category_id = selected_category.id
         draft.subcategory_id = None
         draft.inferred_fields = _without_inferred_fields(draft.inferred_fields, TAXONOMY_INFERENCE_FIELDS)
         _set_ready_if_complete(draft)
@@ -6499,10 +6540,10 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
         _set_ready_if_complete(draft)
         return _draft_or_commit(db, user, conversation, draft)
     if action is WidgetActionId.SELECT_SUBCATEGORY and draft:
-        subcategory = taxonomy.subcategory(UUID(payload["subcategoryId"]), category_id=draft.category_id)
-        if not subcategory:
+        selected_subcategory = taxonomy.subcategory(UUID(payload["subcategoryId"]), category_id=draft.category_id)
+        if not selected_subcategory:
             raise ValueError("Unknown subcategory")
-        draft.subcategory_id = subcategory.id
+        draft.subcategory_id = selected_subcategory.id
         draft.inferred_fields = _without_inferred_fields(draft.inferred_fields, SUBCATEGORY_INFERENCE_FIELDS)
         _set_ready_if_complete(draft)
         return _draft_or_commit(db, user, conversation, draft)
@@ -6534,7 +6575,7 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
         _set_ready_if_complete(draft)
         return _draft_or_commit(db, user, conversation, draft)
     if action is WidgetActionId.SAVE_BUDGET:
-        amount_minor = payload.get("amountMinor")
+        budget_amount_minor = int(payload["amountMinor"])
         category_id = UUID(str(payload["categoryId"])) if payload.get("categoryId") else None
         category = taxonomy.category(category_id, expense_only=True)
         if category_id and not category:
@@ -6548,10 +6589,10 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
         if budget is None:
             budget = db.scalar(select(Budget).where(Budget.user_id == user.id, Budget.category_id == category_id))
         if budget:
-            budget.amount_minor = amount_minor
+            budget.amount_minor = budget_amount_minor
             budget.name = str(payload.get("name") or budget.name)
         else:
-            budget = Budget(user_id=user.id, category_id=category_id, name=str(payload.get("name") or "Monthly spending budget"), amount_minor=amount_minor, currency=user.currency)
+            budget = Budget(user_id=user.id, category_id=category_id, name=str(payload.get("name") or "Monthly spending budget"), amount_minor=budget_amount_minor, currency=user.currency)
             db.add(budget)
             db.flush()
         spent = _budget_spent_minor(db, user, category)
@@ -6559,7 +6600,7 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
         widget = _budget_widget(str(budget.id), budget.name, budget.amount_minor, spent, category.slug if category else None, budget.currency, _budget_management_actions(budget))
         return persist_agent_response(db, conversation, content, widgets=[widget])
     if action is WidgetActionId.SAVE_GOAL:
-        target_minor = payload.get("targetMinor")
+        target_minor = int(payload["targetMinor"])
         name = str(payload.get("name") or "Savings goal").strip()[:120]
         goal = db.scalar(select(Goal).where(Goal.user_id == user.id, func.lower(Goal.name) == name.lower()))
         if goal:
@@ -6573,18 +6614,18 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
         return persist_agent_response(db, conversation, content, widgets=[widget])
     if action is WidgetActionId.CONTRIBUTE_GOAL:
         goal = owned.get(Goal, UUID(str(payload.get("goalId")))) if payload.get("goalId") else None
-        amount_minor = payload.get("amountMinor")
+        contribution_minor = int(payload["amountMinor"])
         if not goal:
             raise ValueError("Unknown goal")
-        goal.current_minor += amount_minor
+        goal.current_minor += contribution_minor
         db.add(GoalContribution(
             user_id=user.id,
             goal_id=goal.id,
-            amount_minor=amount_minor,
+            amount_minor=contribution_minor,
             currency=goal.currency,
             contribution_at=now_utc(),
         ))
-        content = f"Added {format_money_minor(amount_minor, goal.currency)} to your {goal.name} goal."
+        content = f"Added {format_money_minor(contribution_minor, goal.currency)} to your {goal.name} goal."
         widget = _goal_widget(str(goal.id), goal.name, goal.target_minor, goal.current_minor, goal.currency)
         return persist_agent_response(db, conversation, content, widgets=[widget])
     if action is WidgetActionId.COMMIT_IMPORT:
@@ -6736,21 +6777,25 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
         transaction_id = payload.get("transactionId")
         if not transaction_id:
             raise ValueError("Unknown transaction")
-        changes: dict[str, object] = {"amount_minor": int(payload.get("amountMinor") or 0)}
-        for payload_name, service_name in (
-            ("merchant", "merchant"),
-            ("transactionType", "transaction_type"),
-            ("location", "location"),
-            ("spendNature", "spend_nature"),
-            ("categoryId", "category_id"),
-            ("subcategoryId", "subcategory_id"),
-            ("tags", "tags"),
-        ):
-            if payload_name in payload:
-                changes[service_name] = payload[payload_name]
-        if payload.get("transactionAt"):
-            changes["transaction_at"] = datetime.fromisoformat(str(payload["transactionAt"]).replace("Z", "+00:00"))
-        transaction = update_saved_transaction(db, user.id, UUID(str(transaction_id)), **changes)
+        transaction_at = (
+            datetime.fromisoformat(str(payload["transactionAt"]).replace("Z", "+00:00"))
+            if payload.get("transactionAt")
+            else UNSET
+        )
+        transaction = update_saved_transaction(
+            db,
+            user.id,
+            UUID(str(transaction_id)),
+            amount_minor=int(payload["amountMinor"]),
+            merchant=payload["merchant"] if "merchant" in payload else UNSET,
+            transaction_at=transaction_at,
+            transaction_type=payload["transactionType"] if "transactionType" in payload else UNSET,
+            location=payload["location"] if "location" in payload else UNSET,
+            spend_nature=payload["spendNature"] if "spendNature" in payload else UNSET,
+            category_id=payload["categoryId"] if "categoryId" in payload else UNSET,
+            subcategory_id=payload["subcategoryId"] if "subcategoryId" in payload else UNSET,
+            tags=payload["tags"] if "tags" in payload else UNSET,
+        )
         content = f"Updated the {format_money_minor(transaction.amount_minor, transaction.currency)} transaction."
         widget = _transaction_preview(db, transaction, status="Updated")
         return persist_agent_response(db, conversation, content, widgets=[widget])

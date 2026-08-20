@@ -290,6 +290,7 @@ def ensure_spreadsheet_manifest(
                 raise
             continue
         return source, manifest
+    raise AssertionError("unreachable")
 
 
 def _owned_source(
@@ -469,7 +470,7 @@ def query_source(
         raise ValueError("value_field_required")
     limit = max(1, min(int(limit), QUERY_ROW_CAP))
 
-    money = bool(value_field) and _column_role(manifest, value_field) == "money"
+    money = value_field is not None and _column_role(manifest, value_field) == "money"
     value_key = aggregate_value_key(group_by, money)
 
     groups: dict[str, list[Decimal]] = defaultdict(list)
@@ -491,10 +492,10 @@ def query_source(
             if number is not None:
                 groups[key].append(number)
 
-    def render(values: list[Decimal]) -> Any:
+    def render(values: list[Decimal]) -> int | float:
         if metric == "count":
             return int(sum(values))
-        total = sum(values) if values else Decimal(0)
+        total = sum(values, start=Decimal(0))
         result = (total / len(values)) if metric == "average" and values else total
         return scale_money(result, value_field) if money else float(result)
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from ..domain import ValueEnum
 from ..operation_types import AccessMode, ConfirmationPolicy, DataEffect, ValidationMode
@@ -25,11 +26,17 @@ def _protected_capability_members() -> dict[str, str]:
 # and model tool schemas retain a closed enum. Its membership is no longer
 # duplicated in source code. Managed operations remain runtime-dynamic through
 # the generic managed-operation capability and never need an enum member.
-CapabilityId = ValueEnum(
-    "CapabilityId",
-    _protected_capability_members(),
-    module=__name__,
-)
+if TYPE_CHECKING:
+    # The runtime enum's members come from protected operation files, so its
+    # exact class cannot be declared statically without duplicating that source
+    # of truth. ValueEnum supplies the shared member interface to the checker.
+    CapabilityId = ValueEnum
+else:
+    CapabilityId = ValueEnum(
+        "CapabilityId",
+        _protected_capability_members(),
+        module=__name__,
+    )
 
 
 @dataclass(frozen=True)

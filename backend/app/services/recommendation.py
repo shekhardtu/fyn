@@ -31,6 +31,7 @@ from __future__ import annotations
 import math
 import re
 from collections import defaultdict
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from uuid import UUID
@@ -495,7 +496,7 @@ def _score_candidates(
     ledger_channels: dict[str, dict],
     totals: Tally,
     context: Context,
-    candidates: dict[str, str],
+    candidates: Collection[str],
     background: dict[str, float],
     *,
     key_of=lambda channel, key: key,
@@ -564,7 +565,7 @@ def _score_candidates(
     return breakdown
 
 
-def _global_background(totals: Tally, candidates: dict[str, str], static: dict[str, float]) -> dict[str, float]:
+def _global_background(totals: Tally, candidates: Collection[str], static: dict[str, float]) -> dict[str, float]:
     """Blend the user's own decayed category share with the cold-start prior."""
     return {
         candidate_id: (
@@ -649,7 +650,7 @@ def _assemble(
     breakdown: dict[str, list[Contribution]],
     ledger: EvidenceLedger,
     context: Context,
-    entities: dict[str, tuple[str, str, str | None]],
+    entities: Mapping[str, tuple[str, str, str | None]],
     prior_ranks: dict[str, int],
     static_reasons: dict[str, list[str]] | None = None,
 ) -> list[Suggestion]:

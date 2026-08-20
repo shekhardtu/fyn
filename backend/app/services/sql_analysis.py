@@ -178,15 +178,18 @@ def memorize_sql_template(db, user_id, gated_sql: str) -> bool:
     """Write one verified statement back to the pool, value-free and deduped."""
     parameterized, parameters = _parameterize_sql(gated_sql)
     name, signature, description = _structural_metadata(parameterized)
+    semantic_registry_version = semantic_schema_registry().version
+    source_manifest_hash = native_manifest_fingerprint()
+    plan_template = {"kind": "sql", "dialect": AUTHORING_DIALECT, "sql": parameterized}
     specification = {
         "templateVersion": SQL_TEMPLATE_VERSION,
         "sourceManifest": {
             "kind": "native_ledger",
-            "semanticVersion": semantic_schema_registry().version,
-            "hash": native_manifest_fingerprint(),
+            "semanticVersion": semantic_registry_version,
+            "hash": source_manifest_hash,
         },
         "parameterSchema": parameters,
-        "planTemplate": {"kind": "sql", "dialect": AUTHORING_DIALECT, "sql": parameterized},
+        "planTemplate": plan_template,
     }
     fingerprint = hashlib.sha256(
         json.dumps(specification, sort_keys=True, separators=(",", ":")).encode()
@@ -205,10 +208,10 @@ def memorize_sql_template(db, user_id, gated_sql: str) -> bool:
         capability_signature=signature,
         template_version=SQL_TEMPLATE_VERSION,
         status=AnalysisToolStatus.ACTIVE.value,
-        semantic_registry_version=specification["sourceManifest"]["semanticVersion"],
-        source_manifest_hash=specification["sourceManifest"]["hash"],
+        semantic_registry_version=semantic_registry_version,
+        source_manifest_hash=source_manifest_hash,
         parameter_schema=parameters,
-        plan_template=specification["planTemplate"],
+        plan_template=plan_template,
         template_hash=fingerprint,
         validation_report={"passed": True, "checks": [{"name": "sql_gate", "passed": True}]},
         success_count=1,
@@ -231,6 +234,7 @@ def build_sql_analysis_tool(context) -> Any:
     answer_contract = compile_answer_contract(context.question)
 
     def run_governed_sql(purpose: str, sql: str) -> dict[str, Any]:
+        template_saved: bool | str
         try:
             result = execute_governed_sql(context.db, context.user_id, sql)
         except SqlGateError as error:

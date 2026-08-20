@@ -17,6 +17,7 @@ in the shared manifest document.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from functools import lru_cache
 import hashlib
 import json
@@ -24,6 +25,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func, select
+from sqlalchemy.engine import Row
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -213,7 +215,7 @@ def ensure_native_manifest(db: Session) -> SourceManifest:
     )
 
 
-def _catalog_entry(rows: list[tuple[Any, int]], distinct: int, cap: int) -> dict[str, Any]:
+def _catalog_entry(rows: Sequence[Row[Any]], distinct: int, cap: int) -> dict[str, Any]:
     return {
         "values": [str(value) for value, _ in rows[:cap]],
         "distinct": distinct,

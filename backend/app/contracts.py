@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 
+from pydantic import BaseModel
+
 from .config import CSV_UPLOAD_MAX_BYTES
 from .domain import EDITABLE_TRANSACTION_TYPES
 from .services.tool_models import AffordabilityResult, InvestmentProjectionResult, LoanPaymentResult, LoanPrepaymentResult
@@ -74,7 +76,7 @@ from .schemas import (
 )
 
 
-FRONTEND_CONTRACT_MODELS = (
+FRONTEND_CONTRACT_MODELS: tuple[type[BaseModel], ...] = (
     WidgetAction,
     *tuple(dict.fromkeys(ACTION_PAYLOAD_MODELS.values())),
     VisualFieldEncoding,

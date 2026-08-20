@@ -76,14 +76,19 @@ def _public_signature(function: Callable[..., Any], bound_args: Sequence[Any]) -
 
 
 def _parameters_schema(public_signature: Signature, public_hints: dict[str, Any], strict: bool) -> dict[str, Any]:
-    fields = {
+    fields: dict[str, Any | tuple[Any, Any]] = {
         name: (
             public_hints.get(name, Any),
             ... if parameter.default is Parameter.empty else parameter.default,
         )
         for name, parameter in public_signature.parameters.items()
     }
-    schema = create_model("BoundToolArguments", **fields).model_json_schema()
+    # Mypy treats dynamic field names as possible reserved create_model kwargs;
+    # Pydantic accepts this documented ``field_name=(type, default)`` mapping.
+    argument_model: type[BaseModel] = create_model(
+        "BoundToolArguments", **fields  # type: ignore[arg-type]
+    )
+    schema: dict[str, Any] = argument_model.model_json_schema()
     schema.pop("title", None)
     if strict:
         schema["additionalProperties"] = False
