@@ -162,7 +162,7 @@ def _canonical_template(proposal: AnalysisToolProposal) -> tuple[dict[str, Any],
         }
         if query.entity is not None:
             item["entity"] = query.entity
-        if query.start_datetime is not None:
+        if query.start_datetime is not None and query.end_datetime is not None:
             item["start_datetime"] = parameter(
                 f"{prefix}.start_datetime",
                 query.start_datetime.isoformat(),
@@ -212,7 +212,10 @@ def _canonical_template(proposal: AnalysisToolProposal) -> tuple[dict[str, Any],
             ]
         if transform.period_dimension is not None:
             item["period_dimension"] = transform.period_dimension
-        if transform.target_start_date is not None:
+        if (
+            transform.target_start_date is not None
+            and transform.target_end_date is not None
+        ):
             item["target_start_date"] = parameter(
                 f"{prefix}.target_start_date",
                 transform.target_start_date.isoformat(),
@@ -460,6 +463,9 @@ def bind_repeat_analysis(db: Session, user_id: UUID, question: str, today: date)
     )
     if not prior:
         return None
+    run_date = prior.run_date
+    if run_date is None:
+        return None
     template = db.scalar(
         _analysis_templates(db, active_only=True).where(
             AnalysisToolTemplate.id == prior.template_id
@@ -487,7 +493,7 @@ def bind_repeat_analysis(db: Session, user_id: UUID, question: str, today: date)
                 return None
             stored = prior.parameters[name]
             if parameter_type == "date":
-                rebound = reanchor_finance_date(date.fromisoformat(str(stored)), prior.run_date, today)
+                rebound = reanchor_finance_date(date.fromisoformat(str(stored)), run_date, today)
                 if rebound is None:
                     return None
                 values[name] = rebound.isoformat()
@@ -506,7 +512,7 @@ def bind_repeat_analysis(db: Session, user_id: UUID, question: str, today: date)
         return None
     plan_dict["safe_reasoning_summary"] = [
         "Replayed this user's previously validated plan for the identical question.",
-        f"Re-anchored its date windows from {prior.run_date.isoformat()} to {today.isoformat()} deterministically.",
+        f"Re-anchored its date windows from {run_date.isoformat()} to {today.isoformat()} deterministically.",
     ]
     try:
         proposal = AnalysisToolProposal(
@@ -739,31 +745,31 @@ def _repair_incomplete_analysis(proposal: AnalysisToolProposal, today: date) -> 
                     transform.period_dimension = "month"
     queries = {query.name: query for query in repaired.plan.queries}
     for transform in repaired.plan.transforms:
-        query = queries.get(transform.query_name)
-        if transform.operation == "change_drivers" and query and "month" in query.dimensions:
-            driver = _non_month_dimension(query)
+        source_query = queries.get(transform.query_name)
+        if transform.operation == "change_drivers" and source_query and "month" in source_query.dimensions:
+            driver = _non_month_dimension(source_query)
             if driver and (transform.period_dimension != "month" or transform.dimension == "month"):
                 transform.period_dimension = "month"
                 transform.dimension = driver
                 changed = True
     if not repaired.plan.transforms:
         derived_tokens = intent_tokens & DERIVED_ANALYSIS_TOKENS
-        query = next((item for item in repaired.plan.queries if item.dimensions), None)
-        if derived_tokens and query:
+        derived_query = next((item for item in repaired.plan.queries if item.dimensions), None)
+        if derived_tokens and derived_query:
             period_dimension = None
-            if intent_tokens & {"drivers"} and "month" in query.dimensions and len(query.dimensions) > 1:
+            if intent_tokens & {"drivers"} and "month" in derived_query.dimensions and len(derived_query.dimensions) > 1:
                 operation = "change_drivers"
                 period_dimension = "month"
-                dimension = _non_month_dimension(query)
-            elif intent_tokens & {"change", "trend", "increase", "decrease"} and "month" in query.dimensions:
+                dimension = _non_month_dimension(derived_query)
+            elif intent_tokens & {"change", "trend", "increase", "decrease"} and "month" in derived_query.dimensions:
                 operation = "period_change"
                 dimension = "month"
             elif intent_tokens & {"share"}:
                 operation = "share_of_total"
-                dimension = _non_month_dimension(query, fallback_to_first=True)
+                dimension = _non_month_dimension(derived_query, fallback_to_first=True)
             elif intent_tokens & {"rank", "ranking", "largest"}:
                 operation = "rank"
-                dimension = _non_month_dimension(query, fallback_to_first=True)
+                dimension = _non_month_dimension(derived_query, fallback_to_first=True)
             else:
                 operation = "compare_totals"
                 # A time-grouped query compares across its produced buckets
@@ -771,13 +777,13 @@ def _repair_incomplete_analysis(proposal: AnalysisToolProposal, today: date) -> 
                 # currency.
                 dimension = (
                     "time_bucket"
-                    if query.time_grouping
-                    else _non_month_dimension(query, fallback_to_first=True)
+                    if derived_query.time_grouping
+                    else _non_month_dimension(derived_query, fallback_to_first=True)
                 )
             repaired.plan.transforms = [AnalysisTransform(
                 name=f"{proposal.name} deterministic result",
                 operation=operation,
-                query_name=query.name,
+                query_name=derived_query.name,
                 dimension=dimension,
                 period_dimension=period_dimension,
             )]
@@ -822,11 +828,17 @@ def _verify_result(proposal: AnalysisToolProposal, result: IntelligenceResult) -
             rows = query_results.get(query.name, {}).get("rows", [])
             bounded = bounded and len(rows) <= query.limit
             if query.time_grouping or query.time_pivot:
-                values = [str(row.get("time_bucket", "")) for row in rows]
+                time_values = [str(row.get("time_bucket", "")) for row in rows]
+                ordered = ordered and time_values == sorted(
+                    time_values,
+                    reverse=query.order == "desc",
+                )
             else:
-                values = [int(row.get("value", 0)) for row in rows]
-            ordered_values = sorted(values, reverse=query.order == "desc")
-            ordered = ordered and values == ordered_values
+                metric_values = [int(row.get("value", 0)) for row in rows]
+                ordered = ordered and metric_values == sorted(
+                    metric_values,
+                    reverse=query.order == "desc",
+                )
             for item in query.filters:
                 if item.operator not in {"neq", "not_in"} or item.field not in query.dimensions:
                     continue

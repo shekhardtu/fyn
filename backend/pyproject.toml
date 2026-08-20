@@ -85,6 +85,5 @@ module = [
   "app.services.agent_tools",
   "app.services.agents",
   "app.services.agui",
-  "app.services.analysis_harness",
 ]
 ignore_errors = true
