@@ -145,6 +145,49 @@ test("bare amount follows clarification, auto-save, edit/remove controls, and re
   await expect(page.getByText(/Added ₹1,234 expense under Food → Dining/).last()).toBeVisible();
 });
 
+test("custom budget amount keeps the approval widget in view without resetting the transcript", async ({ page }) => {
+  test.setTimeout(90_000);
+  const threadStateLoaded = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return response.request().method() === "GET" && new RegExp(`^${API_MOUNT_PATH}/agent/threads/[^/]+$`).test(url.pathname);
+  });
+  await page.goto(sharedThreadUrl());
+  await threadStateLoaded;
+  const input = page.getByLabel("Message fyn AI");
+  const pending = page.getByRole("group", { name: /^Action required:/ });
+  if (await pending.count()) {
+    const cancel = pending.last().getByRole("button", { name: /^Cancel(?:\s|$)/ }).last();
+    if (await cancel.count()) {
+      await cancel.click();
+      await expect(pending).toHaveCount(0);
+    }
+  }
+  await expect(input).toBeEnabled();
+  await input.fill("Set up a Food budget");
+  await input.press("Enter");
+
+  const amountStep = page.getByRole("group", { name: /^Action required:/ }).filter({
+    has: page.getByRole("textbox", { name: "Custom clarification" }),
+  }).last();
+  await expect(amountStep).toBeVisible({ timeout: 45_000 });
+  const customAmount = amountStep.getByRole("textbox", { name: "Custom clarification" });
+  await customAmount.fill("₹25,123");
+  await amountStep.getByRole("button", { name: "Continue" }).click();
+
+  const approval = page.getByRole("group", { name: /Action required: Food budget/ });
+  const budgetAmount = approval.getByRole("textbox", { name: "Monthly budget amount" });
+  await expect(budgetAmount).toBeVisible({ timeout: 45_000 });
+  await expect(budgetAmount).toBeFocused();
+  await expect(approval).toBeInViewport();
+  const transcriptScroller = page.locator(".conversation-scroll");
+  await expect.poll(() => transcriptScroller.evaluate((node) => node.scrollTop)).toBeGreaterThan(100);
+
+  // The viewport regression does not need to create financial state. Retire the
+  // preview through its governed cancellation path after the assertion.
+  await approval.getByRole("button", { name: /^Cancel(?:\s|$)/ }).click();
+  await expect(page.getByText(/(?:Cancelled|No changes were made)/).last()).toBeVisible();
+});
+
 test("ambiguous add request becomes a HITL draft instead of a validator dead end", async ({ page }) => {
   await page.goto(sharedThreadUrl());
   const input = page.getByLabel("Message fyn AI");

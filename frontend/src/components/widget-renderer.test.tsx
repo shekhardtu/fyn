@@ -14,6 +14,33 @@ describe("widget registry", () => {
 });
 
 describe("budget HITL", () => {
+  it("focuses the amount field without letting the browser scroll a virtual row", () => {
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    const widget: Widget = {
+      id: "construction-budget-draft",
+      type: "budget_progress",
+      version: 1,
+      data: {
+        budgetId: "draft",
+        title: "Construction budget",
+        amountMinor: 2_500_000,
+        spentMinor: 0,
+        remainingMinor: 2_500_000,
+        currency: "INR",
+      },
+      actions: [
+        { id: "save", label: "Set budget", action: "save_budget", style: "primary", payload: { name: "Construction budget" } },
+      ],
+    };
+
+    render(<WidgetRenderer widget={widget} onAction={vi.fn()} />);
+
+    const input = screen.getByRole("textbox", { name: "Monthly budget amount" });
+    expect(input).toHaveFocus();
+    expect(input).not.toHaveAttribute("autofocus");
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+  });
+
   it("shows recorded category spend and submits an edited monthly limit", () => {
     const onAction = vi.fn();
     const widget: Widget = {

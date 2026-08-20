@@ -78,6 +78,19 @@ function FieldLabel({ children, hint }: { children: React.ReactNode; hint?: stri
 const inputClass = "manual-field block h-[var(--h-field)] w-full rounded-lg border border-line-strong bg-surface px-3 text-body text-ink outline-none transition-colors duration-[110ms] ease-linear disabled:opacity-50";
 const invalidClass = "manual-field-danger border-danger-line";
 
+/**
+ * Native `autoFocus` runs before a newly mounted virtual transcript row has
+ * received its final transform. Focusing from an effect runs after that layout
+ * work, and `preventScroll` keeps keyboard focus from moving the transcript.
+ */
+function useHitlAutofocus<T extends HTMLElement>(enabled: boolean) {
+  const ref = useRef<T>(null);
+  useEffect(() => {
+    if (enabled) ref.current?.focus({ preventScroll: true });
+  }, [enabled]);
+  return ref;
+}
+
 function FieldError({ children }: { children: React.ReactNode }) {
   return <span className="mt-1 flex items-center gap-1 text-meta font-medium text-danger-ink"><TriangleAlert size={14} />{children}</span>;
 }
@@ -226,8 +239,8 @@ function Clarification({ widget, onAction, onCancel, disabled, pending }: Widget
   const choiceIds = new Set(listed.map((option) => str(option.id)));
   const navigationActions = widget.actions.filter((action) => !choiceIds.has(action.id) && action.id !== "custom");
   useEffect(() => {
-    if (customOpen && !disabled) customInput.current?.focus();
-  }, [customOpen, disabled]);
+    if (customOpen && !disabled && !pending) customInput.current?.focus({ preventScroll: true });
+  }, [customOpen, disabled, pending]);
   function submitCustom(event: FormEvent) {
     event.preventDefault();
     const value = customText.trim();
@@ -293,6 +306,7 @@ function Selector({ widget, onAction, disabled, pending }: WidgetProps) {
   const [selectedId, choose] = useOptimisticChoice(str(completedValues[field]), pending);
   const [accountName, setAccountName] = useState(str(completedValues.accountName));
   const [accountOpen, setAccountOpen] = useState(accountSelector && list.length === 0);
+  const accountInput = useHitlAutofocus<HTMLInputElement>(accountOpen && !disabled && !pending);
   const action = declaredAction?.action;
   const navigationActions = ensureDraftCancel(
     widget,
@@ -347,7 +361,7 @@ function Selector({ widget, onAction, disabled, pending }: WidgetProps) {
     {accountSelector ? <div className={cn(list.length && "border-t border-line")}>
       {list.length ? <button type="button" data-inline-disclosure="true" aria-expanded={accountOpen} disabled={disabled || pending} onClick={() => setAccountOpen((open) => !open)} className="hitl-disclosure"><PencilLine size={14} />Use another account<ChevronDown size={14} className={cn("ml-auto transition-transform duration-[var(--m-state)]", accountOpen && "rotate-180")} /></button> : null}
       {accountOpen ? <form onSubmit={submitAccount} className="hitl-reveal flex flex-col items-stretch gap-2 p-3 sm:flex-row">
-        <input autoFocus={!disabled} value={accountName} disabled={disabled || pending} maxLength={120} onChange={(event) => setAccountName(event.target.value)} className={inputClass} placeholder="Account name" aria-label="Account name" />
+        <input ref={accountInput} value={accountName} disabled={disabled || pending} maxLength={120} onChange={(event) => setAccountName(event.target.value)} className={inputClass} placeholder="Account name" aria-label="Account name" />
         <Button type="submit" size="lg" disabled={disabled || pending || !accountName.trim()} className="h-[var(--h-field)] px-4">{pending && selectedId === "custom-account" ? <Loader2 size={14} className="animate-spin" /> : null}Continue</Button>
       </form> : null}
     </div> : null}
@@ -360,6 +374,7 @@ function CategorySelector({ widget, onAction, disabled, pending }: WidgetProps) 
   const [query, setQuery] = useState("");
   const completedValues = completionValues(widget);
   const [newCategory, setNewCategory] = useState(str(completedValues.name));
+  const newCategoryInput = useHitlAutofocus<HTMLInputElement>(widget.data.mode === "create" && !disabled && !pending);
   const selectedCategoryId = str(completedValues.categoryId);
   const allOptions = options(widget.data);
   const suggestions = Array.isArray(widget.data.suggestions) ? widget.data.suggestions as Array<Record<string, unknown>> : [];
@@ -391,7 +406,7 @@ function CategorySelector({ widget, onAction, disabled, pending }: WidgetProps) 
       }
     }
     return <Card className="hitl-card"><form onSubmit={submit} className="space-y-3 p-3">
-      <label className="block"><FieldLabel>Category name</FieldLabel><input autoFocus={!disabled} disabled={disabled || pending} aria-label="New category name" value={newCategory} onChange={(event) => setNewCategory(event.target.value)} placeholder="e.g. Pets" maxLength={80} className={inputClass} /></label>
+      <label className="block"><FieldLabel>Category name</FieldLabel><input ref={newCategoryInput} disabled={disabled || pending} aria-label="New category name" value={newCategory} onChange={(event) => setNewCategory(event.target.value)} placeholder="e.g. Pets" maxLength={80} className={inputClass} /></label>
       <HitlActions className="-mx-3 -mb-3 border-t border-line">
         {orderedActions(navigationActions).map((action) => <ActionButton key={action.id} action={action} pending={pending && submittedAction === action.id} disabled={disabled || pending} onClick={() => { markSubmitted(action.id); onAction(widget.id, action.action, action.payload); }} />)}
         <Button type="submit" disabled={disabled || pending || !newCategory.trim()}>{pending && submittedAction === (declaredAction?.id ?? "create") ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Add category</Button>
@@ -427,6 +442,7 @@ function TaxonomyEditor({ widget, onAction, disabled, pending }: WidgetProps) {
   const isTaxonomyPath = operation === widgetActionIds.create_taxonomy_path;
   const lifecycle = str(widget.data.lifecycle, "pending");
   const resolved = lifecycle === "completed" || lifecycle === "cancelled";
+  const nameInput = useHitlAutofocus<HTMLInputElement>(!disabled && !pending && !resolved);
   const submitAction = isTaxonomyPath ? widgetActionIds.create_taxonomy_path : isSubcategory ? widgetActionIds.create_subcategory : widgetActionIds.create_category;
   const declaredAction = widget.actions[0];
   const basePayload = declaredAction?.payload ?? {};
@@ -448,7 +464,7 @@ function TaxonomyEditor({ widget, onAction, disabled, pending }: WidgetProps) {
     }
   }
   return <Card className="hitl-card"><form onSubmit={submit} className="space-y-3 p-3">
-    <label className="block"><FieldLabel hint={isSubcategory && widget.data.parentCategory ? `under ${str(widget.data.parentCategory)}` : undefined}>{isSubcategory ? "Subcategory name" : "Category name"}</FieldLabel><input autoFocus={!disabled && !resolved} disabled={disabled || pending || resolved} aria-label={isSubcategory ? "New subcategory name" : "New category name"} value={name} onChange={(event) => setName(event.target.value)} placeholder={isSubcategory ? "e.g. Materials" : "e.g. Pets"} maxLength={80} className={inputClass} /></label>
+    <label className="block"><FieldLabel hint={isSubcategory && widget.data.parentCategory ? `under ${str(widget.data.parentCategory)}` : undefined}>{isSubcategory ? "Subcategory name" : "Category name"}</FieldLabel><input ref={nameInput} disabled={disabled || pending || resolved} aria-label={isSubcategory ? "New subcategory name" : "New category name"} value={name} onChange={(event) => setName(event.target.value)} placeholder={isSubcategory ? "e.g. Materials" : "e.g. Pets"} maxLength={80} className={inputClass} /></label>
     {isTaxonomyPath ? <label className="block"><FieldLabel hint="comma separated">Subcategories</FieldLabel><input disabled={disabled || pending || resolved} aria-label="New subcategory names" value={subcategories} onChange={(event) => setSubcategories(event.target.value)} placeholder="e.g. Vet, Food, Grooming" className={inputClass} /></label> : null}
     {!resolved ? <HitlActions className="-mx-3 -mb-3 border-t border-line">
       {orderedActions(navigationActions).map((action) => <ActionButton key={action.id} action={action} pending={pending && submittedAction === action.id} disabled={disabled || pending} onClick={() => { markSubmitted(action.id); onAction(widget.id, action.action, action.payload); }} />)}
@@ -585,6 +601,7 @@ function TransactionEdit({ widget, onAction, disabled, pending }: WidgetProps) {
   const effectiveAmount = submitted.amountMinor ?? widget.data.amountMinor;
   const hasAmount = effectiveAmount != null;
   const completing = !hasAmount;
+  const amountInput = useHitlAutofocus<HTMLInputElement>(completing && !disabled && !pending);
   const [amount, setAmount] = useState(hasAmount ? String(num(effectiveAmount) / 100) : "");
   const [merchant, setMerchant] = useState(str(submitted.merchant ?? widget.data.merchant));
   const [transactionAt, setTransactionAt] = useState(timestampInputValue(submitted.transactionAt ?? widget.data.transactionAt));
@@ -640,7 +657,7 @@ function TransactionEdit({ widget, onAction, disabled, pending }: WidgetProps) {
   return <Card className="hitl-card"><form onSubmit={submit} noValidate className="space-y-3 p-3">
     <h3 className="font-heading text-body font-semibold text-ink">{str(widget.data.title, saved ? "Edit transaction" : "Edit this entry")}</h3>
     <div className="grid gap-3 sm:grid-cols-2">
-      <label className="block"><FieldLabel>Amount</FieldLabel><input disabled={disabled || pending} aria-label="Transaction amount" aria-invalid={Boolean(amountError)} aria-describedby={amountError ? `${widget.id}-amount-error` : undefined} inputMode="decimal" autoFocus={completing && !disabled} value={amount} onChange={(event) => { setAmount(event.target.value); if (amountError) setAmountError(null); }} placeholder="1,500" className={cn(inputClass, amountError && invalidClass)} />{amountError ? <span id={`${widget.id}-amount-error`}><FieldError>{amountError}</FieldError></span> : null}</label>
+      <label className="block"><FieldLabel>Amount</FieldLabel><input ref={amountInput} disabled={disabled || pending} aria-label="Transaction amount" aria-invalid={Boolean(amountError)} aria-describedby={amountError ? `${widget.id}-amount-error` : undefined} inputMode="decimal" value={amount} onChange={(event) => { setAmount(event.target.value); if (amountError) setAmountError(null); }} placeholder="1,500" className={cn(inputClass, amountError && invalidClass)} />{amountError ? <span id={`${widget.id}-amount-error`}><FieldError>{amountError}</FieldError></span> : null}</label>
       {shows("merchant") ? <label className="block"><FieldLabel hint="optional">Merchant</FieldLabel><input disabled={disabled || pending} aria-label="Merchant" value={merchant} onChange={(event) => setMerchant(event.target.value)} placeholder="Where you paid" className={inputClass} /></label> : null}
       {shows("transaction_at") ? <label className="block"><FieldLabel>Date and time</FieldLabel><input disabled={disabled || pending} aria-label="Transaction date and time" aria-invalid={Boolean(transactionAtError)} type="datetime-local" value={transactionAt} onChange={(event) => { setTransactionAt(event.target.value); if (transactionAtError) setTransactionAtError(null); }} className={cn(inputClass, transactionAtError && invalidClass)} />{transactionAtError ? <FieldError>{transactionAtError}</FieldError> : null}</label> : null}
       {editable.type ? <div><FieldLabel>Type</FieldLabel><Combobox aria-label="Transaction type" disabled={disabled || pending} value={transactionType} onValueChange={(next) => {
@@ -677,6 +694,7 @@ function ProgressCard({ widget, onAction, onCancel, disabled, pending }: WidgetP
   const navigationActions = saveBudget ? widget.actions.filter((action) => action.id !== saveBudget.id) : [];
   const initialAmount = String(total / 100).replace(/\.0+$/, "");
   const [amount, setAmount] = useState(initialAmount);
+  const budgetAmountInput = useHitlAutofocus<HTMLInputElement>(Boolean(saveBudget) && !disabled && !pending);
   const [amountError, setAmountError] = useState<string | null>(null);
   const [submitted, markSubmitted] = usePendingAction(pending);
   const ratio = total ? current / total * 100 : 0;
@@ -721,7 +739,7 @@ function ProgressCard({ widget, onAction, onCancel, disabled, pending }: WidgetP
   return <Card className={cn("hitl-card", over && "border-danger-line")}><form onSubmit={submitBudget} noValidate>
     {summary}
     <div className="border-t border-line px-3 py-3">
-      <label className="block"><FieldLabel>Monthly limit</FieldLabel><input autoFocus={!disabled} disabled={disabled || pending} aria-label="Monthly budget amount" aria-invalid={Boolean(amountError)} inputMode="decimal" value={amount} onChange={(event) => { setAmount(event.target.value); if (amountError) setAmountError(null); }} className={cn(inputClass, amountError && invalidClass)} />{amountError ? <FieldError>{amountError}</FieldError> : null}</label>
+      <label className="block"><FieldLabel>Monthly limit</FieldLabel><input ref={budgetAmountInput} disabled={disabled || pending} aria-label="Monthly budget amount" aria-invalid={Boolean(amountError)} inputMode="decimal" value={amount} onChange={(event) => { setAmount(event.target.value); if (amountError) setAmountError(null); }} className={cn(inputClass, amountError && invalidClass)} />{amountError ? <FieldError>{amountError}</FieldError> : null}</label>
     </div>
     <HitlActions className="border-t border-line">
       {orderedActions(navigationActions).map((action) => <ActionButton key={action.id} action={action} pending={pending && submitted === action.id} disabled={disabled || pending} onClick={() => { markSubmitted(action.id); onAction(widget.id, action.action, action.payload); }} />)}
