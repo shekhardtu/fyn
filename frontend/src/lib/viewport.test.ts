@@ -5,6 +5,7 @@ import { initViewport, subscribeToViewport, viewportMetrics } from "@/lib/viewpo
 class FakeVisualViewport extends EventTarget {
   height = 800;
   offsetTop = 0;
+  pageTop = 0;
   scale = 1;
 }
 
@@ -20,6 +21,7 @@ function setLayoutHeight(value: number) {
 function showKeyboard(height: number, pan = 0) {
   view.height = 800 - height;
   view.offsetTop = pan;
+  view.pageTop = pan;
   view.dispatchEvent(new Event("resize"));
 }
 
@@ -28,6 +30,7 @@ function readVariable(name: string) {
 }
 
 beforeEach(() => {
+  vi.useFakeTimers();
   view = new FakeVisualViewport();
   Object.defineProperty(window, "visualViewport", { value: view, configurable: true });
   setLayoutHeight(800);
@@ -41,6 +44,7 @@ beforeEach(() => {
 
 afterEach(() => {
   teardown();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -57,12 +61,21 @@ describe("initViewport", () => {
 
     expect(readVariable("--app-height")).toBe("464px");
     expect(readVariable("--viewport-offset")).toBe("120px");
-    expect(readVariable("--keyboard-inset")).toBe("216px");
+    expect(readVariable("--keyboard-inset")).toBe("336px");
     expect(document.documentElement.dataset.keyboard).toBe("open");
   });
 
+  it("does not mistake a large keyboard pan for a closed keyboard", () => {
+    showKeyboard(336, 300);
+
+    expect(readVariable("--viewport-offset")).toBe("300px");
+    expect(readVariable("--keyboard-inset")).toBe("336px");
+    expect(document.documentElement.dataset.keyboard).toBe("open");
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
   it("reads a browser that resizes its own layout viewport as no keyboard at all", () => {
-    // Android Chrome and Safari 26 honour interactive-widget=resizes-content:
+    // Chrome honours interactive-widget=resizes-content:
     // the visible height shrinks, but so does the layout viewport, so there is
     // no covered strip and no inset to correct.
     setLayoutHeight(464);
@@ -98,6 +111,48 @@ describe("initViewport", () => {
     expect(readVariable("--viewport-offset")).toBe("0px");
     expect(document.documentElement.dataset.keyboard).toBeUndefined();
     expect(scrollTo).toHaveBeenCalledWith(0, 0);
+  });
+
+  it("remeasures values that WebKit updates after its resize event", () => {
+    showKeyboard(336);
+    expect(readVariable("--viewport-offset")).toBe("0px");
+
+    // Standalone WebKit can publish the resize before offsetTop/pageTop catch
+    // up, and then supply the correct fields without another event.
+    view.offsetTop = 260;
+    view.pageTop = 260;
+    vi.advanceTimersByTime(80);
+
+    expect(readVariable("--viewport-offset")).toBe("260px");
+  });
+
+  it("finishes a keyboard close whose final metrics arrive without an event", () => {
+    showKeyboard(336, 260);
+    document.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+
+    // The first close event still exposes the keyboard-sized rectangle.
+    vi.advanceTimersByTime(80);
+    expect(readVariable("--app-height")).toBe("464px");
+
+    // WebKit finishes its animation later but omits the final resize/scroll.
+    view.height = 800;
+    view.offsetTop = 0;
+    view.pageTop = 0;
+    vi.advanceTimersByTime(420);
+
+    expect(readVariable("--app-height")).toBe("800px");
+    expect(readVariable("--viewport-offset")).toBe("0px");
+    expect(document.documentElement.dataset.keyboard).toBeUndefined();
+    expect(scrollTo).toHaveBeenCalledWith(0, 0);
+  });
+
+  it("uses pageTop when WebKit under-reports offsetTop", () => {
+    view.height = 464;
+    view.offsetTop = 80;
+    view.pageTop = 240;
+    view.dispatchEvent(new Event("resize"));
+
+    expect(readVariable("--viewport-offset")).toBe("240px");
   });
 
   it("follows the browser's own pan without waiting for a resize", () => {
