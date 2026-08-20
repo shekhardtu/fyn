@@ -94,6 +94,5 @@ module = [
   "app.services.extraction",
   "app.services.finance_time",
   "app.services.intelligence",
-  "app.services.manifest",
 ]
 ignore_errors = true
