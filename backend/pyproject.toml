@@ -88,6 +88,5 @@ module = [
   "app.services.analysis_harness",
   "app.services.auth",
   "app.services.category_prediction",
-  "app.services.continuations",
 ]
 ignore_errors = true
