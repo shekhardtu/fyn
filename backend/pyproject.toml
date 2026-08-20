@@ -101,6 +101,5 @@ module = [
   "app.services.runtime_tools",
   "app.services.semantic",
   "app.services.semantic_registry",
-  "app.services.spreadsheet",
 ]
 ignore_errors = true
