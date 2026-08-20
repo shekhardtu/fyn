@@ -130,12 +130,12 @@ def test_privacy_routes_answer_over_http_in_the_shape_the_client_reads(db):
     application.dependency_overrides[current_user] = lambda: default_user(db)
 
     with TestClient(application) as client:
-        status = client.get("/api/privacy")
+        status = client.get("/privacy")
         assert status.status_code == 200, status.text
         assert status.json()["locationEnabled"] is False
         assert status.json()["sources"]["sms"] is True
 
-        agent = client.get("/api/agent-settings")
+        agent = client.get("/agent-settings")
         assert agent.status_code == 200, agent.text
         assert agent.json() == {
             "answerValidationMode": "full",
@@ -143,7 +143,7 @@ def test_privacy_routes_answer_over_http_in_the_shape_the_client_reads(db):
         }
 
         updated_agent = client.patch(
-            "/api/agent-settings", json={"answerValidationMode": "evidence_only"}
+            "/agent-settings", json={"answerValidationMode": "evidence_only"}
         )
         assert updated_agent.status_code == 200, updated_agent.text
         assert updated_agent.json() == {
@@ -152,7 +152,7 @@ def test_privacy_routes_answer_over_http_in_the_shape_the_client_reads(db):
         }
 
         updated_style = client.patch(
-            "/api/agent-settings", json={"answerStyle": "concise"}
+            "/agent-settings", json={"answerStyle": "concise"}
         )
         assert updated_style.status_code == 200, updated_style.text
         assert updated_style.json() == {
@@ -160,13 +160,13 @@ def test_privacy_routes_answer_over_http_in_the_shape_the_client_reads(db):
             "answerStyle": "concise",
         }
 
-        location = client.patch("/api/privacy/location", json={"enabled": True})
+        location = client.patch("/privacy/location", json={"enabled": True})
         assert location.status_code == 200, location.text
         assert location.json() == {"locationEnabled": True}
 
-        revoked = client.post("/api/privacy/sources/sms/revoke", json={})
+        revoked = client.post("/privacy/sources/sms/revoke", json={})
         assert revoked.status_code == 200, revoked.text
         assert revoked.json() == {"sourceType": "sms", "active": False}
 
-        assert client.get("/api/privacy").json()["locationEnabled"] is True
-        assert client.get("/api/privacy").json()["sources"]["sms"] is False
+        assert client.get("/privacy").json()["locationEnabled"] is True
+        assert client.get("/privacy").json()["sources"]["sms"] is False

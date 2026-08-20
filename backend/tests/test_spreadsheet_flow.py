@@ -27,7 +27,7 @@ def client_for(db, user) -> TestClient:
 def upload(client, body: str, name: str | None = None, filename: str = "expenses.csv"):
     data = {"name": name} if name else {}
     return client.post(
-        "/api/sources/spreadsheet",
+        "/sources/spreadsheet",
         files={"file": (filename, io.BytesIO(body.encode()), "text/csv")},
         data=data,
     )
@@ -52,7 +52,7 @@ def test_upload_reupload_and_annotate_walk_the_manifest_versions(db):
     assert len(list(db.scalars(select(SourceRecord)))) == 3
 
     annotated = client.post(
-        f"/api/sources/spreadsheet/{source_id}/annotations",
+        f"/sources/spreadsheet/{source_id}/annotations",
         json={"annotations": [{"field": "Amount", "statement": "INR including GST"}]},
     )
     assert annotated.status_code == 200, annotated.text
@@ -73,7 +73,7 @@ def test_foreign_sources_return_404_and_bad_uploads_are_typed(db):
 
     stranger_client = client_for(db, stranger)
     forbidden = stranger_client.post(
-        f"/api/sources/spreadsheet/{source_id}/annotations",
+        f"/sources/spreadsheet/{source_id}/annotations",
         json={"annotations": [{"field": "Amount", "statement": "mine"}]},
     )
     assert forbidden.status_code == 404

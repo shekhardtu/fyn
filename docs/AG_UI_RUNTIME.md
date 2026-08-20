@@ -22,7 +22,7 @@ complete reply, tool/stage sequence, and timing reconstructable without using
 the client clock.
 
 ```text
-POST /api/agent
+POST /agent
   → RUN_STARTED
   → STATE_SNAPSHOT (safe Fyn projection only)
   → ACTIVITY_SNAPSHOT*

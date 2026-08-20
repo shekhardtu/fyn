@@ -136,7 +136,7 @@ backend continues to read the same file as its service environment. Without
 it, Compose would build a frontend with Google sign-in hidden unless that value
 also happened to exist in the invoking shell.
 
-Check the active mode at `http://localhost:8000/api/health`. It should report `"database":"postgresql"` and `"agent_mode":"llm"`.
+Check the active mode at `http://localhost:8000/health`. It should report `"database":"postgresql"` and `"agent_mode":"llm"`.
 
 ## Validate
 
@@ -148,9 +148,23 @@ cd frontend && yarn test:e2e
 
 The end-to-end tests exercise bare-amount clarification through save/refresh, rich merchant entry through grounded analytics, confirmation-safe CSV upload, privacy/export controls, and active-conversation persistence. The reconciliation benchmark covers exact replay, cross-source corroboration, pending/posted events, same-amount and same-merchant false-merge traps, refunds, transfers, recurring charges, and human review. Its current gate requires 100% precision, at least 95% recall, zero false merges, and at most 5% false splits; the bundled dataset currently scores 100% precision/recall with zero false merges/splits.
 
+## API topology and compatibility
+
+FastAPI owns unversioned service-root resources such as `/health`,
+`/bootstrap`, and `/agent`; its interactive documentation and schema are at
+`/docs` and `/openapi.json`. The public `/api` mount belongs only to an ingress
+that shares an origin with the SPA, where it separates resources from page
+routes. A dedicated API hostname proxies service-root paths unchanged.
+
+The unversioned surface is deliberate while the only client is first-party.
+A future breaking contract must be added under a new versioned root such as
+`/v2`, kept alongside the existing routes, and migrated client-first before the
+old contract is retired. A breaking change must not silently replace these
+unversioned resources.
+
 ## Accounts and sign-in
 
-Every route below `/api` except `/api/health` and `/api/auth/*` requires a session. The session is an opaque token in a `Secure`, `HttpOnly`, `SameSite=Lax` cookie; the database stores only its SHA-256 digest, so a copy of the table cannot be replayed. Because the cookie is withheld from cross-site writes, the mutating routes need no separate CSRF token — which assumes the app and the API are same-site, as they are when served from sibling subdomains of one host.
+Every service route except `/health` and `/auth/*` requires a session. The session is an opaque token in a `Secure`, `HttpOnly`, `SameSite=Lax` cookie; the database stores only its SHA-256 digest, so a copy of the table cannot be replayed. Because the cookie is withheld from cross-site writes, the mutating routes need no separate CSRF token — which assumes the app and the API are same-site, as they are when served from sibling subdomains of one host.
 
 One-time codes are stored as an HMAC keyed by `AUTH_SECRET` and bound to their challenge id. Sending a new code retires the previous one for that destination, so pressing resend never widens the guessable space.
 
@@ -158,7 +172,7 @@ An identifier belongs to one account:
 
 - Signing in with an unknown phone number or address creates an account.
 - Linking one that another account holds is refused with `409` before any message is sent — the refusal names the remedy, which is to delete that account.
-- Deleting an account (`DELETE /api/privacy/data`) releases its phone number and email address.
+- Deleting an account (`DELETE /privacy/data`) releases its phone number and email address.
 - The last remaining sign-in method cannot be removed.
 - An address that came from Google is managed at Google and is not replaceable by a code here.
 
@@ -172,30 +186,30 @@ With no provider credentials the codes are printed to the API log and, with `OTP
 
 ## API surfaces
 
-- `GET /api/auth/session` — who the caller is; answers `200` signed in or not.
-- `POST /api/auth/otp/start` / `POST /api/auth/otp/verify` — send and present a sign-in code.
-- `POST /api/auth/google` — exchange a verified Google credential for a session.
-- `POST /api/auth/signout` — end this browser's session, leaving other devices alone.
-- `GET /api/profile` — the account and its linked sign-in methods.
-- `POST /api/profile/identities/otp/start` / `.../verify` — link or replace a phone number or email address.
-- `DELETE /api/profile/identities/{id}` — unlink a sign-in method, never the last one.
-- `GET /api/conversations` — one keyset-paged page of history for the rail (`cursor`, `limit`).
-- `DELETE /api/conversations/{id}` — erase a thread and every row that points at it; transactions it recorded are kept.
-- `GET /api/agent/capabilities` — the implemented AG-UI capability declaration, including Fyn's authority boundaries.
-- `POST /api/agent` — start or resume an AG-UI run and stream canonical events over SSE.
-- `GET /api/agent/threads/{id}` — active run and open-interrupt projection used to recover UI state.
-- `GET /api/agent/runs/{id}/events` — replay and follow a persisted run; accepts `after` or `Last-Event-ID`.
-- `POST /api/agent/runs/{id}/cancel` — request cooperative cancellation at a safe execution boundary.
-- `POST /api/observations` — ingest an already-structured observation.
-- `POST /api/ingest/message` — classify and ingest SMS/email text.
-- `POST /api/imports/csv` — idempotent, staged bank CSV review (10 MB limit).
-- `GET /api/transactions` — canonical transactions with source counts.
-- `GET /api/reconciliation/reviews` — unresolved candidate matches.
-- `POST /api/calculators/{affordability,loan,investment}` — deterministic planning tools.
-- `GET /api/privacy` — permission and source status.
-- `PATCH /api/privacy/location` — explicit location enrichment preference.
-- `POST /api/privacy/sources/{source_type}/revoke` — enforce source revocation.
-- `GET /api/privacy/export` / `DELETE /api/privacy/data` — export or explicitly delete all user-owned state.
+- `GET /auth/session` — who the caller is; answers `200` signed in or not.
+- `POST /auth/otp/start` / `POST /auth/otp/verify` — send and present a sign-in code.
+- `POST /auth/google` — exchange a verified Google credential for a session.
+- `POST /auth/signout` — end this browser's session, leaving other devices alone.
+- `GET /profile` — the account and its linked sign-in methods.
+- `POST /profile/identities/otp/start` / `.../verify` — link or replace a phone number or email address.
+- `DELETE /profile/identities/{id}` — unlink a sign-in method, never the last one.
+- `GET /conversations` — one keyset-paged page of history for the rail (`cursor`, `limit`).
+- `DELETE /conversations/{id}` — erase a thread and every row that points at it; transactions it recorded are kept.
+- `GET /agent/capabilities` — the implemented AG-UI capability declaration, including Fyn's authority boundaries.
+- `POST /agent` — start or resume an AG-UI run and stream canonical events over SSE.
+- `GET /agent/threads/{id}` — active run and open-interrupt projection used to recover UI state.
+- `GET /agent/runs/{id}/events` — replay and follow a persisted run; accepts `after` or `Last-Event-ID`.
+- `POST /agent/runs/{id}/cancel` — request cooperative cancellation at a safe execution boundary.
+- `POST /observations` — ingest an already-structured observation.
+- `POST /ingest/message` — classify and ingest SMS/email text.
+- `POST /imports/csv` — idempotent, staged bank CSV review (10 MB limit).
+- `GET /transactions` — canonical transactions with source counts.
+- `GET /reconciliation/reviews` — unresolved candidate matches.
+- `POST /calculators/{affordability,loan,investment}` — deterministic planning tools.
+- `GET /privacy` — permission and source status.
+- `PATCH /privacy/location` — explicit location enrichment preference.
+- `POST /privacy/sources/{source_type}/revoke` — enforce source revocation.
+- `GET /privacy/export` / `DELETE /privacy/data` — export or explicitly delete all user-owned state.
 
 Interactive API documentation is available at `http://localhost:8000/docs`.
 

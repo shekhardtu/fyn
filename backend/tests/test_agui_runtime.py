@@ -266,7 +266,7 @@ def test_pending_widget_becomes_interrupt_and_resume_uses_governed_action(db):
     application.dependency_overrides[get_db] = lambda: db
     application.dependency_overrides[current_user] = lambda: user
     with TestClient(application) as client:
-        exported_response = client.get("/api/privacy/export")
+        exported_response = client.get("/privacy/export")
     assert exported_response.status_code == 200, exported_response.text
     exported_interrupt = next(
         item for item in exported_response.json()["agentInterrupts"] if item["id"] == str(interrupt.id)
@@ -1243,7 +1243,7 @@ def test_capabilities_http_payload_omits_unsupported_optional_fields():
     application.include_router(router)
 
     with TestClient(application) as client:
-        response = client.get("/api/agent/capabilities")
+        response = client.get("/agent/capabilities")
 
     assert response.status_code == 200
     advertised = response.json()
@@ -1285,7 +1285,7 @@ def test_http_agent_stream_is_native_agui_and_replayable(db):
     }
 
     with TestClient(application) as client:
-        streamed = client.post("/api/agent", json=payload)
+        streamed = client.post("/agent", json=payload)
         assert streamed.status_code == 200
         assert streamed.headers["content-type"].startswith("text/event-stream")
         events = [
@@ -1298,7 +1298,7 @@ def test_http_agent_stream_is_native_agui_and_replayable(db):
         assert any(event["type"] == "STATE_DELTA" for event in events)
         assert any(event["type"] == "CUSTOM" and event["name"] == "fyn.response.v1" for event in events)
 
-        replayed = client.get(f"/api/agent/runs/{run_id}/events")
+        replayed = client.get(f"/agent/runs/{run_id}/events")
         replay_events = [
             json.loads(line.removeprefix("data: "))
             for line in replayed.text.splitlines()
@@ -1306,7 +1306,7 @@ def test_http_agent_stream_is_native_agui_and_replayable(db):
         ]
         assert replay_events == events
 
-        continued = client.get(f"/api/agent/runs/{run_id}/events?after=2")
+        continued = client.get(f"/agent/runs/{run_id}/events?after=2")
         continued_events = [
             json.loads(line.removeprefix("data: "))
             for line in continued.text.splitlines()
@@ -1316,7 +1316,7 @@ def test_http_agent_stream_is_native_agui_and_replayable(db):
         assert continued_events[0]["rawEvent"]["fyn"]["sequence"] == 2
         assert continued_events[1:] == events[2:]
 
-        state = client.get(f"/api/agent/threads/{conversation.id}").json()
+        state = client.get(f"/agent/threads/{conversation.id}").json()
         assert state["activeRun"] is None
         assert state["latestRun"]["id"] == str(run_id)
         assert state["latestRun"]["lastSequence"] == len(events)
@@ -1349,7 +1349,7 @@ def test_pending_interrupt_rejects_new_input_with_run_error_event(db):
     }
 
     with TestClient(application) as client:
-        streamed = client.post("/api/agent", json=payload)
+        streamed = client.post("/agent", json=payload)
     events = [
         json.loads(line.removeprefix("data: "))
         for line in streamed.text.splitlines()
@@ -1376,7 +1376,7 @@ def test_pending_interrupt_rejects_new_input_with_run_error_event(db):
         },
     }
     with TestClient(application) as client:
-        rejected = client.post("/api/agent", json=bogus_action)
+        rejected = client.post("/agent", json=bogus_action)
     rejected_events = [
         json.loads(line.removeprefix("data: "))
         for line in rejected.text.splitlines()
@@ -1452,7 +1452,7 @@ def test_newer_widget_action_supersedes_an_older_interrupt(db):
     }
 
     with TestClient(application) as client:
-        streamed = client.post("/api/agent", json=payload)
+        streamed = client.post("/agent", json=payload)
     events = [
         json.loads(line.removeprefix("data: "))
         for line in streamed.text.splitlines()

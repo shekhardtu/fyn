@@ -12,6 +12,7 @@ const apiProxy = {
   "/api": {
     target: BACKEND_ORIGIN,
     changeOrigin: true,
+    rewrite: (path: string) => path.replace(/^\/api(?=\/|$)/, "") || "/",
   },
 } as const;
 

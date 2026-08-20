@@ -128,11 +128,11 @@ def test_saving_takes_a_known_name_immediately_and_learns_an_unknown_one_after(d
     }
 
     with TestClient(_application(db, user)) as client:
-        assert client.patch("/api/privacy/location", json={"enabled": True}).status_code == 200
+        assert client.patch("/privacy/location", json={"enabled": True}).status_code == 200
 
         # First save: the cell is unknown, so the response carries no name and
         # the lookup happens behind it.
-        first = client.post("/api/transactions", json=entry)
+        first = client.post("/transactions", json=entry)
         assert first.status_code == 201
         assert first.json()["location"] is None
         saved = db.get(Transaction, UUID(first.json()["id"]))
@@ -141,7 +141,7 @@ def test_saving_takes_a_known_name_immediately_and_learns_an_unknown_one_after(d
         assert len(calls) == 1
 
         # Second save in the same cell: named in the response itself, no call.
-        second = client.post("/api/transactions", json=entry)
+        second = client.post("/transactions", json=entry)
         assert second.status_code == 201
         assert second.json()["location"] == "Indiranagar, Karnataka"
         assert len(calls) == 1
@@ -156,8 +156,8 @@ def test_a_typed_label_is_never_replaced_by_a_map_service(db, stub_provider, mon
     food = db.scalar(select(Category).where(Category.slug == "food"))
 
     with TestClient(_application(db, user)) as client:
-        assert client.patch("/api/privacy/location", json={"enabled": True}).status_code == 200
-        created = client.post("/api/transactions", json={
+        assert client.patch("/privacy/location", json={"enabled": True}).status_code == 200
+        created = client.post("/transactions", json={
             "amountMinor": 1_000,
             "merchant": "Third Wave",
             "transactionAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
