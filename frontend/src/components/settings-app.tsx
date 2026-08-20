@@ -3,6 +3,7 @@ import { Bell, Download, Loader2, MapPin, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { NotLiveStamp, PanelHeading, SettingSwitch, SettingsGroup, settingsProblem, settingsSaved } from "@/components/settings-parts";
 import { InstallAppSetting } from "@/components/install-app";
+import { InstallDiagnostics } from "@/components/install-diagnostics";
 import { primeLocationPermission } from "@/lib/device-location";
 import { Button } from "@/components/ui/button";
 import { deleteAllData, downloadDataExport, getPrivacyStatus, revokeSource, setLocationEnabled } from "@/lib/api";
@@ -106,6 +107,8 @@ export function AppSettingsPanel({ onDeleted }: { onDeleted: () => void }) {
         />)}
       </div>
     </SettingsGroup>
+
+    <InstallDiagnostics />
 
     <SettingsGroup title="Privacy" description="Nothing is collected until you switch it on.">
       {privacy.isError ? <p role="alert" className="rounded-lg border border-danger-line bg-danger-tint px-4 py-3 text-note leading-5 text-danger-ink">

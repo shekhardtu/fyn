@@ -155,6 +155,23 @@ describe("initViewport", () => {
     expect(readVariable("--viewport-offset")).toBe("240px");
   });
 
+  it("repairs the origin under a pinned shell, whatever the document claims its height is", () => {
+    // WebKit can report a document taller than the window while the keyboard
+    // is up, even with the shell pinned over the whole screen and nothing
+    // under it scrolling. Trusting that number skipped the repair exactly
+    // where it was needed.
+    const shell = document.createElement("div");
+    shell.className = "app-shell";
+    document.body.append(shell);
+    Object.defineProperty(document.documentElement, "scrollHeight", { value: 1400, configurable: true });
+
+    showKeyboard(336, 120);
+    showKeyboard(0);
+
+    expect(scrollTo).toHaveBeenCalledWith(0, 0);
+    shell.remove();
+  });
+
   it("follows the browser's own pan without waiting for a resize", () => {
     view.offsetTop = 90;
     view.dispatchEvent(new Event("scroll"));
