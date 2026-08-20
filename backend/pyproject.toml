@@ -99,6 +99,5 @@ module = [
   "app.services.recommendation",
   "app.services.reconciliation",
   "app.services.runtime_tools",
-  "app.services.semantic",
 ]
 ignore_errors = true

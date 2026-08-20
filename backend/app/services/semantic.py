@@ -378,7 +378,10 @@ def _local_datetime_expression(column, dialect: str, timezone_name: str):
 
 def _event_date_column(entity: str):
     registry_entity = semantic_schema_registry().entities_by_name[entity]
-    return getattr(MODEL_BINDINGS[entity], registry_entity.event_date_key)
+    event_date_key = registry_entity.event_date_key
+    if event_date_key is None:
+        raise SemanticValidationError(f"Entity {entity} has no governed event date")
+    return getattr(MODEL_BINDINGS[entity], event_date_key)
 
 
 def _event_time_column(entity: str, dialect: str, timezone_name: str):
@@ -387,7 +390,7 @@ def _event_time_column(entity: str, dialect: str, timezone_name: str):
     return _transaction_datetime_expression(dialect, timezone_name)
 
 
-def _time_bucket_expression(entity: str, grain: str, dialect: str, timezone_name: str):
+def _time_bucket_expression(entity: str, grain: TimeGrain, dialect: str, timezone_name: str):
     if grain in SUBDAY_TIME_GRAINS:
         column = _event_time_column(entity, dialect, timezone_name)
     else:
@@ -402,7 +405,7 @@ def _time_bucket_expression(entity: str, grain: str, dialect: str, timezone_name
     return func.to_char(column, TIME_GRAIN_SPECS[grain].postgres_format)
 
 
-def _time_component_expression(entity: str, component: str, dialect: str, timezone_name: str):
+def _time_component_expression(entity: str, component: TimeComponent, dialect: str, timezone_name: str):
     if component == "hour_of_day":
         column = _event_time_column(entity, dialect, timezone_name)
         return func.strftime("%H", column) if dialect == "sqlite" else func.to_char(column, "HH24")
@@ -426,14 +429,14 @@ def _time_bucket_values(plan: FinanceQueryPlan) -> list[str]:
         step = timedelta(minutes=1) if grain == "minute" else timedelta(hours=1)
         start = plan.start_datetime or datetime.combine(plan.start_date, time.min)
         end = plan.end_datetime or datetime.combine(plan.end_date, time.max)
-        current = start.replace(second=0, microsecond=0)
+        current_datetime = start.replace(second=0, microsecond=0)
         if grain == "hour":
-            current = current.replace(minute=0)
-        values = []
-        while current <= end:
-            values.append(current.strftime("%Y-%m-%d %H:%M") if grain == "minute" else current.strftime("%Y-%m-%d %H:00"))
-            current += step
-        return values
+            current_datetime = current_datetime.replace(minute=0)
+        subday_values: list[str] = []
+        while current_datetime <= end:
+            subday_values.append(current_datetime.strftime("%Y-%m-%d %H:%M") if grain == "minute" else current_datetime.strftime("%Y-%m-%d %H:00"))
+            current_datetime += step
+        return subday_values
 
     def label(value: date) -> str:
         if grain == "day":
@@ -447,16 +450,16 @@ def _time_bucket_values(plan: FinanceQueryPlan) -> list[str]:
             return f"{value.year}-Q{((value.month - 1) // 3) + 1}"
         return str(value.year)
 
-    values: list[str] = []
+    calendar_values: list[str] = []
     seen: set[str] = set()
-    current = plan.start_date
-    while current <= plan.end_date:
-        bucket = label(current)
+    current_date = plan.start_date
+    while current_date <= plan.end_date:
+        bucket = label(current_date)
         if bucket not in seen:
-            values.append(bucket)
+            calendar_values.append(bucket)
             seen.add(bucket)
-        current += timedelta(days=1)
-    return values
+        current_date += timedelta(days=1)
+    return calendar_values
 
 
 def _fill_time_gaps(plan: FinanceQueryPlan, labels: list[str], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -590,24 +593,34 @@ def _filter_binding(entity: str, field: str):
     return getattr(MODEL_BINDINGS[target_entity], field_spec.column), list(dimension.relationship_path)
 
 
+def _date_filter_values(values: list[str | int | float | date]) -> list[date] | None:
+    dates: list[date] = []
+    for value in values:
+        if not isinstance(value, date) or isinstance(value, datetime):
+            return None
+        dates.append(value)
+    return dates
+
+
 def _apply_filter(stmt, column, item: FinanceFilter, timezone_name: str):
     values = item.value if isinstance(item.value, list) else [item.value]
-    if isinstance(column.property.columns[0].type, DateTime) and all(isinstance(value, date) and not isinstance(value, datetime) for value in values):
+    date_values = _date_filter_values(values)
+    if isinstance(column.property.columns[0].type, DateTime) and date_values is not None:
         if item.operator == "eq":
-            start_at, end_at = utc_range_for_local_dates(values[0], values[0], timezone_name)
+            start_at, end_at = utc_range_for_local_dates(date_values[0], date_values[0], timezone_name)
             return stmt.where(column >= start_at, column < end_at)
         if item.operator == "between":
-            start_at, end_at = utc_range_for_local_dates(values[0], values[1], timezone_name)
+            start_at, end_at = utc_range_for_local_dates(date_values[0], date_values[1], timezone_name)
             return stmt.where(column >= start_at, column < end_at)
         if item.operator == "gte":
-            return stmt.where(column >= from_local_parts(values[0], None, timezone_name))
+            return stmt.where(column >= from_local_parts(date_values[0], None, timezone_name))
         if item.operator == "gt":
-            _, end_at = utc_range_for_local_dates(values[0], values[0], timezone_name)
+            _, end_at = utc_range_for_local_dates(date_values[0], date_values[0], timezone_name)
             return stmt.where(column >= end_at)
         if item.operator == "lt":
-            return stmt.where(column < from_local_parts(values[0], None, timezone_name))
+            return stmt.where(column < from_local_parts(date_values[0], None, timezone_name))
         if item.operator == "lte":
-            _, end_at = utc_range_for_local_dates(values[0], values[0], timezone_name)
+            _, end_at = utc_range_for_local_dates(date_values[0], date_values[0], timezone_name)
             return stmt.where(column < end_at)
     if item.operator == "eq":
         return stmt.where(column == values[0])
@@ -688,11 +701,15 @@ def execute_finance_query(db: Session, user_id: UUID, plan: FinanceQueryPlan) ->
             currency=currency if money_currency_column is not None else None,
         )
     else:
+        if tenant_key is None:
+            raise SemanticValidationError(f"Entity {entity} has no tenant key")
         stmt = stmt.where(getattr(model, tenant_key) == user_id)
         if money_currency_column is not None:
             stmt = stmt.where(money_currency_column == currency)
     if metric.time_semantics == "event_window":
         event_key = registry_entity.event_date_key
+        if event_key is None:
+            raise SemanticValidationError(f"Entity {entity} has no event date key")
         event_column = getattr(model, event_key)
         event_field = next(item for item in registry_entity.fields if item.column == event_key)
         if event_field.data_type == "datetime":
