@@ -651,7 +651,7 @@ const MessageArticle = memo(function MessageArticle({ message, activeWidget, can
       {trace ? <div className="mb-3 pl-0 sm:pl-8"><WidgetRenderer widget={trace} disabled onAction={noAction} /></div> : null}
       {message.content ? message.role === "user"
         ? <div className="ml-auto w-fit max-w-full break-words whitespace-pre-wrap rounded-xl rounded-br-sm bg-secondary px-4 py-3 text-body leading-6 text-on-secondary">{message.content}</div>
-        : <div className="break-words pl-8"><MarkdownMessage>{message.content}</MarkdownMessage></div>
+        : <div className="transcript-answer break-words"><MarkdownMessage id={message.id}>{message.content}</MarkdownMessage></div>
       : null}
       {message.content ? <div className={cn("mt-1.5", message.role === "user" ? "text-right" : "pl-8")}>
         <div className={cn("flex items-center gap-2 whitespace-nowrap", message.role === "user" && "justify-end")}>

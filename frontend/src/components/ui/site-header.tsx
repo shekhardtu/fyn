@@ -54,6 +54,10 @@ export function SiteHeader({ title, subtitle, subtitleClassName, hidden = false,
   }
   return <header
     inert={hidden ? true : undefined}
+    /* The top edge of the page, for anything inside the scroller that pins
+       itself under it — a table header does, and reads this bar's own bottom
+       so it follows the bar as it hides and returns. */
+    data-sticky-anchor
     className={cn(
       // The bar keeps its 3.5rem of content but grows by the status-bar inset and
       // pads itself down by the same amount. Installed on iOS the web view runs

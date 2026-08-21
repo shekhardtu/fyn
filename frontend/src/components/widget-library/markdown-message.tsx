@@ -1,6 +1,7 @@
 import type { ComponentPropsWithoutRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { MarkdownTable, MarkdownTableBody, MarkdownTableCell, MarkdownTableHeadCell, MarkdownTableRow, SourceContext } from "@/components/widget-library/markdown-table";
 
 function safeHref(href: string | undefined) {
   if (!href) return null;
@@ -18,8 +19,10 @@ function safeHref(href: string | undefined) {
  * Raw HTML is deliberately unsupported. Financial records and actions remain
  * typed widgets; Markdown is only the explanatory layer around those widgets.
  */
-export function MarkdownMessage({ children }: { children: string }) {
-  return <div className="markdown-message min-w-0 text-body leading-6 text-ink-body">
+export function MarkdownMessage({ children, id = "" }: { children: string; id?: string }) {
+  // The message's own id, so a table inside it can remember how it was left
+  // even after the transcript unmounts the turn. See `markdown-table.tsx`.
+  return <SourceContext.Provider value={id}><div className="markdown-message min-w-0 text-body leading-6 text-ink-body">
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       components={{
@@ -38,11 +41,17 @@ export function MarkdownMessage({ children }: { children: string }) {
           const safe = safeHref(href);
           return safe ? <a href={safe} target="_blank" rel="noreferrer noopener" className="font-medium text-secondary underline decoration-secondary-line underline-offset-2">{children}</a> : <span>{children}</span>;
         },
-        table: ({ children }) => <span tabIndex={0} role="region" aria-label="Scrollable table" className="my-3 block max-h-[28rem] max-w-full overflow-auto overscroll-auto rounded-xl border border-line focus-visible:outline-2 focus-visible:outline-secondary"><table className="w-full min-w-[420px] border-collapse text-left text-note">{children}</table></span>,
-        thead: ({ children }) => <thead className="bg-surface-sunken text-meta tracking-[0.08em] text-ink-muted uppercase">{children}</thead>,
-        th: ({ children }) => <th className="border-b border-line px-3 py-2 font-semibold">{children}</th>,
-        td: ({ children }) => <td className="border-b border-line px-3 py-2 align-top last:text-right">{children}</td>,
+        // A table is the one thing in an answer that is not prose: it is a
+        // reading of the books, and it gets a reader's chrome — a header that
+        // stays put, a label column that stays put, columns that line up by
+        // what is in them, and a fold over anything too long to sit inside a
+        // reply. `markdown-table.tsx` holds all of it.
+        table: MarkdownTable,
+        tbody: MarkdownTableBody,
+        tr: MarkdownTableRow,
+        th: MarkdownTableHeadCell,
+        td: MarkdownTableCell,
       }}
     >{children}</ReactMarkdown>
-  </div>;
+  </div></SourceContext.Provider>;
 }

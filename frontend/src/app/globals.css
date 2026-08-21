@@ -514,6 +514,449 @@ html[data-focus-modality="keyboard"] :where(a, button, input, select, textarea, 
   max-width: 100%;
 }
 
+/* The assistant's answer, set in from the transcript's edge so it hangs under
+   its byline rather than under the avatar beside it.
+
+   It also publishes that indent, plus the column's own gutter, as the width a
+   full-bleed child may claim back on a phone. The two numbers live here, next
+   to the padding they undo, so a table can go edge-to-edge without carrying a
+   copy of the shell's layout around with it. */
+.transcript-answer {
+  padding-inline-start: 2rem;
+  --bleed-start: 3rem;
+  --bleed-end: 1rem;
+}
+
+@media (min-width: 640px) {
+  /* From here the column has room of its own: a table stays inside the
+     answer, where the byline can still be read as belonging to it. */
+  .transcript-answer {
+    --bleed-start: 0px;
+    --bleed-end: 0px;
+  }
+}
+
+/* ── The table in an answer ───────────────────────────────────────────────
+   A Markdown table in this product is never decoration: it is a reading of
+   the books, so it is built as something you audit rather than something you
+   glance at. Four things make that difference, and all four are here.
+
+   The header holds. The label column holds. Figures line up under each other
+   in one place, on the right, in tabular digits — a column of money you
+   cannot run your eye down is not a table, it is a list with rules drawn on
+   it. And the frame states its own limits: a folded table says how much of
+   itself it is showing.
+
+   Structure comes from rules and grounds, as everywhere else in this system —
+   the pinned header and the frozen column announce themselves by a rule
+   hardening, never by a shadow. The one shadow this product owns belongs to
+   overlays that leave the document, and a table header does not leave. */
+.ledger-table {
+  --row-hover: color-mix(in srgb, var(--sunken) 80%, var(--surface));
+  position: relative;
+  /* Deeper above than below: the table's own controls float in that gutter,
+     clear of both the prose above and the column names below. */
+  margin-block: 2rem 0.875rem;
+  /* On a phone the transcript's gutters are the only thing between a wide
+     table and the screen edge, so the table takes them back: on a 390px
+     screen those three rems are a whole column of figures. The numbers are
+     the shell's, published by `.transcript-answer`, so this reads them by
+     name rather than re-encoding a padding it does not own. */
+  margin-inline: calc(-1 * var(--bleed-start, 0px)) calc(-1 * var(--bleed-end, 0px));
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+}
+
+@media (max-width: 639px) {
+  /* Flush with both edges, so the side border and the radius would be drawn
+     off the screen. The top and bottom rules are what is left holding it. */
+  .ledger-table {
+    border-inline: 0;
+    border-radius: 0;
+  }
+}
+
+.ledger-table [data-table-scroll] {
+  overflow-y: hidden;
+  /* The corners are cut here rather than on the frame, which has to stay
+     unclipped for the width control hanging above its top edge. */
+  border-radius: inherit;
+}
+
+.ledger-table [data-table-scroll]:focus-visible {
+  outline: 2px solid var(--secondary);
+  outline-offset: -2px;
+}
+
+.ledger-table table {
+  /* Columns take the width their contents need and the table scrolls when
+     that comes to more than the frame — the alternative, squeezing every
+     column to fit, breaks a date across two lines to save a column of prose
+     that is going to wrap anyway. Never narrower than the frame, so a short
+     table still fills it. */
+  width: max-content;
+  min-width: 100%;
+  /* Separate, not collapsed: a collapsed border belongs to the table rather
+     than to the cell, and a cell that scrolls out from under a frozen column
+     takes the shared edge with it. Every rule below is drawn by a cell. */
+  border-collapse: separate;
+  border-spacing: 0;
+  text-align: left;
+  font-size: var(--text-control);
+  line-height: 1.35;
+}
+
+/* The header is moved by `usePinnedHeader`, not by `position: sticky` — see
+   the note there for why CSS cannot do it inside a virtualised transcript.
+   All this has to do is make sure it paints over the rows passing beneath it,
+   which in a table means saying so: cells paint in tree order otherwise, and
+   the body comes after the head. */
+.ledger-table thead {
+  position: relative;
+  z-index: 2;
+  will-change: transform;
+}
+
+.ledger-table th {
+  position: relative;
+  z-index: 2;
+  background: var(--sunken);
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--text-meta);
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--ink-muted);
+}
+
+/* Off its rest, floating over rows: the rule under it hardens to say so. */
+.ledger-table[data-pinned="true"] th {
+  border-bottom-color: var(--line-strong);
+}
+
+/* Every column name is the control that sorts by it, so the whole cell is the
+   target rather than a glyph beside it. The mark is the affordance: faint
+   until the pointer arrives, indigo once the column is the one doing the
+   ordering. */
+.ledger-table th > button {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  width: 100%;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+}
+
+.ledger-table th[data-align="end"] > button {
+  flex-direction: row-reverse;
+}
+
+.ledger-table th[data-align="center"] > button {
+  justify-content: center;
+}
+
+.ledger-table th > button svg {
+  flex: none;
+  opacity: 0;
+  transition: opacity var(--m-state) var(--ease);
+}
+
+.ledger-table th:hover > button svg,
+.ledger-table th > button:focus-visible svg {
+  opacity: 0.5;
+}
+
+.ledger-table th > button[data-sorted] {
+  color: var(--ink);
+}
+
+.ledger-table th > button[data-sorted] svg {
+  opacity: 1;
+  color: var(--secondary);
+}
+
+.ledger-table td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--line-soft);
+  vertical-align: top;
+  color: var(--ink-body);
+  /* A sentence in a cell must not be able to push the table to twice the
+     width of the screen; past this it wraps and the row grows instead. */
+  max-width: 22rem;
+}
+
+.ledger-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+/* A row that sums the ones above it is a different kind of statement, and it
+   is held apart by a rule rather than by weight — it is still one of the
+   answer's own rows, not a footer this table invented. */
+.ledger-table tbody tr[data-total] td {
+  border-top: 1px solid var(--line-strong);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.ledger-table tbody tr:hover td {
+  background: var(--row-hover);
+}
+
+/* Figures: right, and in digits of one width, so the eye reads a column of
+   money as a column. Never wrapped — a number broken across two lines has
+   stopped being a number. */
+.ledger-table :is(th, td)[data-align="end"] {
+  text-align: right;
+}
+
+.ledger-table :is(th, td)[data-align="center"] {
+  text-align: center;
+}
+
+.ledger-table td[data-figure] {
+  position: relative;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--ink);
+}
+
+/* ── The measure ──────────────────────────────────────────────────────────
+   The one liberty this table takes with the answer, and the reason it is
+   worth taking: a rule under each figure as long as that figure is large
+   against the biggest real row in its column. Fifty numbers become a shape,
+   and the largest line in a spend table is findable without reading a single
+   digit.
+
+   It is drawn in ink rather than in colour, because a coloured bar in this
+   product would be making a claim — green and red mean income and expense,
+   the indigo means you can press it, and a measure is neither. It never
+   touches the number itself, never appears on the total row, and never
+   appears at all where there is nothing to compare: fewer than five rows, a
+   negative anywhere in the column, or a column of years. */
+.ledger-measure {
+  position: absolute;
+  /* Under the figure's own line — the cell's top padding plus one line — so a
+     row made tall by prose in another column keeps its rule with its number
+     instead of stranding it at the bottom of the row. */
+  top: calc(0.5rem + 1.35em + 0.1875rem);
+  /* Every rule starts at the column's leading edge, so their lengths can be
+     compared straight down the column. Anchoring them to the digits instead
+     was tried and abandoned: a short rule under the last two figures of a
+     number reads as stray underlining, not as a measurement. */
+  inset-inline-start: 0.75rem;
+  height: 2px;
+  width: calc(var(--measure) * (100% - 1.5rem));
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--ink-muted) 32%, transparent);
+}
+
+.ledger-table tbody tr:hover .ledger-measure {
+  background: color-mix(in srgb, var(--ink-muted) 52%, transparent);
+}
+
+
+/* The frozen label column, and only while there is somewhere to scroll to:
+   a table that fits has nothing to hold on to, and pinning a column then
+   would just be an opaque cell sitting on a rule. Cells carry their own
+   ground because a sticky cell has rows travelling underneath it. */
+.ledger-table[data-frozen="true"] :is(thead, tbody) tr > :first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--surface);
+}
+
+.ledger-table[data-frozen="true"] thead tr > :first-child {
+  z-index: 3;
+  background: var(--sunken);
+}
+
+.ledger-table[data-frozen="true"] tbody tr:hover > :first-child {
+  background: var(--row-hover);
+}
+
+/* Held while the rest of the table has moved out from under it. */
+.ledger-table[data-shifted="true"] :is(thead, tbody) tr > :first-child {
+  border-right: 1px solid var(--line-strong);
+}
+
+/* The table's own controls, on its top edge rather than inside the header
+   band, where they would cover the last column's name — and riding
+   `--pin-offset`, the distance the header has been pushed down, so they stay
+   with the header instead of waiting at a top edge the reader passed twenty
+   rows ago.
+
+   Hidden until a pointer arrives, because two controls on every table in a
+   long thread is a page of chrome for a preference most readers set once.
+   Where there is no pointer to arrive they simply stay visible. */
+.ledger-table-tools {
+  position: absolute;
+  /* Wholly above the top rule — its own height plus a hair. Straddling the
+     border was tried first and it sat on the last column's name, which is the
+     one part of a table that must be readable at every moment. */
+  top: -2rem;
+  inset-inline-end: 0;
+  z-index: 4;
+  gap: 0.25rem;
+  padding: 2px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  display: flex;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity var(--m-state) var(--ease), visibility var(--m-state) var(--ease);
+}
+
+/* Once the header has left the top of the table behind, the controls follow it
+   down and dock just beneath the band — above the rows, never over the column
+   names, and never up behind the site header, which is where riding the offset
+   alone used to put them. */
+.ledger-table[data-pinned="true"] > .ledger-table-tools {
+  transform: translateY(calc(var(--pin-offset, 0px) + var(--head-h, 2.125rem) + 2.375rem));
+}
+
+/* Only the width switch is gated: below this the table already runs to both
+   edges of the screen, so there is no width left to give it. Copy is not a
+   width control and a phone is exactly where reaching for the clipboard
+   instead of a selection is worth most. */
+.ledger-table-tool[data-width] {
+  display: none;
+}
+
+@media (min-width: 640px) {
+  .ledger-table-tool[data-width] {
+    display: inline-flex;
+  }
+}
+
+@media (max-width: 639px) {
+  /* The frame's right edge is the screen's right edge down here, so the
+     controls come in to the cell padding rather than sitting on the rim. */
+  .ledger-table-tools {
+    inset-inline-end: 0.75rem;
+  }
+}
+
+.ledger-table:hover > .ledger-table-tools,
+.ledger-table:focus-within > .ledger-table-tools {
+  opacity: 1;
+  visibility: visible;
+}
+
+@media (hover: none) {
+  /* Nothing here can hover, so nothing here can discover a control that waits
+     to be hovered. */
+  .ledger-table-tools {
+    opacity: 1;
+    visibility: visible;
+  }
+}
+
+.ledger-table-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.375rem;
+  height: 1.375rem;
+  border-radius: 4px;
+  color: var(--ink-muted);
+  transition: background-color var(--m-state) var(--ease), color var(--m-state) var(--ease);
+}
+
+.ledger-table-tool:hover {
+  background: var(--sunken);
+  color: var(--ink);
+}
+
+.ledger-table-tool[aria-pressed="true"] {
+  color: var(--secondary);
+}
+
+/* What the table is not showing, said plainly, with the way to see the rest
+   of it in the same line. Outside the scroller: how much is folded away is
+   not a fact about column three, and must not scroll off sideways with it. */
+.ledger-table-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 0.75rem;
+  border-top: 1px solid var(--line);
+  /* The frame stopped clipping when the width control needed to hang over its
+     top edge, so the last thing inside it has to round its own bottom corners
+     — square ones would print outside the border. */
+  border-end-start-radius: inherit;
+  border-end-end-radius: inherit;
+  background: var(--ground);
+  padding: 0.375rem 0.5rem 0.375rem 0.75rem;
+  font-size: var(--text-meta);
+  font-variant-numeric: tabular-nums lining-nums;
+  color: var(--ink-muted);
+}
+
+.ledger-table-count {
+  min-width: 0;
+}
+
+.ledger-table-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-inline-start: auto;
+}
+
+/* Filtering belongs with the row count, not above the header: both are
+   statements about which rows are on screen, and keeping it here leaves the
+   top edge to the data. */
+.ledger-table-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  height: var(--h-compact);
+  padding-inline: 0.5rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink-muted);
+}
+
+.ledger-table-filter input {
+  width: 8rem;
+  min-width: 0;
+  background: none;
+  border: 0;
+  outline: none;
+  /* A step above the labels around it: this is a line you type on, and the
+     11px floor is for things you only read. */
+  font-size: var(--text-note);
+  color: var(--ink);
+}
+
+.ledger-table-filter input::placeholder {
+  color: var(--ink-muted);
+}
+
+.ledger-table-filter button {
+  display: inline-flex;
+  color: var(--ink-muted);
+}
+
+.ledger-table-filter button:hover {
+  color: var(--ink);
+}
+
+html[data-focus-modality="keyboard"] .ledger-table-filter:focus-within {
+  border-color: var(--secondary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--secondary) 15%, transparent);
+}
+
 .conversation-scroll::-webkit-scrollbar,
 .panel-scroll::-webkit-scrollbar,
 .table-scroll::-webkit-scrollbar {
