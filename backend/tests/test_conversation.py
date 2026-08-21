@@ -14,7 +14,7 @@ from app.operations import operation_catalog
 from app.operation_types import ContextRelationship
 from app.operations.tools import OperationProposal
 from app.seed import default_user
-from app.services.agents import ClarificationOption, ClarificationRequest, CopilotDecision, QueryBundleInterpretation, QueryInterpretation, QueryView, TaxonomyInterpretation, ToolGrounding, OperatorResult
+from app.services.agents import ClarificationOption, ClarificationRequest, CopilotDecision, QueryInterpretation, TaxonomyInterpretation, ToolGrounding, OperatorResult
 from app.services import conversation as conversation_service
 from app.services.agui import execute_widget_action
 from app.services.calculators import loan_amortization_schedule

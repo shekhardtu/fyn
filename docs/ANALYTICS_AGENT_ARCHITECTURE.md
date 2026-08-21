@@ -108,24 +108,16 @@ The resolver should produce a typed state delta:
 Applying the delta is deterministic. The model proposes the change; the domain
 layer owns the resulting state.
 
-## Coordinated multi-view queries
+## Coordinated multi-view turns
 
 A user turn is not equivalent to one SQL query or one widget. Requests such as
-`show that table again with an expense summary` require several result shapes
-over one financial scope. They use a typed `QueryBundle`:
-
-```text
-QueryBundle
-  base_query: filters, dates, direction, account and tenant scope
-  views:
-    - transaction rows
-    - aggregate summary
-    - optional breakdown or ranking
-```
-
-The domain compiler expands the views; the model cannot repeat or independently
-alter their filters. Each view is executed against current canonical,
-non-deleted records and the response persists lineage for every view.
+`show that table again with an expense summary` are served by the single agent
+loop: the record view arrives as a typed search operation (an interactive
+table with its own lineage), and the aggregate summary is composed as grounded
+markdown from governed analysis or read tools over the same scope. Every view
+still executes against current canonical, non-deleted records, and scope
+binding is deterministic — the model cannot independently alter the filters of
+a scope it references.
 
 Refresh and refinement have deliberately different semantics. `Show again`
 rehydrates the last grounded query definition and drops prior entity IDs, so an

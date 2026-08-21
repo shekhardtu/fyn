@@ -132,7 +132,6 @@ PRIMITIVES: tuple[PrimitiveDefinition, ...] = (
     PrimitiveDefinition("calculator.loan", 1, EmptyPrimitiveInput, DataEffect.NONE, ConfirmationPolicy.NEVER, frozenset(), False, True, True, frozenset(), None, "run_query"),
     PrimitiveDefinition("calculator.investment", 1, EmptyPrimitiveInput, DataEffect.NONE, ConfirmationPolicy.NEVER, frozenset(), False, True, True, frozenset(), None, "run_query"),
     PrimitiveDefinition("analysis.run", 1, EmptyPrimitiveInput, DataEffect.NONE, ConfirmationPolicy.NEVER, frozenset({"transactions.read"}), False, True, True, frozenset(), None, "run_analysis"),
-    PrimitiveDefinition("analysis.bundle", 1, EmptyPrimitiveInput, DataEffect.NONE, ConfirmationPolicy.NEVER, frozenset({"transactions.read"}), False, True, True, frozenset(), None, "run_query_bundle"),
     PrimitiveDefinition("managed.dispatch", 1, EmptyPrimitiveInput, DataEffect.MUTATION, ConfirmationPolicy.REQUIRED, frozenset(), False, True, True, frozenset(), None, "run_managed_operation"),
     PrimitiveDefinition(
         id="taxonomy.create_category",

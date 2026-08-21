@@ -4114,92 +4114,6 @@ def _transaction_search_response(db: Session, user: User, conversation: Conversa
     )
 
 
-def _query_bundle_response(db: Session, user: User, conversation: Conversation, decision: CopilotDecision) -> AgentResponse:
-    """Compile several views over one authoritative transaction filter scope."""
-    bundle = decision.query_bundle
-    if not bundle:
-        return _conversation_response(db, conversation, "I couldn’t resolve the requested data views safely. Please clarify what you want to compare or display.")
-
-    base_query = bundle.base_query
-    if bundle.refresh_from_active_analysis:
-        prior_state = conversation.active_analysis_state or {}
-        prior_queries = prior_state.get("queries") or [prior_state.get("query") or {}]
-        prior_list = next((item for item in prior_queries if item.get("result_mode") == "summary"), None)
-        if prior_list:
-            allowed = set(QueryInterpretation.model_fields)
-            normalized = {key: value for key, value in prior_list.items() if key in allowed}
-            try:
-                base_query = QueryInterpretation.model_validate(normalized).model_copy(update={
-                    "use_active_scope": False,
-                    "scope_transaction_ids": [],
-                })
-            except ValueError:
-                pass
-
-    view_ids = [view.id for view in bundle.views]
-    if len(view_ids) != len(set(view_ids)):
-        return _conversation_response(db, conversation, "I couldn’t safely render duplicate data views. Please retry the analysis.")
-
-    bundle_id = str(uuid4())
-    blocks: list[str] = []
-    citations: list[DataReference] = []
-    for view in bundle.views:
-        query = base_query.model_copy(update={
-            "result_mode": view.result_mode,
-            "operation": view.operation,
-            "group_by": view.group_by,
-            "sort_direction": view.sort_direction,
-            "limit": view.limit,
-            "use_active_scope": False if bundle.refresh_from_active_analysis else base_query.use_active_scope,
-            "scope_transaction_ids": [] if bundle.refresh_from_active_analysis else base_query.scope_transaction_ids,
-        })
-        try:
-            content, _widgets, view_citations = _transaction_search_parts(db, user, query)
-        except UnsupportedResultModeError:
-            # Record listing left this path with the table widget. Skipping the
-            # view keeps every summary in the bundle answerable instead of
-            # failing the whole turn over a shape the Operator reads directly.
-            continue
-        for citation in view_citations:
-            citation.query = {
-                **citation.query,
-                "bundle_id": bundle_id,
-                "view_id": view.id,
-                "refresh_from_active_analysis": bundle.refresh_from_active_analysis,
-            }
-        blocks.append(content)
-        citations.extend(view_citations)
-
-    if not blocks:
-        return persist_agent_response(
-            db,
-            conversation,
-            "I couldn’t resolve those views to a governed summary, so nothing was computed.",
-            task_status="failed",
-            failure_stage="intent_resolution",
-            error_code="unsupported_result_mode",
-        )
-    content = join_blocks(*blocks)
-    if bundle.refresh_from_active_analysis:
-        content = join_blocks("I refreshed the same records using your previous filters.", content)
-    return persist_agent_response(
-        db,
-        conversation,
-        content,
-        citations=citations,
-    )
-
-
-_DIRECT_HANDOFF_QUERY_METRICS = frozenset({
-    "transaction_summary",
-    "transaction_count",
-    "transaction_amount",
-    "spending_summary",
-    "gross_spend",
-    "income_summary",
-})
-
-
 def _reconcile_correction_query(
     text: str,
     query: QueryInterpretation,
@@ -4297,13 +4211,9 @@ def _normalize_operation_decision(
     active_analysis_state = conversation.active_analysis_state
 
     def target_of(value: CopilotDecision):
-        return value.query or (value.query_bundle.base_query if value.query_bundle else None)
+        return value.query
 
     def rebind(value: CopilotDecision, query) -> CopilotDecision:
-        if value.query_bundle:
-            return value.model_copy(update={
-                "query_bundle": value.query_bundle.model_copy(update={"base_query": query}),
-            })
         return value.model_copy(update={"query": query})
 
     # 1. An independent query never inherits the displayed record scope.
@@ -4791,11 +4701,6 @@ class _ConversationPrimitiveRuntime:
             allow_budget_mutation=True,
         )
 
-    def run_query_bundle(self, _arguments: dict[str, Any]) -> AgentResponse:
-        return _query_bundle_response(
-            self.db, self.user, self.conversation, self.decision
-        )
-
     def run_query(self, _arguments: dict[str, Any]) -> AgentResponse:
         return _query_response(
             self.db, self.user, self.conversation, self.text, self.decision
@@ -5072,7 +4977,6 @@ def _dispatch_decision(
                 {
                     "transaction": decision.transaction,
                     "query": decision.query,
-                    "query_bundle": decision.query_bundle,
                     "taxonomy": decision.taxonomy,
                     "presentation": decision.presentation,
                     "clarification": decision.clarification,

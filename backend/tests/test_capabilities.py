@@ -34,7 +34,6 @@ def test_validation_modes_come_from_live_file_workflows():
     assert capability_spec(capability_for_primitive("transaction.record@1")).validation is ValidationMode.MODEL
     assert capability_spec(capability_for_primitive("taxonomy.change@1")).validation is ValidationMode.MODEL
     assert capability_spec(capability_for_primitive("analysis.run@1")).validation is ValidationMode.MODEL
-    assert capability_spec(capability_for_primitive("analysis.bundle@1")).validation is ValidationMode.MODEL
 
 
 def test_every_capability_declares_its_maximum_business_data_effect():

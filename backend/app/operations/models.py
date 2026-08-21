@@ -78,7 +78,6 @@ OperationRouteStrategy = Literal["decision", "planner", "managed", "protocol"]
 OperationRouteTarget = Literal[
     "transaction",
     "query",
-    "query_bundle",
     "taxonomy",
     "presentation",
     "clarification",

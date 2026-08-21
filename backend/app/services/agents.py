@@ -267,40 +267,6 @@ class ResolvedIntentContract(BaseModel):
         return self
 
 
-class QueryView(BaseModel):
-    """A result shape compiled over a QueryBundle's single governed scope."""
-
-    id: str = Field(pattern=r"^[a-z][a-z0-9_]{0,39}$")
-    result_mode: Literal["summary"] = "summary"
-    operation: QueryOperation
-    group_by: QueryGroupBy = "none"
-    sort_direction: SortDirection = "desc"
-    limit: int = Field(default=50, ge=1, le=100)
-
-    @model_validator(mode="after")
-    def validate_result_contract(self):
-        # Record listing left the bundle with the table widget; the Operator
-        # reads rows through the transaction_list tool instead.
-        if self.operation == "list":
-            raise ValueError("Governed views cannot use operation=list")
-        return self
-
-
-class QueryBundleInterpretation(BaseModel):
-    """One filter scope with several coordinated, deterministic presentations."""
-
-    base_query: QueryInterpretation
-    views: list[QueryView] = Field(min_length=2, max_length=4)
-    refresh_from_active_analysis: bool = False
-
-    @model_validator(mode="after")
-    def validate_views(self):
-        ids = [view.id for view in self.views]
-        if len(ids) != len(set(ids)):
-            raise ValueError("query-bundle view ids must be unique")
-        return self
-
-
 class TaxonomyInterpretation(BaseModel):
     operation: TaxonomyOperation
     name: str | None = Field(default=None, max_length=80)
@@ -513,7 +479,6 @@ class CopilotDecision(BaseModel):
     tool: CapabilityId
     transaction: TransactionInterpretation | None = None
     query: QueryInterpretation | None = None
-    query_bundle: QueryBundleInterpretation | None = None
     taxonomy: TaxonomyInterpretation | None = None
     presentation: PresentationIntent = Field(default_factory=PresentationIntent)
     analysis_tool: AnalysisToolProposal | None = None
@@ -957,7 +922,6 @@ def build_operator(
     user_id: UUID | str | None = None,
     runtime_tools: list[Any] | None = None,
     analysis_tools: list[Any] | None = None,
-    reusable_tools: list[dict] | None = None,
     enable_reasoning: bool = True,
     answer_style: AnswerStyle = AnswerStyle.EXPLAINED,
     presentation: AnswerPresentation | None = None,
