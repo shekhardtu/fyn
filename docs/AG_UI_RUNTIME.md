@@ -21,6 +21,30 @@ server-authored values instead of re-deriving them. This makes the prompt,
 complete reply, tool/stage sequence, and timing reconstructable without using
 the client clock.
 
+### Optional latency telemetry
+
+`AgentRun.metrics` carries a content-free observability envelope alongside the
+provider's native token, cache, cost, duration, and time-to-first-token values.
+Each model pass may add its reasoning profile, prompt/component character
+counts, initially mounted tool names/count, and tool-call duration/error state.
+It never stores prompt components, tool arguments/results, financial values, or
+raw reasoning.
+
+The durable publisher observes lifecycle events in memory and derives queue
+wait, first activity/reasoning/tool/text, first-text-to-finish, total server
+duration, and event counts. This adds no provider call or database round-trip:
+the snapshot is attached to the terminal commit the runtime already requires.
+The adapter contains all instrumentation exceptions and treats a missing sample
+as valid, so telemetry cannot change a run outcome.
+
+The browser separately observes submit-to-receive, first usable answer paint,
+response resolution, and composer unlock. It sends that small sample to
+`POST /agent/runs/{runId}/telemetry` only in an idle task after the interaction
+is usable. The request is never awaited by AG-UI or React Query, uses no run
+state, and drops every client or persistence failure. Replay samples are marked
+so reconnect latency is not confused with original-turn latency. Removing or
+disabling either observability adapter leaves orchestration behavior unchanged.
+
 ```text
 POST /agent
   → RUN_STARTED

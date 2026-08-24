@@ -18,6 +18,11 @@ class _MetricPass:
     stage: str
     model: str
     provider: str | None
+    reasoning_profile: str | None
+    prompt_characters: int | None
+    prompt_components: dict[str, int]
+    mounted_tools: list[str]
+    tool_calls: list[dict[str, Any]]
     input_tokens: int
     output_tokens: int
     total_tokens: int
@@ -76,38 +81,143 @@ def _cost(value: Any) -> float | None:
         return None
 
 
-def record_agno_run_metrics(run_output: Any, *, stage: str, model: str) -> None:
+def _character_count(value: Any) -> int:
+    try:
+        if value is None:
+            return 0
+        if isinstance(value, str):
+            return len(value)
+        if isinstance(value, (list, tuple)) and all(isinstance(item, str) for item in value):
+            return sum(len(item) for item in value)
+        # Never serialize arbitrary prompt/evidence objects merely to observe
+        # them. Their provider token count and total prompt size still remain.
+        return 0
+    except Exception:
+        return 0
+
+
+def agent_instructions(agent: Any) -> Any:
+    """Return instruction data without letting instrumentation introspection raise."""
+    try:
+        return getattr(agent, "instructions", None)
+    except Exception:
+        return None
+
+
+def agent_reasoning_profile(agent: Any) -> str | None:
+    """Read the provider profile after construction without influencing it."""
+    try:
+        value = getattr(getattr(agent, "model", None), "reasoning_effort", None)
+        return str(value)[:32] if value else None
+    except Exception:
+        return None
+
+
+def mounted_tool_names(agent: Any) -> list[str]:
+    """Read mounted tool names defensively from an Agno Agent-like object."""
+    try:
+        tools = getattr(agent, "tools", None) or []
+        values = tools.values() if isinstance(tools, dict) else tools
+        names = []
+        for tool in values:
+            try:
+                name = str(getattr(tool, "name", "") or "").strip()
+                if name:
+                    names.append(name[:160])
+            except Exception:
+                continue
+        return list(dict.fromkeys(names))[:64]
+    except Exception:
+        return []
+
+
+def _tool_call_metrics(run_output: Any) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+    for execution in list(getattr(run_output, "tools", None) or [])[:64]:
+        try:
+            name = str(getattr(execution, "tool_name", "") or "").strip()
+            if not name:
+                continue
+            native_metrics = getattr(execution, "metrics", None)
+            calls.append({
+                "name": name[:160],
+                "durationMs": _milliseconds(getattr(native_metrics, "duration", None)),
+                "failed": bool(getattr(execution, "tool_call_error", False)),
+            })
+        except Exception:
+            # Telemetry is deliberately lossy. One unusual framework tool
+            # object must never affect the financial run it is observing.
+            continue
+    return calls
+
+
+def record_agno_run_metrics(
+    run_output: Any,
+    *,
+    stage: str,
+    model: str,
+    reasoning_profile: str | None = None,
+    prompt_characters: int | None = None,
+    prompt_components: dict[str, Any] | None = None,
+    mounted_tools: list[str] | None = None,
+) -> None:
     """Add one completed Agno ``RunOutput.metrics`` to the active turn.
 
     Outside an AG-UI run no collection exists, so batch jobs and isolated unit
     calls retain their existing behavior. Missing provider fields stay missing;
     in particular, a cost of ``None`` is never silently estimated.
     """
-    collection = _active_collection.get()
-    metrics = getattr(run_output, "metrics", None)
-    if collection is None or metrics is None:
+    try:
+        collection = _active_collection.get()
+        metrics = getattr(run_output, "metrics", None)
+        if collection is None or metrics is None:
+            return
+        input_tokens = _non_negative_int(getattr(metrics, "input_tokens", 0))
+        output_tokens = _non_negative_int(getattr(metrics, "output_tokens", 0))
+        total_tokens = _non_negative_int(getattr(metrics, "total_tokens", 0))
+        if total_tokens == 0 and input_tokens + output_tokens:
+            total_tokens = input_tokens + output_tokens
+        safe_components = {
+            str(key)[:80]: (
+                _non_negative_int(value)
+                if isinstance(value, int) and not isinstance(value, bool)
+                else _character_count(value)
+            )
+            for key, value in (prompt_components or {}).items()
+        }
+        safe_tools = list(dict.fromkeys(
+            str(name).strip()[:160]
+            for name in (mounted_tools or [])
+            if str(name).strip()
+        ))[:64]
+        collection.passes.append(_MetricPass(
+            stage=str(stage)[:80],
+            model=str(getattr(run_output, "model", None) or model)[:160],
+            provider=(
+                str(getattr(run_output, "model_provider", "")).strip()[:80] or None
+            ),
+            reasoning_profile=str(reasoning_profile)[:32] if reasoning_profile else None,
+            prompt_characters=(
+                _non_negative_int(prompt_characters)
+                if prompt_characters is not None
+                else None
+            ),
+            prompt_components=safe_components,
+            mounted_tools=safe_tools,
+            tool_calls=_tool_call_metrics(run_output),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            cache_read_tokens=_non_negative_int(getattr(metrics, "cache_read_tokens", 0)),
+            cache_write_tokens=_non_negative_int(getattr(metrics, "cache_write_tokens", 0)),
+            reasoning_tokens=_non_negative_int(getattr(metrics, "reasoning_tokens", 0)),
+            duration_ms=_milliseconds(getattr(metrics, "duration", None)),
+            time_to_first_token_ms=_milliseconds(getattr(metrics, "time_to_first_token", None)),
+            cost_usd=_cost(getattr(metrics, "cost", None)),
+        ))
+    except Exception:
+        # Metrics are diagnostic evidence, never a dependency of execution.
         return
-    input_tokens = _non_negative_int(getattr(metrics, "input_tokens", 0))
-    output_tokens = _non_negative_int(getattr(metrics, "output_tokens", 0))
-    total_tokens = _non_negative_int(getattr(metrics, "total_tokens", 0))
-    if total_tokens == 0 and input_tokens + output_tokens:
-        total_tokens = input_tokens + output_tokens
-    collection.passes.append(_MetricPass(
-        stage=stage,
-        model=str(getattr(run_output, "model", None) or model),
-        provider=(
-            str(getattr(run_output, "model_provider", "")).strip() or None
-        ),
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        total_tokens=total_tokens,
-        cache_read_tokens=_non_negative_int(getattr(metrics, "cache_read_tokens", 0)),
-        cache_write_tokens=_non_negative_int(getattr(metrics, "cache_write_tokens", 0)),
-        reasoning_tokens=_non_negative_int(getattr(metrics, "reasoning_tokens", 0)),
-        duration_ms=_milliseconds(getattr(metrics, "duration", None)),
-        time_to_first_token_ms=_milliseconds(getattr(metrics, "time_to_first_token", None)),
-        cost_usd=_cost(getattr(metrics, "cost", None)),
-    ))
 
 
 def agent_metric_snapshot() -> dict[str, Any]:
@@ -140,6 +250,12 @@ def agent_metric_snapshot() -> dict[str, Any]:
                 "stage": item.stage,
                 "model": item.model,
                 "provider": item.provider,
+                "reasoningProfile": item.reasoning_profile,
+                "promptCharacters": item.prompt_characters,
+                "promptComponents": item.prompt_components,
+                "mountedToolCount": len(item.mounted_tools),
+                "mountedTools": item.mounted_tools,
+                "toolCalls": item.tool_calls,
                 "inputTokens": item.input_tokens,
                 "outputTokens": item.output_tokens,
                 "totalTokens": item.total_tokens,

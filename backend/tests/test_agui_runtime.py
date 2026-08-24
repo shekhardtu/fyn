@@ -121,6 +121,11 @@ def test_run_persists_ordered_agui_events_and_safe_state(db):
     assert run.time_to_first_response_ms >= 0
     assert run.duration_ms is not None
     assert run.duration_ms >= run.time_to_first_response_ms
+    assert run.metrics["server"]["queueWaitMs"] >= 0
+    assert run.metrics["server"]["acceptedToFirstTextMs"] >= 0
+    assert run.metrics["server"]["acceptedToFinishedMs"] >= run.metrics["server"]["acceptedToFirstTextMs"]
+    assert run.metrics["server"]["eventCounts"]["RUN_STARTED"] == 1
+    assert run.metrics["server"]["eventCounts"]["RUN_FINISHED"] == 1
     snapshots = [event.payload["snapshot"] for event in events if event.event_type == "STATE_SNAPSHOT"]
     assert all("ledger" not in str(snapshot).lower() for snapshot in snapshots)
     assert any(event.event_type == "STATE_DELTA" for event in events)
@@ -1504,6 +1509,52 @@ def test_http_agent_stream_is_native_agui_and_replayable(db):
         assert state["activeRun"] is None
         assert state["latestRun"]["id"] == str(run_id)
         assert state["latestRun"]["lastSequence"] == len(events)
+
+        telemetry = client.post(f"/agent/runs/{run_id}/telemetry", json={
+            "schemaVersion": 1,
+            "submitToRunCreatedMs": 0.4,
+            "submitToFirstActivityReceivedMs": 18.2,
+            "submitToFirstTextReceivedMs": 740.5,
+            "submitToFirstAnswerVisibleMs": 756.1,
+            "submitToResponseResolvedMs": 800.0,
+            "submitToComposerUnlockedMs": 816.2,
+            "pageVisibleAtSubmit": True,
+            "replayed": False,
+        })
+        assert telemetry.status_code == 204
+        db.expire_all()
+        stored = db.get(AgentRun, run_id)
+        assert stored.metrics["client"]["submitToFirstAnswerVisibleMs"] == 756.1
+        assert stored.metrics["client"]["submitToComposerUnlockedMs"] == 816.2
+        assert stored.metrics["server"]["eventCounts"]["RUN_FINISHED"] == 1
+
+
+def test_detached_client_telemetry_contains_persistence_failure(db, monkeypatch):
+    user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
+    conversation = get_or_create_conversation(db, user)
+    run, _live = _execute(
+        db,
+        user,
+        conversation,
+        {"kind": "message", "text": "Hi", "messageId": "telemetry-failure"},
+        "telemetry-failure",
+    )
+    application = FastAPI()
+    application.include_router(router)
+    application.dependency_overrides[get_db] = lambda: db
+    application.dependency_overrides[current_user] = lambda: user
+
+    def fail_commit():
+        raise RuntimeError("telemetry store unavailable")
+
+    monkeypatch.setattr(db, "commit", fail_commit)
+    with TestClient(application) as client:
+        response = client.post(f"/agent/runs/{run.id}/telemetry", json={
+            "schemaVersion": 1,
+            "submitToComposerUnlockedMs": 400,
+        })
+
+    assert response.status_code == 204
 
 
 def test_pending_interrupt_rejects_new_input_with_run_error_event(db):

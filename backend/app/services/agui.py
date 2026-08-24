@@ -69,6 +69,7 @@ from .conversation import (
     resolve_widget_action,
 )
 from .runtime_tools import capability_notes
+from .run_telemetry import RunTelemetryObserver
 from .continuations import (
     CancelContinuation,
     ClarificationContinuationEnvelope,
@@ -199,7 +200,7 @@ def _merge_metric_snapshots(base: dict[str, Any], extra: dict[str, Any]) -> dict
     first_token = base.get("firstModelTimeToFirstTokenMs")
     if first_token is None:
         first_token = extra.get("firstModelTimeToFirstTokenMs")
-    return {
+    merged = {
         "source": "agno_run_output",
         "modelPasses": len(passes),
         "inputTokens": sum(int(item.get("inputTokens") or 0) for item in passes),
@@ -214,6 +215,13 @@ def _merge_metric_snapshots(base: dict[str, Any], extra: dict[str, Any]) -> dict
         "costCoverage": round(len(costs) / len(passes), 4) if passes else 0.0,
         "passes": passes,
     }
+    # Browser and lifecycle telemetry are independent of provider passes and
+    # must survive worker recovery without being interpreted or recomputed.
+    for key in ("server", "client"):
+        value = extra.get(key) or base.get(key)
+        if value is not None:
+            merged[key] = value
+    return merged
 
 
 def _record_activity_event(
@@ -361,6 +369,7 @@ class DurableEventPublisher:
         self._failure_stage: str | None = None
         self._task_error_code: str | None = None
         self._metrics: dict[str, Any] | None = None
+        self._telemetry = RunTelemetryObserver()
 
     @property
     def supports_incremental_flush(self) -> bool:
@@ -374,6 +383,7 @@ class DurableEventPublisher:
     def emit(self, event: Any) -> int:
         self._sequence += 1
         payload = event_payload(event)
+        self._telemetry.observe_event(payload)
         self._pending.append((self._sequence, payload))
         return self._sequence
 
@@ -438,8 +448,17 @@ class DurableEventPublisher:
                 run.failure_stage = self._failure_stage
                 if self._task_error_code is not None:
                     run.error_code = self._task_error_code
-            if self._metrics is not None:
-                run.metrics = self._metrics
+            terminal_at = now_utc() if terminal_status is not None else None
+            bound_metrics = self._metrics
+            if terminal_at is not None:
+                bound_metrics = self._telemetry.terminal_metrics(
+                    bound_metrics,
+                    created_at=run.created_at,
+                    started_at=run.started_at,
+                    finished_at=terminal_at,
+                )
+            if bound_metrics is not None:
+                run.metrics = bound_metrics
             if run.first_response_at is None:
                 first_response = next(
                     (
@@ -458,7 +477,7 @@ class DurableEventPublisher:
                     )
             if terminal_status is not None:
                 run.status = terminal_status.value
-                run.finished_at = now_utc()
+                run.finished_at = terminal_at
                 run.recovery_phase = None
                 run.recovery_payload = {}
                 run.recovery_claimed_at = None

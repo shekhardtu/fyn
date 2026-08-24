@@ -39,7 +39,7 @@ from ..operations.tools import (
     proposal_from_tool_execution,
 )
 from .agent_policies import AgentMode, policy_instructions, policy_name
-from .agent_run_metrics import record_agno_run_metrics
+from .agent_run_metrics import agent_instructions, agent_reasoning_profile, mounted_tool_names, record_agno_run_metrics
 from .answer_presentation import (
     AnswerPresentation,
     answer_presentation,
@@ -1148,13 +1148,16 @@ def run_operator(
     )
     if operator is None:
         return None
+    workflow_json = json.dumps(workflow_context or {}, ensure_ascii=False, default=str)
+    recent_dialogue = _format_recent_context(recent_context)
+    presentation_contract = turn_style_contract(selected_presentation)
     prompt = (
         f"Active domain context (authoritative; select a filesystem operation if it requires a governed workflow):\n"
-        f"{json.dumps(workflow_context or {}, ensure_ascii=False, default=str)}\n\n"
-        f"Recent complete conversation turns:\n{_format_recent_context(recent_context) or '(none)'}\n\n"
+        f"{workflow_json}\n\n"
+        f"Recent complete conversation turns:\n{recent_dialogue or '(none)'}\n\n"
         f"Current user message:\n{text}\n\n"
         "User-selected answer presentation contract (mandatory for this turn):\n"
-        f"{turn_style_contract(selected_presentation)}"
+        f"{presentation_contract}"
     )
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
@@ -1207,6 +1210,16 @@ def run_operator(
             final_output,
             stage="operator_response",
             model=model_id or runtime_settings.operator_model,
+            reasoning_profile=agent_reasoning_profile(operator),
+            prompt_characters=len(prompt),
+            prompt_components={
+                "systemInstructions": agent_instructions(operator),
+                "workflowContext": workflow_json,
+                "recentContext": recent_dialogue,
+                "currentMessage": text,
+                "presentationContract": presentation_contract,
+            },
+            mounted_tools=mounted_tool_names(operator),
         )
 
     final_reasoning = (
@@ -1311,16 +1324,24 @@ def repair_grounded_answer(
         ],
         **FinanceRunContext(current_date, user_timezone).agno_options(),
     )
-    result = composer.run(json.dumps({
+    repair_prompt = json.dumps({
         "question": question,
         "original_answer": original_answer,
         "missing_obligations": obligations,
         "typed_evidence": evidence[:300],
-    }, ensure_ascii=False, default=str))
+    }, ensure_ascii=False, default=str)
+    result = composer.run(repair_prompt)
     record_agno_run_metrics(
         result,
         stage="grounded_answer_repair",
         model=settings.operator_model,
+        reasoning_profile="low",
+        prompt_characters=len(repair_prompt),
+        prompt_components={
+            "question": question,
+            "originalAnswer": original_answer,
+            "obligations": obligations,
+        },
     )
     repaired = (
         result.content
@@ -1375,12 +1396,25 @@ def suggest_related_questions(
         **FinanceRunContext(current_date, user_timezone).agno_options(),
     )
     dialogue = _format_recent_context(recent_turns or [])
-    result = suggester.run(
+    suggestion_prompt = (
         f"Recent conversation (context only):\n{dialogue or '(none)'}\n\n"
         f"Question just asked:\n{question}\n\n"
         f"Answer just given:\n{answer}"
     )
-    record_agno_run_metrics(result, stage="related_question_suggester", model=settings.suggester_model)
+    result = suggester.run(suggestion_prompt)
+    record_agno_run_metrics(
+        result,
+        stage="related_question_suggester",
+        model=settings.suggester_model,
+        reasoning_profile="none",
+        prompt_characters=len(suggestion_prompt),
+        prompt_components={
+            "recentContext": dialogue,
+            "question": question,
+            "answer": answer,
+            "capabilityNotes": capability_notes,
+        },
+    )
     content = result.content if isinstance(result.content, RelatedQuestionSuggestions) else RelatedQuestionSuggestions.model_validate(result.content)
     already_asked = {
         " ".join(str(turn.get("content", "")).casefold().split())
@@ -1441,11 +1475,14 @@ def evaluate_reconciliation_match(
         "canonical_candidate": candidate,
         "deterministic_signals": deterministic_signals,
     }
-    result = reconciler.run(json.dumps(payload, default=str))
+    reconciliation_prompt = json.dumps(payload, default=str)
+    result = reconciler.run(reconciliation_prompt)
     record_agno_run_metrics(
         result,
         stage="reconciliation",
         model=get_settings().reconciler_model,
+        reasoning_profile="none",
+        prompt_characters=len(reconciliation_prompt),
     )
     return (
         result.content

@@ -27,7 +27,7 @@ vi.mock("@ag-ui/client", () => ({
   },
 }));
 
-import { sendAgentMessage } from "@/lib/api";
+import { reportAgentClientTelemetry, sendAgentMessage } from "@/lib/api";
 
 const fetchMock = vi.fn();
 
@@ -59,5 +59,29 @@ describe("durable agent response handling", () => {
     await expect(sendAgentMessage("thread-id", "Cancel the transfer")).rejects.toThrow(
       "fyn AI could not complete this request.",
     );
+  });
+
+  it("dispatches browser telemetry later and never joins the agent request", async () => {
+    vi.useFakeTimers();
+    Object.defineProperty(window, "requestIdleCallback", { value: undefined, configurable: true });
+
+    reportAgentClientTelemetry("run-id", {
+      schemaVersion: 1,
+      submitToRunCreatedMs: 0.2,
+      submitToFirstActivityReceivedMs: 10,
+      submitToFirstReasoningReceivedMs: null,
+      submitToFirstTextReceivedMs: 500,
+      submitToFirstAnswerVisibleMs: 516,
+      submitToResponseResolvedMs: 550,
+      submitToComposerUnlockedMs: 566,
+      pageVisibleAtSubmit: true,
+      replayed: false,
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    await vi.runAllTimersAsync();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][0]).toContain("/agent/runs/run-id/telemetry");
+    vi.useRealTimers();
   });
 });

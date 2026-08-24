@@ -18,6 +18,7 @@ import { MessageDeliveryTime } from "@/components/message-delivery-time";
 import { MessageIdentifier } from "@/components/message-identifier";
 import { environment } from "@/config/environment";
 import { bootstrap, cancelAgentRun, createCategory, createConversation, createSubcategory, deleteConversation, flushConversationDeletion, isUnauthorized, listConversations, loadAgentThreadState, loadConversation, renameConversation, openInterrupts, reconnectAgentRun, resumeAgentInterrupt, sendAgentAction, sendAgentMessage, uploadCsv, type AgentActivity, type AgentRunPhase, type FynInterrupt } from "@/lib/api";
+import { AgentRunTelemetry } from "@/lib/agent-telemetry";
 import { formatBytes, formatMoney, readComposerEntry } from "@/lib/format";
 import { takeSharedText } from "@/lib/share-target";
 import { transcriptElementOffset } from "@/lib/transcript-scroll";
@@ -1186,27 +1187,71 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     });
   }, []);
 
+  const clientRunTelemetry = useRef<AgentRunTelemetry | null>(null);
+  const startClientRunTelemetry = useCallback((replayed = false) => {
+    try {
+      clientRunTelemetry.current = new AgentRunTelemetry(replayed);
+    } catch {
+      clientRunTelemetry.current = null;
+    }
+  }, []);
+  const finishClientRunTelemetry = useCallback((composerUnlocked: boolean) => {
+    const telemetry = clientRunTelemetry.current;
+    if (!telemetry) return;
+    telemetry.responseResolved();
+    const afterUsablePaint = () => {
+      telemetry.answerVisible();
+      if (composerUnlocked) telemetry.composerUnlocked();
+      telemetry.report();
+      if (clientRunTelemetry.current === telemetry) clientRunTelemetry.current = null;
+    };
+    try {
+      if (document.visibilityState === "visible") {
+        window.requestAnimationFrame(() => window.setTimeout(afterUsablePaint, 0));
+      }
+      else window.setTimeout(afterUsablePaint, 0);
+    } catch {
+      // Dropping a browser sample is always safer than touching run behavior.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (streamingText) clientRunTelemetry.current?.answerVisible();
+  }, [streamingText]);
+
   const agentRunCallbacks = useMemo(() => ({
     onRunCreated: (runId: string) => {
+      if (!clientRunTelemetry.current) startClientRunTelemetry();
+      clientRunTelemetry.current?.bindRun(runId);
       setActiveRunId(runId);
       setStoppingRun(false);
       setStreamingText("");
     },
     onPhase: (phase: AgentRunPhase) => setRunPhase(phase),
-    onActivity: updateActivity,
-    onReasoning: (summary: string) => setReasoningSummary(summary),
-    onText: (text: string) => setStreamingText(text),
-  }), [updateActivity]);
+    onActivity: (activity: AgentActivity) => {
+      clientRunTelemetry.current?.activityReceived();
+      updateActivity(activity);
+    },
+    onReasoning: (summary: string) => {
+      clientRunTelemetry.current?.reasoningReceived();
+      setReasoningSummary(summary);
+    },
+    onText: (text: string) => {
+      clientRunTelemetry.current?.textReceived();
+      setStreamingText(text);
+    },
+  }), [startClientRunTelemetry, updateActivity]);
 
   const chatMutation = useMutation({
     mutationFn: ({ id, text }: { id: string; text: string }) => sendAgentMessage(id, text, agentRunCallbacks, inFlight.current?.signal),
-    onMutate: () => { setAgentRun(idleAgentRun); setReasoningSummary(""); setStreamingText(""); setAnnouncement("fyn AI is working on your message."); },
+    onMutate: () => { startClientRunTelemetry(); setAgentRun(idleAgentRun); setReasoningSummary(""); setStreamingText(""); setAnnouncement("fyn AI is working on your message."); },
     onSuccess: (result) => {
       setAgentRun(idleAgentRun);
       setActiveRunId(null);
       setStoppingRun(false);
       setInterrupts(result.interrupts);
       succeeded(result.response);
+      finishClientRunTelemetry(result.interrupts.length === 0);
     },
     // A message that never reached the server should not look delivered: drop
     // the bubble and put the text back where the user can send it again.
@@ -1231,6 +1276,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
       agentRunCallbacks,
       inFlight.current?.signal,
     ),
+    onMutate: () => startClientRunTelemetry(),
     onSuccess: (result, variables) => {
       setPendingWidget(null);
       setActiveRunId(null);
@@ -1244,6 +1290,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
         result.response.widgets,
       ));
       succeeded(result.response);
+      finishClientRunTelemetry(result.interrupts.length === 0);
     },
     onError: (cause: Error, variables) => {
       setPendingWidget(null);
@@ -1263,11 +1310,13 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
       agentRunCallbacks,
       inFlight.current?.signal,
     ),
+    onMutate: () => startClientRunTelemetry(),
     onSuccess: (result) => {
       setActiveRunId(null);
       setStoppingRun(false);
       setInterrupts(result.interrupts);
       succeeded(result.response);
+      finishClientRunTelemetry(result.interrupts.length === 0);
     },
     onError: (cause: Error) => {
       setActiveRunId(null);
@@ -1307,6 +1356,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     const discovered = agentState.data.activeRun;
     if (!discovered || chatPending || actionPending || interruptPending || activeRunId === discovered.id || reconnectingRun.current === discovered.id) return;
     reconnectingRun.current = discovered.id;
+    startClientRunTelemetry(true);
     setAgentRun(idleAgentRun);
     setReasoningSummary("");
     reconnectAgentRun(conversationId, discovered.id, agentRunCallbacks, inFlight.current?.signal)
@@ -1316,6 +1366,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
         setStoppingRun(false);
         setInterrupts(result.interrupts);
         succeeded(result.response);
+        finishClientRunTelemetry(result.interrupts.length === 0);
       })
       .catch((cause: Error) => {
         setAgentRun(idleAgentRun);
@@ -1324,7 +1375,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
         if (cause.name !== "AbortError") failed(cause, null);
       })
       .finally(() => { reconnectingRun.current = null; });
-  }, [activeRunId, actionPending, agentRunCallbacks, agentState.data, chatPending, conversationId, failed, interruptPending, succeeded]);
+  }, [activeRunId, actionPending, agentRunCallbacks, agentState.data, chatPending, conversationId, failed, finishClientRunTelemetry, interruptPending, startClientRunTelemetry, succeeded]);
 
   // Declared above the handlers below rather than beside the render: they are
   // dependencies of those handlers now, and a `const` read from a dependency

@@ -43,6 +43,7 @@ from .models import (
 )
 from .services.spreadsheet import annotate_source_field, ensure_spreadsheet_manifest
 from .schemas import (
+    AgentClientTelemetryIn,
     AgentInterruptOut,
     AgentRunOut,
     SourceAnnotationsIn,
@@ -157,6 +158,7 @@ from .services.agui import (
     sse_event as agui_sse_event,
     supersede_open_interrupts,
 )
+from .services.run_telemetry import merge_client_telemetry
 
 
 router = APIRouter()
@@ -749,6 +751,41 @@ def cancel_agent_run(
         db.commit()
         db.refresh(run)
     return AgentRunOut.model_validate(run)
+
+
+@router.post("/agent/runs/{run_id}/telemetry", status_code=status.HTTP_204_NO_CONTENT)
+def record_agent_client_telemetry(
+    run_id: UUID,
+    request: AgentClientTelemetryIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> Response:
+    """Accept optional browser timings outside the agent execution path.
+
+    The endpoint is intentionally best-effort: its caller never awaits it and
+    a persistence failure cannot change the run outcome or customer response.
+    """
+    run = db.scalar(select(AgentRun).where(AgentRun.id == run_id, AgentRun.user_id == user.id))
+    if not run:
+        # Preserve ownership semantics without exposing whether a foreign run
+        # exists. This failure belongs only to the detached telemetry request.
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    try:
+        client = request.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude_none=True,
+            exclude={"schema_version"},
+        )
+        run.metrics = merge_client_telemetry(run.metrics, client)
+        flag_modified(run, "metrics")
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/observations", response_model=ReconciliationResultOut)
