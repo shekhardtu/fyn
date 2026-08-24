@@ -5,7 +5,7 @@ import { Combobox } from "@/components/ui/combobox";
 import { Progress } from "@/components/ui/progress";
 import { ChartView } from "@/components/widget-library/chart";
 import { formatDimension, formatDuration, formatInstant, formatMoney, formatTransactionClassification, parseAmountToMinor, parseNumber, timestampInputToUtc, timestampInputValue } from "@/lib/format";
-import { dataChartDataSchema, editableTransactionTypes, widgetActionIds, widgetTypeIds, type AgentRunMetrics, type Widget, type WidgetActionId } from "@/lib/protocol";
+import { dataChartDataSchema, editableTransactionTypes, widgetActionIds, widgetTypeIds, type AgentRunMetrics, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type Widget, type WidgetActionId } from "@/lib/protocol";
 import { cn } from "@/lib/utils";
 
 type Primitive = string | number | boolean | null | undefined;
@@ -169,6 +169,10 @@ export type WidgetProps = {
    *  did not yet declare its own cancellation action. */
   onCancel?: () => void;
   onAction: (widgetId: string, action: WidgetActionId, payload: Record<string, unknown>, options?: { markUsed?: boolean }) => void;
+  /** Taxonomy mutations are supplied by the conversation shell, matching the
+   *  standalone transaction editor's dependency boundary. */
+  onCreateCategory?: (name: string) => Promise<CategoryDirectoryOut>;
+  onCreateSubcategory?: (categoryId: string, name: string) => Promise<CategoryDirectorySubcategoryOut>;
   /** Posts text as a new user message through the composer's own guards.
    *  Used by suggestion widgets; absent in read-only render contexts. */
   onPostPrompt?: (text: string) => void;
@@ -590,7 +594,7 @@ function OperationApproval({ widget, onAction, disabled, pending }: WidgetProps)
   </Card>;
 }
 
-function TransactionEdit({ widget, onAction, disabled, pending }: WidgetProps) {
+function TransactionEdit({ widget, onAction, onCreateCategory, onCreateSubcategory, disabled, pending }: WidgetProps) {
   const saved = typeof widget.data.transactionId === "string";
   const submitted = completionValues(widget);
   // `fields` is the whitelist of what this particular edit may change, in the
@@ -615,8 +619,11 @@ function TransactionEdit({ widget, onAction, disabled, pending }: WidgetProps) {
   const [amountError, setAmountError] = useState<string | null>(null);
   const [transactionAtError, setTransactionAtError] = useState<string | null>(null);
   const [submittedAction, markSubmitted] = usePendingAction(pending);
-  const categories = Array.isArray(widget.data.categories) ? widget.data.categories as Data[] : [];
-  const subcategories = (Array.isArray(widget.data.subcategories) ? widget.data.subcategories as Data[] : []).filter((item) => str(item.categoryId) === categoryId);
+  const [categories, setCategories] = useState<Data[]>(Array.isArray(widget.data.categories) ? widget.data.categories as Data[] : []);
+  const [allSubcategories, setAllSubcategories] = useState<Data[]>(Array.isArray(widget.data.subcategories) ? widget.data.subcategories as Data[] : []);
+  const [taxonomyPending, setTaxonomyPending] = useState<"category" | "subcategory" | null>(null);
+  const [taxonomyError, setTaxonomyError] = useState<string | null>(null);
+  const subcategories = allSubcategories.filter((item) => str(item.categoryId) === categoryId);
   const needsCategory = categories.length > 0 && transactionType === "expense" && shows("category");
   const editable = { type: saved && shows("transaction_type"), location: saved && shows("location"), nature: saved && transactionType === "expense" && shows("spend_nature"), tags: saved && shows("tags") };
   // Persisted edit widgets created before the cancel action was added still
@@ -630,6 +637,50 @@ function TransactionEdit({ widget, onAction, disabled, pending }: WidgetProps) {
     style: "secondary",
     payload: { transactionId: widget.data.transactionId },
   }], disabled && !pending);
+
+  async function addCategory(name: string) {
+    if (!onCreateCategory) return;
+    setTaxonomyError(null);
+    setTaxonomyPending("category");
+    try {
+      const created = await onCreateCategory(name);
+      setCategories((current) => current.some((item) => str(item.id) === created.id)
+        ? current
+        : [...current, { id: created.id, label: created.label }]);
+      setAllSubcategories((current) => {
+        const known = new Set(current.map((item) => str(item.id)));
+        return [
+          ...current,
+          ...created.subcategories
+            .filter((item) => !known.has(item.id))
+            .map((item) => ({ id: item.id, categoryId: created.id, label: item.label })),
+        ];
+      });
+      setCategoryId(created.id);
+      setSubcategoryId("");
+    } catch (cause) {
+      setTaxonomyError(cause instanceof Error ? cause.message : "That category could not be added. Try again.");
+    } finally {
+      setTaxonomyPending(null);
+    }
+  }
+
+  async function addSubcategory(name: string) {
+    if (!categoryId || !onCreateSubcategory) return;
+    setTaxonomyError(null);
+    setTaxonomyPending("subcategory");
+    try {
+      const created = await onCreateSubcategory(categoryId, name);
+      setAllSubcategories((current) => current.some((item) => str(item.id) === created.id)
+        ? current
+        : [...current, { id: created.id, categoryId, label: created.label }]);
+      setSubcategoryId(created.id);
+    } catch (cause) {
+      setTaxonomyError(cause instanceof Error ? cause.message : "That subcategory could not be added. Try again.");
+    } finally {
+      setTaxonomyPending(null);
+    }
+  }
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -656,6 +707,8 @@ function TransactionEdit({ widget, onAction, disabled, pending }: WidgetProps) {
 
   return <Card className="hitl-card"><form onSubmit={submit} noValidate className="space-y-3 p-3">
     <h3 className="font-heading text-body font-semibold text-ink">{str(widget.data.title, saved ? "Edit transaction" : "Edit this entry")}</h3>
+    {taxonomyError ? <p role="alert" className="rounded-lg border border-danger-line bg-danger-tint px-3 py-2 text-note text-danger-ink">{taxonomyError}</p> : null}
+    {taxonomyPending ? <p role="status" className="flex items-center gap-2 text-note text-ink-muted"><Loader2 size={14} className="animate-spin" />Adding {taxonomyPending}…</p> : null}
     <div className="grid gap-3 sm:grid-cols-2">
       <label className="block"><FieldLabel>Amount</FieldLabel><input ref={amountInput} disabled={disabled || pending} aria-label="Transaction amount" aria-invalid={Boolean(amountError)} aria-describedby={amountError ? `${widget.id}-amount-error` : undefined} inputMode="decimal" value={amount} onChange={(event) => { setAmount(event.target.value); if (amountError) setAmountError(null); }} placeholder="1,500" className={cn(inputClass, amountError && invalidClass)} />{amountError ? <span id={`${widget.id}-amount-error`}><FieldError>{amountError}</FieldError></span> : null}</label>
       {shows("merchant") ? <label className="block"><FieldLabel hint="optional">Merchant</FieldLabel><input disabled={disabled || pending} aria-label="Merchant" value={merchant} onChange={(event) => setMerchant(event.target.value)} placeholder="Where you paid" className={inputClass} /></label> : null}
@@ -672,13 +725,13 @@ function TransactionEdit({ widget, onAction, disabled, pending }: WidgetProps) {
       {editable.nature ? <div><FieldLabel>Spend nature</FieldLabel><Combobox aria-label="Spend nature" disabled={disabled || pending} value={spendNature} onValueChange={setSpendNature} options={[{ value: "unknown", label: "Not set" }, { value: "essential", label: "Essential" }, { value: "discretionary", label: "Discretionary" }, { value: "potentially_avoidable", label: "Potentially avoidable" }]} triggerClassName="text-body" /></div> : null}
       {editable.tags ? <label className="block sm:col-span-2"><FieldLabel hint="comma separated">Tags</FieldLabel><input disabled={disabled || pending} aria-label="Transaction tags" value={tags} onChange={(event) => setTags(event.target.value)} placeholder="vacation, family, reimbursable" className={inputClass} /></label> : null}
       {needsCategory ? <>
-        <div><FieldLabel>Category</FieldLabel><Combobox aria-label="Transaction category" disabled={disabled || pending} value={categoryId} onValueChange={(next) => { setCategoryId(next); setSubcategoryId(""); }} placeholder="Choose category" options={categories.map((item) => ({ value: str(item.id), label: str(item.label) }))} triggerClassName="text-body" /></div>
-        <div><FieldLabel>Subcategory</FieldLabel><Combobox aria-label="Transaction subcategory" disabled={disabled || pending || !categoryId} value={subcategoryId} onValueChange={setSubcategoryId} placeholder={categoryId ? "Choose subcategory" : "Choose a category first"} options={subcategories.map((item) => ({ value: str(item.id), label: str(item.label) }))} triggerClassName="text-body" /></div>
+        <div><FieldLabel>Category</FieldLabel><Combobox aria-label="Transaction category" disabled={disabled || pending || Boolean(taxonomyPending)} value={categoryId} onValueChange={(next) => { setCategoryId(next); setSubcategoryId(""); setTaxonomyError(null); }} placeholder="Choose category" options={categories.map((item) => ({ value: str(item.id), label: str(item.label) }))} searchPlaceholder="Search or add new" onCreate={onCreateCategory ? (name) => void addCategory(name) : undefined} createHint="New category" triggerClassName="text-body" /></div>
+        <div><FieldLabel>Subcategory</FieldLabel><Combobox aria-label="Transaction subcategory" disabled={disabled || pending || Boolean(taxonomyPending) || !categoryId} value={subcategoryId} onValueChange={(next) => { setSubcategoryId(next); setTaxonomyError(null); }} placeholder={categoryId ? "Choose subcategory" : "Choose a category first"} options={subcategories.map((item) => ({ value: str(item.id), label: str(item.label) }))} searchPlaceholder="Search or add new" onCreate={onCreateSubcategory ? (name) => void addSubcategory(name) : undefined} createHint={`New in ${categories.find((item) => str(item.id) === categoryId)?.label ?? "this category"}`} triggerClassName="text-body" /></div>
       </> : null}
     </div>
     <HitlActions className="-mx-3 -mb-3 border-t border-line">
-      {orderedActions(navigationActions).map((action) => <ActionButton key={action.id} action={action} pending={pending && submittedAction === action.id} disabled={disabled || pending} onClick={() => { markSubmitted(action.id); onAction(widget.id, action.action, action.payload); }} />)}
-      <Button type="submit" disabled={disabled || pending || !amount.trim() || (needsCategory && (!categoryId || !subcategoryId))}>{pending && submittedAction === "submit" ? <Loader2 className="animate-spin" /> : null}{completing ? "Save entry" : "Apply changes"}</Button>
+      {orderedActions(navigationActions).map((action) => <ActionButton key={action.id} action={action} pending={pending && submittedAction === action.id} disabled={disabled || pending || Boolean(taxonomyPending)} onClick={() => { markSubmitted(action.id); onAction(widget.id, action.action, action.payload); }} />)}
+      <Button type="submit" disabled={disabled || pending || Boolean(taxonomyPending) || !amount.trim() || (needsCategory && (!categoryId || !subcategoryId))}>{pending && submittedAction === "submit" ? <Loader2 className="animate-spin" /> : null}{completing ? "Save entry" : "Apply changes"}</Button>
     </HitlActions>
   </form></Card>;
 }

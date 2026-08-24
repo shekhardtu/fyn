@@ -11,17 +11,17 @@ import { Scratchpad } from "@/components/scratchpad";
 import { Textarea } from "@/components/ui/textarea";
 import { Toast, ToastAction, ToastClose, ToastContent, ToastDescription, ToastPortal, ToastProvider, ToastTitle, ToastViewport, toast, UNDO_WINDOW_MS, useToastManager } from "@/components/ui/toast";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { WidgetRenderer } from "@/components/widget-renderer";
+import { WidgetRenderer, type WidgetProps } from "@/components/widget-renderer";
 import { MarkdownMessage } from "@/components/widget-library/markdown-message";
 import { DayDivider, localDayKey } from "@/components/day-divider";
 import { MessageDeliveryTime } from "@/components/message-delivery-time";
 import { MessageIdentifier } from "@/components/message-identifier";
 import { environment } from "@/config/environment";
-import { bootstrap, cancelAgentRun, createConversation, deleteConversation, flushConversationDeletion, isUnauthorized, listConversations, loadAgentThreadState, loadConversation, renameConversation, openInterrupts, reconnectAgentRun, resumeAgentInterrupt, sendAgentAction, sendAgentMessage, uploadCsv, type AgentActivity, type AgentRunPhase, type FynInterrupt } from "@/lib/api";
+import { bootstrap, cancelAgentRun, createCategory, createConversation, createSubcategory, deleteConversation, flushConversationDeletion, isUnauthorized, listConversations, loadAgentThreadState, loadConversation, renameConversation, openInterrupts, reconnectAgentRun, resumeAgentInterrupt, sendAgentAction, sendAgentMessage, uploadCsv, type AgentActivity, type AgentRunPhase, type FynInterrupt } from "@/lib/api";
 import { formatBytes, formatMoney, readComposerEntry } from "@/lib/format";
 import { takeSharedText } from "@/lib/share-target";
 import { transcriptElementOffset } from "@/lib/transcript-scroll";
-import { widgetTypeIds, type AgentResponse, type Bootstrap, type ConversationOut, type ConversationPage, type ConversationSummary, type Message, type Widget, type WidgetActionId } from "@/lib/protocol";
+import { widgetTypeIds, type AgentResponse, type Bootstrap, type CategoryDirectoryOut, type ConversationOut, type ConversationPage, type ConversationSummary, type Message, type Widget, type WidgetActionId } from "@/lib/protocol";
 import { useWorkspaceOverlay } from "@/components/ui/overlay";
 import { useScrollEdges } from "@/lib/scroll-edges";
 import { usePlainKey } from "@/lib/shortcuts";
@@ -46,6 +46,9 @@ type Retry =
   | { kind: "action"; widgetId: string; action: WidgetActionId; payload: Record<string, unknown>; markUsed: boolean }
   | { kind: "upload"; file: File }
   | null;
+
+type CreateCategory = NonNullable<WidgetProps["onCreateCategory"]>;
+type CreateSubcategory = NonNullable<WidgetProps["onCreateSubcategory"]>;
 
 /** Rejects what the importer can't read before spending a round trip on it. */
 function csvProblem(file: File) {
@@ -627,7 +630,7 @@ type WidgetAction = (widgetId: string, action: WidgetActionId, payload: Record<s
  *  backwards. Nothing in a finished turn reads what is being typed, so nothing
  *  in one needs to re-render while it is. The same boundary keeps a streaming
  *  reply from re-rendering the turns above it on every tick. */
-const MessageArticle = memo(function MessageArticle({ message, activeWidget, cancelWidget, usedWidgets, pendingWidget, busy, citationsOpen, onToggleCitations, onAction, onCancelWidget, onPostPrompt }: {
+const MessageArticle = memo(function MessageArticle({ message, activeWidget, cancelWidget, usedWidgets, pendingWidget, busy, citationsOpen, onToggleCitations, onAction, onCreateCategory, onCreateSubcategory, onCancelWidget, onPostPrompt }: {
   message: Message;
   activeWidget: string | null;
   cancelWidget: string | null;
@@ -637,6 +640,8 @@ const MessageArticle = memo(function MessageArticle({ message, activeWidget, can
   citationsOpen: boolean;
   onToggleCitations: (messageId: string) => void;
   onAction: WidgetAction;
+  onCreateCategory: CreateCategory;
+  onCreateSubcategory: CreateSubcategory;
   onPostPrompt: (text: string) => void;
   onCancelWidget: (widgetId: string) => void;
 }) {
@@ -678,7 +683,7 @@ const MessageArticle = memo(function MessageArticle({ message, activeWidget, can
           tabIndex={active ? -1 : undefined}
           className="scroll-mt-4"
         >
-          <WidgetRenderer widget={widget} disabled={!active || usedWidgets.has(widget.id) || busy} pending={pendingWidget === widget.id} onCancel={widget.id === cancelWidget ? () => onCancelWidget(widget.id) : undefined} onAction={onAction} onPostPrompt={onPostPrompt} />
+          <WidgetRenderer widget={widget} disabled={!active || usedWidgets.has(widget.id) || busy} pending={pendingWidget === widget.id} onCancel={widget.id === cancelWidget ? () => onCancelWidget(widget.id) : undefined} onAction={onAction} onCreateCategory={onCreateCategory} onCreateSubcategory={onCreateSubcategory} onPostPrompt={onPostPrompt} />
         </div>;
       })}</div> : null}
     </div>
@@ -688,7 +693,7 @@ const MessageArticle = memo(function MessageArticle({ message, activeWidget, can
 /** The thread itself, held behind the same boundary and for the same reason.
  *  Every prop it takes is either state that does not move while you type or a
  *  callback held stable by the workspace, so a keystroke stops here. */
-const Transcript = memo(function Transcript({ messages, agentRun, reasoningSummary, streamingText, streaming, busy, usedWidgets, pendingWidget, openCitations, activeWidget, cancelWidget, activeWidgetFocusKey, error, retry, followEnd, onAction, onCancelWidget, onActiveWidgetReveal, onToggleCitations, onRetry, onPostPrompt, scrollRef }: {
+const Transcript = memo(function Transcript({ messages, agentRun, reasoningSummary, streamingText, streaming, busy, usedWidgets, pendingWidget, openCitations, activeWidget, cancelWidget, activeWidgetFocusKey, error, retry, followEnd, onAction, onCreateCategory, onCreateSubcategory, onCancelWidget, onActiveWidgetReveal, onToggleCitations, onRetry, onPostPrompt, scrollRef }: {
   messages: Message[];
   agentRun: LiveAgentRun;
   reasoningSummary: string;
@@ -705,6 +710,8 @@ const Transcript = memo(function Transcript({ messages, agentRun, reasoningSumma
   retry: Retry;
   followEnd: boolean;
   onAction: WidgetAction;
+  onCreateCategory: CreateCategory;
+  onCreateSubcategory: CreateSubcategory;
   onPostPrompt: (text: string) => void;
   onCancelWidget: (widgetId: string) => void;
   onActiveWidgetReveal: (target: HTMLElement) => boolean;
@@ -868,6 +875,8 @@ const Transcript = memo(function Transcript({ messages, agentRun, reasoningSumma
               citationsOpen={openCitations.has(messages[row.index].id)}
               onToggleCitations={onToggleCitations}
               onAction={onAction}
+              onCreateCategory={onCreateCategory}
+              onCreateSubcategory={onCreateSubcategory}
               onPostPrompt={onPostPrompt}
               onCancelWidget={onCancelWidget}
             />
@@ -886,6 +895,8 @@ const Transcript = memo(function Transcript({ messages, agentRun, reasoningSumma
       citationsOpen={false}
       onToggleCitations={onToggleCitations}
       onAction={onAction}
+      onCreateCategory={onCreateCategory}
+      onCreateSubcategory={onCreateSubcategory}
       onPostPrompt={onPostPrompt}
       onCancelWidget={onCancelWidget}
     /></div> : null}
@@ -920,6 +931,24 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   const serverTranscriptRevision = useMemo(() => transcriptRevision(serverMessages), [serverMessages]);
   const [messages, setMessages] = useState<Message[]>(serverMessages);
   const conversationId = initialData.active_conversation.id;
+  const addConversationCategory = useCallback<CreateCategory>(async (name) => {
+    const created = await createCategory(name);
+    queryClient.setQueryData<CategoryDirectoryOut[]>(["category-directory"], (current) => {
+      if (!current) return current;
+      return current.some((item) => item.id === created.id)
+        ? current.map((item) => item.id === created.id ? created : item)
+        : [...current, created];
+    });
+    return created;
+  }, [queryClient]);
+  const addConversationSubcategory = useCallback<CreateSubcategory>(async (categoryId, name) => {
+    const created = await createSubcategory(categoryId, name);
+    queryClient.setQueryData<CategoryDirectoryOut[]>(["category-directory"], (current) => current?.map((item) => {
+      if (item.id !== categoryId || item.subcategories.some((subcategory) => subcategory.id === created.id)) return item;
+      return { ...item, subcategories: [...item.subcategories, created] };
+    }));
+    return created;
+  }, [queryClient]);
   const [input, setInput] = useState("");
   // A share from the platform sheet lands as a navigation to "/" carrying the
   // text. Seeded, never sent: the person sees what arrived and decides.
@@ -1787,6 +1816,8 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
               retry={retry}
               followEnd={atBottom}
               onAction={handleWidgetAction}
+              onCreateCategory={addConversationCategory}
+              onCreateSubcategory={addConversationSubcategory}
               onPostPrompt={sendPrompt}
               onCancelWidget={cancelWidgetInterrupt}
               onActiveWidgetReveal={revealActiveWidget}

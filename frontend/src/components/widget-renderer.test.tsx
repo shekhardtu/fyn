@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WidgetRenderer, widgetRegistry } from "@/components/widget-renderer";
 import { widgetTypeIds, type Widget } from "@/lib/protocol";
@@ -268,6 +268,50 @@ describe("saved transaction editor", () => {
       transactionId: "transaction-1",
       amountMinor: 30_000,
       transactionType: "income",
+    });
+  });
+
+  it("creates and selects a missing subcategory from the shared dropdown", async () => {
+    const onAction = vi.fn();
+    const categoryId = "42b9db9a-ff04-4ffc-b428-82bb3fb1eb80";
+    const created = {
+      id: "1c399ee9-9a17-4ebc-af61-8f58f70496a7",
+      slug: "custom-petrol",
+      label: "Petrol",
+      editable: true,
+    };
+    const onCreateSubcategory = vi.fn().mockResolvedValue(created);
+    const widget: Widget = {
+      id: "edit-new-subcategory",
+      type: "transaction_edit",
+      version: 1,
+      data: {
+        transactionId: "transaction-1",
+        title: "Edit saved transaction",
+        amountMinor: 204_000,
+        transactionType: "expense",
+        categoryId,
+        subcategoryId: "existing-other",
+        categories: [{ id: categoryId, label: "Travel" }],
+        subcategories: [{ id: "existing-other", categoryId, label: "Other" }],
+        fields: ["amount", "category", "subcategory"],
+      },
+      actions: [{ id: "update", label: "Apply changes", action: "update_saved_transaction", style: "primary", payload: { transactionId: "transaction-1" } }],
+    };
+
+    render(<WidgetRenderer widget={widget} onAction={onAction} onCreateSubcategory={onCreateSubcategory} />);
+    fireEvent.click(screen.getByRole("combobox", { name: "Transaction subcategory" }));
+    fireEvent.change(screen.getByPlaceholderText("Search or add new"), { target: { value: "Petrol" } });
+    fireEvent.click(screen.getByRole("option", { name: /Add “Petrol”/ }));
+
+    await waitFor(() => expect(onCreateSubcategory).toHaveBeenCalledWith(categoryId, "Petrol"));
+    expect(screen.getByRole("combobox", { name: "Transaction subcategory" })).toHaveTextContent("Petrol");
+    fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+    expect(onAction).toHaveBeenCalledWith(widget.id, "update_saved_transaction", {
+      transactionId: "transaction-1",
+      amountMinor: 204_000,
+      categoryId,
+      subcategoryId: created.id,
     });
   });
 });
