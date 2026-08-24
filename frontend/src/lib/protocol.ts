@@ -30,6 +30,7 @@ import {
   type DataChartData,
   type IdentityOut,
   type ImportResult,
+  type LocationResolveOut,
   type Message,
   type OtpSentOut,
   type OverviewOut,
@@ -115,6 +116,7 @@ export const categorySubcategorySchema = generatedSchema<CategoryDirectorySubcat
 export const transactionCategoryHintSchema = generatedSchema<TransactionCategoryHintOut>("TransactionCategoryHintOut");
 export const transactionListSchema = generatedSchema<TransactionListItemOut>("TransactionListItemOut").array();
 export const transactionListItemSchema = generatedSchema<TransactionListItemOut>("TransactionListItemOut");
+export const locationResolveSchema = generatedSchema<LocationResolveOut>("LocationResolveOut");
 export const privacyStatusSchema = generatedSchema<PrivacyStatusOut>("PrivacyStatusOut");
 export const agentSettingsSchema = generatedSchema<AgentSettingsOut>("AgentSettingsOut");
 export const agentResponseSchema = generatedSchema<AgentResponse>("AgentResponse").superRefine((response, context) => {
@@ -149,6 +151,7 @@ export type {
   DataChartData,
   IdentityOut,
   ImportResult,
+  LocationResolveOut,
   Message,
   OtpSentOut,
   OverviewOut,

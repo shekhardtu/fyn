@@ -1,6 +1,6 @@
 import { renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fixForEntry, primeLocationPermission, RECENT_ENTRY_MS, useDeviceLocation } from "@/lib/device-location";
+import { fixForEntry, primeLocationPermission, useDeviceLocation } from "@/lib/device-location";
 
 const HERE = { latitude: 12.971599, longitude: 77.594566, locationAccuracy: 18 };
 
@@ -46,23 +46,12 @@ describe("useDeviceLocation", () => {
 });
 
 describe("fixForEntry", () => {
-  const now = Date.parse("2026-08-20T10:00:00Z");
-
-  it("attaches the fix to an entry about now", () => {
-    expect(fixForEntry(HERE, "2026-08-20T09:45:00Z", now)).toEqual(HERE);
-  });
-
-  it("withholds it from a backdated entry, where it would be a false claim", () => {
-    const yesterday = new Date(now - RECENT_ENTRY_MS - 1).toISOString();
-    expect(fixForEntry(HERE, yesterday, now)).toEqual({ latitude: null, longitude: null, locationAccuracy: null });
+  it("attaches the browser fix to every new entry, including a backdated one", () => {
+    expect(fixForEntry(HERE)).toEqual(HERE);
   });
 
   it("sends explicit nulls when no fix arrived, so the payload stays complete", () => {
-    expect(fixForEntry(null, "2026-08-20T09:45:00Z", now)).toEqual({ latitude: null, longitude: null, locationAccuracy: null });
-  });
-
-  it("withholds it from an unparseable timestamp instead of guessing", () => {
-    expect(fixForEntry(HERE, "not a date", now)).toEqual({ latitude: null, longitude: null, locationAccuracy: null });
+    expect(fixForEntry(null)).toEqual({ latitude: null, longitude: null, locationAccuracy: null });
   });
 });
 

@@ -34,14 +34,8 @@ const NO_FIX: LocationFields = { latitude: null, longitude: null, locationAccura
 // entries at one counter.
 const MAX_FIX_AGE_MS = 60_000;
 // Long enough for a cold lock indoors, short enough that the answer still
-// concerns this transaction. Nothing waits on it either way.
+// concerns this entry. Nothing waits on it either way.
 const FIX_TIMEOUT_MS = 10_000;
-// A fix describes where the device is now, so it can only be claimed as the
-// place a transaction happened while the entry is about now. Logging Tuesday's
-// lunch on Thursday must not stamp it with Thursday's coordinates — a wrong
-// location is worse than none, and this is the one thing the person cannot see
-// to correct.
-export const RECENT_ENTRY_MS = 2 * 60 * 60 * 1000;
 
 /**
  * Requests one position while `enabled` holds, and reports it once it lands.
@@ -78,19 +72,17 @@ export function useDeviceLocation(enabled: boolean): DeviceFix | null {
 }
 
 /**
- * The location fields for an entry timestamped `transactionAt`.
+ * The location fields for a new manual entry.
  *
- * Returns nothing but nulls when there is no fix, or when the entry is not
- * about the present — see `RECENT_ENTRY_MS`. The keys are always present
- * because the payload type requires them; absence is expressed as null.
+ * Every entry created while location recording is enabled carries the browser
+ * fix that arrived for that drawer, including a backdated entry. This is the
+ * place of entry reported by the device, as the privacy setting promises; the
+ * entry timestamp remains the separately editable transaction time. The keys
+ * are always present because the payload type requires them.
  */
-export function fixForEntry(fix: DeviceFix | null, transactionAt: string, now = Date.now()): LocationFields {
-  if (!fix) return NO_FIX;
-  const when = Date.parse(transactionAt);
-  if (!Number.isFinite(when) || Math.abs(when - now) > RECENT_ENTRY_MS) return NO_FIX;
-  return fix;
+export function fixForEntry(fix: DeviceFix | null): LocationFields {
+  return fix ?? NO_FIX;
 }
-
 
 /**
  * Provokes the browser's permission prompt at the moment the person asks for

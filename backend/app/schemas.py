@@ -1072,6 +1072,17 @@ class TransactionUpdateIn(BaseModel):
     location_accuracy: int | None = Field(default=None, alias="locationAccuracy", ge=0)
 
 
+class LocationResolveIn(BaseModel):
+    """A browser fix to name before a new transaction is submitted."""
+
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+
+
+class LocationResolveOut(BaseModel):
+    location: str | None = None
+
+
 class ObservationIn(BaseModel):
     source_type: FinancialSourceType
     source_message_id: str | None = None

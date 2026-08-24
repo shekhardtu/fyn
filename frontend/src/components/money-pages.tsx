@@ -9,7 +9,7 @@ import { Combobox } from "@/components/ui/combobox";
 import { SITE_HEADER_HEIGHT, SiteHeader, useAutoHideSiteHeader } from "@/components/ui/site-header";
 import { toast, UNDO_WINDOW_MS } from "@/components/ui/toast";
 import { useWorkspaceOverlay, useWorkspaceShell } from "@/components/workspace";
-import { createCategory, createSubcategory, createTransactionHint, createTransactionRecord, deleteCategory, deleteSubcategory, deleteTransactionHint, getPrivacyStatus, loadCategories, loadOverview, loadTransactions, removeTransaction, renameCategory, renameSubcategory, restoreTransaction, updateTransaction, updateTransactionHint } from "@/lib/api";
+import { createCategory, createSubcategory, createTransactionHint, createTransactionRecord, deleteCategory, deleteSubcategory, deleteTransactionHint, getPrivacyStatus, loadCategories, loadOverview, loadTransactions, removeTransaction, renameCategory, renameSubcategory, resolveLocationLabel, restoreTransaction, updateTransaction, updateTransactionHint } from "@/lib/api";
 import { fixForEntry, useDeviceLocation } from "@/lib/device-location";
 import { formatInstant, formatMoney, formatTransactionClassification, parseAmountToMinor, timestampInputToUtc, timestampInputValue } from "@/lib/format";
 import { usePlainKey } from "@/lib/shortcuts";
@@ -72,12 +72,17 @@ export function TransactionEditor({ transaction, categories, saving, problem, lo
   const [subcategoryId, setSubcategoryId] = useState(transaction?.subcategoryId ?? "");
   const [spendNature, setSpendNature] = useState<TransactionListItemOut["spendNature"]>(transaction?.spendNature ?? "unknown");
   const [location, setLocation] = useState(transaction?.location ?? "");
+  const locationTouched = useRef(false);
+  const locationLookup = useRef<Promise<string | null> | null>(null);
   const [validation, setValidation] = useState<string | null>(null);
   // Only while adding. An edit happens wherever the person happens to be
   // later, which is not where the money was spent — so editing an entry
   // leaves whatever fix it already has rather than restamping it with the
   // kitchen table.
   const deviceFix = useDeviceLocation(creating && locationAllowed);
+  const coordinateHint = deviceFix
+    ? `${deviceFix.latitude.toFixed(6)}, ${deviceFix.longitude.toFixed(6)}${deviceFix.locationAccuracy === null ? "" : ` · accuracy ±${deviceFix.locationAccuracy} m`}`
+    : null;
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const subcategories = categories.find((category) => category.id === categoryId)?.subcategories ?? [];
 
@@ -109,6 +114,23 @@ export function TransactionEditor({ transaction, categories, saving, problem, lo
 
   const panelRef = useWorkspaceOverlay(true, requestClose);
 
+  // Naming is optional and asynchronous: coordinates are already a complete
+  // fix, while a provider or network failure simply leaves the editable place
+  // label blank. Never overwrite a label the person started typing while the
+  // lookup was in flight.
+  useEffect(() => {
+    if (!creating || !deviceFix) return;
+    let live = true;
+    locationLookup.current ??= resolveLocationLabel(deviceFix.latitude, deviceFix.longitude);
+    void locationLookup.current
+      .then((resolved) => {
+        if (!live || !resolved || locationTouched.current) return;
+        setLocation((current) => current.trim() ? current : resolved);
+      })
+      .catch(() => undefined);
+    return () => { live = false; };
+  }, [creating, deviceFix]);
+
   // Growing the taxonomy from inside the dropdown. The failure lands in the
   // drawer's own alert row, exactly where a failed save would.
   async function addTaxonomy(work: () => Promise<void>) {
@@ -136,7 +158,7 @@ export function TransactionEditor({ transaction, categories, saving, problem, lo
       subcategoryId: transactionType === "expense" ? subcategoryId || null : null,
       spendNature: transactionType === "expense" ? spendNature : "unknown",
       location: location.trim() || null,
-      ...fixForEntry(deviceFix, instant),
+      ...fixForEntry(deviceFix),
     });
   }
 
@@ -176,7 +198,7 @@ export function TransactionEditor({ transaction, categories, saving, problem, lo
             <div className="text-note font-medium text-ink-body">Subcategory<Combobox aria-label="Transaction subcategory" disabled={saving || !categoryId} value={subcategoryId} onValueChange={setSubcategoryId} placeholder={categoryId ? "No subcategory" : "Choose category first"} options={[{ value: "", label: "No subcategory" }, ...subcategories.map((subcategory) => ({ value: subcategory.id, label: subcategory.label }))]} searchPlaceholder="Search or add new" onCreate={onCreateSubcategory && categoryId ? (name) => void addTaxonomy(async () => { const created = await onCreateSubcategory(categoryId, name); setSubcategoryId(created.id); }) : undefined} createHint={`New in ${categories.find((category) => category.id === categoryId)?.label ?? "this category"}`} triggerClassName="mt-1" /></div>
           </> : null}
           {transactionType === "expense" ? <div className="text-note font-medium text-ink-body">Spend nature<Combobox aria-label="Spend nature" disabled={saving} value={spendNature} onValueChange={(next) => setSpendNature(next as TransactionListItemOut["spendNature"])} options={[{ value: "unknown", label: "Not set" }, { value: "essential", label: "Essential" }, { value: "discretionary", label: "Discretionary" }, { value: "potentially_avoidable", label: "Potentially avoidable" }]} triggerClassName="mt-1" /></div> : null}
-          <label className="text-note font-medium text-ink-body">Location<input aria-label="Transaction location" disabled={saving} value={location} maxLength={160} onChange={(event) => setLocation(event.target.value)} className={inputClass} /></label>
+          <label className="text-note font-medium text-ink-body">Location<input aria-label="Transaction location" disabled={saving} value={location} maxLength={160} onChange={(event) => { locationTouched.current = true; setLocation(event.target.value); }} placeholder="City or place" className={inputClass} />{coordinateHint ? <span aria-live="polite" className="mt-1.5 block text-meta font-normal text-ink-muted">Coordinates {coordinateHint}</span> : null}</label>
         </div>
         <div className="mt-6 flex gap-2 border-t border-line pt-5">
           <Button type="submit" size="lg" disabled={saving}>{saving ? <Loader2 className="animate-spin" /> : null}{saving ? (creating ? "Adding…" : "Saving…") : (creating ? "Add transaction" : "Save changes")}</Button>

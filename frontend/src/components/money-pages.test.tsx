@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { TransactionEditor, TransactionRow } from "@/components/money-pages";
+import * as api from "@/lib/api";
 import type { CategoryDirectoryOut, TransactionListItemOut } from "@/lib/protocol";
 
 /** The dropdowns are Base UI comboboxes now: open the trigger, press the row. */
@@ -36,6 +37,11 @@ const transaction: TransactionListItemOut = {
   sourceCount: 1,
   deletedAt: null,
 };
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  Reflect.deleteProperty(navigator, "geolocation");
+});
 
 describe("TransactionRow", () => {
   it("keeps the edit affordance on an active row", () => {
@@ -75,6 +81,33 @@ describe("TransactionRow", () => {
 });
 
 describe("TransactionEditor", () => {
+  it("shows and saves a browser fix while prefilling its resolved place", async () => {
+    const onSave = vi.fn();
+    const getCurrentPosition = vi.fn((success: PositionCallback) => success({
+      coords: { latitude: 12.971599, longitude: 77.594566, accuracy: 18 },
+      timestamp: Date.now(),
+    } as GeolocationPosition));
+    Object.defineProperty(navigator, "geolocation", { configurable: true, value: { getCurrentPosition } });
+    vi.spyOn(api, "resolveLocationLabel").mockResolvedValue("Bengaluru, Karnataka");
+
+    render(<TransactionEditor transaction={null} categories={categories} saving={false} problem={null} locationAllowed onClose={() => undefined} onSave={onSave} />);
+
+    expect(await screen.findByText("Coordinates 12.971599, 77.594566 · accuracy ±18 m")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText("Transaction location")).toHaveValue("Bengaluru, Karnataka"));
+    expect(api.resolveLocationLabel).toHaveBeenCalledWith(12.971599, 77.594566);
+
+    fireEvent.change(screen.getByLabelText("Transaction amount"), { target: { value: "42" } });
+    fireEvent.change(screen.getByLabelText("Transaction date and time"), { target: { value: "2026-08-01T09:30" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add transaction" }));
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      location: "Bengaluru, Karnataka",
+      latitude: 12.971599,
+      longitude: 77.594566,
+      locationAccuracy: 18,
+    }));
+  });
+
   it("only lists taxonomy categories in the category picker", () => {
     const pickerCategories = [...categories, {
       id: "f2cd0b08-71d3-4142-b3c2-55bcf8f8ba9e",

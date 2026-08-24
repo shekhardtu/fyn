@@ -3,7 +3,7 @@ import { AgentCapabilitiesSchema, type AgentCapabilities, type Message as AgUiMe
 
 import { API_MOUNT_PATH } from "@/config/api-path";
 import { environment } from "@/config/environment";
-import { agentActivityEventSchema, agentResponseSchema, agentSettingsSchema, agentThreadStateSchema, authStatusSchema, bootstrapSchema, categoryDirectoryEntrySchema, categoryDirectorySchema, categorySubcategorySchema, conversationCreatedSchema, conversationPageSchema, conversationSchema, conversationSummarySchema, dashboardDetailSchema, dashboardListSchema, importResultSchema, otpSentSchema, overviewSchema, parseActionPayload, privacyStatusSchema, profileSchema, transactionCategoryHintSchema, transactionListItemSchema, transactionListSchema, type AgentActivityEvent, type AgentInterruptOut, type AgentResponse, type AgentSettingsOut, type AgentThreadStateOut, type AuthStatusOut, type Bootstrap, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type ConversationCreatedOut, type ConversationOut, type ConversationPage, type ConversationSummary, type DashboardDetail, type DashboardSummary, type ImportResult, type OtpSentOut, type OverviewOut, type PrivacyStatusOut, type ProfileOut, type TransactionCategoryHintOut, type TransactionListItemOut, type TransactionUpdateIn, type WidgetActionId } from "@/lib/protocol";
+import { agentActivityEventSchema, agentResponseSchema, agentSettingsSchema, agentThreadStateSchema, authStatusSchema, bootstrapSchema, categoryDirectoryEntrySchema, categoryDirectorySchema, categorySubcategorySchema, conversationCreatedSchema, conversationPageSchema, conversationSchema, conversationSummarySchema, dashboardDetailSchema, dashboardListSchema, importResultSchema, locationResolveSchema, otpSentSchema, overviewSchema, parseActionPayload, privacyStatusSchema, profileSchema, transactionCategoryHintSchema, transactionListItemSchema, transactionListSchema, type AgentActivityEvent, type AgentInterruptOut, type AgentResponse, type AgentSettingsOut, type AgentThreadStateOut, type AuthStatusOut, type Bootstrap, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type ConversationCreatedOut, type ConversationOut, type ConversationPage, type ConversationSummary, type DashboardDetail, type DashboardSummary, type ImportResult, type OtpSentOut, type OverviewOut, type PrivacyStatusOut, type ProfileOut, type TransactionCategoryHintOut, type TransactionListItemOut, type TransactionUpdateIn, type WidgetActionId } from "@/lib/protocol";
 
 const API_URL = environment.apiUrl;
 
@@ -237,6 +237,13 @@ export async function createTransactionRecord(payload: TransactionUpdateIn): Pro
     method: "POST",
     body: JSON.stringify(payload),
   }), "created transaction");
+}
+
+export async function resolveLocationLabel(latitude: number, longitude: number): Promise<string | null> {
+  return conform(locationResolveSchema, await request("/locations/resolve", {
+    method: "POST",
+    body: JSON.stringify({ latitude, longitude }),
+  }), "resolved location").location;
 }
 
 export async function updateTransaction(id: string, payload: TransactionUpdateIn): Promise<TransactionListItemOut> {

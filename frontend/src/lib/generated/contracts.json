@@ -9164,6 +9164,24 @@
       "title": "TransactionUpdateIn",
       "type": "object"
     },
+    "LocationResolveOut": {
+      "properties": {
+        "location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Location"
+        }
+      },
+      "title": "LocationResolveOut",
+      "type": "object"
+    },
     "ImportResultOut": {
       "$defs": {
         "AgentResponse": {
@@ -10974,5 +10992,5 @@
     "approve_operation": "OperationActionPayload",
     "cancel_operation": "OperationActionPayload"
   },
-  "schemaHash": "ea4003a523574e02203bacd0a59fe0001f56c4a38296c4efc679fad678cd95c9"
+  "schemaHash": "cda6fed118483cad2dd8926429efd20803a2b510b8afd2b445e7d589127a46bf"
 }

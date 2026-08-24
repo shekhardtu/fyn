@@ -545,6 +545,9 @@ export const LoanScenarioActionPayload = z.looseObject({
 export const LocationPreferenceOut = z.looseObject({
   "locationEnabled": z.boolean(),
 });
+export const LocationResolveOut = z.looseObject({
+  "location": z.union([z.string(), z.null()]).default(null),
+});
 export const OperationActionPayload = z.looseObject({
   "operationId": z.string().regex(new RegExp("^[a-z][a-z0-9_.-]{1,99}$")),
   "operationVersion": z.int().min(1),
@@ -949,6 +952,7 @@ export const schemas = {
   LoanPrepaymentResult,
   LoanScenarioActionPayload,
   LocationPreferenceOut,
+  LocationResolveOut,
   MessageOut,
   OperationActionPayload,
   OperationApprovalData,

@@ -83,6 +83,8 @@ from .schemas import (
     InvestmentProjectionIn,
     ImportResultOut,
     LoanCalculationIn,
+    LocationResolveIn,
+    LocationResolveOut,
     LocationPreferenceIn,
     LocationPreferenceOut,
     ObservationIn,
@@ -133,7 +135,7 @@ from .services.reconciliation import ingest_observation
 from .services.overview import overview_snapshot
 from .services.proactive import current_insights
 from .services.taxonomy import TaxonomyRepository
-from .services.geocoding import backfill_transaction_label, needs_lookup
+from .services.geocoding import backfill_transaction_label, needs_lookup, resolve_cell
 from .services.transactions import (
     UNSET,
     canonical_transactions,
@@ -1198,6 +1200,27 @@ def create_manual_transaction(
     db.refresh(transaction)
     _name_location_later(background, db, transaction, user.id)
     return _saved_transaction_item(db, user.id, transaction)
+
+
+@router.post("/locations/resolve", response_model=LocationResolveOut)
+def resolve_device_location(
+    request: LocationResolveIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> LocationResolveOut:
+    """Name a permitted browser fix without holding up transaction save.
+
+    Coordinates stay in the request body rather than a URL, where access logs
+    and browser history would retain them. The preference is checked here just
+    like it is at the transaction write boundary; a stale tab cannot use this
+    endpoint after location collection has been turned off.
+    """
+    preference = user_preference(db, user.id, "location:enabled")
+    if not (preference and (preference.value or {}).get("enabled") is True):
+        raise HTTPException(status_code=403, detail="Location collection is disabled")
+    location = resolve_cell(db, request.latitude, request.longitude)
+    db.commit()
+    return LocationResolveOut(location=location)
 
 
 @router.patch("/transactions/{transaction_id}", response_model=TransactionListItemOut)

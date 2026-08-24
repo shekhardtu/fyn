@@ -99,6 +99,29 @@ def test_a_fix_with_only_a_country_still_says_something(db, stub_provider):
     assert resolve_cell(db, *BENGALURU, settings=_settings()) == "India"
 
 
+def test_browser_fix_can_be_named_only_while_location_collection_is_enabled(db, stub_provider, monkeypatch):
+    calls = stub_provider(_nominatim_payload(city="Bengaluru", state="Karnataka"))
+    monkeypatch.setattr(geocoding, "get_settings", _settings)
+    user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
+
+    with TestClient(_application(db, user)) as client:
+        denied = client.post("/locations/resolve", json={"latitude": BENGALURU[0], "longitude": BENGALURU[1]})
+        assert denied.status_code == 403
+        assert calls == []
+
+        assert client.patch("/privacy/location", json={"enabled": True}).status_code == 200
+        resolved = client.post("/locations/resolve", json={"latitude": BENGALURU[0], "longitude": BENGALURU[1]})
+        assert resolved.status_code == 200
+        assert resolved.json() == {"location": "Bengaluru, Karnataka"}
+        assert len(calls) == 1
+
+        # The same ~150m cell is served from the cache rather than sent to the
+        # map provider again as another drawer opens.
+        again = client.post("/locations/resolve", json={"latitude": 12.971610, "longitude": 77.594570})
+        assert again.json() == {"location": "Bengaluru, Karnataka"}
+        assert len(calls) == 1
+
+
 def _application(db, user):
     application = FastAPI()
     application.include_router(router)
