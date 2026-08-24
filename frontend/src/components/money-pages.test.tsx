@@ -75,6 +75,25 @@ describe("TransactionRow", () => {
 });
 
 describe("TransactionEditor", () => {
+  it("only lists taxonomy categories in the category picker", () => {
+    const pickerCategories = [...categories, {
+      id: "f2cd0b08-71d3-4142-b3c2-55bcf8f8ba9e",
+      slug: "other",
+      label: "Other",
+      icon: "circle-ellipsis",
+      editable: false,
+      hints: [],
+      subcategories: [],
+    }];
+    render(<TransactionEditor transaction={transaction} categories={pickerCategories} saving={false} problem={null} onClose={() => undefined} onSave={() => undefined} />);
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Transaction category" }));
+
+    expect(screen.getByRole("option", { name: "Transport" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Other" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Uncategorized" })).not.toBeInTheDocument();
+  });
+
   it("questions a close once the form is dirty, and only discards on the explicit button", () => {
     const onClose = vi.fn();
     render(<TransactionEditor transaction={transaction} categories={categories} saving={false} problem={null} onClose={onClose} onSave={() => undefined} />);
