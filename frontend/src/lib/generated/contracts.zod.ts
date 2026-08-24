@@ -25,10 +25,32 @@ export const AffordabilityResult = z.looseObject({
   "months_to_goal": z.union([z.int(), z.null()]),
   "rule": z.string(),
 });
+export const AgentClientTimingMetrics = z.looseObject({
+  "submitToRunCreatedMs": z.union([z.number().min(0), z.null()]).default(null),
+  "submitToFirstActivityReceivedMs": z.union([z.number().min(0), z.null()]).default(null),
+  "submitToFirstReasoningReceivedMs": z.union([z.number().min(0), z.null()]).default(null),
+  "submitToFirstTextReceivedMs": z.union([z.number().min(0), z.null()]).default(null),
+  "submitToFirstAnswerVisibleMs": z.union([z.number().min(0), z.null()]).default(null),
+  "submitToResponseResolvedMs": z.union([z.number().min(0), z.null()]).default(null),
+  "submitToComposerUnlockedMs": z.union([z.number().min(0), z.null()]).default(null),
+  "pageVisibleAtSubmit": z.union([z.boolean(), z.null()]).default(null),
+  "replayed": z.boolean().default(false),
+});
+export const AgentToolCallMetrics = z.looseObject({
+  "name": z.string().min(1).max(160),
+  "durationMs": z.union([z.number().min(0), z.null()]).default(null),
+  "failed": z.boolean().default(false),
+});
 export const AgentModelPassMetrics = z.looseObject({
   "stage": z.string(),
   "model": z.string(),
   "provider": z.union([z.string(), z.null()]).default(null),
+  "reasoningProfile": z.union([z.string().max(32), z.null()]).default(null),
+  "promptCharacters": z.union([z.int().min(0), z.null()]).default(null),
+  "promptComponents": z.record(z.string(), z.unknown()).optional(),
+  "mountedToolCount": z.int().min(0).default(0),
+  "mountedTools": z.array(z.string()).max(64).optional(),
+  "toolCalls": z.array(AgentToolCallMetrics).max(64).optional(),
   "inputTokens": z.int().min(0),
   "outputTokens": z.int().min(0),
   "totalTokens": z.int().min(0),
@@ -38,6 +60,17 @@ export const AgentModelPassMetrics = z.looseObject({
   "durationMs": z.union([z.number().min(0), z.null()]).default(null),
   "timeToFirstTokenMs": z.union([z.number().min(0), z.null()]).default(null),
   "costUsd": z.union([z.number().min(0), z.null()]).default(null),
+});
+export const AgentServerTimingMetrics = z.looseObject({
+  "queueWaitMs": z.union([z.number().min(0), z.null()]).default(null),
+  "startedToFirstActivityMs": z.union([z.number().min(0), z.null()]).default(null),
+  "startedToFirstReasoningMs": z.union([z.number().min(0), z.null()]).default(null),
+  "startedToFirstToolCallMs": z.union([z.number().min(0), z.null()]).default(null),
+  "startedToFirstTextMs": z.union([z.number().min(0), z.null()]).default(null),
+  "acceptedToFirstTextMs": z.union([z.number().min(0), z.null()]).default(null),
+  "firstTextToFinishedMs": z.union([z.number().min(0), z.null()]).default(null),
+  "acceptedToFinishedMs": z.union([z.number().min(0), z.null()]).default(null),
+  "eventCounts": z.record(z.string(), z.unknown()).optional(),
 });
 export const AgentRunMetrics = z.looseObject({
   "source": z.literal("agno_run_output").default("agno_run_output"),
@@ -53,6 +86,8 @@ export const AgentRunMetrics = z.looseObject({
   "costUsd": z.union([z.number().min(0), z.null()]).default(null),
   "costCoverage": z.number().min(0).max(1).default(0),
   "passes": z.array(AgentModelPassMetrics).optional(),
+  "server": z.union([AgentServerTimingMetrics, z.null()]).default(null),
+  "client": z.union([AgentClientTimingMetrics, z.null()]).default(null),
 });
 export const AgentActivityData = z.looseObject({
   "lifecycle": z.union([WidgetLifecycle, z.null()]).default(null),
@@ -85,6 +120,18 @@ export const AgentActivityEvent = z.looseObject({
   "cumulativeMs": z.number().min(0),
   "failureSummary": z.union([z.string(), z.null()]).default(null),
   "modelPassCount": z.union([z.int().min(0), z.null()]).default(null),
+});
+export const AgentClientTelemetryIn = z.looseObject({
+  "submitToRunCreatedMs": z.union([z.number().min(0), z.null()]).default(null),
+  "submitToFirstActivityReceivedMs": z.union([z.number().min(0), z.null()]).default(null),
+  "submitToFirstReasoningReceivedMs": z.union([z.number().min(0), z.null()]).default(null),
+  "submitToFirstTextReceivedMs": z.union([z.number().min(0), z.null()]).default(null),
+  "submitToFirstAnswerVisibleMs": z.union([z.number().min(0), z.null()]).default(null),
+  "submitToResponseResolvedMs": z.union([z.number().min(0), z.null()]).default(null),
+  "submitToComposerUnlockedMs": z.union([z.number().min(0), z.null()]).default(null),
+  "pageVisibleAtSubmit": z.union([z.boolean(), z.null()]).default(null),
+  "replayed": z.boolean().default(false),
+  "schemaVersion": z.literal(1).default(1),
 });
 export const AgentDecisionDiagnostic = z.looseObject({
   "tool": z.union([z.string(), z.null()]).default(null),
@@ -898,6 +945,8 @@ export const schemas = {
   AffordabilityResult,
   AgentActivityData,
   AgentActivityEvent,
+  AgentClientTelemetryIn,
+  AgentClientTimingMetrics,
   AgentDecisionDiagnostic,
   AgentDiagnosticsOut,
   AgentInterruptOut,
@@ -906,8 +955,10 @@ export const schemas = {
   AgentResponse,
   AgentRunMetrics,
   AgentRunOut,
+  AgentServerTimingMetrics,
   AgentSettingsOut,
   AgentThreadStateOut,
+  AgentToolCallMetrics,
   AuthStatusOut,
   AvoidableExpensesData,
   BootstrapResponse,

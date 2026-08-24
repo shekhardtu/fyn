@@ -1612,7 +1612,77 @@
       "title": "ClarificationOptionData",
       "type": "object"
     },
+    "AgentToolCallMetrics": {
+      "description": "Content-free timing for one model-selected tool execution.",
+      "properties": {
+        "name": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "durationMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Durationms"
+        },
+        "failed": {
+          "default": false,
+          "title": "Failed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "AgentToolCallMetrics",
+      "type": "object"
+    },
     "AgentModelPassMetrics": {
+      "$defs": {
+        "AgentToolCallMetrics": {
+          "description": "Content-free timing for one model-selected tool execution.",
+          "properties": {
+            "name": {
+              "maxLength": 160,
+              "minLength": 1,
+              "title": "Name",
+              "type": "string"
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Durationms"
+            },
+            "failed": {
+              "default": false,
+              "title": "Failed",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "title": "AgentToolCallMetrics",
+          "type": "object"
+        }
+      },
       "properties": {
         "stage": {
           "title": "Stage",
@@ -1633,6 +1703,61 @@
           ],
           "default": null,
           "title": "Provider"
+        },
+        "reasoningProfile": {
+          "anyOf": [
+            {
+              "maxLength": 32,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reasoningprofile"
+        },
+        "promptCharacters": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Promptcharacters"
+        },
+        "promptComponents": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Promptcomponents",
+          "type": "object"
+        },
+        "mountedToolCount": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Mountedtoolcount",
+          "type": "integer"
+        },
+        "mountedTools": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Mountedtools",
+          "type": "array"
+        },
+        "toolCalls": {
+          "items": {
+            "$ref": "#/$defs/AgentToolCallMetrics"
+          },
+          "maxItems": 64,
+          "title": "Toolcalls",
+          "type": "array"
         },
         "inputTokens": {
           "minimum": 0,
@@ -1717,8 +1842,476 @@
       "title": "AgentModelPassMetrics",
       "type": "object"
     },
+    "AgentServerTimingMetrics": {
+      "description": "Elapsed server timings calculated without storing request content.",
+      "properties": {
+        "queueWaitMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Queuewaitms"
+        },
+        "startedToFirstActivityMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Startedtofirstactivityms"
+        },
+        "startedToFirstReasoningMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Startedtofirstreasoningms"
+        },
+        "startedToFirstToolCallMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Startedtofirsttoolcallms"
+        },
+        "startedToFirstTextMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Startedtofirsttextms"
+        },
+        "acceptedToFirstTextMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Acceptedtofirsttextms"
+        },
+        "firstTextToFinishedMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Firsttexttofinishedms"
+        },
+        "acceptedToFinishedMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Acceptedtofinishedms"
+        },
+        "eventCounts": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Eventcounts",
+          "type": "object"
+        }
+      },
+      "title": "AgentServerTimingMetrics",
+      "type": "object"
+    },
+    "AgentClientTimingMetrics": {
+      "description": "Browser-observed elapsed timings; reporting is always best-effort.",
+      "properties": {
+        "submitToRunCreatedMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submittoruncreatedms"
+        },
+        "submitToFirstActivityReceivedMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submittofirstactivityreceivedms"
+        },
+        "submitToFirstReasoningReceivedMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submittofirstreasoningreceivedms"
+        },
+        "submitToFirstTextReceivedMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submittofirsttextreceivedms"
+        },
+        "submitToFirstAnswerVisibleMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submittofirstanswervisiblems"
+        },
+        "submitToResponseResolvedMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submittoresponseresolvedms"
+        },
+        "submitToComposerUnlockedMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submittocomposerunlockedms"
+        },
+        "pageVisibleAtSubmit": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pagevisibleatsubmit"
+        },
+        "replayed": {
+          "default": false,
+          "title": "Replayed",
+          "type": "boolean"
+        }
+      },
+      "title": "AgentClientTimingMetrics",
+      "type": "object"
+    },
+    "AgentClientTelemetryIn": {
+      "properties": {
+        "submitToRunCreatedMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submittoruncreatedms"
+        },
+        "submitToFirstActivityReceivedMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submittofirstactivityreceivedms"
+        },
+        "submitToFirstReasoningReceivedMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submittofirstreasoningreceivedms"
+        },
+        "submitToFirstTextReceivedMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submittofirsttextreceivedms"
+        },
+        "submitToFirstAnswerVisibleMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submittofirstanswervisiblems"
+        },
+        "submitToResponseResolvedMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submittoresponseresolvedms"
+        },
+        "submitToComposerUnlockedMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submittocomposerunlockedms"
+        },
+        "pageVisibleAtSubmit": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pagevisibleatsubmit"
+        },
+        "replayed": {
+          "default": false,
+          "title": "Replayed",
+          "type": "boolean"
+        },
+        "schemaVersion": {
+          "const": 1,
+          "default": 1,
+          "title": "Schemaversion",
+          "type": "integer"
+        }
+      },
+      "title": "AgentClientTelemetryIn",
+      "type": "object"
+    },
     "AgentRunMetrics": {
       "$defs": {
+        "AgentClientTimingMetrics": {
+          "description": "Browser-observed elapsed timings; reporting is always best-effort.",
+          "properties": {
+            "submitToRunCreatedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittoruncreatedms"
+            },
+            "submitToFirstActivityReceivedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittofirstactivityreceivedms"
+            },
+            "submitToFirstReasoningReceivedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittofirstreasoningreceivedms"
+            },
+            "submitToFirstTextReceivedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittofirsttextreceivedms"
+            },
+            "submitToFirstAnswerVisibleMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittofirstanswervisiblems"
+            },
+            "submitToResponseResolvedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittoresponseresolvedms"
+            },
+            "submitToComposerUnlockedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittocomposerunlockedms"
+            },
+            "pageVisibleAtSubmit": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Pagevisibleatsubmit"
+            },
+            "replayed": {
+              "default": false,
+              "title": "Replayed",
+              "type": "boolean"
+            }
+          },
+          "title": "AgentClientTimingMetrics",
+          "type": "object"
+        },
         "AgentModelPassMetrics": {
           "properties": {
             "stage": {
@@ -1740,6 +2333,61 @@
               ],
               "default": null,
               "title": "Provider"
+            },
+            "reasoningProfile": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reasoningprofile"
+            },
+            "promptCharacters": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Promptcharacters"
+            },
+            "promptComponents": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "title": "Promptcomponents",
+              "type": "object"
+            },
+            "mountedToolCount": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Mountedtoolcount",
+              "type": "integer"
+            },
+            "mountedTools": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 64,
+              "title": "Mountedtools",
+              "type": "array"
+            },
+            "toolCalls": {
+              "items": {
+                "$ref": "#/$defs/AgentToolCallMetrics"
+              },
+              "maxItems": 64,
+              "title": "Toolcalls",
+              "type": "array"
             },
             "inputTokens": {
               "minimum": 0,
@@ -1822,6 +2470,158 @@
             "reasoningTokens"
           ],
           "title": "AgentModelPassMetrics",
+          "type": "object"
+        },
+        "AgentServerTimingMetrics": {
+          "description": "Elapsed server timings calculated without storing request content.",
+          "properties": {
+            "queueWaitMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Queuewaitms"
+            },
+            "startedToFirstActivityMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Startedtofirstactivityms"
+            },
+            "startedToFirstReasoningMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Startedtofirstreasoningms"
+            },
+            "startedToFirstToolCallMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Startedtofirsttoolcallms"
+            },
+            "startedToFirstTextMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Startedtofirsttextms"
+            },
+            "acceptedToFirstTextMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Acceptedtofirsttextms"
+            },
+            "firstTextToFinishedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Firsttexttofinishedms"
+            },
+            "acceptedToFinishedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Acceptedtofinishedms"
+            },
+            "eventCounts": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "title": "Eventcounts",
+              "type": "object"
+            }
+          },
+          "title": "AgentServerTimingMetrics",
+          "type": "object"
+        },
+        "AgentToolCallMetrics": {
+          "description": "Content-free timing for one model-selected tool execution.",
+          "properties": {
+            "name": {
+              "maxLength": 160,
+              "minLength": 1,
+              "title": "Name",
+              "type": "string"
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Durationms"
+            },
+            "failed": {
+              "default": false,
+              "title": "Failed",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "title": "AgentToolCallMetrics",
           "type": "object"
         }
       },
@@ -1926,6 +2726,28 @@
           },
           "title": "Passes",
           "type": "array"
+        },
+        "server": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentServerTimingMetrics"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "client": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentClientTimingMetrics"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "title": "AgentRunMetrics",
@@ -1933,6 +2755,121 @@
     },
     "AgentActivityData": {
       "$defs": {
+        "AgentClientTimingMetrics": {
+          "description": "Browser-observed elapsed timings; reporting is always best-effort.",
+          "properties": {
+            "submitToRunCreatedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittoruncreatedms"
+            },
+            "submitToFirstActivityReceivedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittofirstactivityreceivedms"
+            },
+            "submitToFirstReasoningReceivedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittofirstreasoningreceivedms"
+            },
+            "submitToFirstTextReceivedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittofirsttextreceivedms"
+            },
+            "submitToFirstAnswerVisibleMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittofirstanswervisiblems"
+            },
+            "submitToResponseResolvedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittoresponseresolvedms"
+            },
+            "submitToComposerUnlockedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittocomposerunlockedms"
+            },
+            "pageVisibleAtSubmit": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Pagevisibleatsubmit"
+            },
+            "replayed": {
+              "default": false,
+              "title": "Replayed",
+              "type": "boolean"
+            }
+          },
+          "title": "AgentClientTimingMetrics",
+          "type": "object"
+        },
         "AgentModelPassMetrics": {
           "properties": {
             "stage": {
@@ -1954,6 +2891,61 @@
               ],
               "default": null,
               "title": "Provider"
+            },
+            "reasoningProfile": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reasoningprofile"
+            },
+            "promptCharacters": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Promptcharacters"
+            },
+            "promptComponents": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "title": "Promptcomponents",
+              "type": "object"
+            },
+            "mountedToolCount": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Mountedtoolcount",
+              "type": "integer"
+            },
+            "mountedTools": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 64,
+              "title": "Mountedtools",
+              "type": "array"
+            },
+            "toolCalls": {
+              "items": {
+                "$ref": "#/$defs/AgentToolCallMetrics"
+              },
+              "maxItems": 64,
+              "title": "Toolcalls",
+              "type": "array"
             },
             "inputTokens": {
               "minimum": 0,
@@ -2140,9 +3132,183 @@
               },
               "title": "Passes",
               "type": "array"
+            },
+            "server": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AgentServerTimingMetrics"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "client": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AgentClientTimingMetrics"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             }
           },
           "title": "AgentRunMetrics",
+          "type": "object"
+        },
+        "AgentServerTimingMetrics": {
+          "description": "Elapsed server timings calculated without storing request content.",
+          "properties": {
+            "queueWaitMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Queuewaitms"
+            },
+            "startedToFirstActivityMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Startedtofirstactivityms"
+            },
+            "startedToFirstReasoningMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Startedtofirstreasoningms"
+            },
+            "startedToFirstToolCallMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Startedtofirsttoolcallms"
+            },
+            "startedToFirstTextMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Startedtofirsttextms"
+            },
+            "acceptedToFirstTextMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Acceptedtofirsttextms"
+            },
+            "firstTextToFinishedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Firsttexttofinishedms"
+            },
+            "acceptedToFinishedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Acceptedtofinishedms"
+            },
+            "eventCounts": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "title": "Eventcounts",
+              "type": "object"
+            }
+          },
+          "title": "AgentServerTimingMetrics",
+          "type": "object"
+        },
+        "AgentToolCallMetrics": {
+          "description": "Content-free timing for one model-selected tool execution.",
+          "properties": {
+            "name": {
+              "maxLength": 160,
+              "minLength": 1,
+              "title": "Name",
+              "type": "string"
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Durationms"
+            },
+            "failed": {
+              "default": false,
+              "title": "Failed",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "title": "AgentToolCallMetrics",
           "type": "object"
         },
         "WidgetLifecycle": {
@@ -5784,6 +6950,121 @@
     },
     "AgentRunOut": {
       "$defs": {
+        "AgentClientTimingMetrics": {
+          "description": "Browser-observed elapsed timings; reporting is always best-effort.",
+          "properties": {
+            "submitToRunCreatedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittoruncreatedms"
+            },
+            "submitToFirstActivityReceivedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittofirstactivityreceivedms"
+            },
+            "submitToFirstReasoningReceivedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittofirstreasoningreceivedms"
+            },
+            "submitToFirstTextReceivedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittofirsttextreceivedms"
+            },
+            "submitToFirstAnswerVisibleMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittofirstanswervisiblems"
+            },
+            "submitToResponseResolvedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittoresponseresolvedms"
+            },
+            "submitToComposerUnlockedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittocomposerunlockedms"
+            },
+            "pageVisibleAtSubmit": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Pagevisibleatsubmit"
+            },
+            "replayed": {
+              "default": false,
+              "title": "Replayed",
+              "type": "boolean"
+            }
+          },
+          "title": "AgentClientTimingMetrics",
+          "type": "object"
+        },
         "AgentModelPassMetrics": {
           "properties": {
             "stage": {
@@ -5805,6 +7086,61 @@
               ],
               "default": null,
               "title": "Provider"
+            },
+            "reasoningProfile": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reasoningprofile"
+            },
+            "promptCharacters": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Promptcharacters"
+            },
+            "promptComponents": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "title": "Promptcomponents",
+              "type": "object"
+            },
+            "mountedToolCount": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Mountedtoolcount",
+              "type": "integer"
+            },
+            "mountedTools": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 64,
+              "title": "Mountedtools",
+              "type": "array"
+            },
+            "toolCalls": {
+              "items": {
+                "$ref": "#/$defs/AgentToolCallMetrics"
+              },
+              "maxItems": 64,
+              "title": "Toolcalls",
+              "type": "array"
             },
             "inputTokens": {
               "minimum": 0,
@@ -5991,9 +7327,183 @@
               },
               "title": "Passes",
               "type": "array"
+            },
+            "server": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AgentServerTimingMetrics"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "client": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AgentClientTimingMetrics"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             }
           },
           "title": "AgentRunMetrics",
+          "type": "object"
+        },
+        "AgentServerTimingMetrics": {
+          "description": "Elapsed server timings calculated without storing request content.",
+          "properties": {
+            "queueWaitMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Queuewaitms"
+            },
+            "startedToFirstActivityMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Startedtofirstactivityms"
+            },
+            "startedToFirstReasoningMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Startedtofirstreasoningms"
+            },
+            "startedToFirstToolCallMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Startedtofirsttoolcallms"
+            },
+            "startedToFirstTextMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Startedtofirsttextms"
+            },
+            "acceptedToFirstTextMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Acceptedtofirsttextms"
+            },
+            "firstTextToFinishedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Firsttexttofinishedms"
+            },
+            "acceptedToFinishedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Acceptedtofinishedms"
+            },
+            "eventCounts": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "title": "Eventcounts",
+              "type": "object"
+            }
+          },
+          "title": "AgentServerTimingMetrics",
+          "type": "object"
+        },
+        "AgentToolCallMetrics": {
+          "description": "Content-free timing for one model-selected tool execution.",
+          "properties": {
+            "name": {
+              "maxLength": 160,
+              "minLength": 1,
+              "title": "Name",
+              "type": "string"
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Durationms"
+            },
+            "failed": {
+              "default": false,
+              "title": "Failed",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "title": "AgentToolCallMetrics",
           "type": "object"
         }
       },
@@ -6146,6 +7656,121 @@
     },
     "AgentThreadStateOut": {
       "$defs": {
+        "AgentClientTimingMetrics": {
+          "description": "Browser-observed elapsed timings; reporting is always best-effort.",
+          "properties": {
+            "submitToRunCreatedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittoruncreatedms"
+            },
+            "submitToFirstActivityReceivedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittofirstactivityreceivedms"
+            },
+            "submitToFirstReasoningReceivedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittofirstreasoningreceivedms"
+            },
+            "submitToFirstTextReceivedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittofirsttextreceivedms"
+            },
+            "submitToFirstAnswerVisibleMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittofirstanswervisiblems"
+            },
+            "submitToResponseResolvedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittoresponseresolvedms"
+            },
+            "submitToComposerUnlockedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Submittocomposerunlockedms"
+            },
+            "pageVisibleAtSubmit": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Pagevisibleatsubmit"
+            },
+            "replayed": {
+              "default": false,
+              "title": "Replayed",
+              "type": "boolean"
+            }
+          },
+          "title": "AgentClientTimingMetrics",
+          "type": "object"
+        },
         "AgentInterruptOut": {
           "properties": {
             "id": {
@@ -6244,6 +7869,61 @@
               ],
               "default": null,
               "title": "Provider"
+            },
+            "reasoningProfile": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reasoningprofile"
+            },
+            "promptCharacters": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Promptcharacters"
+            },
+            "promptComponents": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "title": "Promptcomponents",
+              "type": "object"
+            },
+            "mountedToolCount": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Mountedtoolcount",
+              "type": "integer"
+            },
+            "mountedTools": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 64,
+              "title": "Mountedtools",
+              "type": "array"
+            },
+            "toolCalls": {
+              "items": {
+                "$ref": "#/$defs/AgentToolCallMetrics"
+              },
+              "maxItems": 64,
+              "title": "Toolcalls",
+              "type": "array"
             },
             "inputTokens": {
               "minimum": 0,
@@ -6430,6 +8110,28 @@
               },
               "title": "Passes",
               "type": "array"
+            },
+            "server": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AgentServerTimingMetrics"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "client": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AgentClientTimingMetrics"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             }
           },
           "title": "AgentRunMetrics",
@@ -6581,6 +8283,158 @@
             "createdAt"
           ],
           "title": "AgentRunOut",
+          "type": "object"
+        },
+        "AgentServerTimingMetrics": {
+          "description": "Elapsed server timings calculated without storing request content.",
+          "properties": {
+            "queueWaitMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Queuewaitms"
+            },
+            "startedToFirstActivityMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Startedtofirstactivityms"
+            },
+            "startedToFirstReasoningMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Startedtofirstreasoningms"
+            },
+            "startedToFirstToolCallMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Startedtofirsttoolcallms"
+            },
+            "startedToFirstTextMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Startedtofirsttextms"
+            },
+            "acceptedToFirstTextMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Acceptedtofirsttextms"
+            },
+            "firstTextToFinishedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Firsttexttofinishedms"
+            },
+            "acceptedToFinishedMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Acceptedtofinishedms"
+            },
+            "eventCounts": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "title": "Eventcounts",
+              "type": "object"
+            }
+          },
+          "title": "AgentServerTimingMetrics",
+          "type": "object"
+        },
+        "AgentToolCallMetrics": {
+          "description": "Content-free timing for one model-selected tool execution.",
+          "properties": {
+            "name": {
+              "maxLength": 160,
+              "minLength": 1,
+              "title": "Name",
+              "type": "string"
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Durationms"
+            },
+            "failed": {
+              "default": false,
+              "title": "Failed",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "title": "AgentToolCallMetrics",
           "type": "object"
         }
       },
@@ -10992,5 +12846,5 @@
     "approve_operation": "OperationActionPayload",
     "cancel_operation": "OperationActionPayload"
   },
-  "schemaHash": "cda6fed118483cad2dd8926429efd20803a2b510b8afd2b445e7d589127a46bf"
+  "schemaHash": "a968ea1e79b1318e1bdf514c7b9d8dccd1a7ff68e42afd5ec21704252e8064f0"
 }

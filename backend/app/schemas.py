@@ -408,10 +408,25 @@ class DataChartData(WidgetDataBase):
     lineage: ChartLineage
 
 
+class AgentToolCallMetrics(BaseModel):
+    """Content-free timing for one model-selected tool execution."""
+
+    name: str = Field(min_length=1, max_length=160)
+    duration_ms: float | None = Field(default=None, alias="durationMs", ge=0)
+    failed: bool = False
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class AgentModelPassMetrics(BaseModel):
     stage: str
     model: str
     provider: str | None = None
+    reasoning_profile: str | None = Field(default=None, alias="reasoningProfile", max_length=32)
+    prompt_characters: int | None = Field(default=None, alias="promptCharacters", ge=0)
+    prompt_components: dict[str, int] = Field(default_factory=dict, alias="promptComponents")
+    mounted_tool_count: int = Field(default=0, alias="mountedToolCount", ge=0)
+    mounted_tools: list[str] = Field(default_factory=list, alias="mountedTools", max_length=64)
+    tool_calls: list[AgentToolCallMetrics] = Field(default_factory=list, alias="toolCalls", max_length=64)
     input_tokens: int = Field(alias="inputTokens", ge=0)
     output_tokens: int = Field(alias="outputTokens", ge=0)
     total_tokens: int = Field(alias="totalTokens", ge=0)
@@ -422,6 +437,40 @@ class AgentModelPassMetrics(BaseModel):
     time_to_first_token_ms: float | None = Field(default=None, alias="timeToFirstTokenMs", ge=0)
     cost_usd: float | None = Field(default=None, alias="costUsd", ge=0)
     model_config = ConfigDict(populate_by_name=True)
+
+
+class AgentServerTimingMetrics(BaseModel):
+    """Elapsed server timings calculated without storing request content."""
+
+    queue_wait_ms: float | None = Field(default=None, alias="queueWaitMs", ge=0)
+    started_to_first_activity_ms: float | None = Field(default=None, alias="startedToFirstActivityMs", ge=0)
+    started_to_first_reasoning_ms: float | None = Field(default=None, alias="startedToFirstReasoningMs", ge=0)
+    started_to_first_tool_call_ms: float | None = Field(default=None, alias="startedToFirstToolCallMs", ge=0)
+    started_to_first_text_ms: float | None = Field(default=None, alias="startedToFirstTextMs", ge=0)
+    accepted_to_first_text_ms: float | None = Field(default=None, alias="acceptedToFirstTextMs", ge=0)
+    first_text_to_finished_ms: float | None = Field(default=None, alias="firstTextToFinishedMs", ge=0)
+    accepted_to_finished_ms: float | None = Field(default=None, alias="acceptedToFinishedMs", ge=0)
+    event_counts: dict[str, int] = Field(default_factory=dict, alias="eventCounts")
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class AgentClientTimingMetrics(BaseModel):
+    """Browser-observed elapsed timings; reporting is always best-effort."""
+
+    submit_to_run_created_ms: float | None = Field(default=None, alias="submitToRunCreatedMs", ge=0)
+    submit_to_first_activity_received_ms: float | None = Field(default=None, alias="submitToFirstActivityReceivedMs", ge=0)
+    submit_to_first_reasoning_received_ms: float | None = Field(default=None, alias="submitToFirstReasoningReceivedMs", ge=0)
+    submit_to_first_text_received_ms: float | None = Field(default=None, alias="submitToFirstTextReceivedMs", ge=0)
+    submit_to_first_answer_visible_ms: float | None = Field(default=None, alias="submitToFirstAnswerVisibleMs", ge=0)
+    submit_to_response_resolved_ms: float | None = Field(default=None, alias="submitToResponseResolvedMs", ge=0)
+    submit_to_composer_unlocked_ms: float | None = Field(default=None, alias="submitToComposerUnlockedMs", ge=0)
+    page_visible_at_submit: bool | None = Field(default=None, alias="pageVisibleAtSubmit")
+    replayed: bool = False
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class AgentClientTelemetryIn(AgentClientTimingMetrics):
+    schema_version: Literal[1] = Field(default=1, alias="schemaVersion")
 
 
 class AgentRunMetrics(BaseModel):
@@ -442,6 +491,8 @@ class AgentRunMetrics(BaseModel):
     cost_usd: float | None = Field(default=None, alias="costUsd", ge=0)
     cost_coverage: float = Field(default=0, alias="costCoverage", ge=0, le=1)
     passes: list[AgentModelPassMetrics] = Field(default_factory=list)
+    server: AgentServerTimingMetrics | None = None
+    client: AgentClientTimingMetrics | None = None
     model_config = ConfigDict(populate_by_name=True)
 
     @model_validator(mode="after")

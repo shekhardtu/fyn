@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from agno.metrics import RunMetrics
 from agno.run.agent import RunOutput
 
@@ -120,3 +122,59 @@ def test_metrics_are_not_collected_outside_a_durable_run():
     )
 
     assert agent_metric_snapshot()["modelPasses"] == 0
+
+
+def test_content_free_prompt_capability_and_tool_timings_are_retained():
+    output = _output(
+        model="operator-model",
+        input_tokens=10,
+        output_tokens=5,
+        duration=1,
+        first_token=0.1,
+        cost=0.001,
+    )
+    output.tools = [SimpleNamespace(
+        tool_name="transaction_summary",
+        tool_call_error=False,
+        metrics=SimpleNamespace(duration=0.125),
+    )]
+    token = begin_agent_metric_collection()
+    try:
+        record_agno_run_metrics(
+            output,
+            stage="operator_response",
+            model="operator-model",
+            reasoning_profile="low",
+            prompt_characters=840,
+            prompt_components={"currentMessage": 12, "recentContext": 400},
+            mounted_tools=["transaction_summary", "transaction_list"],
+        )
+        snapshot = agent_metric_snapshot()
+    finally:
+        end_agent_metric_collection(token)
+
+    metric_pass = snapshot["passes"][0]
+    assert metric_pass["reasoningProfile"] == "low"
+    assert metric_pass["promptCharacters"] == 840
+    assert metric_pass["promptComponents"] == {"currentMessage": 12, "recentContext": 400}
+    assert metric_pass["mountedToolCount"] == 2
+    assert metric_pass["mountedTools"] == ["transaction_summary", "transaction_list"]
+    assert metric_pass["toolCalls"] == [{
+        "name": "transaction_summary",
+        "durationMs": 125,
+        "failed": False,
+    }]
+
+
+def test_broken_framework_metric_objects_are_dropped_without_escaping():
+    class BrokenOutput:
+        @property
+        def metrics(self):
+            raise RuntimeError("metrics unavailable")
+
+    token = begin_agent_metric_collection()
+    try:
+        record_agno_run_metrics(BrokenOutput(), stage="operator", model="operator-model")
+        assert agent_metric_snapshot()["modelPasses"] == 0
+    finally:
+        end_agent_metric_collection(token)
