@@ -1,10 +1,12 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WidgetRenderer, widgetRegistry } from "@/components/widget-renderer";
+import * as api from "@/lib/api";
 import { widgetTypeIds, type Widget } from "@/lib/protocol";
 
 afterEach(() => {
   vi.restoreAllMocks();
+  Reflect.deleteProperty(navigator, "geolocation");
 });
 
 describe("widget registry", () => {
@@ -207,6 +209,44 @@ describe("clarification HITL", () => {
 });
 
 describe("saved transaction editor", () => {
+  it("uses the shared location field to resolve and submit a device fix", async () => {
+    const onAction = vi.fn();
+    const getCurrentPosition = vi.fn((success: PositionCallback) => success({
+      coords: { latitude: 12.971599, longitude: 77.594566, accuracy: 18 },
+      timestamp: Date.now(),
+    } as GeolocationPosition));
+    Object.defineProperty(navigator, "geolocation", { configurable: true, value: { getCurrentPosition } });
+    vi.spyOn(api, "resolveLocationLabel").mockResolvedValue("Bengaluru, Karnataka");
+    const widget: Widget = {
+      id: "edit-location",
+      type: "transaction_edit",
+      version: 1,
+      data: {
+        transactionId: "transaction-1",
+        title: "Edit saved transaction",
+        amountMinor: 47_000,
+        transactionType: "expense",
+        fields: ["amount", "location"],
+      },
+      actions: [{ id: "update", label: "Apply changes", action: "update_saved_transaction", style: "primary", payload: { transactionId: "transaction-1" } }],
+    };
+
+    render(<WidgetRenderer widget={widget} locationAllowed onAction={onAction} />);
+
+    expect(await screen.findByText("Coordinates 12.971599, 77.594566 · accuracy ±18 m")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText("Transaction location")).toHaveValue("Bengaluru, Karnataka"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+
+    expect(onAction).toHaveBeenCalledWith("edit-location", "update_saved_transaction", {
+      transactionId: "transaction-1",
+      amountMinor: 47_000,
+      location: "Bengaluru, Karnataka",
+      latitude: 12.971599,
+      longitude: 77.594566,
+      locationAccuracy: 18,
+    });
+  });
+
   it("offers a backend-owned cancel action without submitting changes", () => {
     const onAction = vi.fn();
     const widget: Widget = {
@@ -317,6 +357,44 @@ describe("saved transaction editor", () => {
 });
 
 describe("transaction preview classification", () => {
+  it("correlates a saved preview with later edits using its stable ID and version", () => {
+    const transactionId = "16a3ff79-4035-427b-a538-6ce4bf2b608b";
+    const preview: Widget = {
+      id: "saved-preview",
+      type: "transaction_preview",
+      version: 1,
+      data: {
+        transactionId,
+        rowVersion: 2,
+        title: "Car",
+        amountMinor: 64_000_000,
+        currency: "INR",
+        transactionType: "expense",
+        category: "Shopping",
+        subcategory: "Other",
+        transactionAt: "2026-08-24T10:10:00Z",
+        status: "Saved",
+        sourceCount: 1,
+      },
+      actions: [],
+    };
+
+    const { rerender } = render(<WidgetRenderer widget={preview} onAction={() => undefined} />);
+    expect(screen.getByRole("button", { name: `Copy Transaction ID ${transactionId}` })).toHaveTextContent("TXN 16A3FF79…BF2B608B");
+    expect(screen.getByText("· Version 2")).toBeInTheDocument();
+
+    rerender(<WidgetRenderer widget={{
+      ...preview,
+      id: "saved-edit",
+      type: "transaction_edit",
+      data: { ...preview.data, fields: ["amount"] },
+      actions: [{ id: "update", label: "Apply changes", action: "update_saved_transaction", style: "primary", payload: { transactionId } }],
+    }} onAction={() => undefined} />);
+
+    expect(screen.getByRole("button", { name: `Copy Transaction ID ${transactionId}` })).toHaveTextContent("TXN 16A3FF79…BF2B608B");
+    expect(screen.getByText("· Version 2")).toBeInTheDocument();
+  });
+
   it("shows direction and leaf without repeating the income root", () => {
     const widget: Widget = {
       id: "income-preview",
@@ -519,6 +597,63 @@ describe("compound taxonomy approval", () => {
 });
 
 describe("persisted widget action receipts", () => {
+  it("turns an amended transaction card into a quiet receipt linked to the current version", () => {
+    const transactionId = "16a3ff79-4035-427b-a538-6ce4bf2b608b";
+    const widget: Widget = {
+      id: "old-transaction-preview",
+      type: "transaction_preview",
+      version: 1,
+      data: {
+        transactionId,
+        rowVersion: 1,
+        supersededByVersion: 2,
+        supersededByWidgetId: "new-transaction-preview",
+        lifecycle: "completed",
+        completion: { action: "supersede_transaction_preview", values: { replacementVersion: 2 } },
+        title: "Other",
+        amountMinor: 60_000_000,
+        currency: "INR",
+        transactionAt: "2026-08-24T10:10:00Z",
+        status: "Saved",
+      },
+      actions: [],
+    };
+
+    render(<WidgetRenderer widget={widget} onAction={() => undefined} />);
+
+    expect(screen.getByRole("status")).toHaveTextContent(/Previous version.*₹6,00,000.*Updated to Version 2/);
+    expect(screen.getByRole("button", { name: `Copy Transaction ID ${transactionId}` })).toHaveTextContent("TXN 16A3FF79…BF2B608B");
+    expect(screen.getByText("· Version 1")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+  });
+
+  it("calls a repeated no-op snapshot an earlier card instead of inventing an amendment", () => {
+    const transactionId = "16a3ff79-4035-427b-a538-6ce4bf2b608b";
+    const widget: Widget = {
+      id: "repeated-transaction-preview",
+      type: "transaction_preview",
+      version: 1,
+      data: {
+        transactionId,
+        rowVersion: 2,
+        supersededByVersion: 2,
+        supersededByWidgetId: "latest-transaction-preview",
+        lifecycle: "completed",
+        title: "Other",
+        amountMinor: 60_000,
+        currency: "INR",
+        transactionAt: "2026-08-24T10:10:00Z",
+        status: "Saved",
+      },
+      actions: [],
+    };
+
+    render(<WidgetRenderer widget={widget} onAction={() => undefined} />);
+
+    expect(screen.getByRole("status")).toHaveTextContent(/Earlier card.*Latest view is Version 2/);
+    expect(screen.queryByText("Previous version")).not.toBeInTheDocument();
+  });
+
   it("collapses a completed subcategory form to its recorded value", () => {
     const widget: Widget = {
       id: "taxonomy-flights",

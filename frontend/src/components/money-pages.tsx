@@ -1,19 +1,21 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
-import { defaultRangeExtractor, type Range, useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowDownLeft, ArrowUpRight, CheckCircle2, Eye, EyeOff, Loader2, PencilLine, Plus, ReceiptText, RotateCcw, Search, Trash2, X } from "lucide-react";
-import { type CSSProperties, FormEvent, type RefObject, type UIEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ArrowDownLeft, ArrowUpRight, CheckCircle2, Eye, EyeOff, History, Loader2, PencilLine, Plus, ReceiptText, RotateCcw, Search, Trash2, X } from "lucide-react";
+import { type CSSProperties, type UIEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { GroupedVirtuoso, type Components, type ContextProp, type GroupProps } from "react-virtuoso";
 import { useSearchParams } from "react-router";
 import { CategoryManager, type CategoryUsage } from "@/components/category-manager";
+import { TransactionForm } from "@/components/transaction-form";
+import { TransactionIdentifier } from "@/components/transaction-identifier";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { SITE_HEADER_HEIGHT, SiteHeader, useAutoHideSiteHeader } from "@/components/ui/site-header";
 import { toast, UNDO_WINDOW_MS } from "@/components/ui/toast";
 import { useWorkspaceOverlay, useWorkspaceShell } from "@/components/workspace";
-import { createCategory, createSubcategory, createTransactionHint, createTransactionRecord, deleteCategory, deleteSubcategory, deleteTransactionHint, getPrivacyStatus, loadCategories, loadOverview, loadTransactions, removeTransaction, renameCategory, renameSubcategory, resolveLocationLabel, restoreTransaction, updateTransaction, updateTransactionHint } from "@/lib/api";
-import { fixForEntry, useDeviceLocation } from "@/lib/device-location";
-import { formatInstant, formatMoney, formatTransactionClassification, parseAmountToMinor, timestampInputToUtc, timestampInputValue } from "@/lib/format";
+import { createCategory, createSubcategory, createTransactionHint, createTransactionRecord, deleteCategory, deleteSubcategory, deleteTransactionHint, getPrivacyStatus, loadCategories, loadOverview, loadTransactionRevisions, loadTransactions, removeTransaction, renameCategory, renameSubcategory, restoreTransaction, updateTransaction, updateTransactionHint } from "@/lib/api";
+import { formatInstant, formatMoney, formatTransactionClassification } from "@/lib/format";
 import { usePlainKey } from "@/lib/shortcuts";
-import { editableTransactionTypes, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type TransactionListItemOut, type TransactionUpdateIn } from "@/lib/protocol";
+import { groupTransactionsByDay } from "@/lib/transaction-groups";
+import { editableTransactionTypes, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type TransactionListItemOut, type TransactionRevisionOut, type TransactionUpdateIn } from "@/lib/protocol";
 import { cn } from "@/lib/utils";
 
 const dayFormatter = new Intl.DateTimeFormat("en-IN", { weekday: "short", day: "numeric", month: "long", year: "numeric" });
@@ -52,9 +54,51 @@ function transactionTone(transaction: TransactionListItemOut) {
   return { className: "text-ink", prefix: "", icon: ReceiptText };
 }
 
-export function TransactionEditor({ transaction, categories, saving, problem, locationAllowed = false, onClose, onSave, onCreateCategory, onCreateSubcategory }: {
+function revisionFieldLabel(field: string) {
+  return ({
+    amount_minor: "Amount",
+    merchant_name: "Merchant",
+    transaction_at: "Date and time",
+    transaction_type: "Type",
+    category: "Category",
+    subcategory: "Subcategory",
+    location_label: "Location",
+    spend_nature: "Spend nature",
+    tags: "Tags",
+    deleted_at: "Record status",
+  } as Record<string, string>)[field] ?? titleCase(field);
+}
+
+function revisionValue(field: string, value: unknown, currency: string) {
+  if (value == null || value === "") return "Not set";
+  if (field === "amount_minor" && typeof value === "number") return formatMoney(value, currency);
+  if (field === "transaction_at" && typeof value === "string") return formatInstant(value);
+  if (field === "deleted_at") return typeof value === "string" ? `Removed ${formatInstant(value)}` : "Active";
+  if (Array.isArray(value)) return value.length ? value.join(", ") : "None";
+  return titleCase(String(value));
+}
+
+function TransactionHistory({ revisions, loading, currency }: { revisions: TransactionRevisionOut[]; loading: boolean; currency: string }) {
+  const visibleFields = new Set(["amount_minor", "merchant_name", "transaction_at", "transaction_type", "category", "subcategory", "location_label", "spend_nature", "tags", "deleted_at"]);
+  return <details className="mt-6 rounded-lg border border-line bg-ground/60">
+    <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-note font-semibold text-ink-body"><History size={16} />Amendment history<span className="ml-auto font-normal text-ink-muted">{loading ? "Loading…" : `${revisions.length} version${revisions.length === 1 ? "" : "s"}`}</span></summary>
+    <div className="border-t border-line px-4 py-3">
+      {loading ? <p className="text-note text-ink-muted">Loading transaction versions…</p> : revisions.length ? <ol className="space-y-4">{revisions.map((revision) => {
+        const changes = Object.entries(revision.changes).filter(([field]) => visibleFields.has(field));
+        return <li key={revision.revisionNumber} className="text-note">
+          <p className="font-medium text-ink">Version {revision.revisionNumber}<span className="ml-2 font-normal text-ink-muted">{formatInstant(revision.createdAt)} · {revision.source === "conversation_edit" ? "Conversation edit" : revision.source === "ledger_edit" ? "Ledger edit" : revision.source === "remove" ? "Removed" : revision.source === "restore" ? "Restored" : "Created"}</span></p>
+          {changes.length ? <ul className="mt-1.5 space-y-1 text-ink-muted">{changes.map(([field, change]) => <li key={field}><span className="font-medium text-ink-body">{revisionFieldLabel(field)}:</span> {revisionValue(field, change.before, currency)} → {revisionValue(field, change.after, currency)}</li>)}</ul> : <p className="mt-1 text-ink-muted">Initial saved version.</p>}
+        </li>;
+      })}</ol> : <p className="text-note text-ink-muted">No amendment history is available for this older transaction yet.</p>}
+    </div>
+  </details>;
+}
+
+export function TransactionEditor({ transaction, categories, revisions = [], historyLoading = false, saving, problem, locationAllowed = false, onClose, onSave, onCreateCategory, onCreateSubcategory }: {
   transaction: TransactionListItemOut | null;
   categories: CategoryDirectoryOut[];
+  revisions?: TransactionRevisionOut[];
+  historyLoading?: boolean;
   saving: boolean;
   problem: string | null;
   locationAllowed?: boolean;
@@ -64,39 +108,8 @@ export function TransactionEditor({ transaction, categories, saving, problem, lo
   onCreateSubcategory?: (categoryId: string, name: string) => Promise<CategoryDirectorySubcategoryOut>;
 }) {
   const creating = transaction === null;
-  const [amount, setAmount] = useState(transaction ? String(transaction.amountMinor / 100) : "");
-  const [merchant, setMerchant] = useState(transaction?.merchant ?? "");
-  const [transactionAt, setTransactionAt] = useState(timestampInputValue(transaction?.transactionAt ?? new Date().toISOString()));
-  const [transactionType, setTransactionType] = useState<TransactionListItemOut["transactionType"]>(transaction?.transactionType ?? "expense");
-  const [categoryId, setCategoryId] = useState(transaction?.categoryId ?? "");
-  const [subcategoryId, setSubcategoryId] = useState(transaction?.subcategoryId ?? "");
-  const [spendNature, setSpendNature] = useState<TransactionListItemOut["spendNature"]>(transaction?.spendNature ?? "unknown");
-  const [location, setLocation] = useState(transaction?.location ?? "");
-  const locationTouched = useRef(false);
-  const locationLookup = useRef<Promise<string | null> | null>(null);
-  const [validation, setValidation] = useState<string | null>(null);
-  // Only while adding. An edit happens wherever the person happens to be
-  // later, which is not where the money was spent — so editing an entry
-  // leaves whatever fix it already has rather than restamping it with the
-  // kitchen table.
-  const deviceFix = useDeviceLocation(creating && locationAllowed);
-  const coordinateHint = deviceFix
-    ? `${deviceFix.latitude.toFixed(6)}, ${deviceFix.longitude.toFixed(6)}${deviceFix.locationAccuracy === null ? "" : ` · accuracy ±${deviceFix.locationAccuracy} m`}`
-    : null;
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
-  const subcategories = categories.find((category) => category.id === categoryId)?.subcategories ?? [];
-
-  // What the drawer opened with. Anything typed since is worth a question
-  // before a stray Escape or off-panel click throws it away.
-  const [opened] = useState({ amount, merchant, transactionAt, transactionType, categoryId, subcategoryId, spendNature, location });
-  const dirty = amount !== opened.amount
-    || merchant !== opened.merchant
-    || transactionAt !== opened.transactionAt
-    || transactionType !== opened.transactionType
-    || categoryId !== opened.categoryId
-    || subcategoryId !== opened.subcategoryId
-    || spendNature !== opened.spendNature
-    || location !== opened.location;
+  const [dirty, setDirty] = useState(false);
 
   // Stable identity: the overlay hook re-arms (and re-focuses the first
   // field) whenever its close callback changes, so the changing closure
@@ -113,56 +126,6 @@ export function TransactionEditor({ transaction, categories, saving, problem, lo
   const requestClose = useCallback(() => closeBehavior.current(), []);
 
   const panelRef = useWorkspaceOverlay(true, requestClose);
-
-  // Naming is optional and asynchronous: coordinates are already a complete
-  // fix, while a provider or network failure simply leaves the editable place
-  // label blank. Never overwrite a label the person started typing while the
-  // lookup was in flight.
-  useEffect(() => {
-    if (!creating || !deviceFix) return;
-    let live = true;
-    locationLookup.current ??= resolveLocationLabel(deviceFix.latitude, deviceFix.longitude);
-    void locationLookup.current
-      .then((resolved) => {
-        if (!live || !resolved || locationTouched.current) return;
-        setLocation((current) => current.trim() ? current : resolved);
-      })
-      .catch(() => undefined);
-    return () => { live = false; };
-  }, [creating, deviceFix]);
-
-  // Growing the taxonomy from inside the dropdown. The failure lands in the
-  // drawer's own alert row, exactly where a failed save would.
-  async function addTaxonomy(work: () => Promise<void>) {
-    setValidation(null);
-    try {
-      await work();
-    } catch (cause) {
-      setValidation(cause instanceof Error ? cause.message : "That could not be added. Try again.");
-    }
-  }
-
-  function submit(event: FormEvent) {
-    event.preventDefault();
-    const amountMinor = parseAmountToMinor(amount);
-    const instant = timestampInputToUtc(transactionAt);
-    if (amountMinor === null) { setValidation("Enter an amount greater than zero."); return; }
-    if (!instant) { setValidation("Enter a valid date and time."); return; }
-    setValidation(null);
-    onSave({
-      amountMinor,
-      merchant: merchant.trim() || null,
-      transactionAt: instant,
-      transactionType,
-      categoryId: transactionType === "expense" ? categoryId || null : null,
-      subcategoryId: transactionType === "expense" ? subcategoryId || null : null,
-      spendNature: transactionType === "expense" ? spendNature : "unknown",
-      location: location.trim() || null,
-      ...fixForEntry(deviceFix),
-    });
-  }
-
-  const inputClass = "manual-field mt-1 h-[var(--h-field)] w-full rounded-lg border border-line-strong bg-surface px-3 text-control text-ink outline-none transition-colors disabled:opacity-60";
   return <>
     <button type="button" tabIndex={-1} aria-hidden onClick={saving ? undefined : requestClose} className="scrim-fade fixed inset-0 z-40 bg-scrim/25 backdrop-blur-[2px]" />
     <section ref={panelRef} role="dialog" aria-modal="true" aria-labelledby="transaction-editor-title" className="drawer-right fixed inset-y-0 right-0 z-50 flex w-full max-w-lg flex-col border-l border-line bg-surface shadow-[var(--shadow-overlay)]">
@@ -171,40 +134,59 @@ export function TransactionEditor({ transaction, categories, saving, problem, lo
         <div className="ml-3 min-w-0"><h2 id="transaction-editor-title" className="font-heading text-title font-semibold text-ink">{creating ? "Add transaction" : "Edit transaction"}</h2><p className="truncate text-note text-ink-muted">{creating ? "Record a confirmed entry" : transaction.merchant ?? titleCase(transaction.transactionType)}</p></div>
         <Button type="button" variant="ghost" size="icon-lg" aria-label="Close transaction editor" disabled={saving} onClick={requestClose} className="-mr-1 ml-auto rounded-xl text-ink-muted"><X /></Button>
       </div>
+      {transaction ? <div className="shrink-0 border-b border-line bg-ground/40 px-6 py-2"><TransactionIdentifier transactionId={transaction.id} rowVersion={transaction.rowVersion} /></div> : null}
 
-      <form onSubmit={submit} className="panel-scroll min-h-0 flex-1 overflow-y-auto px-4 pt-6 pb-[max(1.75rem,env(safe-area-inset-bottom))] sm:px-6">
-        {confirmingDiscard ? <div role="alertdialog" aria-label="Discard unsaved changes" className="mb-4 rounded-lg border border-attention/40 bg-attention-tint px-4 py-3 text-note text-ink-body">
+      <TransactionForm
+        initialValues={{
+          amountMinor: transaction?.amountMinor,
+          merchant: transaction?.merchant,
+          transactionAt: transaction?.transactionAt,
+          transactionType: transaction?.transactionType,
+          categoryId: transaction?.categoryId,
+          subcategoryId: transaction?.subcategoryId,
+          spendNature: transaction?.spendNature,
+          location: transaction?.location,
+        }}
+        categories={categories}
+        transactionTypes={editableTransactionTypes.filter((type) => type !== "transfer" || transaction?.transactionType === "transfer")}
+        disabled={saving}
+        locationAllowed={locationAllowed}
+        captureDeviceLocation={creating}
+        problem={problem}
+        onDirtyChange={setDirty}
+        onCreateCategory={onCreateCategory}
+        onCreateSubcategory={onCreateSubcategory}
+        onSubmit={(values) => {
+          if (!values.transactionAt) return;
+          onSave({
+            expectedVersion: transaction?.rowVersion ?? null,
+            amountMinor: values.amountMinor,
+            merchant: values.merchant,
+            transactionAt: values.transactionAt,
+            transactionType: values.transactionType,
+            categoryId: values.categoryId,
+            subcategoryId: values.subcategoryId,
+            spendNature: values.spendNature,
+            location: values.location,
+            latitude: values.latitude,
+            longitude: values.longitude,
+            locationAccuracy: values.locationAccuracy,
+          });
+        }}
+        className="panel-scroll min-h-0 flex-1 overflow-y-auto px-4 pt-6 pb-[max(1.75rem,env(safe-area-inset-bottom))] sm:px-6"
+        afterFields={transaction ? <TransactionHistory revisions={revisions} loading={historyLoading} currency={transaction.currency} /> : null}
+        banner={confirmingDiscard ? <div role="alertdialog" aria-label="Discard unsaved changes" className="mb-4 rounded-lg border border-attention/40 bg-attention-tint px-4 py-3 text-note text-ink-body">
           You have unsaved changes. Throw them away?
           <div className="mt-2 flex gap-2">
             <Button type="button" variant="destructive" size="sm" onClick={onClose}>Discard</Button>
             <Button type="button" variant="ghost" size="sm" onClick={() => setConfirmingDiscard(false)}>Keep editing</Button>
           </div>
         </div> : null}
-        {(problem || validation) ? <p role="alert" className="mb-4 rounded-lg border border-danger-line bg-danger-tint px-4 py-3 text-note text-danger-ink">{validation || problem}</p> : null}
-        <div className="grid gap-4 sm:grid-cols-2">
-          <label className="text-note font-medium text-ink-body">Amount<input aria-label="Transaction amount" inputMode="decimal" disabled={saving} value={amount} onChange={(event) => setAmount(event.target.value)} className={inputClass} /></label>
-          <div className="text-note font-medium text-ink-body">Type<Combobox aria-label="Transaction type" disabled={saving} value={transactionType} onValueChange={(next) => {
-            setTransactionType(next as TransactionListItemOut["transactionType"]);
-            if (next !== "expense" || !categories.some((item) => item.id === categoryId)) {
-              setCategoryId("");
-              setSubcategoryId("");
-            }
-            if (next !== "expense") setSpendNature("unknown");
-          }} options={editableTransactionTypes.map((type) => ({ value: type, label: titleCase(type) }))} searchable={false} triggerClassName="mt-1" /></div>
-          <label className="text-note font-medium text-ink-body sm:col-span-2">Merchant<input aria-label="Merchant" disabled={saving} value={merchant} maxLength={160} onChange={(event) => setMerchant(event.target.value)} className={inputClass} /></label>
-          <label className="text-note font-medium text-ink-body sm:col-span-2">Date and time<input aria-label="Transaction date and time" type="datetime-local" disabled={saving} value={transactionAt} onChange={(event) => setTransactionAt(event.target.value)} className={inputClass} /></label>
-          {transactionType === "expense" ? <>
-            <div className="text-note font-medium text-ink-body">Category<Combobox aria-label="Transaction category" disabled={saving} value={categoryId} onValueChange={(next) => { setCategoryId(next); setSubcategoryId(""); }} options={categories.map((category) => ({ value: category.id, label: category.label }))} searchPlaceholder="Search or add new" onCreate={onCreateCategory ? (name) => void addTaxonomy(async () => { const created = await onCreateCategory(name); setCategoryId(created.id); setSubcategoryId(""); }) : undefined} createHint="New category" triggerClassName="mt-1" /></div>
-            <div className="text-note font-medium text-ink-body">Subcategory<Combobox aria-label="Transaction subcategory" disabled={saving || !categoryId} value={subcategoryId} onValueChange={setSubcategoryId} placeholder={categoryId ? "No subcategory" : "Choose category first"} options={[{ value: "", label: "No subcategory" }, ...subcategories.map((subcategory) => ({ value: subcategory.id, label: subcategory.label }))]} searchPlaceholder="Search or add new" onCreate={onCreateSubcategory && categoryId ? (name) => void addTaxonomy(async () => { const created = await onCreateSubcategory(categoryId, name); setSubcategoryId(created.id); }) : undefined} createHint={`New in ${categories.find((category) => category.id === categoryId)?.label ?? "this category"}`} triggerClassName="mt-1" /></div>
-          </> : null}
-          {transactionType === "expense" ? <div className="text-note font-medium text-ink-body">Spend nature<Combobox aria-label="Spend nature" disabled={saving} value={spendNature} onValueChange={(next) => setSpendNature(next as TransactionListItemOut["spendNature"])} options={[{ value: "unknown", label: "Not set" }, { value: "essential", label: "Essential" }, { value: "discretionary", label: "Discretionary" }, { value: "potentially_avoidable", label: "Potentially avoidable" }]} triggerClassName="mt-1" /></div> : null}
-          <label className="text-note font-medium text-ink-body">Location<input aria-label="Transaction location" disabled={saving} value={location} maxLength={160} onChange={(event) => { locationTouched.current = true; setLocation(event.target.value); }} placeholder="City or place" className={inputClass} />{coordinateHint ? <span aria-live="polite" className="mt-1.5 block text-meta font-normal text-ink-muted">Coordinates {coordinateHint}</span> : null}</label>
-        </div>
-        <div className="mt-6 flex gap-2 border-t border-line pt-5">
+        renderActions={() => <div className="mt-6 flex gap-2 border-t border-line pt-5">
           <Button type="submit" size="lg" disabled={saving}>{saving ? <Loader2 className="animate-spin" /> : null}{saving ? (creating ? "Adding…" : "Saving…") : (creating ? "Add transaction" : "Save changes")}</Button>
           <Button type="button" size="lg" variant="ghost" disabled={saving} onClick={requestClose}>Cancel</Button>
-        </div>
-      </form>
+        </div>}
+      />
     </section>
   </>;
 }
@@ -222,7 +204,7 @@ export function TransactionRow({ transaction, style, onEdit, onRestore, onRemove
   const tone = transactionTone(transaction);
   const Icon = removed ? Trash2 : tone.icon;
   const classification = formatTransactionClassification(transaction.transactionType, transaction.category, transaction.subcategory);
-  return <article className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-b border-line px-4 sm:gap-4 sm:px-5" style={style}>
+  return <article className="grid min-h-[68px] grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-b border-line px-4 sm:gap-4 sm:px-5" style={style}>
     <span className={cn("grid size-9 place-items-center rounded-lg bg-ground", removed ? "text-ink-muted" : tone.className)}><Icon size={17} /></span>
     <div className="min-w-0"><p className={cn("truncate text-control font-semibold", removed ? "text-ink-muted line-through" : "text-ink")} title={transaction.merchant ?? undefined}>{transaction.merchant ?? titleCase(transaction.transactionType)}</p><p className="mt-0.5 truncate text-note text-ink-muted">{[classification, timeFormatter.format(new Date(transaction.transactionAt)), removed ? `Removed ${formatInstant(transaction.deletedAt)}` : null].filter(Boolean).join(" · ")}</p></div>
     <div className="flex items-center gap-2 sm:gap-4">
@@ -238,15 +220,33 @@ export function TransactionRow({ transaction, style, onEdit, onRestore, onRemove
   </article>;
 }
 
-type TransactionVirtualRow =
-  | { kind: "date"; id: string; label: string }
-  | { kind: "transaction"; id: string; transaction: TransactionListItemOut };
+type TransactionListContext = {
+  fetchingNextPage: boolean;
+  hasNextPage: boolean;
+  stickyTop: number;
+};
 
-function VirtualTransactionList({ items, scrollRef, headerVisible, layoutKey, hasNextPage, fetchingNextPage, onLoadMore, onEdit, onRestore, onRemove }: {
+function TransactionGroup({ children, context, style, ...props }: GroupProps & ContextProp<TransactionListContext>) {
+  return <div {...props} style={{ ...style, top: context.stickyTop, zIndex: 10 }}>{children}</div>;
+}
+
+function TransactionFooter({ context }: ContextProp<TransactionListContext>) {
+  if (!context.hasNextPage) return null;
+  return <div className="flex h-16 items-center justify-center gap-2 text-note text-ink-muted">
+    <Loader2 className={context.fetchingNextPage ? "animate-spin" : undefined} />
+    {context.fetchingNextPage ? "Loading more transactions…" : "Scroll for more transactions"}
+  </div>;
+}
+
+const transactionListComponents: Components<void, TransactionListContext> = {
+  Footer: TransactionFooter,
+  Group: TransactionGroup,
+};
+
+function VirtualTransactionList({ items, scrollElement, headerVisible, hasNextPage, fetchingNextPage, onLoadMore, onEdit, onRestore, onRemove }: {
   items: TransactionListItemOut[];
-  scrollRef: RefObject<HTMLElement | null>;
+  scrollElement: HTMLElement | null;
   headerVisible: boolean;
-  layoutKey: string;
   hasNextPage: boolean;
   fetchingNextPage: boolean;
   onLoadMore: () => void;
@@ -254,72 +254,38 @@ function VirtualTransactionList({ items, scrollRef, headerVisible, layoutKey, ha
   onRestore: (transaction: TransactionListItemOut) => void;
   onRemove: (transaction: TransactionListItemOut) => void;
 }) {
-  const listRef = useRef<HTMLDivElement>(null);
-  const [scrollMargin, setScrollMargin] = useState(0);
-  const rows = useMemo<TransactionVirtualRow[]>(() => {
-    const next: TransactionVirtualRow[] = [];
-    let previousDay = "";
-    for (const transaction of items) {
-      const instant = new Date(transaction.transactionAt);
-      const day = instant.toDateString();
-      if (day !== previousDay) {
-        next.push({ kind: "date", id: `date-${day}`, label: dayFormatter.format(instant) });
-        previousDay = day;
-      }
-      next.push({ kind: "transaction", id: transaction.id, transaction });
-    }
-    return next;
-  }, [items]);
-  const stickyIndexes = useMemo(() => rows.flatMap((row, index) => row.kind === "date" ? [index] : []), [rows]);
-  const activeStickyIndex = useRef(stickyIndexes[0] ?? 0);
-  const extractRange = useCallback((range: Range) => {
-    activeStickyIndex.current = stickyIndexes.findLast((index) => range.startIndex >= index) ?? stickyIndexes[0] ?? 0;
-    return [...new Set([activeStickyIndex.current, ...defaultRangeExtractor(range)])].sort((left, right) => left - right);
-  }, [stickyIndexes]);
+  const groups = useMemo(() => groupTransactionsByDay(items), [items]);
+  const groupCounts = useMemo(() => groups.map((group) => group.transactions.length), [groups]);
+  const itemKeys = useMemo(() => groups.flatMap((group) => [`transaction-day-${group.id}`, ...group.transactions.map((transaction) => transaction.id)]), [groups]);
+  const context = useMemo<TransactionListContext>(() => ({
+    fetchingNextPage,
+    hasNextPage,
+    stickyTop: headerVisible ? SITE_HEADER_HEIGHT : 0,
+  }), [fetchingNextPage, hasNextPage, headerVisible]);
 
-  // Controls and notices share this scroller above the virtual list. Measuring
-  // the real offset keeps every absolute row aligned as those surfaces change.
-  useLayoutEffect(() => {
-    const next = listRef.current?.offsetTop ?? 0;
-    setScrollMargin((current) => current === next ? current : next);
-  }, [items.length, layoutKey]);
+  if (!scrollElement) return <div className="h-20 rounded-t-xl border border-line bg-surface" />;
 
-  const virtualizer = useVirtualizer({
-    count: rows.length + (hasNextPage ? 1 : 0),
-    getScrollElement: () => scrollRef.current,
-    estimateSize: (index) => index >= rows.length ? 64 : rows[index].kind === "date" ? 35 : 68,
-    getItemKey: (index) => index >= rows.length ? "transaction-loader" : rows[index].id,
-    rangeExtractor: extractRange,
-    overscan: 8,
-    scrollMargin,
-    // Avoid TanStack's lifecycle flushSync path under React 19.
-    useFlushSync: false,
-  });
-  const virtualItems = virtualizer.getVirtualItems();
-  const lastVirtualIndex = virtualItems.at(-1)?.index ?? 0;
-
-  useEffect(() => {
-    if (hasNextPage && !fetchingNextPage && lastVirtualIndex >= rows.length - 6) onLoadMore();
-  }, [fetchingNextPage, hasNextPage, lastVirtualIndex, onLoadMore, rows.length]);
-
-  return <div ref={listRef} className="relative overflow-clip rounded-t-xl border border-line bg-surface" style={{ height: virtualizer.getTotalSize() }}>
-    {virtualItems.map((virtualRow) => {
-      if (virtualRow.index >= rows.length) {
-        return <div key="transaction-loader" className="absolute inset-x-0 top-0 flex h-16 items-center justify-center gap-2 text-note text-ink-muted" style={{ transform: `translateY(${virtualRow.start - scrollMargin}px)` }}>
-          <Loader2 className="animate-spin" /> Loading more transactions…
-        </div>;
-      }
-      const row = rows[virtualRow.index];
-      const sticky = row.kind === "date" && virtualRow.index === activeStickyIndex.current;
-      const rowStyle = sticky
-        ? { position: "sticky" as const, top: headerVisible ? SITE_HEADER_HEIGHT : 0, zIndex: 10, height: virtualRow.size }
-        : { position: "absolute" as const, insetInline: 0, top: 0, height: virtualRow.size, transform: `translateY(${virtualRow.start - scrollMargin}px)` };
-      if (row.kind === "date") {
-        return <h3 key={row.id} className="ledger-meta flex items-center border-b border-line bg-ground/98 px-4 shadow-[0_1px_0_var(--line)] backdrop-blur-sm transition-[top] duration-200 sm:px-5" style={rowStyle}>{row.label}</h3>;
-      }
-      return <TransactionRow key={row.id} transaction={row.transaction} style={rowStyle} onEdit={onEdit} onRestore={onRestore} onRemove={onRemove} />;
-    })}
-  </div>;
+  return <section aria-label="Transaction history" className="relative rounded-t-xl border border-line bg-surface">
+    <GroupedVirtuoso<void, TransactionListContext>
+      customScrollParent={scrollElement}
+      groupCounts={groupCounts}
+      context={context}
+      components={transactionListComponents}
+      computeItemKey={(index) => itemKeys[index] ?? index}
+      fixedItemHeight={68}
+      fixedGroupHeight={35}
+      initialItemCount={Math.min(items.length, 18)}
+      increaseViewportBy={{ top: 544, bottom: 816 }}
+      endReached={() => {
+        if (hasNextPage && !fetchingNextPage) onLoadMore();
+      }}
+      groupContent={(groupIndex) => <h3 className="ledger-meta flex h-[35px] items-center border-b border-line bg-ground px-4 shadow-[0_1px_0_var(--line)] sm:px-5">{groups[groupIndex] ? dayFormatter.format(new Date(groups[groupIndex].transactions[0].transactionAt)) : null}</h3>}
+      itemContent={(index) => {
+        const transaction = items[index];
+        return transaction ? <TransactionRow transaction={transaction} onEdit={onEdit} onRestore={onRestore} onRemove={onRemove} /> : null;
+      }}
+    />
+  </section>;
 }
 
 export function TransactionsPage() {
@@ -335,25 +301,40 @@ export function TransactionsPage() {
   const hideRemoved = params.get("removed") === "hidden";
   const [search, setSearch] = useState(urlQuery);
   const [settledSearch, setSettledSearch] = useState(urlQuery);
-  // The "Add transaction" app shortcut lands here with ?new=1.
-  const [editing, setEditing] = useState<TransactionListItemOut | "new" | null>(params.get("new") === "1" ? "new" : null);
+  // The add drawer is URL-owned. App shortcuts, pasted links, and the page's
+  // own Add transaction control all use the same ?new=1 entry point.
+  const adding = params.get("new") === "1";
+  const [editingTransaction, setEditingTransaction] = useState<TransactionListItemOut | null>(null);
+  const editing: TransactionListItemOut | "new" | null = adding ? "new" : editingTransaction;
+  const editingId = editing && editing !== "new" ? editing.id : null;
+  const revisionHistory = useQuery({
+    queryKey: ["transaction-revisions", editingId],
+    queryFn: () => loadTransactionRevisions(editingId as string),
+    enabled: editingId !== null,
+  });
   const [notice, setNotice] = useState<string | null>(null);
   const { headerVisible, updateHeaderForScroll } = useAutoHideSiteHeader();
-  const mainRef = useRef<HTMLElement>(null);
+  const [mainElement, setMainElement] = useState<HTMLElement | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const filterType = kind === "all" ? null : kind as TransactionListItemOut["transactionType"];
 
   usePlainKey("/", useCallback(() => searchRef.current?.focus(), []));
 
-  // Consume the shortcut's parameter, so closing the drawer and refreshing
-  // does not reopen it, and neither does Back.
-  useEffect(() => {
-    if (params.get("new") !== "1") return;
+  const closeEditor = useCallback(() => {
+    setEditingTransaction(null);
     setParams((previous) => {
       const merged = new URLSearchParams(previous);
       merged.delete("new");
       return merged;
     }, { replace: true });
+  }, [setParams]);
+
+  const openNewEditor = useCallback(() => {
+    setNotice(null);
+    setEditingTransaction(null);
+    const merged = new URLSearchParams(params);
+    merged.set("new", "1");
+    setParams(merged);
   }, [params, setParams]);
 
   function setKind(next: string) {
@@ -373,19 +354,23 @@ export function TransactionsPage() {
   }
 
   useEffect(() => {
+    const query = search.trim();
+    // An unchanged input has nothing to synchronize. Skipping the write also
+    // prevents an older debounce closure from replaying a stale query-string
+    // snapshot over a newer owner such as ?new=1.
+    if (query === urlQuery) return;
     const timer = window.setTimeout(() => {
       setSettledSearch(search);
       // Typing rewrites the entry in place; only the type filter earns a
       // history entry, so Back steps through filters rather than keystrokes.
       setParams((previous) => {
         const merged = new URLSearchParams(previous);
-        const query = search.trim();
         if (query) merged.set("q", query); else merged.delete("q");
         return merged;
       }, { replace: true });
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [search, setParams]);
+  }, [search, setParams, urlQuery]);
 
   // Back/forward (or a pasted link) changes ?q= underneath the input.
   if (urlQuery !== settledSearch.trim()) {
@@ -435,7 +420,8 @@ export function TransactionsPage() {
         void queryClient.invalidateQueries({ queryKey: ["transactions"] });
       }
       void queryClient.invalidateQueries({ queryKey: ["overview"] });
-      setEditing(null);
+      if (variables.id) void queryClient.invalidateQueries({ queryKey: ["transaction-revisions", variables.id] });
+      closeEditor();
       setNotice(`${updated.merchant ?? titleCase(updated.transactionType)} was ${variables.id ? "updated" : "added"}.`);
     },
   });
@@ -505,10 +491,9 @@ export function TransactionsPage() {
   const categoriesReady = Boolean(categories.data);
   usePlainKey("n", useCallback(() => {
     if (!categoriesReady) return;
-    setNotice(null);
     resetSave();
-    setEditing((current) => current ?? "new");
-  }, [categoriesReady, resetSave]));
+    if (!editing) openNewEditor();
+  }, [categoriesReady, editing, openNewEditor, resetSave]));
 
   // Taxonomy created from inside the editor lands in the shared directory
   // cache, so the new entry is selectable everywhere without a refetch.
@@ -530,14 +515,17 @@ export function TransactionsPage() {
     return created;
   }
 
-  return <main ref={mainRef} id="main-content" onScroll={trackScroll} className="min-h-0 min-w-0 overflow-y-auto bg-ground">
+  return <main ref={setMainElement} id="main-content" onScroll={trackScroll} className="min-h-0 min-w-0 overflow-y-auto bg-ground">
     <MoneyPageHeader title="Transactions" subtitle="Recent activity and corrections" hidden={!headerVisible} />
     <div className="mx-auto w-full max-w-[70rem] px-4 py-7 sm:px-6 sm:py-10 lg:px-8">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div><p className="ledger-meta">Ledger</p><h2 className="mt-2 font-heading text-[clamp(1.7rem,4vw,2.25rem)] leading-tight font-semibold tracking-[-0.04em] text-ink">Recent transactions</h2><p className="mt-2 text-body text-ink-muted">Review the latest records and correct anything that needs attention.</p></div>
         <div className="flex shrink-0 items-center gap-3">
           {transactions.data ? <p aria-live="polite" className="text-note text-ink-muted">{items.length} {transactions.hasNextPage ? "loaded" : items.length === 1 ? "transaction" : "transactions"}</p> : null}
-          <Button type="button" disabled={!categories.data} title={categories.data ? undefined : "Loading your categories first…"} onClick={() => { setNotice(null); save.reset(); setEditing("new"); }}><Plus /> Add transaction</Button>
+          <Button type="button" disabled={!categories.data} title={categories.data ? undefined : "Loading your categories first…"} onClick={() => {
+            save.reset();
+            openNewEditor();
+          }}><Plus /> Add transaction</Button>
         </div>
       </div>
 
@@ -549,10 +537,10 @@ export function TransactionsPage() {
       </div>
 
       <div className="mt-5">
-        {transactions.isPending || categories.isPending ? <PageSkeleton /> : (transactions.isError && !transactions.data) || categories.isError ? <QueryFailure title="We couldn’t load your transactions" onRetry={() => { void transactions.refetch(); void categories.refetch(); }} /> : items.length ? <VirtualTransactionList items={items} scrollRef={mainRef} headerVisible={headerVisible} layoutKey={notice ?? ""} hasNextPage={transactions.hasNextPage} fetchingNextPage={transactions.isFetchingNextPage} onLoadMore={loadMore} onEdit={(transaction) => { setNotice(null); save.reset(); setEditing(transaction); }} onRestore={(transaction) => { setNotice(null); restore.mutate({ transaction }); }} onRemove={(transaction) => { setNotice(null); remove.mutate({ transaction }); }} /> : <div className="rounded-xl border border-line bg-surface px-6 py-12 text-center"><ReceiptText className="mx-auto text-secondary" /><h2 className="mt-4 font-heading text-title font-semibold text-ink">{search.trim() || kind !== "all" ? "No matching transactions" : "No transactions yet"}</h2><p className="mt-2 text-control text-ink-muted">{search.trim() || kind !== "all" ? "Try a different search or transaction type." : "Add your first transaction to start the ledger."}</p></div>}
+        {transactions.isPending || categories.isPending ? <PageSkeleton /> : (transactions.isError && !transactions.data) || categories.isError ? <QueryFailure title="We couldn’t load your transactions" onRetry={() => { void transactions.refetch(); void categories.refetch(); }} /> : items.length ? <VirtualTransactionList items={items} scrollElement={mainElement} headerVisible={headerVisible} hasNextPage={transactions.hasNextPage} fetchingNextPage={transactions.isFetchingNextPage} onLoadMore={loadMore} onEdit={(transaction) => { setNotice(null); save.reset(); closeEditor(); setEditingTransaction(transaction); }} onRestore={(transaction) => { setNotice(null); restore.mutate({ transaction }); }} onRemove={(transaction) => { setNotice(null); remove.mutate({ transaction }); }} /> : <div className="rounded-xl border border-line bg-surface px-6 py-12 text-center"><ReceiptText className="mx-auto text-secondary" /><h2 className="mt-4 font-heading text-title font-semibold text-ink">{search.trim() || kind !== "all" ? "No matching transactions" : "No transactions yet"}</h2><p className="mt-2 text-control text-ink-muted">{search.trim() || kind !== "all" ? "Try a different search or transaction type." : "Add your first transaction to start the ledger."}</p></div>}
       </div>
     </div>
-    {editing && categories.data ? <TransactionEditor key={editing === "new" ? "new" : editing.id} transaction={editing === "new" ? null : editing} categories={categories.data} saving={save.isPending} problem={save.error?.message ?? null} locationAllowed={locationAllowed} onClose={() => { if (!save.isPending) setEditing(null); }} onSave={(payload) => save.mutate({ id: editing === "new" ? null : editing.id, payload })} onCreateCategory={addCategory} onCreateSubcategory={addSubcategory} /> : null}
+    {editing && categories.data ? <TransactionEditor key={editing === "new" ? "new" : editing.id} transaction={editing === "new" ? null : editing} categories={categories.data} revisions={revisionHistory.data} historyLoading={revisionHistory.isPending && editing !== "new"} saving={save.isPending} problem={save.error?.message ?? null} locationAllowed={locationAllowed} onClose={() => { if (!save.isPending) closeEditor(); }} onSave={(payload) => save.mutate({ id: editing === "new" ? null : editing.id, payload })} onCreateCategory={addCategory} onCreateSubcategory={addSubcategory} /> : null}
   </main>;
 }
 

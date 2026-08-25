@@ -109,6 +109,32 @@ For a typed read correction, domain policy independently selects the most
 relevant prior query by matching its specific filters and restores its period
 when the user did not provide a new one.
 
+Saved-transaction corrections use a distinct typed edit operation. Its
+`target_*` fields describe only the old row and its editable fields describe
+only replacement values, so a new amount can never be reused as the lookup
+amount. A reference to the immediately preceding transaction card binds the
+server-issued transaction ID without exposing that ID to the model. Exact
+merchant, old amount, date, type, and category selectors handle independent
+requests; more than one match returns selectable transaction cards carrying
+the proposed patch forward. No keyword or prose-similarity match is allowed to
+choose the row that may later be updated.
+
+Relative changes are represented separately from replacement amounts. The
+server resolves the exact row first and only then applies add, subtract, or
+percentage arithmetic to that row's canonical amount. “Last entered” and
+“latest transaction date” are distinct target modes, and qualifiers such as
+expense or income are applied before either mode selects one result. Exact
+selectors have no arbitrary recency window.
+
+Every saved editor carries the canonical transaction's `rowVersion`. The AG-UI
+action boundary replaces client-supplied transaction identity and version with
+the values on the immutable server widget, and the transaction service locks
+the row before comparing the version. A mismatch refuses the write and returns
+the current record for review. Successful edits, removals, and restores advance
+the version and append an immutable transaction revision with before/after
+snapshots, the exact field diff, actor, source, and conversation context. A
+no-op save advances neither the version nor the audit history.
+
 One versioned prompt template supplies four server-owned policy modes:
 Operator, Planner, Validator, and Reconciler. Operator owns each interactive
 turn. It may answer ordinary conversation, call authenticated read/calculation

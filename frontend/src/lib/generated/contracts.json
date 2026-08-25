@@ -85,6 +85,3641 @@
     "csvUploadBytes": 10485760
   },
   "schemas": {
+    "ContactSuggestionOut": {
+      "additionalProperties": false,
+      "properties": {
+        "channel": {
+          "enum": [
+            "email",
+            "phone"
+          ],
+          "title": "Channel",
+          "type": "string"
+        },
+        "identifier": {
+          "title": "Identifier",
+          "type": "string"
+        },
+        "displayName": {
+          "title": "Displayname",
+          "type": "string"
+        },
+        "matchKind": {
+          "enum": [
+            "exact",
+            "previously_shared"
+          ],
+          "title": "Matchkind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "channel",
+        "identifier",
+        "displayName",
+        "matchKind"
+      ],
+      "title": "ContactSuggestionOut",
+      "type": "object"
+    },
+    "CreatePersonalLoanIn": {
+      "$defs": {
+        "LoanSecurityItemIn": {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "gold",
+                "post_dated_cheque",
+                "cancelled_cheque",
+                "document",
+                "other"
+              ],
+              "title": "Kind",
+              "type": "string"
+            },
+            "description": {
+              "maxLength": 240,
+              "minLength": 1,
+              "title": "Description",
+              "type": "string"
+            },
+            "maskedIdentifier": {
+              "anyOf": [
+                {
+                  "maxLength": 120,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Maskedidentifier"
+            },
+            "statedValueMinor": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Statedvalueminor"
+            }
+          },
+          "required": [
+            "kind",
+            "description"
+          ],
+          "title": "LoanSecurityItemIn",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "direction": {
+          "enum": [
+            "lent",
+            "borrowed"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "counterpartyName": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Counterpartyname",
+          "type": "string"
+        },
+        "inviteChannel": {
+          "enum": [
+            "phone",
+            "email"
+          ],
+          "title": "Invitechannel",
+          "type": "string"
+        },
+        "inviteValue": {
+          "maxLength": 320,
+          "minLength": 3,
+          "title": "Invitevalue",
+          "type": "string"
+        },
+        "principalMinor": {
+          "exclusiveMinimum": 0,
+          "maximum": 100000000000,
+          "title": "Principalminor",
+          "type": "integer"
+        },
+        "currency": {
+          "default": "INR",
+          "maxLength": 3,
+          "minLength": 3,
+          "title": "Currency",
+          "type": "string"
+        },
+        "moneyDate": {
+          "format": "date",
+          "title": "Moneydate",
+          "type": "string"
+        },
+        "dueDate": {
+          "format": "date",
+          "title": "Duedate",
+          "type": "string"
+        },
+        "annualRateBps": {
+          "default": 0,
+          "maximum": 10000,
+          "minimum": 0,
+          "title": "Annualratebps",
+          "type": "integer"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "securityItems": {
+          "items": {
+            "$ref": "#/$defs/LoanSecurityItemIn"
+          },
+          "maxItems": 5,
+          "title": "Securityitems",
+          "type": "array"
+        }
+      },
+      "required": [
+        "direction",
+        "counterpartyName",
+        "inviteChannel",
+        "inviteValue",
+        "principalMinor",
+        "moneyDate",
+        "dueDate"
+      ],
+      "title": "CreatePersonalLoanIn",
+      "type": "object"
+    },
+    "LoanSecurityItemIn": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "gold",
+            "post_dated_cheque",
+            "cancelled_cheque",
+            "document",
+            "other"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "description": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "maskedIdentifier": {
+          "anyOf": [
+            {
+              "maxLength": 120,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maskedidentifier"
+        },
+        "statedValueMinor": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Statedvalueminor"
+        }
+      },
+      "required": [
+        "kind",
+        "description"
+      ],
+      "title": "LoanSecurityItemIn",
+      "type": "object"
+    },
+    "LoanTermProposalIn": {
+      "additionalProperties": false,
+      "properties": {
+        "dueDate": {
+          "format": "date",
+          "title": "Duedate",
+          "type": "string"
+        },
+        "annualRateBps": {
+          "maximum": 10000,
+          "minimum": 0,
+          "title": "Annualratebps",
+          "type": "integer"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "expectedRowVersion": {
+          "exclusiveMinimum": 0,
+          "title": "Expectedrowversion",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "dueDate",
+        "annualRateBps",
+        "expectedRowVersion"
+      ],
+      "title": "LoanTermProposalIn",
+      "type": "object"
+    },
+    "RecordLoanPaymentIn": {
+      "additionalProperties": false,
+      "properties": {
+        "amountMinor": {
+          "exclusiveMinimum": 0,
+          "title": "Amountminor",
+          "type": "integer"
+        },
+        "occurredOn": {
+          "format": "date",
+          "title": "Occurredon",
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        }
+      },
+      "required": [
+        "amountMinor",
+        "occurredOn"
+      ],
+      "title": "RecordLoanPaymentIn",
+      "type": "object"
+    },
+    "ConfirmLoanPaymentIn": {
+      "additionalProperties": false,
+      "properties": {
+        "expectedRowVersion": {
+          "exclusiveMinimum": 0,
+          "title": "Expectedrowversion",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "expectedRowVersion"
+      ],
+      "title": "ConfirmLoanPaymentIn",
+      "type": "object"
+    },
+    "SendLoanReminderIn": {
+      "additionalProperties": false,
+      "properties": {
+        "tone": {
+          "default": "friendly",
+          "enum": [
+            "friendly",
+            "update",
+            "due"
+          ],
+          "title": "Tone",
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        }
+      },
+      "title": "SendLoanReminderIn",
+      "type": "object"
+    },
+    "LoanParticipantOut": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "lender",
+            "borrower"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "displayName": {
+          "title": "Displayname",
+          "type": "string"
+        },
+        "state": {
+          "title": "State",
+          "type": "string"
+        },
+        "isCurrentUser": {
+          "title": "Iscurrentuser",
+          "type": "boolean"
+        },
+        "verificationChannel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Verificationchannel"
+        },
+        "verificationClaim": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Verificationclaim"
+        },
+        "claimedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Claimedat"
+        }
+      },
+      "required": [
+        "id",
+        "role",
+        "displayName",
+        "state",
+        "isCurrentUser"
+      ],
+      "title": "LoanParticipantOut",
+      "type": "object"
+    },
+    "LoanSecurityItemOut": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "maskedIdentifier": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maskedidentifier"
+        },
+        "statedValueMinor": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Statedvalueminor"
+        },
+        "currency": {
+          "title": "Currency",
+          "type": "string"
+        },
+        "providedBy": {
+          "title": "Providedby",
+          "type": "string"
+        },
+        "heldBy": {
+          "title": "Heldby",
+          "type": "string"
+        },
+        "state": {
+          "title": "State",
+          "type": "string"
+        },
+        "returnedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Returnedat"
+        },
+        "returnConfirmedBy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Returnconfirmedby"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "description",
+        "currency",
+        "providedBy",
+        "heldBy",
+        "state"
+      ],
+      "title": "LoanSecurityItemOut",
+      "type": "object"
+    },
+    "LoanInvitationOut": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "channel": {
+          "enum": [
+            "phone",
+            "email"
+          ],
+          "title": "Channel",
+          "type": "string"
+        },
+        "destinationMasked": {
+          "title": "Destinationmasked",
+          "type": "string"
+        },
+        "expiresAt": {
+          "format": "date-time",
+          "title": "Expiresat",
+          "type": "string"
+        },
+        "redeemedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Redeemedat"
+        },
+        "revokedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Revokedat"
+        },
+        "sharePath": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sharepath"
+        }
+      },
+      "required": [
+        "id",
+        "channel",
+        "destinationMasked",
+        "expiresAt"
+      ],
+      "title": "LoanInvitationOut",
+      "type": "object"
+    },
+    "LoanTermOut": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "version": {
+          "title": "Version",
+          "type": "integer"
+        },
+        "principalMinor": {
+          "title": "Principalminor",
+          "type": "integer"
+        },
+        "currency": {
+          "title": "Currency",
+          "type": "string"
+        },
+        "annualRateBps": {
+          "title": "Annualratebps",
+          "type": "integer"
+        },
+        "interestMethod": {
+          "title": "Interestmethod",
+          "type": "string"
+        },
+        "moneyDate": {
+          "format": "date",
+          "title": "Moneydate",
+          "type": "string"
+        },
+        "dueDate": {
+          "format": "date",
+          "title": "Duedate",
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "totalInterestMinor": {
+          "title": "Totalinterestminor",
+          "type": "integer"
+        },
+        "totalRepayableMinor": {
+          "title": "Totalrepayableminor",
+          "type": "integer"
+        },
+        "state": {
+          "title": "State",
+          "type": "string"
+        },
+        "sourceHash": {
+          "title": "Sourcehash",
+          "type": "string"
+        },
+        "documentRevisionId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Documentrevisionid"
+        },
+        "effectiveAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Effectiveat"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "principalMinor",
+        "currency",
+        "annualRateBps",
+        "interestMethod",
+        "moneyDate",
+        "dueDate",
+        "totalInterestMinor",
+        "totalRepayableMinor",
+        "state",
+        "sourceHash"
+      ],
+      "title": "LoanTermOut",
+      "type": "object"
+    },
+    "DocumentChangeOut": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "fieldPath": {
+          "title": "Fieldpath",
+          "type": "string"
+        },
+        "beforeValue": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Beforevalue"
+        },
+        "afterValue": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Aftervalue"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        },
+        "authoredBy": {
+          "title": "Authoredby",
+          "type": "string"
+        },
+        "createdAt": {
+          "format": "date-time",
+          "title": "Createdat",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "fieldPath",
+        "summary",
+        "authoredBy",
+        "createdAt"
+      ],
+      "title": "DocumentChangeOut",
+      "type": "object"
+    },
+    "DocumentAcceptanceOut": {
+      "additionalProperties": false,
+      "properties": {
+        "participantId": {
+          "format": "uuid",
+          "title": "Participantid",
+          "type": "string"
+        },
+        "participantName": {
+          "title": "Participantname",
+          "type": "string"
+        },
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "contentHash": {
+          "title": "Contenthash",
+          "type": "string"
+        },
+        "acceptedAt": {
+          "format": "date-time",
+          "title": "Acceptedat",
+          "type": "string"
+        }
+      },
+      "required": [
+        "participantId",
+        "participantName",
+        "action",
+        "contentHash",
+        "acceptedAt"
+      ],
+      "title": "DocumentAcceptanceOut",
+      "type": "object"
+    },
+    "LoanCashflowOut": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "state": {
+          "title": "State",
+          "type": "string"
+        },
+        "amountMinor": {
+          "title": "Amountminor",
+          "type": "integer"
+        },
+        "principalMinor": {
+          "title": "Principalminor",
+          "type": "integer"
+        },
+        "interestMinor": {
+          "title": "Interestminor",
+          "type": "integer"
+        },
+        "currency": {
+          "title": "Currency",
+          "type": "string"
+        },
+        "occurredOn": {
+          "format": "date",
+          "title": "Occurredon",
+          "type": "string"
+        },
+        "initiatedBy": {
+          "title": "Initiatedby",
+          "type": "string"
+        },
+        "confirmedBy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confirmedby"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "createdAt": {
+          "format": "date-time",
+          "title": "Createdat",
+          "type": "string"
+        },
+        "confirmedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confirmedat"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "state",
+        "amountMinor",
+        "principalMinor",
+        "interestMinor",
+        "currency",
+        "occurredOn",
+        "initiatedBy",
+        "createdAt"
+      ],
+      "title": "LoanCashflowOut",
+      "type": "object"
+    },
+    "SharedRecordEventOut": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "eventType": {
+          "title": "Eventtype",
+          "type": "string"
+        },
+        "actorParticipantId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actorparticipantid"
+        },
+        "actorName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actorname"
+        },
+        "payload": {
+          "additionalProperties": true,
+          "title": "Payload",
+          "type": "object"
+        },
+        "eventHash": {
+          "title": "Eventhash",
+          "type": "string"
+        },
+        "createdAt": {
+          "format": "date-time",
+          "title": "Createdat",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "eventType",
+        "payload",
+        "eventHash",
+        "createdAt"
+      ],
+      "title": "SharedRecordEventOut",
+      "type": "object"
+    },
+    "PersonalLoanSummaryOut": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "sharedRecordId": {
+          "format": "uuid",
+          "title": "Sharedrecordid",
+          "type": "string"
+        },
+        "direction": {
+          "enum": [
+            "lent",
+            "borrowed"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "counterpartyName": {
+          "title": "Counterpartyname",
+          "type": "string"
+        },
+        "counterpartyVerification": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Counterpartyverification"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "fundingStatus": {
+          "title": "Fundingstatus",
+          "type": "string"
+        },
+        "principalMinor": {
+          "title": "Principalminor",
+          "type": "integer"
+        },
+        "outstandingPrincipalMinor": {
+          "title": "Outstandingprincipalminor",
+          "type": "integer"
+        },
+        "accruedInterestMinor": {
+          "title": "Accruedinterestminor",
+          "type": "integer"
+        },
+        "totalRepayableMinor": {
+          "title": "Totalrepayableminor",
+          "type": "integer"
+        },
+        "paidMinor": {
+          "title": "Paidminor",
+          "type": "integer"
+        },
+        "currency": {
+          "title": "Currency",
+          "type": "string"
+        },
+        "moneyDate": {
+          "format": "date",
+          "title": "Moneydate",
+          "type": "string"
+        },
+        "dueDate": {
+          "format": "date",
+          "title": "Duedate",
+          "type": "string"
+        },
+        "nextDueMinor": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Nextdueminor"
+        },
+        "responseNeeded": {
+          "title": "Responseneeded",
+          "type": "boolean"
+        },
+        "rowVersion": {
+          "title": "Rowversion",
+          "type": "integer"
+        },
+        "createdAt": {
+          "format": "date-time",
+          "title": "Createdat",
+          "type": "string"
+        },
+        "updatedAt": {
+          "format": "date-time",
+          "title": "Updatedat",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sharedRecordId",
+        "direction",
+        "counterpartyName",
+        "status",
+        "fundingStatus",
+        "principalMinor",
+        "outstandingPrincipalMinor",
+        "accruedInterestMinor",
+        "totalRepayableMinor",
+        "paidMinor",
+        "currency",
+        "moneyDate",
+        "dueDate",
+        "responseNeeded",
+        "rowVersion",
+        "createdAt",
+        "updatedAt"
+      ],
+      "title": "PersonalLoanSummaryOut",
+      "type": "object"
+    },
+    "PersonalLoanDetailOut": {
+      "$defs": {
+        "DocumentAcceptanceOut": {
+          "additionalProperties": false,
+          "properties": {
+            "participantId": {
+              "format": "uuid",
+              "title": "Participantid",
+              "type": "string"
+            },
+            "participantName": {
+              "title": "Participantname",
+              "type": "string"
+            },
+            "action": {
+              "title": "Action",
+              "type": "string"
+            },
+            "contentHash": {
+              "title": "Contenthash",
+              "type": "string"
+            },
+            "acceptedAt": {
+              "format": "date-time",
+              "title": "Acceptedat",
+              "type": "string"
+            }
+          },
+          "required": [
+            "participantId",
+            "participantName",
+            "action",
+            "contentHash",
+            "acceptedAt"
+          ],
+          "title": "DocumentAcceptanceOut",
+          "type": "object"
+        },
+        "DocumentChangeOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "fieldPath": {
+              "title": "Fieldpath",
+              "type": "string"
+            },
+            "beforeValue": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Beforevalue"
+            },
+            "afterValue": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Aftervalue"
+            },
+            "summary": {
+              "title": "Summary",
+              "type": "string"
+            },
+            "authoredBy": {
+              "title": "Authoredby",
+              "type": "string"
+            },
+            "createdAt": {
+              "format": "date-time",
+              "title": "Createdat",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "fieldPath",
+            "summary",
+            "authoredBy",
+            "createdAt"
+          ],
+          "title": "DocumentChangeOut",
+          "type": "object"
+        },
+        "DocumentRevisionOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "documentId": {
+              "format": "uuid",
+              "title": "Documentid",
+              "type": "string"
+            },
+            "documentTitle": {
+              "title": "Documenttitle",
+              "type": "string"
+            },
+            "revisionNumber": {
+              "title": "Revisionnumber",
+              "type": "integer"
+            },
+            "baseRevisionId": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Baserevisionid"
+            },
+            "state": {
+              "title": "State",
+              "type": "string"
+            },
+            "authoredBy": {
+              "title": "Authoredby",
+              "type": "string"
+            },
+            "content": {
+              "additionalProperties": true,
+              "title": "Content",
+              "type": "object"
+            },
+            "changeSummary": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "title": "Changesummary",
+              "type": "array"
+            },
+            "sourceSnapshotHash": {
+              "title": "Sourcesnapshothash",
+              "type": "string"
+            },
+            "contentHash": {
+              "title": "Contenthash",
+              "type": "string"
+            },
+            "proposedAt": {
+              "format": "date-time",
+              "title": "Proposedat",
+              "type": "string"
+            },
+            "finalizedAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Finalizedat"
+            },
+            "changes": {
+              "items": {
+                "$ref": "#/$defs/DocumentChangeOut"
+              },
+              "title": "Changes",
+              "type": "array"
+            },
+            "acceptances": {
+              "items": {
+                "$ref": "#/$defs/DocumentAcceptanceOut"
+              },
+              "title": "Acceptances",
+              "type": "array"
+            }
+          },
+          "required": [
+            "id",
+            "documentId",
+            "documentTitle",
+            "revisionNumber",
+            "state",
+            "authoredBy",
+            "content",
+            "changeSummary",
+            "sourceSnapshotHash",
+            "contentHash",
+            "proposedAt"
+          ],
+          "title": "DocumentRevisionOut",
+          "type": "object"
+        },
+        "LoanCashflowOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "kind": {
+              "title": "Kind",
+              "type": "string"
+            },
+            "state": {
+              "title": "State",
+              "type": "string"
+            },
+            "amountMinor": {
+              "title": "Amountminor",
+              "type": "integer"
+            },
+            "principalMinor": {
+              "title": "Principalminor",
+              "type": "integer"
+            },
+            "interestMinor": {
+              "title": "Interestminor",
+              "type": "integer"
+            },
+            "currency": {
+              "title": "Currency",
+              "type": "string"
+            },
+            "occurredOn": {
+              "format": "date",
+              "title": "Occurredon",
+              "type": "string"
+            },
+            "initiatedBy": {
+              "title": "Initiatedby",
+              "type": "string"
+            },
+            "confirmedBy": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Confirmedby"
+            },
+            "note": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Note"
+            },
+            "createdAt": {
+              "format": "date-time",
+              "title": "Createdat",
+              "type": "string"
+            },
+            "confirmedAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Confirmedat"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "state",
+            "amountMinor",
+            "principalMinor",
+            "interestMinor",
+            "currency",
+            "occurredOn",
+            "initiatedBy",
+            "createdAt"
+          ],
+          "title": "LoanCashflowOut",
+          "type": "object"
+        },
+        "LoanInvitationOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "channel": {
+              "enum": [
+                "phone",
+                "email"
+              ],
+              "title": "Channel",
+              "type": "string"
+            },
+            "destinationMasked": {
+              "title": "Destinationmasked",
+              "type": "string"
+            },
+            "expiresAt": {
+              "format": "date-time",
+              "title": "Expiresat",
+              "type": "string"
+            },
+            "redeemedAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Redeemedat"
+            },
+            "revokedAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Revokedat"
+            },
+            "sharePath": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Sharepath"
+            }
+          },
+          "required": [
+            "id",
+            "channel",
+            "destinationMasked",
+            "expiresAt"
+          ],
+          "title": "LoanInvitationOut",
+          "type": "object"
+        },
+        "LoanParticipantOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "role": {
+              "enum": [
+                "lender",
+                "borrower"
+              ],
+              "title": "Role",
+              "type": "string"
+            },
+            "displayName": {
+              "title": "Displayname",
+              "type": "string"
+            },
+            "state": {
+              "title": "State",
+              "type": "string"
+            },
+            "isCurrentUser": {
+              "title": "Iscurrentuser",
+              "type": "boolean"
+            },
+            "verificationChannel": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Verificationchannel"
+            },
+            "verificationClaim": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Verificationclaim"
+            },
+            "claimedAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Claimedat"
+            }
+          },
+          "required": [
+            "id",
+            "role",
+            "displayName",
+            "state",
+            "isCurrentUser"
+          ],
+          "title": "LoanParticipantOut",
+          "type": "object"
+        },
+        "LoanSecurityItemOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "kind": {
+              "title": "Kind",
+              "type": "string"
+            },
+            "description": {
+              "title": "Description",
+              "type": "string"
+            },
+            "maskedIdentifier": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Maskedidentifier"
+            },
+            "statedValueMinor": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Statedvalueminor"
+            },
+            "currency": {
+              "title": "Currency",
+              "type": "string"
+            },
+            "providedBy": {
+              "title": "Providedby",
+              "type": "string"
+            },
+            "heldBy": {
+              "title": "Heldby",
+              "type": "string"
+            },
+            "state": {
+              "title": "State",
+              "type": "string"
+            },
+            "returnedAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Returnedat"
+            },
+            "returnConfirmedBy": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Returnconfirmedby"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "description",
+            "currency",
+            "providedBy",
+            "heldBy",
+            "state"
+          ],
+          "title": "LoanSecurityItemOut",
+          "type": "object"
+        },
+        "LoanTermOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "version": {
+              "title": "Version",
+              "type": "integer"
+            },
+            "principalMinor": {
+              "title": "Principalminor",
+              "type": "integer"
+            },
+            "currency": {
+              "title": "Currency",
+              "type": "string"
+            },
+            "annualRateBps": {
+              "title": "Annualratebps",
+              "type": "integer"
+            },
+            "interestMethod": {
+              "title": "Interestmethod",
+              "type": "string"
+            },
+            "moneyDate": {
+              "format": "date",
+              "title": "Moneydate",
+              "type": "string"
+            },
+            "dueDate": {
+              "format": "date",
+              "title": "Duedate",
+              "type": "string"
+            },
+            "note": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Note"
+            },
+            "totalInterestMinor": {
+              "title": "Totalinterestminor",
+              "type": "integer"
+            },
+            "totalRepayableMinor": {
+              "title": "Totalrepayableminor",
+              "type": "integer"
+            },
+            "state": {
+              "title": "State",
+              "type": "string"
+            },
+            "sourceHash": {
+              "title": "Sourcehash",
+              "type": "string"
+            },
+            "documentRevisionId": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Documentrevisionid"
+            },
+            "effectiveAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Effectiveat"
+            }
+          },
+          "required": [
+            "id",
+            "version",
+            "principalMinor",
+            "currency",
+            "annualRateBps",
+            "interestMethod",
+            "moneyDate",
+            "dueDate",
+            "totalInterestMinor",
+            "totalRepayableMinor",
+            "state",
+            "sourceHash"
+          ],
+          "title": "LoanTermOut",
+          "type": "object"
+        },
+        "SharedRecordEventOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "sequence": {
+              "title": "Sequence",
+              "type": "integer"
+            },
+            "eventType": {
+              "title": "Eventtype",
+              "type": "string"
+            },
+            "actorParticipantId": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Actorparticipantid"
+            },
+            "actorName": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Actorname"
+            },
+            "payload": {
+              "additionalProperties": true,
+              "title": "Payload",
+              "type": "object"
+            },
+            "eventHash": {
+              "title": "Eventhash",
+              "type": "string"
+            },
+            "createdAt": {
+              "format": "date-time",
+              "title": "Createdat",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "sequence",
+            "eventType",
+            "payload",
+            "eventHash",
+            "createdAt"
+          ],
+          "title": "SharedRecordEventOut",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "sharedRecordId": {
+          "format": "uuid",
+          "title": "Sharedrecordid",
+          "type": "string"
+        },
+        "direction": {
+          "enum": [
+            "lent",
+            "borrowed"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "counterpartyName": {
+          "title": "Counterpartyname",
+          "type": "string"
+        },
+        "counterpartyVerification": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Counterpartyverification"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "fundingStatus": {
+          "title": "Fundingstatus",
+          "type": "string"
+        },
+        "principalMinor": {
+          "title": "Principalminor",
+          "type": "integer"
+        },
+        "outstandingPrincipalMinor": {
+          "title": "Outstandingprincipalminor",
+          "type": "integer"
+        },
+        "accruedInterestMinor": {
+          "title": "Accruedinterestminor",
+          "type": "integer"
+        },
+        "totalRepayableMinor": {
+          "title": "Totalrepayableminor",
+          "type": "integer"
+        },
+        "paidMinor": {
+          "title": "Paidminor",
+          "type": "integer"
+        },
+        "currency": {
+          "title": "Currency",
+          "type": "string"
+        },
+        "moneyDate": {
+          "format": "date",
+          "title": "Moneydate",
+          "type": "string"
+        },
+        "dueDate": {
+          "format": "date",
+          "title": "Duedate",
+          "type": "string"
+        },
+        "nextDueMinor": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Nextdueminor"
+        },
+        "responseNeeded": {
+          "title": "Responseneeded",
+          "type": "boolean"
+        },
+        "rowVersion": {
+          "title": "Rowversion",
+          "type": "integer"
+        },
+        "createdAt": {
+          "format": "date-time",
+          "title": "Createdat",
+          "type": "string"
+        },
+        "updatedAt": {
+          "format": "date-time",
+          "title": "Updatedat",
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "annualRateBps": {
+          "title": "Annualratebps",
+          "type": "integer"
+        },
+        "currentTerms": {
+          "$ref": "#/$defs/LoanTermOut"
+        },
+        "participants": {
+          "items": {
+            "$ref": "#/$defs/LoanParticipantOut"
+          },
+          "title": "Participants",
+          "type": "array"
+        },
+        "invitation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LoanInvitationOut"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "documentRevision": {
+          "$ref": "#/$defs/DocumentRevisionOut"
+        },
+        "cashflows": {
+          "items": {
+            "$ref": "#/$defs/LoanCashflowOut"
+          },
+          "title": "Cashflows",
+          "type": "array"
+        },
+        "securityItems": {
+          "items": {
+            "$ref": "#/$defs/LoanSecurityItemOut"
+          },
+          "title": "Securityitems",
+          "type": "array"
+        },
+        "activity": {
+          "items": {
+            "$ref": "#/$defs/SharedRecordEventOut"
+          },
+          "title": "Activity",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "sharedRecordId",
+        "direction",
+        "counterpartyName",
+        "status",
+        "fundingStatus",
+        "principalMinor",
+        "outstandingPrincipalMinor",
+        "accruedInterestMinor",
+        "totalRepayableMinor",
+        "paidMinor",
+        "currency",
+        "moneyDate",
+        "dueDate",
+        "responseNeeded",
+        "rowVersion",
+        "createdAt",
+        "updatedAt",
+        "annualRateBps",
+        "currentTerms",
+        "participants",
+        "documentRevision",
+        "cashflows",
+        "securityItems",
+        "activity"
+      ],
+      "title": "PersonalLoanDetailOut",
+      "type": "object"
+    },
+    "PersonalLoanListOut": {
+      "$defs": {
+        "PersonalLoanSummaryOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "sharedRecordId": {
+              "format": "uuid",
+              "title": "Sharedrecordid",
+              "type": "string"
+            },
+            "direction": {
+              "enum": [
+                "lent",
+                "borrowed"
+              ],
+              "title": "Direction",
+              "type": "string"
+            },
+            "counterpartyName": {
+              "title": "Counterpartyname",
+              "type": "string"
+            },
+            "counterpartyVerification": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Counterpartyverification"
+            },
+            "status": {
+              "title": "Status",
+              "type": "string"
+            },
+            "fundingStatus": {
+              "title": "Fundingstatus",
+              "type": "string"
+            },
+            "principalMinor": {
+              "title": "Principalminor",
+              "type": "integer"
+            },
+            "outstandingPrincipalMinor": {
+              "title": "Outstandingprincipalminor",
+              "type": "integer"
+            },
+            "accruedInterestMinor": {
+              "title": "Accruedinterestminor",
+              "type": "integer"
+            },
+            "totalRepayableMinor": {
+              "title": "Totalrepayableminor",
+              "type": "integer"
+            },
+            "paidMinor": {
+              "title": "Paidminor",
+              "type": "integer"
+            },
+            "currency": {
+              "title": "Currency",
+              "type": "string"
+            },
+            "moneyDate": {
+              "format": "date",
+              "title": "Moneydate",
+              "type": "string"
+            },
+            "dueDate": {
+              "format": "date",
+              "title": "Duedate",
+              "type": "string"
+            },
+            "nextDueMinor": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Nextdueminor"
+            },
+            "responseNeeded": {
+              "title": "Responseneeded",
+              "type": "boolean"
+            },
+            "rowVersion": {
+              "title": "Rowversion",
+              "type": "integer"
+            },
+            "createdAt": {
+              "format": "date-time",
+              "title": "Createdat",
+              "type": "string"
+            },
+            "updatedAt": {
+              "format": "date-time",
+              "title": "Updatedat",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "sharedRecordId",
+            "direction",
+            "counterpartyName",
+            "status",
+            "fundingStatus",
+            "principalMinor",
+            "outstandingPrincipalMinor",
+            "accruedInterestMinor",
+            "totalRepayableMinor",
+            "paidMinor",
+            "currency",
+            "moneyDate",
+            "dueDate",
+            "responseNeeded",
+            "rowVersion",
+            "createdAt",
+            "updatedAt"
+          ],
+          "title": "PersonalLoanSummaryOut",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "moneyIGaveMinor": {
+          "title": "Moneyigaveminor",
+          "type": "integer"
+        },
+        "moneyIReceivedMinor": {
+          "title": "Moneyireceivedminor",
+          "type": "integer"
+        },
+        "needsResponseCount": {
+          "title": "Needsresponsecount",
+          "type": "integer"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/PersonalLoanSummaryOut"
+          },
+          "title": "Items",
+          "type": "array"
+        }
+      },
+      "required": [
+        "moneyIGaveMinor",
+        "moneyIReceivedMinor",
+        "needsResponseCount",
+        "items"
+      ],
+      "title": "PersonalLoanListOut",
+      "type": "object"
+    },
+    "InvitationPreviewOut": {
+      "$defs": {
+        "PersonalLoanSummaryOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "sharedRecordId": {
+              "format": "uuid",
+              "title": "Sharedrecordid",
+              "type": "string"
+            },
+            "direction": {
+              "enum": [
+                "lent",
+                "borrowed"
+              ],
+              "title": "Direction",
+              "type": "string"
+            },
+            "counterpartyName": {
+              "title": "Counterpartyname",
+              "type": "string"
+            },
+            "counterpartyVerification": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Counterpartyverification"
+            },
+            "status": {
+              "title": "Status",
+              "type": "string"
+            },
+            "fundingStatus": {
+              "title": "Fundingstatus",
+              "type": "string"
+            },
+            "principalMinor": {
+              "title": "Principalminor",
+              "type": "integer"
+            },
+            "outstandingPrincipalMinor": {
+              "title": "Outstandingprincipalminor",
+              "type": "integer"
+            },
+            "accruedInterestMinor": {
+              "title": "Accruedinterestminor",
+              "type": "integer"
+            },
+            "totalRepayableMinor": {
+              "title": "Totalrepayableminor",
+              "type": "integer"
+            },
+            "paidMinor": {
+              "title": "Paidminor",
+              "type": "integer"
+            },
+            "currency": {
+              "title": "Currency",
+              "type": "string"
+            },
+            "moneyDate": {
+              "format": "date",
+              "title": "Moneydate",
+              "type": "string"
+            },
+            "dueDate": {
+              "format": "date",
+              "title": "Duedate",
+              "type": "string"
+            },
+            "nextDueMinor": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Nextdueminor"
+            },
+            "responseNeeded": {
+              "title": "Responseneeded",
+              "type": "boolean"
+            },
+            "rowVersion": {
+              "title": "Rowversion",
+              "type": "integer"
+            },
+            "createdAt": {
+              "format": "date-time",
+              "title": "Createdat",
+              "type": "string"
+            },
+            "updatedAt": {
+              "format": "date-time",
+              "title": "Updatedat",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "sharedRecordId",
+            "direction",
+            "counterpartyName",
+            "status",
+            "fundingStatus",
+            "principalMinor",
+            "outstandingPrincipalMinor",
+            "accruedInterestMinor",
+            "totalRepayableMinor",
+            "paidMinor",
+            "currency",
+            "moneyDate",
+            "dueDate",
+            "responseNeeded",
+            "rowVersion",
+            "createdAt",
+            "updatedAt"
+          ],
+          "title": "PersonalLoanSummaryOut",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "tokenValid": {
+          "title": "Tokenvalid",
+          "type": "boolean"
+        },
+        "senderName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sendername"
+        },
+        "recipientName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recipientname"
+        },
+        "channel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Channel"
+        },
+        "destinationMasked": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Destinationmasked"
+        },
+        "expiresAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expiresat"
+        },
+        "canRedeem": {
+          "default": false,
+          "title": "Canredeem",
+          "type": "boolean"
+        },
+        "loan": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PersonalLoanSummaryOut"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "tokenValid"
+      ],
+      "title": "InvitationPreviewOut",
+      "type": "object"
+    },
+    "DocumentRevisionOut": {
+      "$defs": {
+        "DocumentAcceptanceOut": {
+          "additionalProperties": false,
+          "properties": {
+            "participantId": {
+              "format": "uuid",
+              "title": "Participantid",
+              "type": "string"
+            },
+            "participantName": {
+              "title": "Participantname",
+              "type": "string"
+            },
+            "action": {
+              "title": "Action",
+              "type": "string"
+            },
+            "contentHash": {
+              "title": "Contenthash",
+              "type": "string"
+            },
+            "acceptedAt": {
+              "format": "date-time",
+              "title": "Acceptedat",
+              "type": "string"
+            }
+          },
+          "required": [
+            "participantId",
+            "participantName",
+            "action",
+            "contentHash",
+            "acceptedAt"
+          ],
+          "title": "DocumentAcceptanceOut",
+          "type": "object"
+        },
+        "DocumentChangeOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "fieldPath": {
+              "title": "Fieldpath",
+              "type": "string"
+            },
+            "beforeValue": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Beforevalue"
+            },
+            "afterValue": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Aftervalue"
+            },
+            "summary": {
+              "title": "Summary",
+              "type": "string"
+            },
+            "authoredBy": {
+              "title": "Authoredby",
+              "type": "string"
+            },
+            "createdAt": {
+              "format": "date-time",
+              "title": "Createdat",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "fieldPath",
+            "summary",
+            "authoredBy",
+            "createdAt"
+          ],
+          "title": "DocumentChangeOut",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "documentId": {
+          "format": "uuid",
+          "title": "Documentid",
+          "type": "string"
+        },
+        "documentTitle": {
+          "title": "Documenttitle",
+          "type": "string"
+        },
+        "revisionNumber": {
+          "title": "Revisionnumber",
+          "type": "integer"
+        },
+        "baseRevisionId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Baserevisionid"
+        },
+        "state": {
+          "title": "State",
+          "type": "string"
+        },
+        "authoredBy": {
+          "title": "Authoredby",
+          "type": "string"
+        },
+        "content": {
+          "additionalProperties": true,
+          "title": "Content",
+          "type": "object"
+        },
+        "changeSummary": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Changesummary",
+          "type": "array"
+        },
+        "sourceSnapshotHash": {
+          "title": "Sourcesnapshothash",
+          "type": "string"
+        },
+        "contentHash": {
+          "title": "Contenthash",
+          "type": "string"
+        },
+        "proposedAt": {
+          "format": "date-time",
+          "title": "Proposedat",
+          "type": "string"
+        },
+        "finalizedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Finalizedat"
+        },
+        "changes": {
+          "items": {
+            "$ref": "#/$defs/DocumentChangeOut"
+          },
+          "title": "Changes",
+          "type": "array"
+        },
+        "acceptances": {
+          "items": {
+            "$ref": "#/$defs/DocumentAcceptanceOut"
+          },
+          "title": "Acceptances",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "documentId",
+        "documentTitle",
+        "revisionNumber",
+        "state",
+        "authoredBy",
+        "content",
+        "changeSummary",
+        "sourceSnapshotHash",
+        "contentHash",
+        "proposedAt"
+      ],
+      "title": "DocumentRevisionOut",
+      "type": "object"
+    },
+    "ReminderOut": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "state": {
+          "title": "State",
+          "type": "string"
+        },
+        "channel": {
+          "title": "Channel",
+          "type": "string"
+        },
+        "destinationMasked": {
+          "title": "Destinationmasked",
+          "type": "string"
+        },
+        "queuedAt": {
+          "format": "date-time",
+          "title": "Queuedat",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "state",
+        "channel",
+        "destinationMasked",
+        "queuedAt"
+      ],
+      "title": "ReminderOut",
+      "type": "object"
+    },
+    "LoanCommandOut": {
+      "$defs": {
+        "DocumentAcceptanceOut": {
+          "additionalProperties": false,
+          "properties": {
+            "participantId": {
+              "format": "uuid",
+              "title": "Participantid",
+              "type": "string"
+            },
+            "participantName": {
+              "title": "Participantname",
+              "type": "string"
+            },
+            "action": {
+              "title": "Action",
+              "type": "string"
+            },
+            "contentHash": {
+              "title": "Contenthash",
+              "type": "string"
+            },
+            "acceptedAt": {
+              "format": "date-time",
+              "title": "Acceptedat",
+              "type": "string"
+            }
+          },
+          "required": [
+            "participantId",
+            "participantName",
+            "action",
+            "contentHash",
+            "acceptedAt"
+          ],
+          "title": "DocumentAcceptanceOut",
+          "type": "object"
+        },
+        "DocumentChangeOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "fieldPath": {
+              "title": "Fieldpath",
+              "type": "string"
+            },
+            "beforeValue": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Beforevalue"
+            },
+            "afterValue": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Aftervalue"
+            },
+            "summary": {
+              "title": "Summary",
+              "type": "string"
+            },
+            "authoredBy": {
+              "title": "Authoredby",
+              "type": "string"
+            },
+            "createdAt": {
+              "format": "date-time",
+              "title": "Createdat",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "fieldPath",
+            "summary",
+            "authoredBy",
+            "createdAt"
+          ],
+          "title": "DocumentChangeOut",
+          "type": "object"
+        },
+        "DocumentRevisionOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "documentId": {
+              "format": "uuid",
+              "title": "Documentid",
+              "type": "string"
+            },
+            "documentTitle": {
+              "title": "Documenttitle",
+              "type": "string"
+            },
+            "revisionNumber": {
+              "title": "Revisionnumber",
+              "type": "integer"
+            },
+            "baseRevisionId": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Baserevisionid"
+            },
+            "state": {
+              "title": "State",
+              "type": "string"
+            },
+            "authoredBy": {
+              "title": "Authoredby",
+              "type": "string"
+            },
+            "content": {
+              "additionalProperties": true,
+              "title": "Content",
+              "type": "object"
+            },
+            "changeSummary": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "title": "Changesummary",
+              "type": "array"
+            },
+            "sourceSnapshotHash": {
+              "title": "Sourcesnapshothash",
+              "type": "string"
+            },
+            "contentHash": {
+              "title": "Contenthash",
+              "type": "string"
+            },
+            "proposedAt": {
+              "format": "date-time",
+              "title": "Proposedat",
+              "type": "string"
+            },
+            "finalizedAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Finalizedat"
+            },
+            "changes": {
+              "items": {
+                "$ref": "#/$defs/DocumentChangeOut"
+              },
+              "title": "Changes",
+              "type": "array"
+            },
+            "acceptances": {
+              "items": {
+                "$ref": "#/$defs/DocumentAcceptanceOut"
+              },
+              "title": "Acceptances",
+              "type": "array"
+            }
+          },
+          "required": [
+            "id",
+            "documentId",
+            "documentTitle",
+            "revisionNumber",
+            "state",
+            "authoredBy",
+            "content",
+            "changeSummary",
+            "sourceSnapshotHash",
+            "contentHash",
+            "proposedAt"
+          ],
+          "title": "DocumentRevisionOut",
+          "type": "object"
+        },
+        "LoanCashflowOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "kind": {
+              "title": "Kind",
+              "type": "string"
+            },
+            "state": {
+              "title": "State",
+              "type": "string"
+            },
+            "amountMinor": {
+              "title": "Amountminor",
+              "type": "integer"
+            },
+            "principalMinor": {
+              "title": "Principalminor",
+              "type": "integer"
+            },
+            "interestMinor": {
+              "title": "Interestminor",
+              "type": "integer"
+            },
+            "currency": {
+              "title": "Currency",
+              "type": "string"
+            },
+            "occurredOn": {
+              "format": "date",
+              "title": "Occurredon",
+              "type": "string"
+            },
+            "initiatedBy": {
+              "title": "Initiatedby",
+              "type": "string"
+            },
+            "confirmedBy": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Confirmedby"
+            },
+            "note": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Note"
+            },
+            "createdAt": {
+              "format": "date-time",
+              "title": "Createdat",
+              "type": "string"
+            },
+            "confirmedAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Confirmedat"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "state",
+            "amountMinor",
+            "principalMinor",
+            "interestMinor",
+            "currency",
+            "occurredOn",
+            "initiatedBy",
+            "createdAt"
+          ],
+          "title": "LoanCashflowOut",
+          "type": "object"
+        },
+        "LoanInvitationOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "channel": {
+              "enum": [
+                "phone",
+                "email"
+              ],
+              "title": "Channel",
+              "type": "string"
+            },
+            "destinationMasked": {
+              "title": "Destinationmasked",
+              "type": "string"
+            },
+            "expiresAt": {
+              "format": "date-time",
+              "title": "Expiresat",
+              "type": "string"
+            },
+            "redeemedAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Redeemedat"
+            },
+            "revokedAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Revokedat"
+            },
+            "sharePath": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Sharepath"
+            }
+          },
+          "required": [
+            "id",
+            "channel",
+            "destinationMasked",
+            "expiresAt"
+          ],
+          "title": "LoanInvitationOut",
+          "type": "object"
+        },
+        "LoanParticipantOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "role": {
+              "enum": [
+                "lender",
+                "borrower"
+              ],
+              "title": "Role",
+              "type": "string"
+            },
+            "displayName": {
+              "title": "Displayname",
+              "type": "string"
+            },
+            "state": {
+              "title": "State",
+              "type": "string"
+            },
+            "isCurrentUser": {
+              "title": "Iscurrentuser",
+              "type": "boolean"
+            },
+            "verificationChannel": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Verificationchannel"
+            },
+            "verificationClaim": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Verificationclaim"
+            },
+            "claimedAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Claimedat"
+            }
+          },
+          "required": [
+            "id",
+            "role",
+            "displayName",
+            "state",
+            "isCurrentUser"
+          ],
+          "title": "LoanParticipantOut",
+          "type": "object"
+        },
+        "LoanSecurityItemOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "kind": {
+              "title": "Kind",
+              "type": "string"
+            },
+            "description": {
+              "title": "Description",
+              "type": "string"
+            },
+            "maskedIdentifier": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Maskedidentifier"
+            },
+            "statedValueMinor": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Statedvalueminor"
+            },
+            "currency": {
+              "title": "Currency",
+              "type": "string"
+            },
+            "providedBy": {
+              "title": "Providedby",
+              "type": "string"
+            },
+            "heldBy": {
+              "title": "Heldby",
+              "type": "string"
+            },
+            "state": {
+              "title": "State",
+              "type": "string"
+            },
+            "returnedAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Returnedat"
+            },
+            "returnConfirmedBy": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Returnconfirmedby"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "description",
+            "currency",
+            "providedBy",
+            "heldBy",
+            "state"
+          ],
+          "title": "LoanSecurityItemOut",
+          "type": "object"
+        },
+        "LoanTermOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "version": {
+              "title": "Version",
+              "type": "integer"
+            },
+            "principalMinor": {
+              "title": "Principalminor",
+              "type": "integer"
+            },
+            "currency": {
+              "title": "Currency",
+              "type": "string"
+            },
+            "annualRateBps": {
+              "title": "Annualratebps",
+              "type": "integer"
+            },
+            "interestMethod": {
+              "title": "Interestmethod",
+              "type": "string"
+            },
+            "moneyDate": {
+              "format": "date",
+              "title": "Moneydate",
+              "type": "string"
+            },
+            "dueDate": {
+              "format": "date",
+              "title": "Duedate",
+              "type": "string"
+            },
+            "note": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Note"
+            },
+            "totalInterestMinor": {
+              "title": "Totalinterestminor",
+              "type": "integer"
+            },
+            "totalRepayableMinor": {
+              "title": "Totalrepayableminor",
+              "type": "integer"
+            },
+            "state": {
+              "title": "State",
+              "type": "string"
+            },
+            "sourceHash": {
+              "title": "Sourcehash",
+              "type": "string"
+            },
+            "documentRevisionId": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Documentrevisionid"
+            },
+            "effectiveAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Effectiveat"
+            }
+          },
+          "required": [
+            "id",
+            "version",
+            "principalMinor",
+            "currency",
+            "annualRateBps",
+            "interestMethod",
+            "moneyDate",
+            "dueDate",
+            "totalInterestMinor",
+            "totalRepayableMinor",
+            "state",
+            "sourceHash"
+          ],
+          "title": "LoanTermOut",
+          "type": "object"
+        },
+        "PersonalLoanDetailOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "sharedRecordId": {
+              "format": "uuid",
+              "title": "Sharedrecordid",
+              "type": "string"
+            },
+            "direction": {
+              "enum": [
+                "lent",
+                "borrowed"
+              ],
+              "title": "Direction",
+              "type": "string"
+            },
+            "counterpartyName": {
+              "title": "Counterpartyname",
+              "type": "string"
+            },
+            "counterpartyVerification": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Counterpartyverification"
+            },
+            "status": {
+              "title": "Status",
+              "type": "string"
+            },
+            "fundingStatus": {
+              "title": "Fundingstatus",
+              "type": "string"
+            },
+            "principalMinor": {
+              "title": "Principalminor",
+              "type": "integer"
+            },
+            "outstandingPrincipalMinor": {
+              "title": "Outstandingprincipalminor",
+              "type": "integer"
+            },
+            "accruedInterestMinor": {
+              "title": "Accruedinterestminor",
+              "type": "integer"
+            },
+            "totalRepayableMinor": {
+              "title": "Totalrepayableminor",
+              "type": "integer"
+            },
+            "paidMinor": {
+              "title": "Paidminor",
+              "type": "integer"
+            },
+            "currency": {
+              "title": "Currency",
+              "type": "string"
+            },
+            "moneyDate": {
+              "format": "date",
+              "title": "Moneydate",
+              "type": "string"
+            },
+            "dueDate": {
+              "format": "date",
+              "title": "Duedate",
+              "type": "string"
+            },
+            "nextDueMinor": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Nextdueminor"
+            },
+            "responseNeeded": {
+              "title": "Responseneeded",
+              "type": "boolean"
+            },
+            "rowVersion": {
+              "title": "Rowversion",
+              "type": "integer"
+            },
+            "createdAt": {
+              "format": "date-time",
+              "title": "Createdat",
+              "type": "string"
+            },
+            "updatedAt": {
+              "format": "date-time",
+              "title": "Updatedat",
+              "type": "string"
+            },
+            "note": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Note"
+            },
+            "annualRateBps": {
+              "title": "Annualratebps",
+              "type": "integer"
+            },
+            "currentTerms": {
+              "$ref": "#/$defs/LoanTermOut"
+            },
+            "participants": {
+              "items": {
+                "$ref": "#/$defs/LoanParticipantOut"
+              },
+              "title": "Participants",
+              "type": "array"
+            },
+            "invitation": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/LoanInvitationOut"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "documentRevision": {
+              "$ref": "#/$defs/DocumentRevisionOut"
+            },
+            "cashflows": {
+              "items": {
+                "$ref": "#/$defs/LoanCashflowOut"
+              },
+              "title": "Cashflows",
+              "type": "array"
+            },
+            "securityItems": {
+              "items": {
+                "$ref": "#/$defs/LoanSecurityItemOut"
+              },
+              "title": "Securityitems",
+              "type": "array"
+            },
+            "activity": {
+              "items": {
+                "$ref": "#/$defs/SharedRecordEventOut"
+              },
+              "title": "Activity",
+              "type": "array"
+            }
+          },
+          "required": [
+            "id",
+            "sharedRecordId",
+            "direction",
+            "counterpartyName",
+            "status",
+            "fundingStatus",
+            "principalMinor",
+            "outstandingPrincipalMinor",
+            "accruedInterestMinor",
+            "totalRepayableMinor",
+            "paidMinor",
+            "currency",
+            "moneyDate",
+            "dueDate",
+            "responseNeeded",
+            "rowVersion",
+            "createdAt",
+            "updatedAt",
+            "annualRateBps",
+            "currentTerms",
+            "participants",
+            "documentRevision",
+            "cashflows",
+            "securityItems",
+            "activity"
+          ],
+          "title": "PersonalLoanDetailOut",
+          "type": "object"
+        },
+        "SharedRecordEventOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "sequence": {
+              "title": "Sequence",
+              "type": "integer"
+            },
+            "eventType": {
+              "title": "Eventtype",
+              "type": "string"
+            },
+            "actorParticipantId": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Actorparticipantid"
+            },
+            "actorName": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Actorname"
+            },
+            "payload": {
+              "additionalProperties": true,
+              "title": "Payload",
+              "type": "object"
+            },
+            "eventHash": {
+              "title": "Eventhash",
+              "type": "string"
+            },
+            "createdAt": {
+              "format": "date-time",
+              "title": "Createdat",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "sequence",
+            "eventType",
+            "payload",
+            "eventHash",
+            "createdAt"
+          ],
+          "title": "SharedRecordEventOut",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "loan": {
+          "$ref": "#/$defs/PersonalLoanDetailOut"
+        },
+        "replayed": {
+          "default": false,
+          "title": "Replayed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "loan"
+      ],
+      "title": "LoanCommandOut",
+      "type": "object"
+    },
     "WidgetAction": {
       "$defs": {
         "WidgetActionId": {
@@ -820,6 +4455,167 @@
       "title": "UpdateDraftPayload",
       "type": "object"
     },
+    "EditSavedTransactionPayload": {
+      "$defs": {
+        "SpendNature": {
+          "enum": [
+            "essential",
+            "discretionary",
+            "potentially_avoidable",
+            "unknown"
+          ],
+          "title": "SpendNature",
+          "type": "string"
+        },
+        "TransactionType": {
+          "enum": [
+            "expense",
+            "income",
+            "transfer",
+            "investment",
+            "loan_payment",
+            "refund",
+            "reimbursement",
+            "cash_withdrawal",
+            "cash_deposit",
+            "unknown"
+          ],
+          "title": "TransactionType",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "description": "Optional server-prefilled patch carried by a disambiguation choice.",
+      "properties": {
+        "transactionId": {
+          "format": "uuid",
+          "title": "Transactionid",
+          "type": "string"
+        },
+        "amountMinor": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 9000000000000000,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Amountminor"
+        },
+        "merchant": {
+          "anyOf": [
+            {
+              "maxLength": 160,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Merchant"
+        },
+        "transactionDate": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Transactiondate"
+        },
+        "transactionType": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TransactionType"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "categorySlug": {
+          "anyOf": [
+            {
+              "maxLength": 120,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Categoryslug"
+        },
+        "subcategorySlug": {
+          "anyOf": [
+            {
+              "maxLength": 120,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subcategoryslug"
+        },
+        "location": {
+          "anyOf": [
+            {
+              "maxLength": 160,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Location"
+        },
+        "spendNature": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SpendNature"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "tags": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 8,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tags"
+        }
+      },
+      "required": [
+        "transactionId"
+      ],
+      "title": "EditSavedTransactionPayload",
+      "type": "object"
+    },
     "TransactionActionPayload": {
       "additionalProperties": false,
       "properties": {
@@ -873,8 +4669,22 @@
         },
         "amountMinor": {
           "exclusiveMinimum": 0,
+          "maximum": 9000000000000000,
           "title": "Amountminor",
           "type": "integer"
+        },
+        "expectedVersion": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expectedversion"
         },
         "merchant": {
           "anyOf": [
@@ -980,6 +4790,47 @@
           ],
           "default": null,
           "title": "Tags"
+        },
+        "latitude": {
+          "anyOf": [
+            {
+              "maximum": 90,
+              "minimum": -90,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latitude"
+        },
+        "longitude": {
+          "anyOf": [
+            {
+              "maximum": 180,
+              "minimum": -180,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Longitude"
+        },
+        "locationAccuracy": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Locationaccuracy"
         }
       },
       "required": [
@@ -4382,6 +8233,19 @@
           "default": null,
           "title": "Transactionid"
         },
+        "rowVersion": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rowversion"
+        },
         "draftId": {
           "anyOf": [
             {
@@ -4487,6 +8351,31 @@
           },
           "title": "Tags",
           "type": "array"
+        },
+        "supersededByVersion": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Supersededbyversion"
+        },
+        "supersededByWidgetId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Supersededbywidgetid"
         }
       },
       "required": [
@@ -4578,6 +8467,19 @@
           ],
           "default": null,
           "title": "Transactionid"
+        },
+        "rowVersion": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rowversion"
         },
         "draftId": {
           "anyOf": [
@@ -10739,6 +14641,11 @@
           "title": "Id",
           "type": "string"
         },
+        "rowVersion": {
+          "minimum": 1,
+          "title": "Rowversion",
+          "type": "integer"
+        },
         "transactionType": {
           "$ref": "#/$defs/TransactionType"
         },
@@ -10857,6 +14764,7 @@
       },
       "required": [
         "id",
+        "rowVersion",
         "transactionType",
         "amountMinor",
         "currency",
@@ -10866,6 +14774,81 @@
         "sourceCount"
       ],
       "title": "TransactionListItemOut",
+      "type": "object"
+    },
+    "TransactionRevisionChangeOut": {
+      "properties": {
+        "before": {
+          "default": null,
+          "title": "Before"
+        },
+        "after": {
+          "default": null,
+          "title": "After"
+        }
+      },
+      "title": "TransactionRevisionChangeOut",
+      "type": "object"
+    },
+    "TransactionRevisionOut": {
+      "$defs": {
+        "TransactionRevisionChangeOut": {
+          "properties": {
+            "before": {
+              "default": null,
+              "title": "Before"
+            },
+            "after": {
+              "default": null,
+              "title": "After"
+            }
+          },
+          "title": "TransactionRevisionChangeOut",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "revisionNumber": {
+          "minimum": 1,
+          "title": "Revisionnumber",
+          "type": "integer"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "changes": {
+          "additionalProperties": {
+            "$ref": "#/$defs/TransactionRevisionChangeOut"
+          },
+          "title": "Changes",
+          "type": "object"
+        },
+        "createdAt": {
+          "format": "date-time",
+          "title": "Createdat",
+          "type": "string"
+        }
+      },
+      "required": [
+        "revisionNumber",
+        "source",
+        "changes",
+        "createdAt"
+      ],
+      "title": "TransactionRevisionOut",
       "type": "object"
     },
     "TransactionUpdateIn": {
@@ -10901,8 +14884,22 @@
       "properties": {
         "amountMinor": {
           "exclusiveMinimum": 0,
+          "maximum": 9000000000000000,
           "title": "Amountminor",
           "type": "integer"
+        },
+        "expectedVersion": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expectedversion"
         },
         "merchant": {
           "anyOf": [
@@ -12832,7 +16829,7 @@
     "edit_transaction": "DraftActionPayload",
     "cancel_transaction_edit": "DraftActionPayload",
     "update_transaction_draft": "UpdateDraftPayload",
-    "edit_saved_transaction": "TransactionActionPayload",
+    "edit_saved_transaction": "EditSavedTransactionPayload",
     "cancel_saved_transaction_edit": "TransactionActionPayload",
     "update_saved_transaction": "UpdateSavedTransactionPayload",
     "request_remove_transaction": "TransactionActionPayload",
@@ -12846,5 +16843,5 @@
     "approve_operation": "OperationActionPayload",
     "cancel_operation": "OperationActionPayload"
   },
-  "schemaHash": "a968ea1e79b1318e1bdf514c7b9d8dccd1a7ff68e42afd5ec21704252e8064f0"
+  "schemaHash": "6efea9b87f0e9c8c026553ecba6de0d044be26171f44c022fce49d45e04274d3"
 }

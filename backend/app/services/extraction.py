@@ -42,6 +42,22 @@ AMOUNT_PATTERN = re.compile(
     r"(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
+_INDIAN_AMOUNT_COMPONENT = re.compile(
+    r"([0-9][0-9,]*(?:\.\d+)?)\s*"
+    r"(crores?|cr|lakhs?|lacs?|lakh|lac|thousands?|thousand|k)?",
+    re.IGNORECASE,
+)
+_INDIAN_COMPOSITE_AMOUNT_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?:₹|rs\.?|inr)?\s*"
+    r"(?P<components>"
+    r"[0-9][0-9,]*(?:\.\d+)?\s*(?:crores?|cr|lakhs?|lacs?|lakh|lac)"
+    r"(?:\s+(?:and\s+)?[0-9][0-9,]*(?:\.\d+)?"
+    r"(?:\s*(?:lakhs?|lacs?|lakh|lac|thousands?|thousand|k))?){1,3}"
+    r")"
+    r"(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
 MERCHANT_PATTERNS = [
     re.compile(r"\b(?:at|to|from)\s+([A-Za-z][A-Za-z0-9&.' -]{1,50}?)(?=\s+(?:for|in|on|today|yesterday|last\s+night|was\s+successful)\b|[.!?,]|$)", re.I),
 ]
@@ -92,6 +108,45 @@ def infer_expense_category(text: str) -> tuple[str | None, str | None]:
 
 
 def parse_amount_minor(text: str) -> int | None:
+    # Indian amounts are commonly spoken as a sum of magnitude components:
+    # ``6 lakh 40,000`` means 640,000, not merely the first regex token
+    # (600,000). Resolve that composition before the single-number parser.
+    composite = _INDIAN_COMPOSITE_AMOUNT_PATTERN.search(text)
+    if composite:
+        multipliers = {
+            "crore": Decimal(10_000_000),
+            "crores": Decimal(10_000_000),
+            "cr": Decimal(10_000_000),
+            "lakh": Decimal(100_000),
+            "lakhs": Decimal(100_000),
+            "lac": Decimal(100_000),
+            "lacs": Decimal(100_000),
+            "thousand": Decimal(1_000),
+            "thousands": Decimal(1_000),
+            "k": Decimal(1_000),
+        }
+        total = Decimal(0)
+        previous_multiplier: Decimal | None = None
+        valid = True
+        for component in _INDIAN_AMOUNT_COMPONENT.finditer(composite.group("components")):
+            try:
+                value = Decimal(component.group(1).replace(",", ""))
+            except InvalidOperation:
+                valid = False
+                break
+            suffix = (component.group(2) or "").lower()
+            multiplier = multipliers.get(suffix, Decimal(1))
+            # Components in a spoken composite must descend in magnitude.
+            # Rejecting ``6 lakh 2 crore`` keeps malformed text on the normal
+            # parser instead of silently inventing a sum.
+            if previous_multiplier is not None and multiplier >= previous_multiplier:
+                valid = False
+                break
+            total += value * multiplier
+            previous_multiplier = multiplier
+        if valid and total > 0:
+            return int((total * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
     candidates = list(AMOUNT_PATTERN.finditer(text))
     if not candidates:
         return None

@@ -27,16 +27,29 @@ import {
   type ConversationOut,
   type ConversationCreatedOut,
   type ConversationSummary,
+  type ContactSuggestionOut,
+  type CreatePersonalLoanIn,
   type DataChartData,
+  type DocumentRevisionOut,
   type IdentityOut,
   type ImportResult,
+  type InvitationPreviewOut,
   type LocationResolveOut,
+  type LoanCommandOut,
+  type LoanTermProposalIn,
   type Message,
   type OtpSentOut,
   type OverviewOut,
+  type PersonalLoanDetailOut,
+  type PersonalLoanListOut,
+  type PersonalLoanSummaryOut,
   type PrivacyStatusOut,
   type ProfileOut,
+  type RecordLoanPaymentIn,
+  type ReminderOut,
+  type SendLoanReminderIn,
   type TransactionListItemOut,
+  type TransactionRevisionOut,
   type TransactionCategoryHintOut,
   type TransactionUpdateIn,
   type Widget,
@@ -60,6 +73,10 @@ export function parseActionPayload(action: WidgetActionId, payload: Record<strin
   return actionPayloadSchemas[action].parse(payload) as Record<string, unknown>;
 }
 export const dataChartDataSchema = generatedSchema<DataChartData>("DataChartData");
+export const transactionRevisionSchema = generatedSchema<TransactionRevisionOut>("TransactionRevisionOut");
+export const transactionRevisionListSchema = transactionRevisionSchema.array();
+
+export type { TransactionRevisionOut };
 
 /** Dashboards are a REST surface rather than a widget lane, so their envelope
  *  is written here against the fixed API contract; the tile's chart itself
@@ -132,6 +149,13 @@ export const otpSentSchema = generatedSchema<OtpSentOut>("OtpSentOut");
 export const importResultSchema = generatedSchema<ImportResult>("ImportResultOut");
 export const agentActivityEventSchema = generatedSchema<AgentActivityEvent>("AgentActivityEvent");
 export const agentThreadStateSchema = generatedSchema<AgentThreadStateOut>("AgentThreadStateOut");
+export const personalLoanListSchema = generatedSchema<PersonalLoanListOut>("PersonalLoanListOut");
+export const contactSuggestionSchema = generatedSchema<ContactSuggestionOut>("ContactSuggestionOut");
+export const personalLoanDetailSchema = generatedSchema<PersonalLoanDetailOut>("PersonalLoanDetailOut");
+export const loanCommandSchema = generatedSchema<LoanCommandOut>("LoanCommandOut");
+export const invitationPreviewSchema = generatedSchema<InvitationPreviewOut>("InvitationPreviewOut");
+export const documentRevisionListSchema = generatedSchema<DocumentRevisionOut>("DocumentRevisionOut").array();
+export const reminderSchema = generatedSchema<ReminderOut>("ReminderOut");
 
 export type {
   AgentResponse,
@@ -148,15 +172,27 @@ export type {
   ConversationOut,
   ConversationCreatedOut,
   ConversationSummary,
+  ContactSuggestionOut,
+  CreatePersonalLoanIn,
   DataChartData,
+  DocumentRevisionOut,
   IdentityOut,
   ImportResult,
+  InvitationPreviewOut,
   LocationResolveOut,
+  LoanCommandOut,
+  LoanTermProposalIn,
   Message,
   OtpSentOut,
   OverviewOut,
+  PersonalLoanDetailOut,
+  PersonalLoanListOut,
+  PersonalLoanSummaryOut,
   PrivacyStatusOut,
   ProfileOut,
+  RecordLoanPaymentIn,
+  ReminderOut,
+  SendLoanReminderIn,
   TransactionListItemOut,
   TransactionCategoryHintOut,
   TransactionUpdateIn,

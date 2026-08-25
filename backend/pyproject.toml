@@ -25,6 +25,9 @@ dependencies = [
   # rotation and audience checks that make the credential mean anything.
   "google-auth>=2.35,<3",
   "requests>=2.32,<3",
+  # Authenticated encryption for invitation destinations and notification
+  # delivery addresses stored by reusable shared-record modules.
+  "cryptography>=45,<47",
   # Human-authored operation manifests, strict input validation, and runtime
   # catalog reloads. These are explicit dependencies rather than relying on
   # uvicorn's optional dependency tree.

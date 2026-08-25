@@ -1,7 +1,7 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
-import { useVirtualizer } from "@tanstack/react-virtual";
-import { Activity, ArrowDown, Check, CheckCircle2, ChartColumn, Copy, FileText, LayoutDashboard, Loader2, MessageSquareText, Paperclip, ReceiptText, RotateCcw, SendHorizontal, Settings, ShieldCheck, Sparkles, Square, SquarePen, Tags, Trash2, TriangleAlert, X } from "lucide-react";
+import { Activity, ArrowDown, Check, CheckCircle2, ChartColumn, Copy, FileText, HandCoins, LayoutDashboard, Loader2, MessageSquareText, Paperclip, ReceiptText, RotateCcw, SendHorizontal, Settings, ShieldCheck, Sparkles, Square, SquarePen, Tags, Trash2, TriangleAlert, X } from "lucide-react";
 import { createContext, FormEvent, memo, RefObject, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useLocation, useMatch, useNavigate } from "react-router";
 import { SETTINGS_TOAST_PROBLEM, SETTINGS_TOAST_SAVED, SettingsRailIndex } from "@/components/settings-parts";
 import { Button } from "@/components/ui/button";
@@ -17,11 +17,11 @@ import { DayDivider, localDayKey } from "@/components/day-divider";
 import { MessageDeliveryTime } from "@/components/message-delivery-time";
 import { MessageIdentifier } from "@/components/message-identifier";
 import { environment } from "@/config/environment";
-import { bootstrap, cancelAgentRun, createCategory, createConversation, createSubcategory, deleteConversation, flushConversationDeletion, isUnauthorized, listConversations, loadAgentThreadState, loadConversation, renameConversation, openInterrupts, reconnectAgentRun, resumeAgentInterrupt, sendAgentAction, sendAgentMessage, uploadCsv, type AgentActivity, type AgentRunPhase, type FynInterrupt } from "@/lib/api";
+import { bootstrap, cancelAgentRun, createCategory, createConversation, createSubcategory, deleteConversation, flushConversationDeletion, getPrivacyStatus, isUnauthorized, listConversations, loadAgentThreadState, loadConversation, renameConversation, openInterrupts, reconnectAgentRun, resumeAgentInterrupt, sendAgentAction, sendAgentMessage, uploadCsv, type AgentActivity, type AgentRunPhase, type FynInterrupt } from "@/lib/api";
 import { AgentRunTelemetry } from "@/lib/agent-telemetry";
 import { formatBytes, formatMoney, readComposerEntry } from "@/lib/format";
 import { takeSharedText } from "@/lib/share-target";
-import { transcriptElementOffset } from "@/lib/transcript-scroll";
+import { focusedTurnSpacerHeight, transcriptElementOffset } from "@/lib/transcript-scroll";
 import { widgetTypeIds, type AgentResponse, type Bootstrap, type CategoryDirectoryOut, type ConversationOut, type ConversationPage, type ConversationSummary, type Message, type Widget, type WidgetActionId } from "@/lib/protocol";
 import { useWorkspaceOverlay } from "@/components/ui/overlay";
 import { useScrollEdges } from "@/lib/scroll-edges";
@@ -240,6 +240,7 @@ const MONEY_PAGES = [
   { label: "Overview", icon: LayoutDashboard, path: "/overview" },
   { label: "Dashboards", icon: ChartColumn, path: "/dashboards" },
   { label: "Transactions", icon: ReceiptText, path: "/transactions" },
+  { label: "Personal lending", icon: HandCoins, path: "/loans" },
   { label: "Categories", icon: Tags, path: "/categories" },
 ] as const;
 
@@ -546,9 +547,10 @@ function Composer({ variant, value, onValueChange, onSubmit, onStop, textRef, fi
   </form>;
 }
 
-function InterruptFallback({ interrupt, busy, onResolve }: {
+function InterruptFallback({ interrupt, busy, locationAllowed, onResolve }: {
   interrupt: FynInterrupt;
   busy: boolean;
+  locationAllowed: boolean;
   onResolve: (response: { status: "resolved"; payload: unknown } | { status: "cancelled" }) => void;
 }) {
   const recoveredWidget = recoverInterruptWidget(interrupt);
@@ -556,6 +558,7 @@ function InterruptFallback({ interrupt, busy, onResolve }: {
     <WidgetRenderer
       widget={recoveredWidget}
       pending={busy}
+      locationAllowed={locationAllowed}
       onAction={(widgetId, action, payload) => onResolve(interruptActionResolution(widgetId, action, payload))}
       onCancel={() => onResolve({ status: "cancelled" })}
     />
@@ -631,13 +634,16 @@ type WidgetAction = (widgetId: string, action: WidgetActionId, payload: Record<s
  *  backwards. Nothing in a finished turn reads what is being typed, so nothing
  *  in one needs to re-render while it is. The same boundary keeps a streaming
  *  reply from re-rendering the turns above it on every tick. */
-const MessageArticle = memo(function MessageArticle({ message, activeWidget, cancelWidget, usedWidgets, pendingWidget, busy, citationsOpen, onToggleCitations, onAction, onCreateCategory, onCreateSubcategory, onCancelWidget, onPostPrompt }: {
+const MessageArticle = memo(function MessageArticle({ message, focusedPrompt = false, focusedResponse = false, activeWidget, cancelWidget, usedWidgets, pendingWidget, busy, locationAllowed, citationsOpen, onToggleCitations, onAction, onCreateCategory, onCreateSubcategory, onCancelWidget, onPostPrompt }: {
   message: Message;
+  focusedPrompt?: boolean;
+  focusedResponse?: boolean;
   activeWidget: string | null;
   cancelWidget: string | null;
   usedWidgets: Set<string>;
   pendingWidget: string | null;
   busy: boolean;
+  locationAllowed: boolean;
   citationsOpen: boolean;
   onToggleCitations: (messageId: string) => void;
   onAction: WidgetAction;
@@ -651,7 +657,7 @@ const MessageArticle = memo(function MessageArticle({ message, activeWidget, can
   // stores it in.
   const trace = message.widgets.find((widget) => widget.type === widgetTypeIds.agent_activity);
   const widgets = message.widgets.filter((widget) => widget.id !== trace?.id);
-  return <article data-message-id={message.id} className={cn("group", message.role === "user" ? "flex justify-end" : "max-w-[680px]")}>
+  return <article data-message-id={message.id} data-message-role={message.role} data-focused-prompt={focusedPrompt || undefined} data-focused-response={focusedResponse || undefined} className={cn("group", message.role === "user" ? "flex justify-end" : "max-w-[680px]")}>
     <div className={cn("min-w-0", message.role === "user" && "max-w-[82%]")}>
       {message.role === "assistant" ? <AssistantByline thinking={Boolean(trace)} /> : null}
       {trace ? <div className="mb-3 pl-0 sm:pl-8"><WidgetRenderer widget={trace} disabled onAction={noAction} /></div> : null}
@@ -684,23 +690,34 @@ const MessageArticle = memo(function MessageArticle({ message, activeWidget, can
           tabIndex={active ? -1 : undefined}
           className="scroll-mt-4"
         >
-          <WidgetRenderer widget={widget} disabled={!active || usedWidgets.has(widget.id) || busy} pending={pendingWidget === widget.id} onCancel={widget.id === cancelWidget ? () => onCancelWidget(widget.id) : undefined} onAction={onAction} onCreateCategory={onCreateCategory} onCreateSubcategory={onCreateSubcategory} onPostPrompt={onPostPrompt} />
+          <WidgetRenderer widget={widget} disabled={!active || usedWidgets.has(widget.id) || busy} pending={pendingWidget === widget.id} locationAllowed={locationAllowed} onCancel={widget.id === cancelWidget ? () => onCancelWidget(widget.id) : undefined} onAction={onAction} onCreateCategory={onCreateCategory} onCreateSubcategory={onCreateSubcategory} onPostPrompt={onPostPrompt} />
         </div>;
       })}</div> : null}
     </div>
   </article>;
 });
 
+function buildTranscriptDayMarkers(messages: Message[]) {
+  let previous: string | null = null;
+  return messages.map((message) => {
+    const key = localDayKey(message.created_at);
+    const opensDay = key !== null && key !== previous;
+    if (key !== null) previous = key;
+    return opensDay ? message.created_at : null;
+  });
+}
+
 /** The thread itself, held behind the same boundary and for the same reason.
  *  Every prop it takes is either state that does not move while you type or a
  *  callback held stable by the workspace, so a keystroke stops here. */
-const Transcript = memo(function Transcript({ messages, agentRun, reasoningSummary, streamingText, streaming, busy, usedWidgets, pendingWidget, openCitations, activeWidget, cancelWidget, activeWidgetFocusKey, error, retry, followEnd, onAction, onCreateCategory, onCreateSubcategory, onCancelWidget, onActiveWidgetReveal, onToggleCitations, onRetry, onPostPrompt, scrollRef }: {
+const Transcript = memo(function Transcript({ messages, agentRun, reasoningSummary, streamingText, streaming, busy, locationAllowed, usedWidgets, pendingWidget, openCitations, activeWidget, cancelWidget, activeWidgetFocusKey, error, retry, followEnd, focusedPromptIndex, onAction, onCreateCategory, onCreateSubcategory, onCancelWidget, onActiveWidgetReveal, onFocusedPromptReveal, onListHeightChanged, onToggleCitations, onRetry, onPostPrompt, scrollElement, scrollRef }: {
   messages: Message[];
   agentRun: LiveAgentRun;
   reasoningSummary: string;
   streamingText: string;
   streaming: boolean;
   busy: boolean;
+  locationAllowed: boolean;
   usedWidgets: Set<string>;
   pendingWidget: string | null;
   openCitations: Set<string>;
@@ -710,66 +727,159 @@ const Transcript = memo(function Transcript({ messages, agentRun, reasoningSumma
   error: string | null;
   retry: Retry;
   followEnd: boolean;
+  focusedPromptIndex: number | null;
   onAction: WidgetAction;
   onCreateCategory: CreateCategory;
   onCreateSubcategory: CreateSubcategory;
   onPostPrompt: (text: string) => void;
   onCancelWidget: (widgetId: string) => void;
   onActiveWidgetReveal: (target: HTMLElement) => boolean;
+  onFocusedPromptReveal: () => void;
+  onListHeightChanged: () => void;
   onToggleCitations: (messageId: string) => void;
   onRetry: () => void;
+  scrollElement: HTMLDivElement | null;
   scrollRef: RefObject<HTMLDivElement | null>;
 }) {
-  const listRef = useRef<HTMLDivElement>(null);
-  // The list does not start at the top of the scroller — the column above it is
-  // padded — and the virtualiser measures offsets from the scroller. Without
-  // this margin every row would be positioned that padding too high.
-  const [scrollMargin, setScrollMargin] = useState(0);
-  useLayoutEffect(() => { setScrollMargin(listRef.current?.offsetTop ?? 0); }, []);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const turnContentRef = useRef<HTMLDivElement>(null);
+  const focusSpacerRef = useRef<HTMLDivElement>(null);
+  const focusedPromptPlaced = useRef<number | null>(null);
+  const focusedPromptScrollStarted = useRef<number | null>(null);
+  const promptFocusFrame = useRef(0);
+  const focusedTurnLayout = useRef<(() => void) | null>(null);
+  const focusedTurnContentHeight = useRef<{ index: number; height: number } | null>(null);
 
-  const virtualizer = useVirtualizer({
-    count: messages.length,
-    getScrollElement: () => scrollRef.current,
-    // A measurement can arrive while React is committing this transcript.
-    // TanStack's synchronous mode uses flushSync for that update, which React
-    // 19 rejects inside a lifecycle. A normal scheduled render keeps the same
-    // measurements without nesting another React flush inside the commit.
-    useFlushSync: false,
-    // Row measurements can change both scrollTop (to preserve the reader's
-    // anchor) and every following row's position. Let the virtualiser write
-    // those two DOM changes together, before the browser paints. Going
-    // through a deferred React render here produced one frame with the new
-    // scrollTop and the old transforms — the visible snap when a turn entered
-    // or left the virtual window.
-    directDomUpdates: true,
-    directDomUpdatesMode: "transform",
-    // Only an opening guess. Turns here run from a one-line question to a chart,
-    // so every row is measured once it mounts and the estimate stops mattering.
-    estimateSize: () => 220,
-    getItemKey: (index) => messages[index].id,
-    // End anchoring is a mode, not a permanent property of a chat. It keeps a
-    // live tail stable while the reader follows it, but turns off as soon as
-    // the reader navigates inside a turn (for example, opening trace details).
-    // With start anchoring, a visible row can grow below its clicked control
-    // without the virtualiser competing with the browser over scrollTop.
-    //
-    // Anchoring is all the virtualiser is trusted with. Deliberate follow
-    // scrolls come from the workspace and target the scroller's physical end,
-    // because live-run content — the activity card, the streaming reply, the
-    // column's bottom padding — sits below the virtual rows, and a scroll that
-    // stops at the last row's edge strands all of it under the fold.
-    anchorTo: followEnd ? "end" : "start",
-    scrollEndThreshold: 1,
-    // Generous, because a row that scrolls in unmeasured resizes the moment it
-    // does, and doing that at the edge of the viewport is what reads as jitter.
-    overscan: 8,
-    scrollMargin,
-  });
+  // A restored React Query transcript can paint before its background refresh
+  // adds turns that arrived after the cache snapshot. Moving only the external
+  // scroller cannot reveal those rows until Virtuoso has selected them for its
+  // rendered range, so explicitly keep the virtual range on the final item
+  // while the workspace says the reader is following. As soon as wheel, touch,
+  // keyboard, or scrollbar intent takes ownership `followEnd` becomes false
+  // and history is left exactly where the reader put it.
+  useLayoutEffect(() => {
+    if (!followEnd || focusedPromptIndex !== null || messages.length === 0) return;
+    virtuosoRef.current?.scrollToIndex({
+      index: messages.length - 1,
+      align: "end",
+      behavior: "auto",
+    });
+  }, [focusedPromptIndex, followEnd, messages.length]);
 
-  const setListRef = useCallback((node: HTMLDivElement | null) => {
-    listRef.current = node;
-    virtualizer.containerRef(node);
-  }, [virtualizer]);
+  // A submitted question opens a fresh reading window: the question sits just
+  // under the sticky header, the answer starts below it, and the unwritten
+  // remainder is real scrollable space. As content arrives the spacer gives up
+  // exactly the same height, keeping the viewport still until the answer fills
+  // it. From that point the spacer is zero and the normal end follower carries
+  // a reader who has not taken control.
+  useLayoutEffect(() => {
+    cancelAnimationFrame(promptFocusFrame.current);
+    const spacer = focusSpacerRef.current;
+    if (focusedPromptIndex === null) {
+      if (spacer) spacer.style.height = "0px";
+      focusedPromptPlaced.current = null;
+      focusedPromptScrollStarted.current = null;
+      focusedTurnContentHeight.current = null;
+      return;
+    }
+    if (focusedPromptPlaced.current !== focusedPromptIndex && focusedPromptScrollStarted.current !== focusedPromptIndex) {
+      focusedPromptPlaced.current = null;
+      focusedPromptScrollStarted.current = null;
+    }
+
+    let attempts = 0;
+    let stableFrames = 0;
+    const place = () => {
+      const scroller = scrollRef.current;
+      const content = turnContentRef.current;
+      const promptMessage = messages[focusedPromptIndex];
+      const currentSpacer = focusSpacerRef.current;
+      if (!scroller || !content || !promptMessage || !currentSpacer) return;
+      const prompt = scroller.querySelector<HTMLElement>('[data-focused-prompt="true"]');
+      if (!prompt) {
+        if (followEnd && attempts === 0) {
+          virtuosoRef.current?.scrollToIndex({ index: focusedPromptIndex, align: "start", behavior: "auto" });
+        }
+        if (++attempts < 12) promptFocusFrame.current = requestAnimationFrame(place);
+        return;
+      }
+
+      const scrollerRect = scroller.getBoundingClientRect();
+      const promptRect = prompt.getBoundingClientRect();
+      const header = scroller.querySelector<HTMLElement>("[data-sticky-anchor]");
+      const headerIsVisible = header ? !header.hasAttribute("inert") : true;
+      const topInset = (headerIsVisible ? (header?.offsetHeight ?? 56) : 0) + 16;
+      const desiredTop = scrollerRect.top + topInset;
+      const turnContentHeight = Math.max(0, content.getBoundingClientRect().bottom - promptRect.top);
+      const spacerRect = currentSpacer.getBoundingClientRect();
+      // The transcript column has breathing room after the log. Include that
+      // real trailing space in the window equation or the physical end lands
+      // the prompt behind the sticky header by exactly the padding amount.
+      const spacerEnd = scroller.scrollTop + spacerRect.bottom - scrollerRect.top;
+      const trailingSpace = Math.max(0, scroller.scrollHeight - spacerEnd);
+      const baseReserve = focusedTurnSpacerHeight(scroller.clientHeight, topInset, turnContentHeight + trailingSpace);
+      const distanceFromEnd = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+      const currentReserve = Number.parseFloat(currentSpacer.style.height) || 0;
+      const previousMeasurement = focusedTurnContentHeight.current;
+      const contentDelta = previousMeasurement?.index === focusedPromptIndex
+        ? turnContentHeight - previousMeasurement.height
+        : 0;
+      let reserve = previousMeasurement?.index === focusedPromptIndex
+        ? Math.max(0, currentReserve - contentDelta)
+        : baseReserve;
+      focusedTurnContentHeight.current = { index: focusedPromptIndex, height: turnContentHeight };
+      // When no content changed, displacement at the physical end can only be
+      // a late virtual-row measurement. Absorb that exact difference once. A
+      // content delta has already been countered one-for-one above; applying
+      // both corrections would double it and create an oscillation.
+      if (followEnd && distanceFromEnd <= AT_END_SLACK_PX && Math.abs(contentDelta) <= 0.5) {
+        reserve = Math.max(0, reserve + promptRect.top - desiredTop);
+      }
+      const reserveChanged = Math.abs(currentReserve - reserve) > 0.5;
+      if (reserveChanged) currentSpacer.style.height = `${reserve}px`;
+
+      const alignmentDelta = Math.abs(promptRect.top - desiredTop);
+      if (followEnd && focusedPromptPlaced.current === null) {
+        const aligned = alignmentDelta <= 1;
+        if (!aligned && focusedPromptScrollStarted.current !== focusedPromptIndex) {
+          focusedPromptScrollStarted.current = focusedPromptIndex;
+          onFocusedPromptReveal();
+        }
+        stableFrames = aligned ? stableFrames + 1 : 0;
+        if (stableFrames >= 2) focusedPromptPlaced.current = focusedPromptIndex;
+      }
+      // Re-measure after changing the spacer even once the initial glide has
+      // settled: shrinking it clamps the browser to a new maximum scrollTop,
+      // and that clamp is the final input needed to converge on the exact top.
+      const focusedWindowNeedsSettle = followEnd && reserve > 0 && (reserveChanged || alignmentDelta > 1);
+      if (++attempts < 40 && (focusedPromptPlaced.current === null || focusedWindowNeedsSettle)) {
+        promptFocusFrame.current = requestAnimationFrame(place);
+      }
+    };
+    focusedTurnLayout.current = place;
+    promptFocusFrame.current = requestAnimationFrame(place);
+    return () => {
+      cancelAnimationFrame(promptFocusFrame.current);
+      if (focusedTurnLayout.current === place) focusedTurnLayout.current = null;
+    };
+  }, [agentRun, busy, error, focusedPromptIndex, followEnd, messages, onFocusedPromptReveal, reasoningSummary, scrollRef, streaming, streamingText]);
+
+  const handleListHeightChanged = useCallback(() => {
+    onListHeightChanged();
+    cancelAnimationFrame(promptFocusFrame.current);
+    promptFocusFrame.current = requestAnimationFrame(() => focusedTurnLayout.current?.());
+  }, [onListHeightChanged]);
+
+  useEffect(() => {
+    const content = turnContentRef.current;
+    if (focusedPromptIndex === null || !content || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(promptFocusFrame.current);
+      promptFocusFrame.current = requestAnimationFrame(() => focusedTurnLayout.current?.());
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [focusedPromptIndex]);
 
   // A HITL response is a hand-off back to the person. Move both the viewport
   // and keyboard/screen-reader focus to that exact widget, even when the prior
@@ -796,9 +906,26 @@ const Transcript = memo(function Transcript({ messages, agentRun, reasoningSumma
       if (!scroller) return;
       const target = scroller.querySelector<HTMLElement>('[data-active-widget="true"]');
       if (!target) {
-        if (attempts === 0) virtualizer.scrollToIndex(rowIndex, { align: "start", behavior: "auto" });
+        if (attempts === 0) virtuosoRef.current?.scrollToIndex({ index: rowIndex, align: "start", behavior: "auto" });
         if (++attempts < 12) focusFrame.current = requestAnimationFrame(reveal);
         return;
+      }
+
+      // A short answer is already inside the focused question's reserved
+      // viewport. Focus its decision surface without moving the prompt; once
+      // the answer is taller than the window, the existing exact alignment is
+      // allowed to take over.
+      if (focusedPromptIndex !== null) {
+        const scrollerRect = scroller.getBoundingClientRect();
+        const targetRect = target.getBoundingClientRect();
+        const header = scroller.querySelector<HTMLElement>("[data-sticky-anchor]");
+        const visibleTop = scrollerRect.top + (header?.hasAttribute("inert") ? 0 : (header?.offsetHeight ?? 56));
+        if (targetRect.top >= visibleTop && targetRect.bottom <= scrollerRect.bottom) {
+          if (!(document.activeElement instanceof HTMLElement) || !target.contains(document.activeElement)) {
+            target.focus({ preventScroll: true });
+          }
+          return;
+        }
       }
 
       // The virtualizer remains the sole writer of this scroller's position.
@@ -813,30 +940,21 @@ const Transcript = memo(function Transcript({ messages, agentRun, reasoningSumma
       if (!onActiveWidgetReveal(target)) return;
       const offset = transcriptElementOffset(scroller, target);
       const aligned = Math.abs(scroller.scrollTop - offset) <= 1;
-      if (!aligned) virtualizer.scrollToOffset(offset, { behavior: "auto" });
+      if (!aligned) virtuosoRef.current?.scrollTo({ top: offset, behavior: "auto" });
       stableFrames = aligned ? stableFrames + 1 : 0;
       if (++attempts < 12 && stableFrames < 2) focusFrame.current = requestAnimationFrame(reveal);
     };
     focusFrame.current = requestAnimationFrame(reveal);
     return () => cancelAnimationFrame(focusFrame.current);
-  }, [activeWidget, activeWidgetFocusKey, followEnd, messages, onActiveWidgetReveal, scrollRef, virtualizer]);
+  }, [activeWidget, activeWidgetFocusKey, focusedPromptIndex, followEnd, messages.length, onActiveWidgetReveal, scrollRef]);
 
   // Which rows open a day. A thread is read back long after it was written —
   // often across several sittings — so the transcript is dated: the first entry
   // carries its day, and the marker returns only where the calendar day
   // actually changes. Computed once per transcript rather than per row, because
   // this component re-renders on every streamed token.
-  const dayMarkers = useMemo(() => {
-    let previous: string | null = null;
-    return messages.map((message) => {
-      const key = localDayKey(message.created_at);
-      const opensDay = key !== null && key !== previous;
-      if (key !== null) previous = key;
-      return opensDay ? message.created_at : null;
-    });
-  }, [messages]);
+  const dayMarkers = useMemo(() => buildTranscriptDayMarkers(messages), [messages]);
 
-  const rows = virtualizer.getVirtualItems();
   const streamingMessage = useMemo<Message | null>(() => streamingText ? {
     id: "streaming-assistant",
     role: "assistant",
@@ -847,52 +965,59 @@ const Transcript = memo(function Transcript({ messages, agentRun, reasoningSumma
     delivered_at: "",
   } : null, [streamingText]);
   return <div role="log" aria-busy={streaming}>
-    <div ref={setListRef} style={{ position: "relative" }}>
-      {rows.map((row) => {
-        const opensDay = dayMarkers[row.index];
-        return <div
-          key={row.key}
-          data-index={row.index}
-          ref={virtualizer.measureElement}
-          style={{ position: "absolute", insetInlineStart: 0, top: 0, width: "100%" }}
-        >
-          {/* The rhythm the removed `space-y-6` used to hold. It belongs on the
-              row rather than between rows now, because absolutely positioned
-              siblings have no gap to share. */}
-          <div className="pb-6">
-            {opensDay ? <DayDivider
-              isoTime={opensDay}
-              /* The thread's own top padding already sets the first day off; a
-                 later one has a message directly above it and needs the air. */
-              className={cn("mb-5", row.index > 0 && "mt-2")}
-            /> : null}
-            <MessageArticle
-              message={messages[row.index]}
-              activeWidget={activeWidget}
-              cancelWidget={cancelWidget}
-              usedWidgets={usedWidgets}
-              pendingWidget={pendingWidget}
-              busy={busy}
-              citationsOpen={openCitations.has(messages[row.index].id)}
-              onToggleCitations={onToggleCitations}
-              onAction={onAction}
-              onCreateCategory={onCreateCategory}
-              onCreateSubcategory={onCreateSubcategory}
-              onPostPrompt={onPostPrompt}
-              onCancelWidget={onCancelWidget}
-            />
-          </div>
+    <div ref={turnContentRef}>
+    {scrollElement ? <Virtuoso<Message>
+      key={messages[0]?.id ?? "empty-transcript"}
+      ref={virtuosoRef}
+      customScrollParent={scrollElement}
+      data={messages}
+      computeItemKey={(index, message) => message?.id ?? messages[index]?.id ?? index}
+      defaultItemHeight={220}
+      initialItemCount={Math.min(messages.length, 8)}
+      initialTopMostItemIndex={messages.length ? { index: "LAST", align: "end" } : undefined}
+      increaseViewportBy={{ top: 1320, bottom: 1320 }}
+      minOverscanItemCount={{ top: 6, bottom: 6 }}
+      totalListHeightChanged={handleListHeightChanged}
+      itemContent={(index, item) => {
+        const message = item ?? messages[index];
+        if (!message) return null;
+        const opensDay = dayMarkers[index];
+        return <div className="pb-6">
+          {opensDay ? <DayDivider
+            isoTime={opensDay}
+            className={cn("mb-5", index > 0 && "mt-2")}
+          /> : null}
+          <MessageArticle
+            message={message}
+            focusedPrompt={index === focusedPromptIndex}
+            focusedResponse={focusedPromptIndex !== null && index === focusedPromptIndex + 1 && message.role === "assistant"}
+            activeWidget={activeWidget}
+            cancelWidget={cancelWidget}
+            usedWidgets={usedWidgets}
+            pendingWidget={pendingWidget}
+            busy={busy}
+            locationAllowed={locationAllowed}
+            citationsOpen={openCitations.has(message.id)}
+            onToggleCitations={onToggleCitations}
+            onAction={onAction}
+            onCreateCategory={onCreateCategory}
+            onCreateSubcategory={onCreateSubcategory}
+            onPostPrompt={onPostPrompt}
+            onCancelWidget={onCancelWidget}
+          />
         </div>;
-      })}
-    </div>
+      }}
+    /> : null}
     {streaming ? <div aria-hidden><AgentActivityIndicator run={agentRun} reasoningSummary={reasoningSummary} /></div> : null}
     {streamingMessage ? <div className="pb-6"><MessageArticle
       message={streamingMessage}
+      focusedResponse={focusedPromptIndex !== null}
       activeWidget={null}
       cancelWidget={null}
       usedWidgets={usedWidgets}
       pendingWidget={null}
       busy
+      locationAllowed={locationAllowed}
       citationsOpen={false}
       onToggleCitations={onToggleCitations}
       onAction={onAction}
@@ -903,6 +1028,8 @@ const Transcript = memo(function Transcript({ messages, agentRun, reasoningSumma
     /></div> : null}
     {busy && !streaming ? <div className="mt-6 flex items-center gap-3 px-1 py-2 text-control text-ink-muted"><span className="grid size-7 place-items-center rounded-full bg-secondary-tint text-secondary"><Sparkles size={14} /></span><span className="flex gap-1" aria-hidden><i className="typing-dot" /><i className="typing-dot" /><i className="typing-dot" /></span><span className="sr-only">Working on it</span></div> : null}
     {error ? <div role="alert" className="mt-6 flex flex-wrap items-center gap-3 gap-2 rounded-lg border border-danger-line bg-danger-tint px-4 py-3 text-note leading-5 text-danger-ink sm:mx-8"><TriangleAlert className="shrink-0" /><span className="min-w-0 flex-1">{error}</span>{retry ? <Button type="button" variant="outline" size="lg" onClick={onRetry} className="rounded-xl border-danger-line text-danger-ink hover:bg-danger-tint"><RotateCcw size={14} /> Try again</Button> : null}</div> : null}
+    </div>
+    <div ref={focusSpacerRef} data-focused-turn-spacer aria-hidden className="pointer-events-none h-0" />
   </div>;
 });
 
@@ -924,6 +1051,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   onRenameTitle?: (title: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const locationAllowed = useQuery({ queryKey: ["privacy"], queryFn: getPrivacyStatus, staleTime: 5 * 60_000 }).data?.locationEnabled ?? false;
   const serverMessages = initialData.active_conversation.messages;
   // React Query can restore a still-fresh transcript from persistent storage
   // before its background request returns. Compute the server revision only
@@ -978,6 +1106,11 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   const [interrupts, setInterrupts] = useState<FynInterrupt[] | null>(null);
   const [reasoningSummary, setReasoningSummary] = useState("");
   const [streamingText, setStreamingText] = useState("");
+  // The optimistic UUID is replaced with the server-authored user-message ID
+  // when the response lands. Resolving the index from that identity keeps the
+  // focus window attached to the same question when a background transcript
+  // reconciliation inserts or updates other rows.
+  const [focusedPromptId, setFocusedPromptId] = useState<string | null>(null);
   const [openCitations, setOpenCitations] = useState<Set<string>>(new Set());
   const [upload, setUpload] = useState<{ name: string; percent: number } | null>(null);
   const [atBottom, setAtBottom] = useState(true);
@@ -1043,6 +1176,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     setInterrupts(null);
     setReasoningSummary("");
     setStreamingText("");
+    if (resetViewport) setFocusedPromptId(null);
     setOpenCitations(new Set());
     setUpload(null);
     // A background refetch of this same transcript is reconciliation, not
@@ -1057,7 +1191,12 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   }
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  const { headerVisible, updateHeaderForScroll, showHeader } = useAutoHideSiteHeader();
+  const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
+  const bindScrollRef = useCallback((node: HTMLDivElement | null) => {
+    scrollRef.current = node;
+    setScrollElement(node);
+  }, []);
+  const { headerVisible, updateHeaderForScroll, showHeader, hideHeader } = useAutoHideSiteHeader();
   const textRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -1081,7 +1220,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   // not land on top of it and snap the movement it exists to smooth.
   const followScroll = useRef<{ smooth: boolean } | null>(null);
   const followSettleTimer = useRef<number | undefined>(undefined);
-  // A HITL card is positioned by the transcript virtualizer. Its scroll
+  // A HITL card is positioned by the transcript list. Its scroll
   // events are programmatic even though the destination is intentionally not
   // the physical bottom, so they must never be mistaken for reader navigation.
   const widgetRevealActive = useRef(false);
@@ -1128,6 +1267,9 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
 
   const succeeded = useCallback((response: AgentResponse) => {
     setMessages((current) => mergeAgentResponse(current, response));
+    if (response.user_message_id) {
+      setFocusedPromptId((current) => current?.startsWith("optimistic-") ? response.user_message_id : current);
+    }
     setError(null);
     setRetry(null);
     setConnectionLost(false);
@@ -1406,7 +1548,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     if (readerScrolled.current) return false;
     // This hand-off is application navigation, not evidence that the reader
     // took over the scrollbar. Keep it distinct so the scroll events emitted
-    // by virtualizer alignment cannot permanently disable response following.
+    // by list alignment cannot permanently disable response following.
     readerScrolled.current = false;
     followScroll.current = null;
     window.clearTimeout(followSettleTimer.current);
@@ -1479,11 +1621,14 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     readerScrolled.current = false;
     unseenLatest.current = false;
     setAtBottom(true);
+    hideHeader();
     updateJumpControl(false);
     const deliveredAt = new Date().toISOString();
-    setMessages((current) => [...current, { id: `optimistic-${Date.now()}`, role: "user", content: text, widgets: [], citations: [], created_at: deliveredAt, delivered_at: deliveredAt }]);
+    const optimisticId = `optimistic-${Date.now()}`;
+    setFocusedPromptId(optimisticId);
+    setMessages((current) => [...current, { id: optimisticId, role: "user", content: text, widgets: [], citations: [], created_at: deliveredAt, delivered_at: deliveredAt }]);
     startChat({ id: conversationId, text });
-  }, [chatPending, actionPending, uploadPending, agentRunning, pausedForInterrupt, startChat, conversationId, updateJumpControl]);
+  }, [chatPending, actionPending, uploadPending, agentRunning, pausedForInterrupt, hideHeader, startChat, conversationId, updateJumpControl]);
 
   function submit(event?: FormEvent) {
     event?.preventDefault();
@@ -1495,6 +1640,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     const problem = csvProblem(file);
     if (problem) { failed(new Error(problem), null); return; }
     setError(null);
+    setFocusedPromptId(null);
     readerScrolled.current = false;
     unseenLatest.current = false;
     setAtBottom(true);
@@ -1552,7 +1698,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
 
   // Opening information inside a turn is reader navigation. Capture that
   // intent before the disclosure toggles so the same React commit switches the
-  // virtualiser out of end-follow mode and lets the content grow naturally.
+  // transcript out of end-follow mode and lets the content grow naturally.
   function stopFollowingForDisclosure(event: ReactMouseEvent<HTMLDivElement>) {
     const target = event.target;
     if (!(target instanceof Element)) return;
@@ -1600,13 +1746,13 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     node.scrollTo({ top: node.scrollHeight, behavior: "auto" });
   }, []);
 
-  // Follow scrolls target the scroller's physical end, not the virtualiser's
+  // Follow scrolls target the scroller's physical end, not the list's
   // last row: the live activity card, the streaming reply, and the column's
   // bottom padding all sit below the virtual rows, and a scroll that stops at
   // the last row's edge strands them under the fold — which then read as "the
   // reader scrolled away" and switched following off for the rest of the run.
-  // The virtualiser still owns end anchoring, so estimates exchanged for
-  // measured heights keep the end pinned between deliberate scrolls.
+  // Virtuoso still owns row measurement; the content ResizeObserver below
+  // carries a following reader to the physical end after those measurements.
   const scrollToEnd = useCallback((behavior: ScrollBehavior) => {
     const node = scrollRef.current;
     if (!node) return;
@@ -1621,6 +1767,25 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     node.scrollTo({ top: node.scrollHeight, behavior });
   }, [followSettle]);
 
+  const revealFocusedPrompt = useCallback(() => {
+    readerScrolled.current = false;
+    unseenLatest.current = false;
+    updateJumpControl(false);
+    scrollToEnd(prefersReducedMotion() ? "auto" : "smooth");
+  }, [scrollToEnd, updateJumpControl]);
+
+  // Virtuoso first places the last estimated row, then replaces estimates with
+  // measured heights. With an external scroll parent that correction does not
+  // necessarily resize `contentRef`, so its ResizeObserver cannot close the
+  // remaining gap after a reload. Follow Virtuoso's own total-height signal
+  // while the reader still owns the latest edge. `readerScrolled` changes on
+  // wheel/touch/key intent before React state commits, so this callback cannot
+  // pull someone back down while they are reading history.
+  const followMeasuredList = useCallback(() => {
+    if (!atBottom || readerScrolled.current) return;
+    scrollToEnd("auto");
+  }, [atBottom, scrollToEnd]);
+
   function trackScroll(event: React.UIEvent<HTMLDivElement>) {
     const node = event.currentTarget;
     window.clearTimeout(scrollSettleTimer.current);
@@ -1628,7 +1793,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     updateHeaderForScroll(node.scrollTop, readerScrolled.current);
     const distanceFromBottom = Math.max(0, node.scrollHeight - node.scrollTop - node.clientHeight);
     // The active-widget reveal deliberately stops above the physical bottom.
-    // Its virtualizer-owned scroll events are not a scrollbar drag and must
+    // Its list-owned scroll events are not a scrollbar drag and must
     // not flip the thread into reader-owned mode while its row settles.
     if (widgetRevealActive.current) {
       updateJumpControl(false);
@@ -1671,7 +1836,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
       followSettleTimer.current = window.setTimeout(followSettle, SCROLL_SETTLE_MS);
       return;
     }
-    // A scroll with no announced owner can be a virtualizer correction after a
+    // A scroll with no announced owner can be a list correction after a
     // row measurement. Inferring reader intent here would disable following
     // just before the next card is focused. Wheel, touch, keyboard and native
     // scrollbar pointer intent are all captured before their scroll events.
@@ -1705,6 +1870,9 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   // thread is empty, but a resumed one can hold assistant-only rows, so the
   // opening screen keys off the absence of a question rather than a row count.
   const focusedMode = !loadingThread && !messages.some((message) => message.role === "user");
+  const focusedPromptIndex = focusedPromptId === null
+    ? null
+    : messages.findIndex((message) => message.id === focusedPromptId);
   // Growing the box pushes the tail of the thread up, and the tail is what you
   // were reading — so the reader is carried with it, but only if they were
   // already at the end. Instantly, not smoothly: the composer changing shape
@@ -1822,7 +1990,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
       <DocumentTitle title={title} fallback="Financial check-in" />
       <main id="main-content" className="relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-surface">
         <div
-          ref={scrollRef}
+          ref={bindScrollRef}
           onClickCapture={stopFollowingForDisclosure}
           onScroll={trackScroll}
           onWheel={noteWheelScroll}
@@ -1857,6 +2025,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
               streamingText={streamingText}
               streaming={agentRunning}
               busy={busy}
+              locationAllowed={locationAllowed}
               usedWidgets={usedWidgets}
               pendingWidget={pendingWidget}
               openCitations={openCitations}
@@ -1866,14 +2035,18 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
               error={error}
               retry={retry}
               followEnd={atBottom}
+              focusedPromptIndex={focusedPromptIndex !== null && focusedPromptIndex >= 0 ? focusedPromptIndex : null}
               onAction={handleWidgetAction}
               onCreateCategory={addConversationCategory}
               onCreateSubcategory={addConversationSubcategory}
               onPostPrompt={sendPrompt}
               onCancelWidget={cancelWidgetInterrupt}
               onActiveWidgetReveal={revealActiveWidget}
+              onFocusedPromptReveal={revealFocusedPrompt}
+              onListHeightChanged={followMeasuredList}
               onToggleCitations={toggleCitations}
               onRetry={retryLast}
+              scrollElement={scrollElement}
               scrollRef={scrollRef}
             />
           </div>}
@@ -1887,7 +2060,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
               position it exists to restore. */}
           <div ref={jumpToLatestRef} data-visible="false" data-scrolling="false" data-unread="false" aria-hidden="true" inert style={{ bottom: `calc(var(--dock-h) + 0.75rem)` }} className="jump-to-latest pointer-events-none absolute inset-x-0 z-20 flex justify-center px-3 sm:px-6"><Button type="button" onClick={jumpToLatest} variant="outline" className="pointer-events-auto rounded-full shadow-[var(--shadow-overlay)]"><ArrowDown size={14} className="jump-to-latest-icon" /> Jump to latest<span aria-hidden className="jump-to-latest-unread-dot" /></Button></div>
           <div ref={dockRef} className="entry-dock z-20 shrink-0 px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6 sm:pt-4 sm:pb-4">
-            {fallbackInterrupt ? <InterruptFallback interrupt={fallbackInterrupt} busy={interruptPending} onResolve={(response) => {
+            {fallbackInterrupt ? <InterruptFallback interrupt={fallbackInterrupt} busy={interruptPending} locationAllowed={locationAllowed} onResolve={(response) => {
               followNextResponse();
               resolveInterrupt({ interrupt: fallbackInterrupt, response });
             }} /> : null}
@@ -2128,7 +2301,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
         <ConversationRail
           conversations={conversations}
           activeId={conversationId}
-          activePage={MONEY_PAGES.some((item) => item.path === pathname) ? pathname : null}
+          activePage={MONEY_PAGES.find((item) => pathname === item.path || pathname.startsWith(`${item.path}/`))?.path ?? null}
           user={initial.data?.user ?? null}
           open={sidebarOpen}
           docked={isDesktop}
@@ -2198,6 +2371,13 @@ export function ConversationThread({ conversationId }: { conversationId: string 
     queryKey: ["conversation", conversationId],
     queryFn: () => loadConversation(conversationId),
     retry: false,
+    // Persisted data makes the first paint instant and preserves offline use,
+    // but its freshness timestamp can outlive a just-completed mutation whose
+    // invalidation had not finished before the page reloaded. A money record
+    // must therefore reconcile on every mount even when the cached transcript
+    // is younger than the global stale time. The cache still supplies `data`
+    // immediately; this is a background correctness read, not a loading gate.
+    refetchOnMount: "always",
   });
 
   if (!initial.data) return <main className="min-h-0 bg-surface" />;

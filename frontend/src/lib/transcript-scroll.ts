@@ -15,3 +15,15 @@ export function transcriptElementOffset(scroller: HTMLElement, target: HTMLEleme
   const maxOffset = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
   return Math.min(Math.max(0, rawOffset), maxOffset);
 }
+
+/**
+ * Keep a newly submitted turn one viewport tall while its answer is forming.
+ * The blank remainder shrinks one-for-one as content arrives, so the physical
+ * end of the scroller stays at the prompt instead of moving on every token.
+ * Once the answer fills the viewport the reserve reaches zero and ordinary
+ * end-following resumes naturally.
+ */
+export function focusedTurnSpacerHeight(viewportHeight: number, topInset: number, turnContentHeight: number) {
+  if (![viewportHeight, topInset, turnContentHeight].every(Number.isFinite)) return 0;
+  return Math.max(0, viewportHeight - Math.max(0, topInset) - Math.max(0, turnContentHeight));
+}

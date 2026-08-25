@@ -11,6 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .api import router
 from .api_auth import router as auth_router
+from .api_contacts import router as contacts_router
+from .api_lending import router as lending_router
 from .config import get_settings, require_production_auth_config
 from .database import Base, SessionLocal, engine
 from .event_time import now_utc
@@ -31,6 +33,7 @@ from watchfiles import awatch
 
 _agent_recovery_task: asyncio.Task | None = None
 _operation_watch_task: asyncio.Task | None = None
+_lending_notification_task: asyncio.Task | None = None
 
 
 async def _watch_operations() -> None:
@@ -124,9 +127,17 @@ async def _drain_agent_recovery_backlog(created_before: datetime) -> None:
     ))
 
 
+async def _deliver_lending_notifications() -> None:
+    from .services.lending_notifications import deliver_one
+
+    while True:
+        delivered = await asyncio.to_thread(deliver_one, SessionLocal, settings)
+        await asyncio.sleep(0.05 if delivered else settings.lending_notification_poll_seconds)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global _agent_recovery_task, _operation_watch_task
+    global _agent_recovery_task, _operation_watch_task, _lending_notification_task
     # Development-only authentication settings must never reach a real database,
     # so this is checked before the first request rather than at the first
     # sign-in attempt.
@@ -157,6 +168,8 @@ async def lifespan(_: FastAPI):
     # The cutoff excludes runs accepted by this process: their request handlers
     # already own execution, so recovery can never race them for the same row.
     _agent_recovery_task = asyncio.create_task(_drain_agent_recovery_backlog(now_utc()))
+    if settings.lending_notification_worker_enabled:
+        _lending_notification_task = asyncio.create_task(_deliver_lending_notifications())
     try:
         yield
     finally:
@@ -170,6 +183,11 @@ async def lifespan(_: FastAPI):
             with suppress(asyncio.CancelledError):
                 await _operation_watch_task
             _operation_watch_task = None
+        if _lending_notification_task:
+            _lending_notification_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await _lending_notification_task
+            _lending_notification_task = None
 
 
 settings = get_settings()
@@ -182,4 +200,6 @@ app.add_middleware(
     allow_headers=["Content-Type", "Idempotency-Key", "Last-Event-ID"],
 )
 app.include_router(auth_router)
+app.include_router(contacts_router)
+app.include_router(lending_router)
 app.include_router(router)

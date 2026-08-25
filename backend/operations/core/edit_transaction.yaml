@@ -1,0 +1,114 @@
+apiVersion: fyn.ai/v1
+kind: Operation
+metadata:
+  {
+    id: edit_transaction,
+    version: 2,
+    title: Edit transaction,
+    namespace: finance,
+    owner: engineering,
+    enabled: true,
+  }
+discovery:
+  {
+    description: Prepare corrections to an existing saved financial transaction and require the user to apply the populated edit,
+    aliases: [edit transaction, update transaction, correct expense, change transaction amount],
+    examples: [Correct my last expense to 640000, Change the merchant on that transaction to Toit],
+    negativeExamples: [Delete my last expense, Record a new expense],
+  }
+eligibility:
+  {
+    requiredPermissions: [transactions.write],
+    expectedEffect: draft,
+    access: write,
+  }
+input:
+  schema:
+    type: object
+    additionalProperties: false
+    properties:
+      target_mode:
+        {
+          type: string,
+          enum: [preceding_card, latest_entered, latest_by_transaction_date, matching],
+        }
+      target_merchant: { type: string, maxLength: 160 }
+      target_amount_minor: { type: integer, minimum: 1, maximum: 9000000000000000 }
+      target_transaction_date: { type: string, format: date }
+      target_transaction_type:
+        {
+          type: string,
+          enum:
+            [
+              expense,
+              income,
+              transfer,
+              investment,
+              loan_payment,
+              refund,
+              reimbursement,
+              cash_withdrawal,
+              cash_deposit,
+            ],
+        }
+      target_category_slug: { type: string, maxLength: 120 }
+      amount_minor: { type: integer, minimum: 1, maximum: 9000000000000000 }
+      amount_change_kind:
+        {
+          type: string,
+          enum: [replace, add, subtract, percentage_increase, percentage_decrease],
+        }
+      amount_delta_minor: { type: integer, minimum: 1, maximum: 9000000000000000 }
+      amount_percent_bps: { type: integer, minimum: 1, maximum: 100000 }
+      merchant: { type: string, maxLength: 160 }
+      transaction_date: { type: string, format: date }
+      transaction_type:
+        {
+          type: string,
+          enum:
+            [
+              expense,
+              income,
+              transfer,
+              investment,
+              loan_payment,
+              refund,
+              reimbursement,
+              cash_withdrawal,
+              cash_deposit,
+              unknown,
+            ],
+        }
+      category_slug: { type: string, maxLength: 120 }
+      subcategory_slug: { type: string, maxLength: 120 }
+      location: { type: string, maxLength: 160 }
+      spend_nature:
+        {
+          type: string,
+          enum: [essential, discretionary, potentially_avoidable, unknown],
+        }
+      tags: { type: array, maxItems: 8, items: { type: string, maxLength: 80 } }
+instructions:
+  selection: Use when the user wants to correct or change a transaction that is already saved. Never use the removal operation for an edit, and never use the requested replacement amount to search for the old transaction.
+  argumentCollection: Put old-record selectors only in target_* fields and replacement values only in editable fields. Use target_mode=preceding_card only when the request refers to the immediately preceding transaction card. For explicit last/latest, use latest_entered unless the user explicitly means the latest transaction date; preserve qualifiers such as expense or income in target_transaction_type. Use target_mode=matching with one or more exact target fields otherwise. For increase/decrease language, use amount_change_kind with amount_delta_minor or amount_percent_bps; never turn a delta into amount_minor. Never copy a replacement value into a target field.
+routing: { strategy: decision, bindings: {} }
+execution:
+  {
+    steps: [{ id: execute, uses: transaction.edit@1 }],
+    label: Preparing transaction correction,
+    validation: model,
+  }
+approval: { minimum: required }
+presentation:
+  {
+    success:
+      { title: Transaction correction prepared, message: Review and apply the transaction changes. },
+    failure:
+      { title: Transaction unchanged, message: No transaction was changed. },
+  }
+tests:
+  - name: correction route
+    request: Correct my last expense to 640000
+    expectedInputs: { target_mode: latest_entered, target_transaction_type: expense, amount_minor: 64000000 }
+    expectedEffect: draft
+    expectedApproval: required

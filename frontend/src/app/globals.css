@@ -1813,6 +1813,21 @@ html[data-focus-modality="keyboard"] .entry-card:has(textarea:focus) {
   background: var(--ink-muted);
 }
 
+/* A replaced transaction card is still audit evidence, but no longer the
+   current object. Keep it neutral, full-width, and visually quieter than the
+   active transaction preview beneath it. */
+.hitl-receipt-history {
+  width: 100%;
+  flex-wrap: wrap;
+  border-color: var(--line);
+  background: var(--ground);
+  color: var(--ink-muted);
+}
+
+.hitl-receipt-history .hitl-receipt-mark {
+  background: var(--ink-muted);
+}
+
 @media (max-width: 639px) {
   .hitl-actions > * {
     flex: 1 1 auto;

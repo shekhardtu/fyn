@@ -6,9 +6,33 @@ import json
 from pydantic import BaseModel
 
 from .config import CSV_UPLOAD_MAX_BYTES
+from .contact_schemas import ContactSuggestionOut
 from .domain import EDITABLE_TRANSACTION_TYPES
 from .services.tool_models import AffordabilityResult, InvestmentProjectionResult, LoanPaymentResult, LoanPrepaymentResult
 from .visualization_contracts import VisualEncodingContract, VisualFieldEncoding, VisualizationView
+from .lending_schemas import (
+    ConfirmLoanPaymentIn,
+    CreatePersonalLoanIn,
+    DocumentAcceptanceOut,
+    DocumentChangeOut,
+    DocumentRevisionOut,
+    InvitationPreviewOut,
+    LoanCommandOut,
+    LoanCashflowOut,
+    LoanInvitationOut,
+    LoanParticipantOut,
+    LoanSecurityItemIn,
+    LoanSecurityItemOut,
+    LoanTermOut,
+    LoanTermProposalIn,
+    PersonalLoanDetailOut,
+    PersonalLoanListOut,
+    PersonalLoanSummaryOut,
+    RecordLoanPaymentIn,
+    ReminderOut,
+    SendLoanReminderIn,
+    SharedRecordEventOut,
+)
 from .schemas import (
     ACTION_PAYLOAD_MODELS,
     ChartLineage,
@@ -71,6 +95,8 @@ from .schemas import (
     TransactionCategoryHintIn,
     TransactionCategoryHintOut,
     TransactionListItemOut,
+    TransactionRevisionChangeOut,
+    TransactionRevisionOut,
     TransactionUpdateIn,
     Widget,
     WidgetAction,
@@ -82,6 +108,28 @@ from .schemas import (
 
 
 FRONTEND_CONTRACT_MODELS: tuple[type[BaseModel], ...] = (
+    ContactSuggestionOut,
+    CreatePersonalLoanIn,
+    LoanSecurityItemIn,
+    LoanTermProposalIn,
+    RecordLoanPaymentIn,
+    ConfirmLoanPaymentIn,
+    SendLoanReminderIn,
+    LoanParticipantOut,
+    LoanSecurityItemOut,
+    LoanInvitationOut,
+    LoanTermOut,
+    DocumentChangeOut,
+    DocumentAcceptanceOut,
+    LoanCashflowOut,
+    SharedRecordEventOut,
+    PersonalLoanSummaryOut,
+    PersonalLoanDetailOut,
+    PersonalLoanListOut,
+    InvitationPreviewOut,
+    DocumentRevisionOut,
+    ReminderOut,
+    LoanCommandOut,
     WidgetAction,
     *tuple(dict.fromkeys(ACTION_PAYLOAD_MODELS.values())),
     VisualFieldEncoding,
@@ -127,6 +175,8 @@ FRONTEND_CONTRACT_MODELS: tuple[type[BaseModel], ...] = (
     TransactionCategoryHintOut,
     TransactionCategoryHintIn,
     TransactionListItemOut,
+    TransactionRevisionChangeOut,
+    TransactionRevisionOut,
     TransactionUpdateIn,
     LocationResolveOut,
     ImportResultOut,

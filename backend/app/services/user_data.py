@@ -10,6 +10,7 @@ from sqlalchemy import Table, delete, inspect, select, update
 from sqlalchemy.orm import Session
 
 from ..database import Base
+from ..event_time import now_utc
 from ..models import (
     AIAction,
     Account,
@@ -36,7 +37,11 @@ from ..models import (
     InvestmentHolding,
     InvestmentValuationSnapshot,
     Loan,
+    LoanCashflow,
+    LoanReminder,
     LoanScenario,
+    LoanSecurityItem,
+    LoanTermVersion,
     Message,
     Merchant,
     MerchantAlias,
@@ -48,6 +53,17 @@ from ..models import (
     SourceAnnotation,
     SourceManifest,
     SourceRecord,
+    SharedDocument,
+    SharedRecord,
+    SharedRecordEvent,
+    SharedRecordInvitation,
+    SharedRecordParticipant,
+    DocumentAcceptance,
+    DocumentChange,
+    DocumentRevision,
+    NotificationOutbox,
+    PersonalLoanAgreement,
+    CommandReceipt,
     Subcategory,
     Subscription,
     Tag,
@@ -55,6 +71,7 @@ from ..models import (
     TransactionCategoryHint,
     TransactionDraft,
     TransactionFieldValue,
+    TransactionRevision,
     TransactionSource,
     TransactionTag,
     User,
@@ -162,6 +179,7 @@ DEPENDENT_USER_DATA: tuple[DependentDataSpec, ...] = (
     DependentDataSpec(ReconciliationDecision, ReconciliationCandidate, "candidate_id"),
     DependentDataSpec(ImportRecord, Import, "import_id"),
     DependentDataSpec(TransactionFieldValue, Transaction, "transaction_id"),
+    DependentDataSpec(TransactionRevision, Transaction, "transaction_id"),
     DependentDataSpec(TransactionTag, Transaction, "transaction_id"),
     DependentDataSpec(TransactionSource, Transaction, "transaction_id"),
     DependentDataSpec(Message, Conversation, "conversation_id"),
@@ -249,12 +267,99 @@ def export_user_data(db: Session, user: User) -> dict[str, Any]:
         )) if parent_ids else []
         payload[dependent_spec.key] = serialize_rows(rows)
     payload["userMemories"] = export_user_memories(user.id)
+    participant_rows = list(db.scalars(select(SharedRecordParticipant).where(
+        SharedRecordParticipant.member_user_id == user.id
+    )))
+    record_ids = [row.shared_record_id for row in participant_rows]
+    if record_ids:
+        records = list(db.scalars(select(SharedRecord).where(SharedRecord.id.in_(record_ids))))
+        documents = list(db.scalars(select(SharedDocument).where(SharedDocument.shared_record_id.in_(record_ids))))
+        document_ids = [row.id for row in documents]
+        revisions = list(db.scalars(select(DocumentRevision).where(
+            DocumentRevision.document_id.in_(document_ids)
+        ))) if document_ids else []
+        revision_ids = [row.id for row in revisions]
+        agreements = list(db.scalars(select(PersonalLoanAgreement).where(
+            PersonalLoanAgreement.shared_record_id.in_(record_ids)
+        )))
+        agreement_ids = [row.id for row in agreements]
+        payload["sharedRecords"] = serialize_rows(records)
+        payload["sharedRecordParticipants"] = serialize_rows(list(db.scalars(
+            select(SharedRecordParticipant).where(SharedRecordParticipant.shared_record_id.in_(record_ids))
+        )))
+        payload["sharedRecordInvitations"] = serialize_rows(
+            list(db.scalars(select(SharedRecordInvitation).where(SharedRecordInvitation.shared_record_id.in_(record_ids)))),
+            redacted_columns=("destination_hash", "destination_ciphertext", "token_hash"),
+        )
+        payload["sharedDocuments"] = serialize_rows(documents)
+        payload["documentRevisions"] = serialize_rows(revisions)
+        payload["documentChanges"] = serialize_rows(list(db.scalars(select(DocumentChange).where(
+            DocumentChange.revision_id.in_(revision_ids)
+        )))) if revision_ids else []
+        payload["documentAcceptances"] = serialize_rows(list(db.scalars(select(DocumentAcceptance).where(
+            DocumentAcceptance.revision_id.in_(revision_ids)
+        )))) if revision_ids else []
+        payload["personalLoanAgreements"] = serialize_rows(agreements)
+        for key, model in (
+            ("loanTermVersions", LoanTermVersion),
+            ("loanSecurityItems", LoanSecurityItem),
+            ("loanCashflows", LoanCashflow),
+            ("loanReminders", LoanReminder),
+        ):
+            payload[key] = serialize_rows(list(db.scalars(select(model).where(
+                model.agreement_id.in_(agreement_ids)
+            )))) if agreement_ids else []
+        payload["sharedRecordEvents"] = serialize_rows(list(db.scalars(select(SharedRecordEvent).where(
+            SharedRecordEvent.shared_record_id.in_(record_ids)
+        ))))
+        payload["notificationOutbox"] = serialize_rows(
+            list(db.scalars(select(NotificationOutbox).where(NotificationOutbox.shared_record_id.in_(record_ids)))),
+            redacted_columns=("destination_ciphertext", "context_ciphertext"),
+        )
+    else:
+        for key in (
+            "sharedRecords", "sharedRecordParticipants", "sharedRecordInvitations",
+            "sharedDocuments", "documentRevisions", "documentChanges",
+            "documentAcceptances", "personalLoanAgreements", "loanTermVersions",
+            "loanSecurityItems", "loanCashflows", "loanReminders",
+            "sharedRecordEvents", "notificationOutbox",
+        ):
+            payload[key] = []
     return payload
 
 
 def delete_user_data(db: Session, user: User) -> int:
     """Delete all registered relational data and Agno memory for one user."""
     deleted_memories = clear_user_memories(user.id)
+    participants = list(db.scalars(select(SharedRecordParticipant).where(
+        SharedRecordParticipant.member_user_id == user.id
+    )))
+    participant_ids = [item.id for item in participants]
+    record_ids = [item.shared_record_id for item in participants]
+    if participant_ids:
+        # A jointly acknowledged record remains available to the other person,
+        # but account ownership, delivery endpoints, and authentication audit
+        # links are detached explicitly for SQLite as well as PostgreSQL.
+        db.execute(delete(NotificationOutbox).where(
+            NotificationOutbox.recipient_participant_id.in_(participant_ids)
+        ))
+        db.execute(delete(SharedRecordInvitation).where(
+            SharedRecordInvitation.participant_id.in_(participant_ids)
+        ))
+        db.execute(update(SharedRecordParticipant).where(
+            SharedRecordParticipant.id.in_(participant_ids)
+        ).values(member_user_id=None, state="account_deleted", hidden_at=now_utc()))
+    if record_ids:
+        db.execute(update(SharedRecord).where(
+            SharedRecord.id.in_(record_ids),
+            SharedRecord.created_by_user_id == user.id,
+        ).values(created_by_user_id=None))
+        db.execute(update(DocumentAcceptance).where(
+            DocumentAcceptance.actor_user_id == user.id
+        ).values(actor_user_id=None))
+        db.execute(update(CommandReceipt).where(
+            CommandReceipt.actor_user_id == user.id
+        ).values(actor_user_id=None))
     owned = _owned_rows(db, user.id)
     for dependent_spec in DEPENDENT_USER_DATA:
         parent_ids = [cast(UUID, getattr(item, "id")) for item in owned[dependent_spec.parent_model]]

@@ -7,7 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .config import DEFAULT_CURRENCY
-from .domain import CONVERSATION_TITLE_MAX, ExecutionStatus, FinancialSourceType, IdentityProvider, IdentitySource, ImportStatus, MESSAGE_SOURCE_TYPES, OtpChannel, ReconciliationOutcome, SpendNature, TaxonomyOperation, TransactionStatus, TransactionType, ValueEnum, WidgetActionId
+from .domain import CONVERSATION_TITLE_MAX, MAX_TRANSACTION_AMOUNT_MINOR, ExecutionStatus, FinancialSourceType, IdentityProvider, IdentitySource, ImportStatus, MESSAGE_SOURCE_TYPES, OtpChannel, ReconciliationOutcome, SpendNature, TaxonomyOperation, TransactionStatus, TransactionType, ValueEnum, WidgetActionId
 from .event_time import as_utc, from_local_parts, now_utc
 from .services.tool_models import AffordabilityInput, InvestmentProjectionInput, LoanWithPrepaymentInput
 from .visualization_contracts import VisualizationView
@@ -226,8 +226,23 @@ class TransactionActionPayload(ActionPayloadBase):
     transaction_id: UUID = Field(alias="transactionId")
 
 
+class EditSavedTransactionPayload(TransactionActionPayload):
+    """Optional server-prefilled patch carried by a disambiguation choice."""
+
+    amount_minor: int | None = Field(default=None, alias="amountMinor", gt=0, le=MAX_TRANSACTION_AMOUNT_MINOR)
+    merchant: str | None = Field(default=None, max_length=160)
+    transaction_date: DateValue | None = Field(default=None, alias="transactionDate")
+    transaction_type: TransactionType | None = Field(default=None, alias="transactionType")
+    category_slug: str | None = Field(default=None, alias="categorySlug", max_length=120)
+    subcategory_slug: str | None = Field(default=None, alias="subcategorySlug", max_length=120)
+    location: str | None = Field(default=None, max_length=160)
+    spend_nature: SpendNature | None = Field(default=None, alias="spendNature")
+    tags: list[str] | None = Field(default=None, max_length=8)
+
+
 class UpdateSavedTransactionPayload(TransactionActionPayload):
-    amount_minor: int = Field(alias="amountMinor", gt=0)
+    amount_minor: int = Field(alias="amountMinor", gt=0, le=MAX_TRANSACTION_AMOUNT_MINOR)
+    expected_version: int | None = Field(default=None, alias="expectedVersion", ge=1)
     merchant: str | None = Field(default=None, max_length=160)
     transaction_at: datetime | None = Field(default=None, alias="transactionAt")
     transaction_type: TransactionType | None = Field(default=None, alias="transactionType")
@@ -236,6 +251,9 @@ class UpdateSavedTransactionPayload(TransactionActionPayload):
     category_id: UUID | None = Field(default=None, alias="categoryId")
     subcategory_id: UUID | None = Field(default=None, alias="subcategoryId")
     tags: list[str] | str | None = None
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    location_accuracy: int | None = Field(default=None, alias="locationAccuracy", ge=0)
 
     @field_validator("transaction_at")
     @classmethod
@@ -314,7 +332,7 @@ ACTION_PAYLOAD_MODELS: dict[WidgetActionId, type[BaseModel]] = {
     WidgetActionId.EDIT_TRANSACTION: DraftActionPayload,
     WidgetActionId.CANCEL_TRANSACTION_EDIT: DraftActionPayload,
     WidgetActionId.UPDATE_TRANSACTION_DRAFT: UpdateDraftPayload,
-    WidgetActionId.EDIT_SAVED_TRANSACTION: TransactionActionPayload,
+    WidgetActionId.EDIT_SAVED_TRANSACTION: EditSavedTransactionPayload,
     WidgetActionId.CANCEL_SAVED_TRANSACTION_EDIT: TransactionActionPayload,
     WidgetActionId.UPDATE_SAVED_TRANSACTION: UpdateSavedTransactionPayload,
     WidgetActionId.REQUEST_REMOVE_TRANSACTION: TransactionActionPayload,
@@ -590,6 +608,7 @@ class ConfirmationCardData(WidgetDataBase):
 class TransactionPreviewData(WidgetDataBase):
     title: str
     transaction_id: str | None = Field(default=None, alias="transactionId")
+    row_version: int | None = Field(default=None, alias="rowVersion", ge=1)
     draft_id: str | None = Field(default=None, alias="draftId")
     amount_minor: int = Field(alias="amountMinor")
     currency: str
@@ -602,11 +621,17 @@ class TransactionPreviewData(WidgetDataBase):
     location: str | None = None
     spend_nature: SpendNature | None = Field(default=None, alias="spendNature")
     tags: list[str] = Field(default_factory=list)
+    # When a later card represents the same ledger row, the earlier card is an
+    # audit receipt rather than a second current record. These fields preserve
+    # the durable link in both the stored transcript and the live widget patch.
+    superseded_by_version: int | None = Field(default=None, alias="supersededByVersion", ge=1)
+    superseded_by_widget_id: str | None = Field(default=None, alias="supersededByWidgetId")
 
 
 class TransactionEditData(WidgetDataBase):
     title: str
     transaction_id: str | None = Field(default=None, alias="transactionId")
+    row_version: int | None = Field(default=None, alias="rowVersion", ge=1)
     draft_id: str | None = Field(default=None, alias="draftId")
     amount_minor: int | None = Field(default=None, alias="amountMinor")
     currency: str | None = None
@@ -1088,6 +1113,7 @@ class TransactionCategoryHintIn(BaseModel):
 
 class TransactionListItemOut(BaseModel):
     id: UUID
+    row_version: int = Field(serialization_alias="rowVersion", ge=1)
     transaction_type: TransactionType = Field(serialization_alias="transactionType")
     amount_minor: int = Field(serialization_alias="amountMinor")
     currency: str = Field(min_length=3, max_length=3)
@@ -1107,7 +1133,10 @@ class TransactionListItemOut(BaseModel):
 class TransactionUpdateIn(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
-    amount_minor: int = Field(alias="amountMinor", gt=0)
+    amount_minor: int = Field(alias="amountMinor", gt=0, le=MAX_TRANSACTION_AMOUNT_MINOR)
+    # Optional because the same shape is used for creation. PATCH requires it
+    # at the endpoint; POST rejects no stale row because none exists yet.
+    expected_version: int | None = Field(default=None, alias="expectedVersion", ge=1)
     merchant: str | None = Field(default=None, max_length=160)
     transaction_at: datetime = Field(alias="transactionAt")
     transaction_type: TransactionType = Field(alias="transactionType")
@@ -1121,6 +1150,19 @@ class TransactionUpdateIn(BaseModel):
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
     location_accuracy: int | None = Field(default=None, alias="locationAccuracy", ge=0)
+
+
+class TransactionRevisionChangeOut(BaseModel):
+    before: Any = None
+    after: Any = None
+
+
+class TransactionRevisionOut(BaseModel):
+    revision_number: int = Field(serialization_alias="revisionNumber", ge=1)
+    source: str
+    reason: str | None = None
+    changes: dict[str, TransactionRevisionChangeOut]
+    created_at: datetime = Field(serialization_alias="createdAt")
 
 
 class LocationResolveIn(BaseModel):

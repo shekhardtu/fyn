@@ -687,7 +687,22 @@ def _action_response(
     if request.conversation_id != conversation.id:
         raise ValueError("Widget action belongs to a different conversation")
     origin = prepare_widget_action(db, conversation, request.widget_id, request.action)
-    response = handle_action(db, user, conversation, request.action, request.payload)
+    payload = dict(request.payload)
+    if origin is not None:
+        widget = origin[2]
+        transaction_id = widget.data.get("transactionId")
+        if transaction_id is not None:
+            supplied_id = payload.get("transactionId")
+            if supplied_id is not None and str(supplied_id) != str(transaction_id):
+                raise ValueError("Widget action targets a different transaction")
+            payload["transactionId"] = transaction_id
+        if request.action is WidgetActionId.UPDATE_SAVED_TRANSACTION:
+            row_version = widget.data.get("rowVersion")
+            if row_version is not None:
+                # The immutable server widget, not a client field, binds the
+                # optimistic-lock token to this exact review surface.
+                payload["expectedVersion"] = row_version
+    response = handle_action(db, user, conversation, request.action, payload)
     if request.complete_widget:
         lifecycle = WidgetLifecycle.CANCELLED if request.action.value.startswith("cancel_") else WidgetLifecycle.COMPLETED
         update = resolve_widget_action(
@@ -695,10 +710,13 @@ def _action_response(
             origin,
             lifecycle=lifecycle,
             action=request.action,
-            payload=request.payload,
+            payload=payload,
         )
         if update:
-            response.widget_updates.append(update)
+            # The action receipt is the direct answer to the click and retains
+            # first position for clients/tests; any additional patches retire
+            # earlier views of the same domain record.
+            response.widget_updates.insert(0, update)
             db.commit()
     return response
 

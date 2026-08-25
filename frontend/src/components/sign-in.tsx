@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, CheckCircle2, Loader2, Mail, Smartphone, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import { appPaths } from "@/routing/paths";
 import { Button } from "@/components/ui/button";
 import { environment } from "@/config/environment";
@@ -313,6 +313,7 @@ export function GoogleSignInButton({ onCredential, onProblem }: { onCredential: 
 
 export function SignInPanel() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const [channel, setChannel] = useState<OtpChannel>("phone");
   const [problem, setProblem] = useState<string | null>(null);
@@ -320,12 +321,14 @@ export function SignInPanel() {
   // Someone who already has a session has no business on this page.
   const status = useQuery({ queryKey: ["auth"], queryFn: getAuthStatus, retry: false });
   const authenticated = status.data?.authenticated ?? false;
+  const requestedNext = searchParams.get("next");
+  const destination = requestedNext?.startsWith("/") && !requestedNext.startsWith("//") ? requestedNext : appPaths.home;
 
   const enter = useCallback(async () => {
     // Nothing cached under the previous visitor may survive into this session.
     queryClient.clear();
-    navigate(appPaths.home, { replace: true });
-  }, [navigate, queryClient]);
+    navigate(destination, { replace: true });
+  }, [destination, navigate, queryClient]);
 
   useEffect(() => { if (authenticated) void enter(); }, [authenticated, enter]);
 

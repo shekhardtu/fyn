@@ -3,7 +3,7 @@ import { AgentCapabilitiesSchema, type AgentCapabilities, type Message as AgUiMe
 
 import { API_MOUNT_PATH } from "@/config/api-path";
 import { environment } from "@/config/environment";
-import { agentActivityEventSchema, agentResponseSchema, agentSettingsSchema, agentThreadStateSchema, authStatusSchema, bootstrapSchema, categoryDirectoryEntrySchema, categoryDirectorySchema, categorySubcategorySchema, conversationCreatedSchema, conversationPageSchema, conversationSchema, conversationSummarySchema, dashboardDetailSchema, dashboardListSchema, importResultSchema, locationResolveSchema, otpSentSchema, overviewSchema, parseActionPayload, privacyStatusSchema, profileSchema, transactionCategoryHintSchema, transactionListItemSchema, transactionListSchema, type AgentActivityEvent, type AgentInterruptOut, type AgentResponse, type AgentSettingsOut, type AgentThreadStateOut, type AuthStatusOut, type Bootstrap, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type ConversationCreatedOut, type ConversationOut, type ConversationPage, type ConversationSummary, type DashboardDetail, type DashboardSummary, type ImportResult, type OtpSentOut, type OverviewOut, type PrivacyStatusOut, type ProfileOut, type TransactionCategoryHintOut, type TransactionListItemOut, type TransactionUpdateIn, type WidgetActionId } from "@/lib/protocol";
+import { agentActivityEventSchema, agentResponseSchema, agentSettingsSchema, agentThreadStateSchema, authStatusSchema, bootstrapSchema, categoryDirectoryEntrySchema, categoryDirectorySchema, categorySubcategorySchema, contactSuggestionSchema, conversationCreatedSchema, conversationPageSchema, conversationSchema, conversationSummarySchema, dashboardDetailSchema, dashboardListSchema, documentRevisionListSchema, importResultSchema, invitationPreviewSchema, loanCommandSchema, locationResolveSchema, otpSentSchema, overviewSchema, parseActionPayload, personalLoanDetailSchema, personalLoanListSchema, privacyStatusSchema, profileSchema, reminderSchema, transactionCategoryHintSchema, transactionListItemSchema, transactionListSchema, transactionRevisionListSchema, type AgentActivityEvent, type AgentInterruptOut, type AgentResponse, type AgentSettingsOut, type AgentThreadStateOut, type AuthStatusOut, type Bootstrap, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type ContactSuggestionOut, type ConversationCreatedOut, type ConversationOut, type ConversationPage, type ConversationSummary, type CreatePersonalLoanIn, type DashboardDetail, type DashboardSummary, type DocumentRevisionOut, type ImportResult, type InvitationPreviewOut, type LoanCommandOut, type LoanTermProposalIn, type OtpSentOut, type OverviewOut, type PersonalLoanDetailOut, type PersonalLoanListOut, type PrivacyStatusOut, type ProfileOut, type RecordLoanPaymentIn, type ReminderOut, type SendLoanReminderIn, type TransactionCategoryHintOut, type TransactionListItemOut, type TransactionRevisionOut, type TransactionUpdateIn, type WidgetActionId } from "@/lib/protocol";
 import type { AgentClientTelemetryIn } from "@/lib/generated/contracts";
 
 const API_URL = environment.apiUrl;
@@ -135,6 +135,75 @@ export async function loadOverview(month?: string): Promise<OverviewOut> {
   return conform(overviewSchema, compatiblePayload, "overview");
 }
 
+/* ── Personal lending ──────────────────────────────────────────────────────
+ * Lending is a shared aggregate, not a loose collection of transactions. The
+ * API owns every transition atomically and the browser supplies a fresh key so
+ * retrying a tap can never create a second loan, payment, or reminder. */
+
+function lendingMutation(path: string, method: "POST", payload: unknown, idempotencyKey: string = crypto.randomUUID()) {
+  return request(path, {
+    method,
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function loadPersonalLoans(): Promise<PersonalLoanListOut> {
+  return conform(personalLoanListSchema, await request("/loan-agreements"), "personal loan list");
+}
+
+export async function searchContacts(channel: "email" | "phone", query: string, signal?: AbortSignal): Promise<ContactSuggestionOut[]> {
+  const path = `/contacts?channel=${encodeURIComponent(channel)}&q=${encodeURIComponent(query)}`;
+  return conform(contactSuggestionSchema.array(), await request(path, { signal }), "contact suggestions");
+}
+
+export async function loadPersonalLoan(id: string): Promise<PersonalLoanDetailOut> {
+  return conform(personalLoanDetailSchema, await request(`/loan-agreements/${encodeURIComponent(id)}`), "personal loan");
+}
+
+export async function createPersonalLoan(payload: CreatePersonalLoanIn, idempotencyKey?: string): Promise<LoanCommandOut> {
+  return conform(loanCommandSchema, await lendingMutation("/loan-agreements", "POST", payload, idempotencyKey), "created personal loan");
+}
+
+export async function loadLoanInvitation(token: string): Promise<InvitationPreviewOut> {
+  return conform(invitationPreviewSchema, await request(`/loan-invitations/${encodeURIComponent(token)}`), "loan invitation");
+}
+
+export async function redeemLoanInvitation(token: string): Promise<LoanCommandOut> {
+  return conform(loanCommandSchema, await request(`/loan-invitations/${encodeURIComponent(token)}/redeem`, {
+    method: "POST",
+    body: "{}",
+  }), "redeemed loan invitation");
+}
+
+export async function acceptPersonalLoan(id: string, expectedRowVersion: number, idempotencyKey?: string): Promise<LoanCommandOut> {
+  return conform(loanCommandSchema, await lendingMutation(`/loan-agreements/${encodeURIComponent(id)}/accept`, "POST", { expectedRowVersion }, idempotencyKey), "accepted personal loan");
+}
+
+export async function proposePersonalLoanTerms(id: string, payload: LoanTermProposalIn, idempotencyKey?: string): Promise<LoanCommandOut> {
+  return conform(loanCommandSchema, await lendingMutation(`/loan-agreements/${encodeURIComponent(id)}/term-proposals`, "POST", payload, idempotencyKey), "updated repayment plan");
+}
+
+export async function recordPersonalLoanPayment(id: string, payload: RecordLoanPaymentIn, idempotencyKey?: string): Promise<LoanCommandOut> {
+  return conform(loanCommandSchema, await lendingMutation(`/loan-agreements/${encodeURIComponent(id)}/payments`, "POST", payload, idempotencyKey), "recorded loan payment");
+}
+
+export async function confirmPersonalLoanPayment(cashflowId: string, expectedRowVersion: number, idempotencyKey?: string): Promise<LoanCommandOut> {
+  return conform(loanCommandSchema, await lendingMutation(`/loan-cashflows/${encodeURIComponent(cashflowId)}/confirm`, "POST", { expectedRowVersion }, idempotencyKey), "confirmed loan payment");
+}
+
+export async function sendPersonalLoanReminder(id: string, payload: SendLoanReminderIn, idempotencyKey?: string): Promise<ReminderOut> {
+  return conform(reminderSchema, await lendingMutation(`/loan-agreements/${encodeURIComponent(id)}/reminders`, "POST", payload, idempotencyKey), "loan reminder");
+}
+
+export async function closePersonalLoan(id: string, idempotencyKey?: string): Promise<LoanCommandOut> {
+  return conform(loanCommandSchema, await lendingMutation(`/loan-agreements/${encodeURIComponent(id)}/close`, "POST", {}, idempotencyKey), "closed personal loan");
+}
+
+export async function loadSharedDocumentRevisions(documentId: string): Promise<DocumentRevisionOut[]> {
+  return conform(documentRevisionListSchema, await request(`/shared-documents/${encodeURIComponent(documentId)}/revisions`), "document revision history");
+}
+
 /* ── Dashboards ─────────────────────────────────────────────────────────────
  * Saved analysis charts, re-executed on every read so a tile is always live
  * data — the page never caches a stale plot beyond react-query's own window. */
@@ -252,6 +321,10 @@ export async function updateTransaction(id: string, payload: TransactionUpdateIn
     method: "PATCH",
     body: JSON.stringify(payload),
   }), "updated transaction");
+}
+
+export async function loadTransactionRevisions(id: string): Promise<TransactionRevisionOut[]> {
+  return conform(transactionRevisionListSchema, await request(`/transactions/${encodeURIComponent(id)}/revisions`), "transaction history");
 }
 
 export async function loadConversation(id: string): Promise<ConversationOut> {

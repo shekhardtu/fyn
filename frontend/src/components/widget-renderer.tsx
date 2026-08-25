@@ -1,11 +1,12 @@
-import { CalendarDays, Check, ChevronDown, CircleEllipsis, Info, Landmark, Loader2, PencilLine, Plus, ReceiptText, Search, Target, Trash2, TriangleAlert, Utensils, WalletCards, X } from "lucide-react";
+import { CalendarDays, Check, ChevronDown, CircleEllipsis, History, Info, Landmark, Loader2, PencilLine, Plus, ReceiptText, Search, Target, Trash2, TriangleAlert, Utensils, WalletCards, X } from "lucide-react";
 import { FormEvent, memo, useEffect, useId, useMemo, useRef, useState, type ComponentType } from "react";
+import { TransactionForm, type TransactionFormCategory, type TransactionFormField, type TransactionFormValues } from "@/components/transaction-form";
+import { isPersistedTransactionId, TransactionIdentifier } from "@/components/transaction-identifier";
 import { Button } from "@/components/ui/button";
-import { Combobox } from "@/components/ui/combobox";
 import { Progress } from "@/components/ui/progress";
 import { ChartView } from "@/components/widget-library/chart";
-import { formatDimension, formatDuration, formatInstant, formatMoney, formatTransactionClassification, parseAmountToMinor, parseNumber, timestampInputToUtc, timestampInputValue } from "@/lib/format";
-import { dataChartDataSchema, editableTransactionTypes, widgetActionIds, widgetTypeIds, type AgentRunMetrics, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type Widget, type WidgetActionId } from "@/lib/protocol";
+import { formatDimension, formatDuration, formatInstant, formatMoney, formatTransactionClassification, parseAmountToMinor, parseNumber } from "@/lib/format";
+import { dataChartDataSchema, editableTransactionTypes, widgetActionIds, widgetTypeIds, type AgentRunMetrics, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type TransactionListItemOut, type Widget, type WidgetActionId } from "@/lib/protocol";
 import { cn } from "@/lib/utils";
 
 type Primitive = string | number | boolean | null | undefined;
@@ -173,6 +174,8 @@ export type WidgetProps = {
    *  standalone transaction editor's dependency boundary. */
   onCreateCategory?: (name: string) => Promise<CategoryDirectoryOut>;
   onCreateSubcategory?: (categoryId: string, name: string) => Promise<CategoryDirectorySubcategoryOut>;
+  /** Whether this browser may attach a fresh device fix to a transaction form. */
+  locationAllowed?: boolean;
   /** Posts text as a new user message through the composer's own guards.
    *  Used by suggestion widgets; absent in read-only render contexts. */
   onPostPrompt?: (text: string) => void;
@@ -215,11 +218,12 @@ function HitlActions({ children, className }: { children: React.ReactNode; class
   return <div className={cn("hitl-actions", className)}>{children}</div>;
 }
 
-function ActionRow({ widget, disabled, pending, onAction, onCancel, icons, actions = widget.actions }: WidgetProps & { icons?: Record<string, React.ReactNode>; actions?: Widget["actions"] }) {
+function ActionRow({ widget, disabled, pending, onAction, onCancel, icons, actions = widget.actions, leading }: WidgetProps & { icons?: Record<string, React.ReactNode>; actions?: Widget["actions"]; leading?: React.ReactNode }) {
   const fallbackCancel = onCancel && !actions.some(isEscapeAction);
   const [submitted, submit] = usePendingAction(pending);
-  if (!actions.length && !fallbackCancel) return null;
+  if (!actions.length && !fallbackCancel && !leading) return null;
   return <HitlActions className="border-t border-line">
+    {leading ? <div className="mr-auto shrink-0">{leading}</div> : null}
     {fallbackCancel ? <Button type="button" variant="ghost" disabled={disabled || pending} onClick={() => { submit("protocol-cancel"); onCancel(); }}>Cancel</Button> : null}
     {orderedActions(actions).map((action) => <ActionButton key={action.id} action={action} pending={pending && submitted === action.id} disabled={disabled || pending} icon={icons?.[action.action]} onClick={() => { submit(action.id); onAction(widget.id, action.action, action.payload); }} />)}
   </HitlActions>;
@@ -522,6 +526,9 @@ function TransactionPreview({ widget, onAction, disabled, pending }: WidgetProps
   const sourceCount = Math.max(1, num(widget.data.sourceCount));
   const spendNature = str(widget.data.spendNature);
   const metadata = [widget.data.location, spendNature && spendNature !== "unknown" ? formatEnumLabel(spendNature) : null].filter(Boolean).map(String);
+  const identifier = isPersistedTransactionId(widget.data.transactionId)
+    ? <TransactionIdentifier transactionId={widget.data.transactionId} rowVersion={widget.data.rowVersion} />
+    : undefined;
   return <Card className={cn("border-secondary-line", removed && "border-danger-line")}>
     <div className="flex items-center gap-3 p-4">
       <span className={cn("grid size-10 shrink-0 place-items-center rounded-full bg-secondary-tint text-secondary", removed && "bg-danger-tint text-danger-ink")}>{removed ? <Trash2 /> : <Check size={20} strokeWidth={2.5} />}</span>
@@ -532,7 +539,7 @@ function TransactionPreview({ widget, onAction, disabled, pending }: WidgetProps
       </div>
       <Money value={widget.data.amountMinor} currency={str(widget.data.currency, "INR")} className="shrink-0 font-semibold text-ink" />
     </div>
-    {widget.actions.length ? <ActionRow widget={widget} disabled={disabled} pending={pending} onAction={onAction} icons={{ [widgetActionIds.edit_saved_transaction]: <PencilLine size={14} />, [widgetActionIds.request_remove_transaction]: <Trash2 size={14} /> }} /> : null}
+    <ActionRow widget={widget} disabled={disabled} pending={pending} onAction={onAction} leading={identifier} icons={{ [widgetActionIds.edit_saved_transaction]: <PencilLine size={14} />, [widgetActionIds.request_remove_transaction]: <Trash2 size={14} /> }} />
   </Card>;
 }
 
@@ -594,7 +601,7 @@ function OperationApproval({ widget, onAction, disabled, pending }: WidgetProps)
   </Card>;
 }
 
-function TransactionEdit({ widget, onAction, onCreateCategory, onCreateSubcategory, disabled, pending }: WidgetProps) {
+function TransactionEdit({ widget, onAction, onCreateCategory, onCreateSubcategory, disabled, pending, locationAllowed }: WidgetProps) {
   const saved = typeof widget.data.transactionId === "string";
   const submitted = completionValues(widget);
   // `fields` is the whitelist of what this particular edit may change, in the
@@ -606,26 +613,23 @@ function TransactionEdit({ widget, onAction, onCreateCategory, onCreateSubcatego
   const hasAmount = effectiveAmount != null;
   const completing = !hasAmount;
   const amountInput = useHitlAutofocus<HTMLInputElement>(completing && !disabled && !pending);
-  const [amount, setAmount] = useState(hasAmount ? String(num(effectiveAmount) / 100) : "");
-  const [merchant, setMerchant] = useState(str(submitted.merchant ?? widget.data.merchant));
-  const [transactionAt, setTransactionAt] = useState(timestampInputValue(submitted.transactionAt ?? widget.data.transactionAt));
-  const [categoryId, setCategoryId] = useState(str(submitted.categoryId ?? widget.data.categoryId));
-  const [subcategoryId, setSubcategoryId] = useState(str(submitted.subcategoryId ?? widget.data.subcategoryId));
-  const [transactionType, setTransactionType] = useState(str(submitted.transactionType ?? widget.data.transactionType, "expense"));
-  const [location, setLocation] = useState(str(submitted.location ?? widget.data.location));
-  const [spendNature, setSpendNature] = useState(str(submitted.spendNature ?? widget.data.spendNature, "unknown"));
   const submittedTags = submitted.tags ?? widget.data.tags;
-  const [tags, setTags] = useState(Array.isArray(submittedTags) ? submittedTags.map(String).join(", ") : "");
-  const [amountError, setAmountError] = useState<string | null>(null);
-  const [transactionAtError, setTransactionAtError] = useState<string | null>(null);
   const [submittedAction, markSubmitted] = usePendingAction(pending);
-  const [categories, setCategories] = useState<Data[]>(Array.isArray(widget.data.categories) ? widget.data.categories as Data[] : []);
-  const [allSubcategories, setAllSubcategories] = useState<Data[]>(Array.isArray(widget.data.subcategories) ? widget.data.subcategories as Data[] : []);
-  const [taxonomyPending, setTaxonomyPending] = useState<"category" | "subcategory" | null>(null);
-  const [taxonomyError, setTaxonomyError] = useState<string | null>(null);
-  const subcategories = allSubcategories.filter((item) => str(item.categoryId) === categoryId);
-  const needsCategory = categories.length > 0 && transactionType === "expense" && shows("category");
-  const editable = { type: saved && shows("transaction_type"), location: saved && shows("location"), nature: saved && transactionType === "expense" && shows("spend_nature"), tags: saved && shows("tags") };
+  const rawCategories = Array.isArray(widget.data.categories) ? widget.data.categories as Data[] : [];
+  const rawSubcategories = Array.isArray(widget.data.subcategories) ? widget.data.subcategories as Data[] : [];
+  const categories: TransactionFormCategory[] = rawCategories.map((category) => ({
+    id: str(category.id),
+    label: str(category.label),
+    subcategories: rawSubcategories
+      .filter((subcategory) => str(subcategory.categoryId) === str(category.id))
+      .map((subcategory) => ({ id: str(subcategory.id), label: str(subcategory.label) })),
+  }));
+  const requestedFields: TransactionFormField[] = (requested ?? (saved
+    ? ["amount", "merchant", "transaction_at", "transaction_type", "location", "spend_nature", "tags", "category", "subcategory"]
+    : ["amount", "merchant", "transaction_at"]))
+    .filter((field): field is TransactionFormField => ["amount", "merchant", "transaction_at", "transaction_type", "location", "spend_nature", "tags", "category", "subcategory"].includes(field));
+  const currentType = str(submitted.transactionType ?? widget.data.transactionType, "expense") as TransactionListItemOut["transactionType"];
+  const safeTransactionTypes = editableTransactionTypes.filter((type) => type !== "transfer" || currentType === "transfer");
   // Persisted edit widgets created before the cancel action was added still
   // receive the safe backend cancel path after a refresh.
   const submitAction = saved ? widgetActionIds.update_saved_transaction : widgetActionIds.update_transaction_draft;
@@ -638,102 +642,60 @@ function TransactionEdit({ widget, onAction, onCreateCategory, onCreateSubcatego
     payload: { transactionId: widget.data.transactionId },
   }], disabled && !pending);
 
-  async function addCategory(name: string) {
-    if (!onCreateCategory) return;
-    setTaxonomyError(null);
-    setTaxonomyPending("category");
-    try {
-      const created = await onCreateCategory(name);
-      setCategories((current) => current.some((item) => str(item.id) === created.id)
-        ? current
-        : [...current, { id: created.id, label: created.label }]);
-      setAllSubcategories((current) => {
-        const known = new Set(current.map((item) => str(item.id)));
-        return [
-          ...current,
-          ...created.subcategories
-            .filter((item) => !known.has(item.id))
-            .map((item) => ({ id: item.id, categoryId: created.id, label: item.label })),
-        ];
-      });
-      setCategoryId(created.id);
-      setSubcategoryId("");
-    } catch (cause) {
-      setTaxonomyError(cause instanceof Error ? cause.message : "That category could not be added. Try again.");
-    } finally {
-      setTaxonomyPending(null);
-    }
-  }
-
-  async function addSubcategory(name: string) {
-    if (!categoryId || !onCreateSubcategory) return;
-    setTaxonomyError(null);
-    setTaxonomyPending("subcategory");
-    try {
-      const created = await onCreateSubcategory(categoryId, name);
-      setAllSubcategories((current) => current.some((item) => str(item.id) === created.id)
-        ? current
-        : [...current, { id: created.id, categoryId, label: created.label }]);
-      setSubcategoryId(created.id);
-    } catch (cause) {
-      setTaxonomyError(cause instanceof Error ? cause.message : "That subcategory could not be added. Try again.");
-    } finally {
-      setTaxonomyPending(null);
-    }
-  }
-
-  function submit(event: FormEvent) {
-    event.preventDefault();
-    const minor = parseAmountToMinor(amount);
-    if (minor === null) { setAmountError("Enter an amount greater than zero, like 1,500 or 1500.50."); return; }
-    const utcTransactionAt = shows("transaction_at") ? timestampInputToUtc(transactionAt) : null;
-    if (shows("transaction_at") && !utcTransactionAt) { setTransactionAtError("Enter a valid date and time."); return; }
-    setAmountError(null);
-    setTransactionAtError(null);
+  function submit(values: TransactionFormValues) {
     const payload: Record<string, unknown> = saved
-      ? { transactionId: widget.data.transactionId, amountMinor: minor }
-      : { draftId: widget.data.draftId, amountMinor: minor };
-    if (shows("merchant")) payload.merchant = merchant;
-    if (shows("transaction_at")) payload.transactionAt = utcTransactionAt;
-    if (saved && shows("transaction_type")) payload.transactionType = transactionType;
-    if (saved && shows("location")) payload.location = location;
-    if (saved && transactionType === "expense" && shows("spend_nature")) payload.spendNature = spendNature;
-    if (saved && shows("tags")) payload.tags = tags.split(",").map((tag) => tag.trim()).filter(Boolean);
-    if (saved && transactionType === "expense" && shows("category")) payload.categoryId = categoryId || null;
-    if (saved && transactionType === "expense" && shows("subcategory")) payload.subcategoryId = subcategoryId || null;
+      ? { transactionId: widget.data.transactionId, expectedVersion: widget.data.rowVersion, amountMinor: values.amountMinor }
+      : { draftId: widget.data.draftId, amountMinor: values.amountMinor };
+    if (shows("merchant")) payload.merchant = values.merchant;
+    if (shows("transaction_at")) payload.transactionAt = values.transactionAt;
+    if (saved && shows("transaction_type")) payload.transactionType = values.transactionType;
+    if (saved && shows("location")) {
+      payload.location = values.location;
+      payload.latitude = values.latitude;
+      payload.longitude = values.longitude;
+      payload.locationAccuracy = values.locationAccuracy;
+    }
+    if (saved && values.transactionType === "expense" && shows("spend_nature")) payload.spendNature = values.spendNature;
+    if (saved && shows("tags")) payload.tags = values.tags;
+    if (saved && values.transactionType === "expense" && shows("category")) payload.categoryId = values.categoryId;
+    if (saved && values.transactionType === "expense" && shows("subcategory")) payload.subcategoryId = values.subcategoryId;
     markSubmitted("submit");
     onAction(widget.id, saved ? widgetActionIds.update_saved_transaction : widgetActionIds.update_transaction_draft, payload);
   }
 
-  return <Card className="hitl-card"><form onSubmit={submit} noValidate className="space-y-3 p-3">
-    <h3 className="font-heading text-body font-semibold text-ink">{str(widget.data.title, saved ? "Edit transaction" : "Edit this entry")}</h3>
-    {taxonomyError ? <p role="alert" className="rounded-lg border border-danger-line bg-danger-tint px-3 py-2 text-note text-danger-ink">{taxonomyError}</p> : null}
-    {taxonomyPending ? <p role="status" className="flex items-center gap-2 text-note text-ink-muted"><Loader2 size={14} className="animate-spin" />Adding {taxonomyPending}…</p> : null}
-    <div className="grid gap-3 sm:grid-cols-2">
-      <label className="block"><FieldLabel>Amount</FieldLabel><input ref={amountInput} disabled={disabled || pending} aria-label="Transaction amount" aria-invalid={Boolean(amountError)} aria-describedby={amountError ? `${widget.id}-amount-error` : undefined} inputMode="decimal" value={amount} onChange={(event) => { setAmount(event.target.value); if (amountError) setAmountError(null); }} placeholder="1,500" className={cn(inputClass, amountError && invalidClass)} />{amountError ? <span id={`${widget.id}-amount-error`}><FieldError>{amountError}</FieldError></span> : null}</label>
-      {shows("merchant") ? <label className="block"><FieldLabel hint="optional">Merchant</FieldLabel><input disabled={disabled || pending} aria-label="Merchant" value={merchant} onChange={(event) => setMerchant(event.target.value)} placeholder="Where you paid" className={inputClass} /></label> : null}
-      {shows("transaction_at") ? <label className="block"><FieldLabel>Date and time</FieldLabel><input disabled={disabled || pending} aria-label="Transaction date and time" aria-invalid={Boolean(transactionAtError)} type="datetime-local" value={transactionAt} onChange={(event) => { setTransactionAt(event.target.value); if (transactionAtError) setTransactionAtError(null); }} className={cn(inputClass, transactionAtError && invalidClass)} />{transactionAtError ? <FieldError>{transactionAtError}</FieldError> : null}</label> : null}
-      {editable.type ? <div><FieldLabel>Type</FieldLabel><Combobox aria-label="Transaction type" disabled={disabled || pending} value={transactionType} onValueChange={(next) => {
-        setTransactionType(next);
-        if (next !== "expense" || !categories.some((item) => str(item.id) === categoryId)) {
-          setCategoryId("");
-          setSubcategoryId("");
-        }
-        if (next !== "expense") setSpendNature("unknown");
-      }} options={editableTransactionTypes.map((type) => ({ value: type, label: type.replaceAll("_", " ") }))} searchable={false} triggerClassName="text-body" /></div> : null}
-      {editable.location ? <label className="block"><FieldLabel hint="optional">Location</FieldLabel><input disabled={disabled || pending} aria-label="Transaction location" value={location} onChange={(event) => setLocation(event.target.value)} placeholder="City or place" className={inputClass} /></label> : null}
-      {editable.nature ? <div><FieldLabel>Spend nature</FieldLabel><Combobox aria-label="Spend nature" disabled={disabled || pending} value={spendNature} onValueChange={setSpendNature} options={[{ value: "unknown", label: "Not set" }, { value: "essential", label: "Essential" }, { value: "discretionary", label: "Discretionary" }, { value: "potentially_avoidable", label: "Potentially avoidable" }]} triggerClassName="text-body" /></div> : null}
-      {editable.tags ? <label className="block sm:col-span-2"><FieldLabel hint="comma separated">Tags</FieldLabel><input disabled={disabled || pending} aria-label="Transaction tags" value={tags} onChange={(event) => setTags(event.target.value)} placeholder="vacation, family, reimbursable" className={inputClass} /></label> : null}
-      {needsCategory ? <>
-        <div><FieldLabel>Category</FieldLabel><Combobox aria-label="Transaction category" disabled={disabled || pending || Boolean(taxonomyPending)} value={categoryId} onValueChange={(next) => { setCategoryId(next); setSubcategoryId(""); setTaxonomyError(null); }} placeholder="Choose category" options={categories.map((item) => ({ value: str(item.id), label: str(item.label) }))} searchPlaceholder="Search or add new" onCreate={onCreateCategory ? (name) => void addCategory(name) : undefined} createHint="New category" triggerClassName="text-body" /></div>
-        <div><FieldLabel>Subcategory</FieldLabel><Combobox aria-label="Transaction subcategory" disabled={disabled || pending || Boolean(taxonomyPending) || !categoryId} value={subcategoryId} onValueChange={(next) => { setSubcategoryId(next); setTaxonomyError(null); }} placeholder={categoryId ? "Choose subcategory" : "Choose a category first"} options={subcategories.map((item) => ({ value: str(item.id), label: str(item.label) }))} searchPlaceholder="Search or add new" onCreate={onCreateSubcategory ? (name) => void addSubcategory(name) : undefined} createHint={`New in ${categories.find((item) => str(item.id) === categoryId)?.label ?? "this category"}`} triggerClassName="text-body" /></div>
-      </> : null}
-    </div>
-    <HitlActions className="-mx-3 -mb-3 border-t border-line">
+  return <Card className="hitl-card"><TransactionForm
+    initialValues={{
+      amountMinor: hasAmount ? num(effectiveAmount) : null,
+      merchant: str(submitted.merchant ?? widget.data.merchant),
+      transactionAt: str(submitted.transactionAt ?? widget.data.transactionAt),
+      transactionType: currentType,
+      location: str(submitted.location ?? widget.data.location),
+      spendNature: str(submitted.spendNature ?? widget.data.spendNature, "unknown") as TransactionListItemOut["spendNature"],
+      tags: Array.isArray(submittedTags) ? submittedTags.map(String) : [],
+      categoryId: str(submitted.categoryId ?? widget.data.categoryId),
+      subcategoryId: str(submitted.subcategoryId ?? widget.data.subcategoryId),
+    }}
+    categories={categories}
+    fields={requestedFields}
+    transactionTypes={safeTransactionTypes}
+    density="compact"
+    disabled={Boolean(disabled || pending)}
+    locationAllowed={locationAllowed}
+    captureDeviceLocation={saved && shows("location")}
+    requireExpenseTaxonomy={saved}
+    amountInputRef={amountInput}
+    onCreateCategory={onCreateCategory}
+    onCreateSubcategory={onCreateSubcategory}
+    onSubmit={submit}
+    className="space-y-3 p-3"
+    banner={<h3 className="font-heading text-body font-semibold text-ink">{str(widget.data.title, saved ? "Edit transaction" : "Edit this entry")}</h3>}
+    renderActions={({ blocked, taxonomyPending }) => <HitlActions className="-mx-3 -mb-3 border-t border-line">
+      {saved && isPersistedTransactionId(widget.data.transactionId) ? <div className="mr-auto shrink-0"><TransactionIdentifier transactionId={widget.data.transactionId} rowVersion={widget.data.rowVersion} /></div> : null}
       {orderedActions(navigationActions).map((action) => <ActionButton key={action.id} action={action} pending={pending && submittedAction === action.id} disabled={disabled || pending || Boolean(taxonomyPending)} onClick={() => { markSubmitted(action.id); onAction(widget.id, action.action, action.payload); }} />)}
-      <Button type="submit" disabled={disabled || pending || Boolean(taxonomyPending) || !amount.trim() || (needsCategory && (!categoryId || !subcategoryId))}>{pending && submittedAction === "submit" ? <Loader2 className="animate-spin" /> : null}{completing ? "Save entry" : "Apply changes"}</Button>
-    </HitlActions>
-  </form></Card>;
+      <Button type="submit" disabled={blocked}>{pending && submittedAction === "submit" ? <Loader2 className="animate-spin" /> : null}{completing ? "Save entry" : "Apply changes"}</Button>
+    </HitlActions>}
+  />
+  </Card>;
 }
 
 /** Charts are decoration for anyone who can't see them; the same numbers are
@@ -1351,6 +1313,18 @@ function completionSummary(widget: Widget) {
 
 function HitlReceipt({ widget, lifecycle }: { widget: Widget; lifecycle: "completed" | "cancelled" }) {
   const cancelled = lifecycle === "cancelled";
+  const supersededByVersion = typeof widget.data.supersededByVersion === "number" ? widget.data.supersededByVersion : null;
+  if (widget.type === widgetTypeIds.transaction_preview && supersededByVersion) {
+    const displayedVersion = typeof widget.data.rowVersion === "number" ? widget.data.rowVersion : null;
+    const amended = displayedVersion === null || displayedVersion < supersededByVersion;
+    return <div role="status" className="hitl-receipt hitl-receipt-history widget-enter">
+      <span aria-hidden className="hitl-receipt-mark"><History size={11} strokeWidth={2.5} /></span>
+      <span className="font-medium text-ink-body">{amended ? "Previous version" : "Earlier card"}</span>
+      <Money value={widget.data.amountMinor} currency={str(widget.data.currency, "INR")} className="text-ink-muted" />
+      <span className="text-ink-muted">· {amended ? `Updated to Version ${supersededByVersion}` : `Latest view is Version ${supersededByVersion}`}</span>
+      <TransactionIdentifier transactionId={widget.data.transactionId} rowVersion={widget.data.rowVersion} className="ml-auto" />
+    </div>;
+  }
   const summary = cancelled ? { status: "Cancelled", detail: "" } : completionSummary(widget);
   return <div role="status" className={cn("hitl-receipt widget-enter", cancelled && "hitl-receipt-cancelled")}>
     <span aria-hidden className="hitl-receipt-mark">{cancelled ? <X size={12} strokeWidth={2.5} /> : <Check size={12} strokeWidth={3} />}</span>

@@ -51,6 +51,18 @@ export const appRoutes: RouteObject[] = [
         lazy: async () => ({ Component: (await import("@/routes/money-routes")).CategoriesRoute }),
       },
       {
+        path: "loans",
+        lazy: async () => ({ Component: (await import("@/routes/lending-routes")).PersonalLoansRoute }),
+      },
+      {
+        path: "loans/:loanId",
+        lazy: async () => ({ Component: (await import("@/routes/lending-routes")).PersonalLoanDetailRoute }),
+      },
+      {
+        path: "loan-invitations/:token",
+        lazy: async () => ({ Component: (await import("@/routes/lending-routes")).LoanInvitationRoute }),
+      },
+      {
         path: "c",
         lazy: async () => ({ Component: (await import("@/routes/workspace-routes")).ConversationLayoutRoute }),
         // The layout owns the thread so it stays mounted while only the id

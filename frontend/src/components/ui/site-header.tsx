@@ -15,18 +15,41 @@ export const SITE_HEADER_HEIGHT = 56;
 export function useAutoHideSiteHeader() {
   const [headerVisible, setHeaderVisible] = useState(true);
   const previousScrollTop = useRef(0);
+  const direction = useRef<"down" | "up" | null>(null);
+  const directionTravel = useRef(0);
 
   const updateHeaderForScroll = useCallback((scrollTop: number, userDriven = true) => {
     const next = Math.max(0, scrollTop);
     const delta = next - previousScrollTop.current;
     previousScrollTop.current = next;
     if (!userDriven) return;
-    if (next <= 8) setHeaderVisible(true);
-    else if (Math.abs(delta) >= 4) setHeaderVisible(delta < 0);
+    if (next <= 8) {
+      direction.current = null;
+      directionTravel.current = 0;
+      setHeaderVisible(true);
+      return;
+    }
+    if (Math.abs(delta) < 1) return;
+
+    const nextDirection = delta > 0 ? "down" : "up";
+    if (direction.current !== nextDirection) {
+      direction.current = nextDirection;
+      directionTravel.current = 0;
+    }
+    directionTravel.current += Math.abs(delta);
+
+    // A trackpad's momentum frequently reports a few pixels in the opposite
+    // direction while settling. Require deliberate travel before changing the
+    // header so those reversals cannot restart its compositor transition.
+    const threshold = nextDirection === "down" ? 24 : 16;
+    if (directionTravel.current < threshold) return;
+    directionTravel.current = 0;
+    setHeaderVisible(nextDirection === "up");
   }, []);
 
   const showHeader = useCallback(() => setHeaderVisible(true), []);
-  return { headerVisible, updateHeaderForScroll, showHeader };
+  const hideHeader = useCallback(() => setHeaderVisible(false), []);
+  return { headerVisible, updateHeaderForScroll, showHeader, hideHeader };
 }
 
 export function SiteHeader({ title, subtitle, subtitleClassName, hidden = false, navOpen, onOpenNav, end, onRenameTitle }: {

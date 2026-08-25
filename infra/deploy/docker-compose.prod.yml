@@ -72,6 +72,10 @@ services:
       DATABASE_URL: postgresql+psycopg://finance:${POSTGRES_PASSWORD:?}@fyn-postgres:5432/finance
       OPERATIONS_CORE_DIR: /app/operations
       OPERATIONS_MANAGED_DIR: /app/managed-operations
+      # Existing servers predate the lending notification setting, so their
+      # env file will not contain it yet. Never let production invitations
+      # inherit the application's localhost development default.
+      LENDING_WEB_URL: ${LENDING_WEB_URL:-https://fynai.co}
     volumes:
       - ../../backend/managed-operations:/app/managed-operations:ro
     # The API is the app's front door here, so it is the one container on the

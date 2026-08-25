@@ -8,11 +8,11 @@ from uuid import UUID
 from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
-from ..domain import SpendNature, TransactionStatus, TransactionType
+from ..domain import MAX_TRANSACTION_AMOUNT_MINOR, SpendNature, TransactionStatus, TransactionType
 from ..event_time import as_utc, now_utc
 from .geocoding import cached_label
 from .preferences import user_preference
-from ..models import Transaction, TransactionFieldValue, TransactionSource
+from ..models import Tag, Transaction, TransactionFieldValue, TransactionRevision, TransactionSource, TransactionTag
 from ..taxonomy_catalog import DefaultCategorySlug, TRANSACTION_CATEGORY_ROOTS, category_slug_matches_transaction_type
 from .extraction import normalize_merchant
 from .merchants import MerchantRepository
@@ -20,7 +20,7 @@ from .tags import TagRepository
 from .taxonomy import TaxonomyRepository
 
 
-_SYSTEM_MANAGED_FIELDS = frozenset({"id", "created_at", "updated_at", "deleted_at"})
+_SYSTEM_MANAGED_FIELDS = frozenset({"id", "created_at", "updated_at", "deleted_at", "row_version"})
 _CREATE_FIELDS = frozenset(
     column.key for column in Transaction.__table__.columns
     if column.key not in _SYSTEM_MANAGED_FIELDS
@@ -84,10 +84,27 @@ def remove_transaction(
     record that is already removed (or not yours) is a refusal, so a double
     click cannot look like two successful deletes.
     """
-    transaction = active_transaction(db, user_id, transaction_id)
+    transaction = db.scalar(
+        canonical_transactions(user_id)
+        .where(Transaction.id == transaction_id)
+        .with_for_update()
+    )
     if transaction is None:
         raise ValueError("Unknown transaction")
+    before = transaction_snapshot(db, transaction)
+    _ensure_baseline_revision(db, transaction, before)
     transaction.deleted_at = now_utc()
+    db.flush()
+    after = transaction_snapshot(db, transaction)
+    transaction.row_version += 1
+    _record_revision(
+        db,
+        transaction,
+        before=before,
+        after=after,
+        actor_user_id=user_id,
+        source="remove",
+    )
     db.flush()
     return transaction
 
@@ -108,11 +125,24 @@ def restore_transaction(
         transaction_log(user_id).where(
             Transaction.id == transaction_id,
             Transaction.deleted_at.is_not(None),
-        )
+        ).with_for_update()
     )
     if transaction is None:
         raise ValueError("Unknown transaction")
+    before = transaction_snapshot(db, transaction)
+    _ensure_baseline_revision(db, transaction, before)
     transaction.deleted_at = None
+    db.flush()
+    after = transaction_snapshot(db, transaction)
+    transaction.row_version += 1
+    _record_revision(
+        db,
+        transaction,
+        before=before,
+        after=after,
+        actor_user_id=user_id,
+        source="restore",
+    )
     db.flush()
     return transaction
 
@@ -225,6 +255,142 @@ def canonical_transaction_classification(
     return category.id, subcategory.id if subcategory else None, nature
 
 
+class TransactionVersionConflict(ValueError):
+    """The editor was opened against an older canonical row version."""
+
+    def __init__(self, expected: int, actual: int):
+        super().__init__("Transaction changed since you opened it. Reload and review the latest version.")
+        self.expected = expected
+        self.actual = actual
+
+
+_REVISION_FIELDS = (
+    "account_id",
+    "destination_account_id",
+    "transaction_type",
+    "amount_minor",
+    "currency",
+    "merchant_id",
+    "merchant_name",
+    "category_id",
+    "subcategory_id",
+    "transaction_at",
+    "posted_at",
+    "location_label",
+    "location_source",
+    "spend_nature",
+    "status",
+    "deleted_at",
+)
+
+
+def _revision_value(value: object) -> object:
+    if isinstance(value, datetime):
+        return as_utc(value).isoformat()
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, Decimal):
+        return str(value)
+    return value
+
+
+def _tag_names(db: Session, transaction_id: UUID) -> list[str]:
+    return list(db.scalars(
+        select(Tag.name)
+        .join(TransactionTag, TransactionTag.tag_id == Tag.id)
+        .where(TransactionTag.transaction_id == transaction_id)
+        .order_by(Tag.name)
+    ))
+
+
+def transaction_snapshot(db: Session, transaction: Transaction) -> dict[str, object]:
+    snapshot = {
+        field: _revision_value(getattr(transaction, field))
+        for field in _REVISION_FIELDS
+    }
+    category, subcategory = TaxonomyRepository(db, transaction.user_id).path(
+        transaction.category_id,
+        transaction.subcategory_id,
+    )
+    snapshot["category"] = category.name if category else None
+    snapshot["subcategory"] = subcategory.name if subcategory else None
+    snapshot["tags"] = _tag_names(db, transaction.id)
+    return snapshot
+
+
+def _record_revision(
+    db: Session,
+    transaction: Transaction,
+    *,
+    before: dict[str, object],
+    after: dict[str, object],
+    actor_user_id: UUID | None,
+    source: str,
+    conversation_id: UUID | None = None,
+    widget_id: str | None = None,
+    reason: str | None = None,
+) -> TransactionRevision | None:
+    changes = {
+        field: {"before": before.get(field), "after": after.get(field)}
+        for field in sorted(set(before) | set(after))
+        if before.get(field) != after.get(field)
+    }
+    if before and not changes:
+        return None
+    revision = TransactionRevision(
+        transaction_id=transaction.id,
+        revision_number=transaction.row_version,
+        actor_user_id=actor_user_id,
+        source=source[:40],
+        conversation_id=conversation_id,
+        widget_id=widget_id[:160] if widget_id else None,
+        reason=reason,
+        before_snapshot=before,
+        after_snapshot=after,
+        changes=changes,
+    )
+    db.add(revision)
+    return revision
+
+
+def _ensure_baseline_revision(
+    db: Session,
+    transaction: Transaction,
+    snapshot: dict[str, object],
+) -> None:
+    existing = db.scalar(
+        select(TransactionRevision.id)
+        .where(TransactionRevision.transaction_id == transaction.id)
+        .limit(1)
+    )
+    if existing is None:
+        _record_revision(
+            db,
+            transaction,
+            before={},
+            after=snapshot,
+            actor_user_id=None,
+            source="legacy_baseline",
+        )
+
+
+def _validate_transaction_amount(amount_minor: int) -> None:
+    if amount_minor <= 0:
+        raise ValueError("Transaction amount must be greater than zero")
+    if amount_minor > MAX_TRANSACTION_AMOUNT_MINOR:
+        raise ValueError("Transaction amount exceeds the supported maximum")
+
+
+def _validate_distinct_transfer_accounts(transaction: Transaction) -> None:
+    if (
+        TransactionType(transaction.transaction_type) is TransactionType.TRANSFER
+        and transaction.account_id is not None
+        and transaction.destination_account_id is not None
+        and transaction.account_id == transaction.destination_account_id
+    ):
+        raise ValueError("A transfer requires two different accounts")
+
+
 def create_transaction(db: Session, /, **values: Any) -> Transaction:
     """Bind source-specific values to the canonical ORM record and persist it.
 
@@ -253,8 +419,19 @@ def create_transaction(db: Session, /, **values: Any) -> Transaction:
         spend_nature=spend_nature.value,
     )
     values.setdefault("status", TransactionStatus.PROVISIONAL)
+    _validate_transaction_amount(int(values["amount_minor"]))
     transaction = Transaction(**values)
+    _validate_distinct_transfer_accounts(transaction)
     db.add(transaction)
+    db.flush()
+    _record_revision(
+        db,
+        transaction,
+        before={},
+        after=transaction_snapshot(db, transaction),
+        actor_user_id=UUID(str(values["user_id"])),
+        source="create",
+    )
     db.flush()
     return transaction
 
@@ -357,9 +534,10 @@ def create_manual_transaction(
     location_accuracy: int | None = None,
 ) -> Transaction:
     """Create a confirmed user-entered transaction through canonical services."""
-    if amount_minor <= 0:
-        raise ValueError("Transaction amount must be greater than zero")
+    _validate_transaction_amount(amount_minor)
     kind = TransactionType(str(transaction_type))
+    if kind is TransactionType.TRANSFER:
+        raise ValueError("Create a transfer through the account-aware flow so both accounts are recorded")
     category, subcategory = _taxonomy_path(db, user_id, category_id, subcategory_id) if kind is TransactionType.EXPENSE else (None, None)
     label = str(location or "").strip()[:160] or None
     fix = _accepted_device_fix(db, user_id, latitude, longitude, location_accuracy)
@@ -420,6 +598,11 @@ def update_saved_transaction(
     longitude: float | None = None,
     location_accuracy: int | None = None,
     tags: object = UNSET,
+    expected_version: int | None = None,
+    source: str = "user_correction",
+    conversation_id: UUID | None = None,
+    widget_id: str | None = None,
+    reason: str | None = None,
 ) -> Transaction:
     """Apply a user correction through one canonical transaction boundary.
 
@@ -433,28 +616,41 @@ def update_saved_transaction(
     an edit from a device that has since lost permission must not erase where
     the transaction actually happened.
     """
-    transaction = active_transaction(db, user_id, transaction_id)
+    transaction = db.scalar(
+        canonical_transactions(user_id)
+        .where(Transaction.id == transaction_id)
+        .with_for_update()
+    )
     if not transaction:
         raise ValueError("Unknown transaction")
-    if amount_minor <= 0:
-        raise ValueError("Transaction amount must be greater than zero")
+    if expected_version is not None and transaction.row_version != expected_version:
+        raise TransactionVersionConflict(expected_version, transaction.row_version)
+    _validate_transaction_amount(amount_minor)
+    before = transaction_snapshot(db, transaction)
+    original_kind = TransactionType(transaction.transaction_type)
+    proposed_kind = (
+        TransactionType(str(transaction_type))
+        if transaction_type is not UNSET
+        else original_kind
+    )
+    if proposed_kind is TransactionType.TRANSFER and original_kind is not TransactionType.TRANSFER:
+        if transaction.account_id is None or transaction.destination_account_id is None:
+            raise ValueError("A transfer requires both a source and destination account")
+        if transaction.account_id == transaction.destination_account_id:
+            raise ValueError("A transfer requires two different accounts")
+    _ensure_baseline_revision(db, transaction, before)
 
-    changed_fields: dict[str, object] = {"amount_minor": amount_minor}
     transaction.amount_minor = amount_minor
     if merchant is not UNSET:
         transaction.merchant_name = str(merchant or "").strip()[:160] or None
-        changed_fields["merchant"] = transaction.merchant_name
     if transaction_at is not UNSET:
         if not isinstance(transaction_at, datetime):
             raise ValueError("Transaction date and time are required")
         transaction.transaction_at = as_utc(transaction_at)
-        changed_fields["transaction_at"] = transaction.transaction_at.isoformat()
     if transaction_type is not UNSET:
         transaction.transaction_type = TransactionType(str(transaction_type)).value
-        changed_fields["transaction_type"] = transaction.transaction_type
     if location is not UNSET:
         transaction.location_label = str(location or "").strip()[:160] or None
-        changed_fields["location"] = transaction.location_label
         # Renaming the place does not demote a stored fix to a typed one. The
         # coordinates still say where this happened; only their label changed.
         if transaction.latitude is None or transaction.longitude is None:
@@ -465,12 +661,8 @@ def update_saved_transaction(
         transaction.longitude = fix["longitude"]
         transaction.location_accuracy = fix["location_accuracy"]
         transaction.location_source = "device"
-        # The provenance log records that a fix arrived, never the fix itself:
-        # copying coordinates into a second table doubles what one leak costs.
-        changed_fields["location_source"] = "device"
     if spend_nature is not UNSET:
         transaction.spend_nature = _spend_nature_or_unknown(spend_nature).value
-        changed_fields["spend_nature"] = transaction.spend_nature
 
     kind = TransactionType(transaction.transaction_type)
     # Category payloads are meaningful only for expenses. Other directions are
@@ -481,13 +673,9 @@ def update_saved_transaction(
             category, subcategory = _taxonomy_path(db, user_id, category_id, None if subcategory_id is UNSET else subcategory_id)
             transaction.category_id = category.id if category else None
             transaction.subcategory_id = subcategory.id if subcategory else None
-            changed_fields["category_id"] = str(category.id) if category else None
-            if subcategory_id is not UNSET:
-                changed_fields["subcategory_id"] = str(subcategory.id) if subcategory else None
         elif subcategory_id is not UNSET:
             _category, subcategory = _taxonomy_path(db, user_id, transaction.category_id, subcategory_id)
             transaction.subcategory_id = subcategory.id if subcategory else None
-            changed_fields["subcategory_id"] = str(subcategory.id) if subcategory else None
 
     canonical_category_id, canonical_subcategory_id, canonical_nature = canonical_transaction_classification(
         db,
@@ -499,20 +687,17 @@ def update_saved_transaction(
     )
     if transaction.category_id != canonical_category_id:
         transaction.category_id = canonical_category_id
-        changed_fields["category_id"] = str(canonical_category_id) if canonical_category_id else None
     if transaction.subcategory_id != canonical_subcategory_id:
         transaction.subcategory_id = canonical_subcategory_id
-        changed_fields["subcategory_id"] = str(canonical_subcategory_id) if canonical_subcategory_id else None
     if transaction.spend_nature != canonical_nature.value:
         transaction.spend_nature = canonical_nature.value
-        changed_fields["spend_nature"] = canonical_nature.value
     if tags is not UNSET:
         raw_tags: list[object] = (
             [item for item in tags]
             if isinstance(tags, list)
             else [item for item in str(tags or "").split(",")]
         )
-        changed_fields["tags"] = TagRepository(db, user_id).replace_transaction_tags(
+        TagRepository(db, user_id).replace_transaction_tags(
             transaction.id,
             raw_tags,
             source="user",
@@ -520,8 +705,40 @@ def update_saved_transaction(
         )
 
     _canonicalize_merchant(db, user_id, transaction)
-    if "merchant" in changed_fields:
-        changed_fields["merchant"] = transaction.merchant_name
-    _record_user_values(db, transaction.id, changed_fields, origin="user_correction")
+    _validate_distinct_transfer_accounts(transaction)
+    db.flush()
+    after = transaction_snapshot(db, transaction)
+    changed_fields = {
+        field: after.get(field)
+        for field in sorted(set(before) | set(after))
+        if before.get(field) != after.get(field)
+    }
+    if not changed_fields:
+        return transaction
+    transaction.row_version += 1
+    provenance_names = {
+        "merchant_name": "merchant",
+        "location_label": "location",
+    }
+    provenance_fields = {
+        provenance_names.get(field, field): value
+        for field, value in changed_fields.items()
+        if field in {
+            "amount_minor", "merchant_name", "transaction_at", "transaction_type",
+            "category_id", "subcategory_id", "location_label", "spend_nature", "tags",
+        }
+    }
+    _record_user_values(db, transaction.id, provenance_fields, origin="user_correction")
+    _record_revision(
+        db,
+        transaction,
+        before=before,
+        after=after,
+        actor_user_id=user_id,
+        source=source,
+        conversation_id=conversation_id,
+        widget_id=widget_id,
+        reason=reason,
+    )
     db.flush()
     return transaction
