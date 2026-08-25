@@ -629,6 +629,11 @@ class DocumentRevision(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     content_schema_version: Mapped[int] = mapped_column(Integer, default=1)
     source_snapshot_hash: Mapped[str] = mapped_column(String(64))
     content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    # The content and every supporting file are two different authenticity
+    # surfaces.  Keeping both hashes, plus their combined evidence hash, makes
+    # it impossible to replace an attachment without producing a new revision.
+    manifest_hash: Mapped[str] = mapped_column(String(64), index=True)
+    evidence_hash: Mapped[str] = mapped_column(String(64), index=True)
     proposed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now())
     finalized_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     __table_args__ = (
@@ -665,14 +670,112 @@ class DocumentAcceptance(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         index=True,
     )
     content_hash: Mapped[str] = mapped_column(String(64))
+    manifest_hash: Mapped[str] = mapped_column(String(64))
+    evidence_hash: Mapped[str] = mapped_column(String(64), index=True)
     action: Mapped[str] = mapped_column(String(20), default="accepted")
     actor_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"),
         index=True,
     )
     accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now())
+    statement_version: Mapped[int] = mapped_column(Integer, default=1)
+    statement_text: Mapped[str] = mapped_column(String(500))
+    auth_method: Mapped[str] = mapped_column(String(40), default="verified_session")
+    actor_identifier_masked: Mapped[Optional[str]] = mapped_column(String(320))
+    actor_timezone: Mapped[str] = mapped_column(String(80), default=DEFAULT_TIMEZONE)
+    request_ip_hash: Mapped[Optional[str]] = mapped_column(String(64))
+    user_agent_hash: Mapped[Optional[str]] = mapped_column(String(64))
     __table_args__ = (
         UniqueConstraint("revision_id", "participant_id", name="uq_document_acceptance_participant"),
+        CheckConstraint("statement_version > 0", name="ck_document_acceptance_statement_version"),
+    )
+
+
+class DocumentAsset(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """One private, validated file that can be bound to a document revision.
+
+    The bytes live in object storage (a private filesystem adapter in local
+    development); PostgreSQL owns authorization, integrity, and lifecycle.
+    Draft assets are user-owned until they are atomically attached to a shared
+    document, after which both record participants may read but not replace it.
+    """
+
+    __tablename__ = "document_assets"
+    owner_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        index=True,
+    )
+    document_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("shared_documents.id", ondelete="CASCADE"),
+        index=True,
+    )
+    uploaded_by_participant_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("shared_record_participants.id", ondelete="SET NULL"),
+        index=True,
+    )
+    original_filename: Mapped[str] = mapped_column(String(240))
+    media_type: Mapped[str] = mapped_column(String(80))
+    byte_size: Mapped[int] = mapped_column(BigInteger)
+    sha256: Mapped[str] = mapped_column(String(64), index=True)
+    storage_key: Mapped[str] = mapped_column(String(160), unique=True)
+    state: Mapped[str] = mapped_column(String(30), default="quarantined", index=True)
+    classification: Mapped[str] = mapped_column(String(50), default="supporting_evidence", index=True)
+    description: Mapped[Optional[str]] = mapped_column(String(240))
+    validated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        CheckConstraint("byte_size > 0", name="ck_document_asset_positive_size"),
+    )
+
+
+class DocumentRevisionAsset(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "document_revision_assets"
+    revision_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("document_revisions.id", ondelete="CASCADE"),
+        index=True,
+    )
+    asset_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("document_assets.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    display_order: Mapped[int] = mapped_column(Integer, default=0)
+    __table_args__ = (
+        UniqueConstraint("revision_id", "asset_id", name="uq_document_revision_asset"),
+        CheckConstraint("display_order >= 0", name="ck_document_revision_asset_order"),
+    )
+
+
+class DocumentRequest(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """A reusable participant-to-participant request for revision evidence."""
+
+    __tablename__ = "document_requests"
+    shared_record_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("shared_records.id", ondelete="CASCADE"),
+        index=True,
+    )
+    requested_by_participant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("shared_record_participants.id", ondelete="CASCADE"),
+        index=True,
+    )
+    requested_from_participant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("shared_record_participants.id", ondelete="CASCADE"),
+        index=True,
+    )
+    label: Mapped[str] = mapped_column(String(120))
+    classification: Mapped[str] = mapped_column(String(50), default="supporting_evidence")
+    instructions: Mapped[Optional[str]] = mapped_column(String(500))
+    required: Mapped[bool] = mapped_column(Boolean, default=True)
+    state: Mapped[str] = mapped_column(String(30), default="requested", index=True)
+    fulfilled_asset_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("document_assets.id", ondelete="SET NULL"),
+        index=True,
+    )
+    fulfilled_revision_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("document_revisions.id", ondelete="SET NULL"),
+        index=True,
+    )
+    fulfilled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        CheckConstraint("requested_by_participant_id <> requested_from_participant_id", name="ck_document_request_distinct_participants"),
     )
 
 
@@ -685,6 +788,7 @@ class PersonalLoanAgreement(UUIDPrimaryKeyMixin, CurrencyMixin, TimestampMixin, 
     )
     status: Mapped[str] = mapped_column(String(30), default="pending_acceptance", index=True)
     funding_status: Mapped[str] = mapped_column(String(30), default="pending_confirmation", index=True)
+    intent: Mapped[str] = mapped_column(String(40), default="record_given", index=True)
     current_terms_version: Mapped[int] = mapped_column(Integer, default=1)
     __table_args__ = (
         CheckConstraint("current_terms_version > 0", name="ck_personal_loan_terms_version"),
@@ -737,8 +841,12 @@ class LoanTermVersion(UUIDPrimaryKeyMixin, CurrencyMixin, TimestampMixin, Base):
     )
     version: Mapped[int] = mapped_column(Integer)
     principal_minor: Mapped[int] = mapped_column(Integer)
-    annual_rate_bps: Mapped[int] = mapped_column(Integer, default=0)
+    interest_rate_bps: Mapped[int] = mapped_column(Integer, default=0)
+    interest_period: Mapped[str] = mapped_column(String(16), default="yearly")
+    interest_mode: Mapped[str] = mapped_column(String(16), default="simple")
     interest_method: Mapped[str] = mapped_column(String(30), default="none")
+    calculation_basis: Mapped[str] = mapped_column(String(30), default="actual_365")
+    rounding_policy: Mapped[str] = mapped_column(String(30), default="half_up_minor_unit")
     money_date: Mapped[date] = mapped_column(Date)
     due_date: Mapped[date] = mapped_column(Date, index=True)
     note: Mapped[Optional[str]] = mapped_column(Text)
@@ -760,7 +868,9 @@ class LoanTermVersion(UUIDPrimaryKeyMixin, CurrencyMixin, TimestampMixin, Base):
         UniqueConstraint("agreement_id", "version", name="uq_loan_term_version"),
         CheckConstraint("version > 0", name="ck_loan_term_positive_version"),
         CheckConstraint("principal_minor > 0", name="ck_loan_term_positive_principal"),
-        CheckConstraint("annual_rate_bps >= 0", name="ck_loan_term_nonnegative_rate"),
+        CheckConstraint("interest_rate_bps >= 0", name="ck_loan_term_nonnegative_rate"),
+        CheckConstraint("interest_period IN ('monthly', 'yearly')", name="ck_loan_term_interest_period"),
+        CheckConstraint("interest_mode IN ('simple', 'compound')", name="ck_loan_term_interest_mode"),
         CheckConstraint("total_interest_minor >= 0", name="ck_loan_term_nonnegative_interest"),
         CheckConstraint("total_repayable_minor >= principal_minor", name="ck_loan_term_total_repayable"),
         CheckConstraint("due_date >= money_date", name="ck_loan_term_date_order"),

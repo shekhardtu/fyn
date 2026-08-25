@@ -1,13 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Loader2, LogOut, Mail, Plus, Smartphone, Trash2, TriangleAlert } from "lucide-react";
+import { Check, Download, FileText, Loader2, LogOut, Mail, Plus, ShieldCheck, Smartphone, Trash2, TriangleAlert, UploadCloud } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { appPaths } from "@/routing/paths";
 import { CHANNEL_COPY, CodeExchange } from "@/components/sign-in";
-import { NotLiveStamp, SettingsGroup, settingsProblem, settingsSaved } from "@/components/settings-parts";
+import { SettingsGroup, settingsProblem, settingsSaved } from "@/components/settings-parts";
 import { Button } from "@/components/ui/button";
-import { getProfile, isUnauthorized, removeIdentity, signOut, startLinkCode, verifyLinkCode, type OtpChannel, type Profile } from "@/lib/api";
-import type { IdentityOut } from "@/lib/protocol";
+import { deleteDocumentAsset, documentAssetDownloadUrl, getProfile, isUnauthorized, loadDocumentAssets, removeIdentity, signOut, startLinkCode, updateProfile, uploadDocumentAsset, verifyLinkCode, type OtpChannel, type Profile } from "@/lib/api";
+import type { DocumentAssetOut, IdentityOut } from "@/lib/protocol";
 
 const PROVIDER_COPY: Record<IdentityOut["provider"], { label: string; icon: ReactNode }> = {
   phone: { label: "Phone number", icon: <Smartphone /> },
@@ -45,15 +45,17 @@ export function ProfilePanel() {
   const queryClient = useQueryClient();
   const [linking, setLinking] = useState<OtpChannel | null>(null);
   const [confirmingRemoval, setConfirmingRemoval] = useState<string | null>(null);
+  const [confirmingDocumentRemoval, setConfirmingDocumentRemoval] = useState<string | null>(null);
+  const [displayName, setDisplayName] = useState<string | null>(null);
 
   const profile = useQuery({ queryKey: ["profile"], queryFn: getProfile, retry: false });
+  const documents = useQuery({ queryKey: ["document-assets"], queryFn: loadDocumentAssets, retry: false });
 
   const leave = useCallback(() => { queryClient.clear(); navigate(appPaths.login, { replace: true }); }, [navigate, queryClient]);
   const signedOut = isUnauthorized(profile.error);
   useEffect(() => {
     if (signedOut) leave();
   }, [signedOut, leave]);
-
   const leaveSession = useMutation({
     mutationFn: signOut,
     onSuccess: leave,
@@ -65,6 +67,33 @@ export function ProfilePanel() {
     onSuccess: (updated) => {
       queryClient.setQueryData(["profile"], updated);
       settingsSaved("That sign-in method was removed.");
+    },
+    onError: (cause: Error) => settingsProblem(cause.message),
+  });
+  const saveProfile = useMutation({
+    mutationFn: () => updateProfile(displayName ?? profile.data?.displayName ?? ""),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["profile"], updated);
+      setDisplayName(null);
+      void queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+      settingsSaved("Your display name was updated.");
+    },
+    onError: (cause: Error) => settingsProblem(cause.message),
+  });
+  const addDocument = useMutation({
+    mutationFn: (file: File) => uploadDocumentAsset(file, "supporting_evidence"),
+    onSuccess: (asset) => {
+      queryClient.setQueryData(["document-assets"], (current: DocumentAssetOut[] | undefined) => current ? [asset, ...current] : [asset]);
+      settingsSaved("The document was added to your private repository.");
+    },
+    onError: (cause: Error) => settingsProblem(cause.message),
+  });
+  const removeDocument = useMutation({
+    mutationFn: deleteDocumentAsset,
+    onSuccess: (_value, assetId) => {
+      queryClient.setQueryData(["document-assets"], documents.data?.filter((asset) => asset.id !== assetId) ?? []);
+      setConfirmingDocumentRemoval(null);
+      settingsSaved("The private document was removed.");
     },
     onError: (cause: Error) => settingsProblem(cause.message),
   });
@@ -84,6 +113,7 @@ export function ProfilePanel() {
   if (!profile.data) return <div className="grid place-items-center py-16"><Loader2 size={20} className="animate-spin text-ink-muted" aria-label="Loading your profile" /></div>;
 
   const account = profile.data;
+  const editedDisplayName = displayName ?? account.displayName;
   const blocked = removalBlock(account);
   const has = (provider: IdentityOut["provider"]) => account.identities.some((item) => item.provider === provider);
   const googleOwnsEmail = account.identities.some((item) => item.provider === "email" && item.source === "google");
@@ -99,19 +129,53 @@ export function ProfilePanel() {
 
     <SettingsGroup
       title="Your details"
-      stamp={<NotLiveStamp />}
-      description="What every amount and timestamp in the ledger is rendered against. Editing them here isn’t wired up yet — they still come from how you signed up."
+      description="Your name appears on shared agreements and acknowledgement evidence. Use the name people you know will recognize."
     >
-      <dl className="divide-y divide-line overflow-hidden rounded-lg border border-line bg-surface">
-        {[
-          { term: "Display name", value: account.displayName },
-          { term: "Currency", value: account.currency },
-          { term: "Time zone", value: account.timezone },
-        ].map((detail) => <div key={detail.term} className="flex items-center justify-between gap-4 px-4 py-3">
-          <dt className="text-control font-medium text-ink-muted">{detail.term}</dt>
-          <dd className="min-w-0 truncate text-control font-semibold text-ink-body">{detail.value}</dd>
-        </div>)}
-      </dl>
+      <form onSubmit={(event) => { event.preventDefault(); saveProfile.mutate(); }}>
+        <label className="block text-control font-medium text-ink-body">Display name
+          <input value={editedDisplayName} onChange={(event) => setDisplayName(event.target.value)} minLength={2} maxLength={120} required autoComplete="name" className="manual-field mt-2 h-11 w-full rounded-lg border border-line-strong bg-surface px-3 text-body text-ink outline-none placeholder:text-ink-muted" />
+        </label>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <Button type="submit" disabled={saveProfile.isPending || editedDisplayName.trim() === account.displayName || editedDisplayName.trim().toLowerCase() === "you"}>{saveProfile.isPending ? <Loader2 className="animate-spin" /> : <Check />}Save name</Button>
+          <span className="text-note text-ink-muted">{account.currency} · {account.timezone}</span>
+        </div>
+      </form>
+    </SettingsGroup>
+
+    <SettingsGroup
+      title="Private document repository"
+      description="Keep important PDFs and images ready to reuse. Nothing here is shared until you explicitly add it to an agreement."
+    >
+      <div className="mb-4 flex items-start gap-3 rounded-xl border border-secondary-line bg-secondary-tint p-4">
+        <ShieldCheck className="mt-0.5 shrink-0 text-secondary" size={18} />
+        <p className="text-note leading-5 text-ink-body">When you share a document, Fyn creates an immutable copy for that agreement. Your private original stays here and can be reused.</p>
+      </div>
+      <label className="flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-line-strong bg-surface-sunken px-4 py-5 text-control font-semibold text-ink transition-colors hover:border-secondary">
+        {addDocument.isPending ? <Loader2 className="animate-spin text-secondary" /> : <UploadCloud className="text-secondary" />}
+        {addDocument.isPending ? "Uploading securely…" : "Add PDF, JPG, or PNG"}
+        <input
+          type="file"
+          accept="application/pdf,image/png,image/jpeg"
+          disabled={addDocument.isPending}
+          className="sr-only"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) addDocument.mutate(file);
+            event.target.value = "";
+          }}
+        />
+      </label>
+      {documents.isPending ? <p className="mt-4 flex items-center gap-2 text-note text-ink-muted"><Loader2 size={15} className="animate-spin" />Loading private documents…</p>
+        : documents.isError ? <p role="alert" className="mt-4 text-note text-danger-ink">Your private documents couldn’t be loaded.</p>
+        : documents.data?.length ? <ul className="mt-4 divide-y divide-line overflow-hidden rounded-xl border border-line bg-surface">
+          {documents.data.map((asset) => <li key={asset.id} className="flex items-center gap-3 px-3 py-3">
+            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-secondary-tint text-secondary"><FileText size={17} /></span>
+            <div className="min-w-0 flex-1"><p className="truncate text-control font-semibold text-ink">{asset.originalFilename}</p><p className="mt-0.5 text-meta text-ink-muted">{asset.classification.replaceAll("_", " ")} · {(asset.byteSize / 1024).toFixed(0)} KB</p></div>
+            <a href={documentAssetDownloadUrl(asset.id)} className="grid size-10 place-items-center rounded-xl text-ink-muted hover:bg-surface-sunken hover:text-ink" aria-label={`Download ${asset.originalFilename}`}><Download size={17} /></a>
+            {confirmingDocumentRemoval === asset.id ? <div className="flex items-center gap-1"><Button type="button" variant="destructive" size="sm" disabled={removeDocument.isPending} onClick={() => removeDocument.mutate(asset.id)}>{removeDocument.isPending ? <Loader2 className="animate-spin" /> : <Trash2 />}Remove</Button><Button type="button" variant="ghost" size="sm" onClick={() => setConfirmingDocumentRemoval(null)}>Keep</Button></div>
+              : <Button type="button" variant="ghost" size="icon-lg" aria-label={`Remove ${asset.originalFilename}`} onClick={() => setConfirmingDocumentRemoval(asset.id)}><Trash2 /></Button>}
+          </li>)}
+        </ul> : <p className="mt-4 text-note text-ink-muted">No private documents yet.</p>}
     </SettingsGroup>
 
     <SettingsGroup

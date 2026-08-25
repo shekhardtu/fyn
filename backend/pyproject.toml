@@ -16,6 +16,10 @@ dependencies = [
   "pydantic-settings>=2.5,<3",
   "psycopg[binary]>=3.2,<4",
   "python-multipart>=0.0.12,<1",
+  # Cloudflare R2 exposes an S3-compatible private object API.
+  "boto3>=1.35,<2",
+  # Canonical agreement and evidence-bundle PDF rendering.
+  "reportlab>=4.2,<5",
   "agno>=1.7,<3",
   "ag-ui-protocol==0.1.19",
   "openai>=1.68,<3",
@@ -46,6 +50,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.3,<9",
+  "pypdf>=6,<7",
   "ruff>=0.16,<1",
   "mypy>=1.19,<2",
   "types-dateparser>=1.2,<2",

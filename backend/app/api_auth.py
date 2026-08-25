@@ -19,6 +19,7 @@ from .schemas import (
     OtpStartIn,
     OtpVerifyIn,
     ProfileOut,
+    ProfileUpdateIn,
     SignOutOut,
 )
 from .security import clear_session_cookie, current_user, optional_user, session_token, set_session_cookie
@@ -190,6 +191,17 @@ def sign_out(
 
 @router.get("/profile", response_model=ProfileOut)
 def profile(db: Session = Depends(get_db), user: User = Depends(current_user)) -> ProfileOut:
+    return _profile(db, user)
+
+
+@router.patch("/profile", response_model=ProfileOut)
+def update_profile(
+    request: ProfileUpdateIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> ProfileOut:
+    user.display_name = request.display_name
+    db.commit()
     return _profile(db, user)
 
 

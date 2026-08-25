@@ -1,6 +1,30 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+/* Evidence previews are paper documents, not theme-colored cards. Their ink
+   and rule colors stay stable in both light and dark workspaces. */
+.agreement-paper,
+section[aria-label="Agreement review"] > div {
+  --surface: #fffefa;
+  --sunken: #f3f5f2;
+  --ink: #17221b;
+  --ink-body: #2f3b33;
+  --ink-muted: #68736b;
+  --line: #d9dfda;
+  --line-soft: #e8ece9;
+  --line-strong: #b9c2bb;
+  --secondary: #176b45;
+  --secondary-hover: #12583a;
+  --secondary-tint: #edf7f1;
+  --secondary-line: #a9d2bb;
+  --money-in: #176b45;
+  --attention: #c58918;
+  --attention-tint: #fff7df;
+  --attention-ink: #674700;
+  color: var(--ink-body);
+  color-scheme: light;
+}
+
 /* ── The system ───────────────────────────────────────────────────────────
    White is the ground. One secondary carries every interactive surface, and
    it is deliberately not a money colour: green and red mean income and

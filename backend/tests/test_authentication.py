@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import UUID
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -526,6 +528,20 @@ def test_one_account_never_sees_another_accounts_profile(client, db):
     assert db.scalar(
         select(UserIdentity).where(UserIdentity.provider == IdentityProvider.PHONE.value, UserIdentity.identifier == PHONE)
     ).user_id == db.scalar(select(User).where(User.phone == PHONE)).id
+
+
+def test_profile_name_can_be_updated_but_placeholder_identity_is_refused(client, db):
+    signed_in = sign_in_with_phone(client)
+    user_id = signed_in["profile"]["id"]
+
+    updated = client.patch("/profile", json={"displayName": "  Hari   Prasad  "})
+    assert updated.status_code == 200
+    assert updated.json()["displayName"] == "Hari Prasad"
+    assert db.get(User, UUID(user_id)).display_name == "Hari Prasad"
+
+    refused = client.patch("/profile", json={"displayName": "You"})
+    assert refused.status_code == 422
+    assert db.get(User, UUID(user_id)).display_name == "Hari Prasad"
 
 
 def test_a_token_for_another_client_is_refused(monkeypatch):

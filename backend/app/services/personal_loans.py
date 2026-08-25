@@ -11,17 +11,22 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..config import Settings
 from ..domain import IdentityProvider, OtpChannel
 from ..event_time import as_utc, now_utc
 from ..lending_schemas import (
     CreatePersonalLoanIn,
+    FulfillDocumentRequestsIn,
+    RecordLoanFundingIn,
     LoanTermProposalIn,
     RecordLoanPaymentIn,
     SendLoanReminderIn,
 )
 from ..models import (
     DocumentAcceptance,
+    DocumentAsset,
     DocumentChange,
+    DocumentRequest,
     DocumentRevision,
     Loan,
     LoanCashflow,
@@ -39,6 +44,7 @@ from ..models import (
     UserIdentity,
 )
 from .documents import accept_revision, create_document, create_revision, loan_document_content
+from .document_assets import asset_dict, attach_draft_assets, carry_forward_revision_assets, revision_assets
 from .identity import IdentityError, normalize_channel_value
 from .shared_records import (
     SharedRecordConflict,
@@ -63,11 +69,30 @@ class PersonalLoanError(SharedRecordError):
     pass
 
 
-def _interest(principal_minor: int, annual_rate_bps: int, money_date: date, due_date: date) -> int:
-    if annual_rate_bps == 0 or due_date <= money_date:
+def _interest_metadata(interest_rate_bps: int, interest_period: str, interest_mode: str) -> tuple[str, str, str]:
+    if interest_rate_bps == 0:
+        return "none", "not_applicable", "half_up_minor_unit"
+    basis = "fixed_30_day_month" if interest_period == "monthly" else "actual_365"
+    return f"{interest_mode}_{interest_period}", basis, "half_up_minor_unit"
+
+
+def _annualized_rate_bps(interest_rate_bps: int, interest_period: str) -> int:
+    return interest_rate_bps * 12 if interest_period == "monthly" else interest_rate_bps
+
+
+def _interest(principal_minor: int, interest_rate_bps: int, interest_period: str, interest_mode: str, money_date: date, due_date: date) -> int:
+    if interest_rate_bps == 0 or due_date <= money_date:
         return 0
     days = (due_date - money_date).days
-    value = Decimal(principal_minor) * Decimal(annual_rate_bps) / Decimal(10_000) * Decimal(days) / Decimal(365)
+    period_days = 30 if interest_period == "monthly" else 365
+    periodic_rate = Decimal(interest_rate_bps) / Decimal(10_000)
+    if interest_mode == "compound":
+        full_periods, remaining_days = divmod(days, period_days)
+        factor = (Decimal(1) + periodic_rate) ** full_periods
+        factor *= Decimal(1) + periodic_rate * Decimal(remaining_days) / Decimal(period_days)
+        value = Decimal(principal_minor) * (factor - Decimal(1))
+    else:
+        value = Decimal(principal_minor) * periodic_rate * Decimal(days) / Decimal(period_days)
     return int(value.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
@@ -77,17 +102,25 @@ def _term_payload(
     currency: str,
     money_date: date,
     due_date: date,
-    annual_rate_bps: int,
+    interest_rate_bps: int,
+    interest_period: str,
+    interest_mode: str,
     note: str | None,
 ) -> dict[str, Any]:
-    total_interest = _interest(principal_minor, annual_rate_bps, money_date, due_date)
+    total_interest = _interest(principal_minor, interest_rate_bps, interest_period, interest_mode, money_date, due_date)
+    interest_method, calculation_basis, rounding_policy = _interest_metadata(interest_rate_bps, interest_period, interest_mode)
     return {
         "principalMinor": principal_minor,
         "currency": currency,
         "moneyDate": money_date.isoformat(),
         "dueDate": due_date.isoformat(),
-        "annualRateBps": annual_rate_bps,
-        "interestMethod": "none" if annual_rate_bps == 0 else "simple_annual",
+        "interestRateBps": interest_rate_bps,
+        "interestPeriod": interest_period,
+        "interestMode": interest_mode,
+        "annualizedRateBps": _annualized_rate_bps(interest_rate_bps, interest_period),
+        "interestMethod": interest_method,
+        "calculationBasis": calculation_basis,
+        "roundingPolicy": rounding_policy,
         "totalInterestMinor": total_interest,
         "totalRepayableMinor": principal_minor + total_interest,
         "note": note,
@@ -211,6 +244,14 @@ def _security_snapshot(items: list[LoanSecurityItem]) -> list[dict[str, Any]]:
     } for item in items]
 
 
+def _document_requests(db: Session, shared_record_id: UUID) -> list[DocumentRequest]:
+    return list(db.scalars(
+        select(DocumentRequest)
+        .where(DocumentRequest.shared_record_id == shared_record_id)
+        .order_by(DocumentRequest.created_at, DocumentRequest.id)
+    ))
+
+
 def _remaining(db: Session, agreement: PersonalLoanAgreement, term: LoanTermVersion | None = None) -> tuple[int, int, int]:
     current = term or _current_term(db, agreement)
     principal_paid, interest_paid, total_paid = _confirmed_totals(db, agreement.id)
@@ -281,7 +322,7 @@ def rebuild_projection_for_participant(
         "counterparty_name": counterparty.display_name,
         "outstanding_principal_minor": outstanding,
         "accrued_interest_minor": interest,
-        "annual_rate_percent": Decimal(term.annual_rate_bps) / Decimal(100),
+        "annual_rate_percent": Decimal(_annualized_rate_bps(term.interest_rate_bps, term.interest_period)) / Decimal(100),
         "rate_type": "fixed",
         "remaining_tenure_months": months,
         "current_emi_minor": outstanding + interest if outstanding + interest else None,
@@ -341,7 +382,12 @@ def create_personal_loan(
     user: User,
     request: CreatePersonalLoanIn,
     idempotency_key: str,
+    settings: Settings,
+    request_ip_hash: str | None = None,
+    user_agent_hash: str | None = None,
 ) -> tuple[PersonalLoanAgreement, str | None, bool]:
+    if user.display_name.strip().casefold() == "you":
+        raise PersonalLoanError("Add your real display name in Profile before creating a shared agreement.")
     request_data = request.model_dump(mode="json")
     prior = begin_command(
         db,
@@ -401,11 +447,17 @@ def create_personal_loan(
     db.add_all([own, counterparty])
     db.flush()
 
+    intent = request.intent or ("record_given" if request.direction == "lent" else "record_received")
+    if request.direction == "lent" and intent not in {"record_given", "offer_to_lend"}:
+        raise PersonalLoanError("That intent does not match the selected lending direction.")
+    if request.direction == "borrowed" and intent not in {"record_received", "request_to_borrow"}:
+        raise PersonalLoanError("That intent does not match the selected borrowing direction.")
     agreement = PersonalLoanAgreement(
         shared_record_id=record.id,
         currency=request.currency,
         status="pending_acceptance",
         funding_status="pending_confirmation",
+        intent=intent,
         current_terms_version=1,
     )
     db.add(agreement)
@@ -413,6 +465,19 @@ def create_personal_loan(
 
     lender = own if own_role == "lender" else counterparty
     borrower = own if own_role == "borrower" else counterparty
+    if request.document_requests and own_role != "lender":
+        raise PersonalLoanError("Only the lender can require documents from the borrower. You can share your own repository documents instead.")
+    requested_documents = [DocumentRequest(
+        shared_record_id=record.id,
+        requested_by_participant_id=lender.id,
+        requested_from_participant_id=borrower.id,
+        label=item.label,
+        classification=item.classification,
+        instructions=item.instructions,
+        required=item.required,
+        state="requested",
+    ) for item in request.document_requests]
+    db.add_all(requested_documents)
     assurance_items = [LoanSecurityItem(
         agreement_id=agreement.id,
         kind=item.kind,
@@ -421,7 +486,7 @@ def create_personal_loan(
         stated_value_minor=item.stated_value_minor,
         provided_by_participant_id=borrower.id,
         held_by_participant_id=lender.id,
-        state="acknowledged",
+        state="proposed",
         currency=request.currency,
     ) for item in request.security_items]
     db.add_all(assurance_items)
@@ -432,7 +497,9 @@ def create_personal_loan(
         currency=request.currency,
         money_date=request.money_date,
         due_date=request.due_date,
-        annual_rate_bps=request.annual_rate_bps,
+        interest_rate_bps=request.interest_rate_bps,
+        interest_period=request.interest_period,
+        interest_mode=request.interest_mode,
         note=request.note,
     )
     term_data["securityItems"] = _security_snapshot(assurance_items)
@@ -441,8 +508,12 @@ def create_personal_loan(
         agreement_id=agreement.id,
         version=1,
         principal_minor=request.principal_minor,
-        annual_rate_bps=request.annual_rate_bps,
+        interest_rate_bps=request.interest_rate_bps,
+        interest_period=request.interest_period,
+        interest_mode=request.interest_mode,
         interest_method=term_data["interestMethod"],
+        calculation_basis=term_data["calculationBasis"],
+        rounding_policy=term_data["roundingPolicy"],
         money_date=request.money_date,
         due_date=request.due_date,
         note=request.note,
@@ -477,7 +548,12 @@ def create_personal_loan(
         currency=term.currency,
         money_date=term.money_date.isoformat(),
         due_date=term.due_date.isoformat(),
-        annual_rate_bps=term.annual_rate_bps,
+        interest_rate_bps=term.interest_rate_bps,
+        interest_period=term.interest_period,
+        interest_mode=term.interest_mode,
+        interest_method=term.interest_method,
+        calculation_basis=term.calculation_basis,
+        rounding_policy=term.rounding_policy,
         total_interest_minor=term.total_interest_minor,
         total_repayable_minor=term.total_repayable_minor,
         note=term.note,
@@ -491,20 +567,43 @@ def create_personal_loan(
         source_snapshot_hash=source_hash,
     )
     term.document_revision_id = revision.id
-    accept_revision(db, document=document, revision=revision, participant=own, actor_user_id=user.id)
+    attach_draft_assets(
+        db,
+        document=document,
+        revision=revision,
+        participant=own,
+        user=user,
+        asset_ids=request.asset_ids,
+        settings=settings,
+    )
+    from .identity import mask
+    creator_identifier = user.email or user.phone
+    creator_channel = OtpChannel.EMAIL if user.email else OtpChannel.PHONE
+    accept_revision(
+        db,
+        document=document,
+        revision=revision,
+        participant=own,
+        actor_user_id=user.id,
+        actor_identifier_masked=mask(creator_channel, creator_identifier) if creator_identifier else None,
+        actor_timezone=user.timezone,
+        request_ip_hash=request_ip_hash,
+        user_agent_hash=user_agent_hash,
+    )
 
-    db.add(LoanCashflow(
-        agreement_id=agreement.id,
-        kind="disbursement",
-        state="proposed",
-        amount_minor=term.principal_minor,
-        principal_minor=term.principal_minor,
-        interest_minor=0,
-        occurred_on=term.money_date,
-        initiated_by_participant_id=own.id,
-        currency=term.currency,
-        note="Recorded when the shared plan was created",
-    ))
+    if intent in {"record_given", "record_received"}:
+        db.add(LoanCashflow(
+            agreement_id=agreement.id,
+            kind="disbursement",
+            state="proposed",
+            amount_minor=term.principal_minor,
+            principal_minor=term.principal_minor,
+            interest_minor=0,
+            occurred_on=term.money_date,
+            initiated_by_participant_id=own.id,
+            currency=term.currency,
+            note="Recorded when the shared plan was created",
+        ))
     invitation, raw_token = issue_invitation(
         db,
         record=record,
@@ -537,7 +636,15 @@ def create_personal_loan(
         "revisionId": str(revision.id),
         "revisionNumber": revision.revision_number,
         "contentHash": revision.content_hash,
+        "manifestHash": revision.manifest_hash,
+        "evidenceHash": revision.evidence_hash,
+        "assetCount": len(request.asset_ids),
     })
+    if requested_documents:
+        append_event(db, record, "document.evidence_requested", actor_participant_id=own.id, payload={
+            "requestCount": len(requested_documents),
+            "requiredCount": sum(1 for item in requested_documents if item.required),
+        })
     append_event(db, record, "invitation.queued", actor_participant_id=own.id, payload={
         "invitationId": str(invitation.id),
         "channel": invitation.channel,
@@ -595,6 +702,8 @@ def accept_current_terms(
     user: User,
     expected_row_version: int,
     idempotency_key: str,
+    request_ip_hash: str | None = None,
+    user_agent_hash: str | None = None,
 ) -> tuple[PersonalLoanAgreement, bool]:
     record, participant, agreement = _loan_context(db, agreement_id, user.id, lock=True)
     request_data = {"expectedRowVersion": expected_row_version}
@@ -606,22 +715,39 @@ def accept_current_terms(
     latest = _latest_term(db, agreement)
     if latest.state != "proposed" or latest.document_revision_id is None:
         raise SharedRecordConflict("There is no repayment-plan change awaiting your agreement.")
+    missing_required_documents = db.scalar(select(func.count()).select_from(DocumentRequest).where(
+        DocumentRequest.shared_record_id == record.id,
+        DocumentRequest.requested_from_participant_id == participant.id,
+        DocumentRequest.required.is_(True),
+        DocumentRequest.state == "requested",
+    )) or 0
+    if missing_required_documents:
+        raise PersonalLoanError("Provide the required documents before acknowledging this agreement.")
     document = _document_for_record(db, record.id)
     revision = db.scalar(select(DocumentRevision).where(DocumentRevision.id == latest.document_revision_id).with_for_update())
     if revision is None or revision.source_snapshot_hash != latest.source_hash:
         raise SharedRecordConflict("The document does not match the proposed financial terms.")
+    from .identity import mask
+    actor_identifier = user.email or user.phone
+    actor_channel = OtpChannel.EMAIL if user.email else OtpChannel.PHONE
     _acceptance, finalized = accept_revision(
         db,
         document=document,
         revision=revision,
         participant=participant,
         actor_user_id=user.id,
+        actor_identifier_masked=mask(actor_channel, actor_identifier) if actor_identifier else None,
+        actor_timezone=user.timezone,
+        request_ip_hash=request_ip_hash,
+        user_agent_hash=user_agent_hash,
     )
     participant.state = "accepted"
     append_event(db, record, "document.accepted", actor_participant_id=participant.id, payload={
         "revisionId": str(revision.id),
         "revisionNumber": revision.revision_number,
         "contentHash": revision.content_hash,
+        "manifestHash": revision.manifest_hash,
+        "evidenceHash": revision.evidence_hash,
     })
     if finalized:
         previous = _current_term(db, agreement)
@@ -630,8 +756,9 @@ def accept_current_terms(
         latest.state = "accepted"
         latest.effective_at = now_utc()
         agreement.current_terms_version = latest.version
-        agreement.status = "active"
-        record.status = "active"
+        recorded_funding = agreement.intent in {"record_given", "record_received"}
+        agreement.status = "active" if recorded_funding else "funding_pending"
+        record.status = agreement.status
         disbursement = db.scalar(select(LoanCashflow).where(
             LoanCashflow.agreement_id == agreement.id,
             LoanCashflow.kind == "disbursement",
@@ -641,6 +768,9 @@ def accept_current_terms(
             disbursement.confirmed_by_participant_id = participant.id
             disbursement.confirmed_at = now_utc()
             agreement.funding_status = "confirmed"
+        for item in _security_items(db, agreement.id):
+            if item.state == "proposed":
+                item.state = "acknowledged"
         append_event(db, record, "loan.terms_activated", actor_participant_id=participant.id, payload={
             "termsVersion": latest.version,
             "dueDate": latest.due_date.isoformat(),
@@ -660,6 +790,214 @@ def accept_current_terms(
     return agreement, False
 
 
+def fulfill_document_requests(
+    db: Session,
+    *,
+    agreement_id: UUID,
+    user: User,
+    request: FulfillDocumentRequestsIn,
+    idempotency_key: str,
+    settings: Settings,
+    request_ip_hash: str | None = None,
+    user_agent_hash: str | None = None,
+) -> tuple[PersonalLoanAgreement, bool]:
+    """Bind borrower-selected library files to one new immutable revision.
+
+    Private library assets remain private. ``attach_draft_assets`` copies each
+    selected object into the shared document before the borrower acknowledges
+    that exact evidence manifest. The lender must then review and acknowledge
+    the replacement revision independently.
+    """
+    record, participant, agreement = _loan_context(db, agreement_id, user.id, lock=True)
+    request_data = request.model_dump(mode="json")
+    prior = begin_command(
+        db,
+        actor_user_id=user.id,
+        command_type="personal_loan.fulfill_document_requests",
+        idempotency_key=idempotency_key,
+        request_payload=request_data,
+    )
+    if prior is not None:
+        return agreement, True
+    if record.row_version != request.expected_row_version:
+        raise SharedRecordConflict("This agreement changed. Review the latest document requests before continuing.")
+    if participant.role != "borrower":
+        raise PersonalLoanError("Only the borrower can provide documents requested from the borrower.")
+
+    requested = {
+        item.id: item
+        for item in _document_requests(db, record.id)
+        if item.requested_from_participant_id == participant.id and item.state == "requested"
+    }
+    item_ids = [item.request_id for item in request.items]
+    asset_ids = [item.asset_id for item in request.items]
+    if len(item_ids) != len(set(item_ids)):
+        raise PersonalLoanError("Choose one document for each request.")
+    if len(asset_ids) != len(set(asset_ids)):
+        raise PersonalLoanError("Choose a different document for each request.")
+    if any(item_id not in requested for item_id in item_ids):
+        raise SharedRecordConflict("One of these document requests is no longer awaiting a response.")
+    missing_required = [item for item in requested.values() if item.required and item.id not in set(item_ids)]
+    if missing_required:
+        raise PersonalLoanError("Provide every required document together so both people review one exact revision.")
+
+    latest = _latest_term(db, agreement)
+    if latest.state == "proposed" and latest.version != agreement.current_terms_version:
+        raise SharedRecordConflict("A repayment-plan change is already awaiting a response.")
+    current = _current_term(db, agreement)
+    document = _document_for_record(db, record.id)
+    base_revision = _latest_revision(db, document.id)
+    parties = _participants(db, record.id)
+    lender = _party_by_role(parties, "lender")
+    borrower = _party_by_role(parties, "borrower")
+    assurance_items = _security_items(db, agreement.id)
+
+    version = latest.version + 1
+    proposed = LoanTermVersion(
+        agreement_id=agreement.id,
+        version=version,
+        principal_minor=current.principal_minor,
+        interest_rate_bps=current.interest_rate_bps,
+        interest_period=current.interest_period,
+        interest_mode=current.interest_mode,
+        interest_method=current.interest_method,
+        calculation_basis=current.calculation_basis,
+        rounding_policy=current.rounding_policy,
+        money_date=current.money_date,
+        due_date=current.due_date,
+        note=current.note,
+        schedule=current.schedule,
+        total_interest_minor=current.total_interest_minor,
+        total_repayable_minor=current.total_repayable_minor,
+        state="proposed",
+        proposed_by_participant_id=participant.id,
+        source_hash=current.source_hash,
+        currency=current.currency,
+    )
+    db.add(proposed)
+    db.flush()
+    revision = create_revision(
+        db,
+        document=document,
+        author=participant,
+        content=loan_document_content(
+            lender_name=lender.display_name,
+            borrower_name=borrower.display_name,
+            principal_minor=proposed.principal_minor,
+            currency=proposed.currency,
+            money_date=proposed.money_date.isoformat(),
+            due_date=proposed.due_date.isoformat(),
+            interest_rate_bps=proposed.interest_rate_bps,
+            interest_period=proposed.interest_period,
+            interest_mode=proposed.interest_mode,
+            interest_method=proposed.interest_method,
+            calculation_basis=proposed.calculation_basis,
+            rounding_policy=proposed.rounding_policy,
+            total_interest_minor=proposed.total_interest_minor,
+            total_repayable_minor=proposed.total_repayable_minor,
+            note=proposed.note,
+            security_items=_security_snapshot(assurance_items),
+        ),
+        source_snapshot_hash=proposed.source_hash,
+        base_revision=base_revision,
+    )
+    carry_forward_revision_assets(db, base_revision_id=base_revision.id, revision=revision)
+    bound_assets = attach_draft_assets(
+        db,
+        document=document,
+        revision=revision,
+        participant=participant,
+        user=user,
+        asset_ids=asset_ids,
+        settings=settings,
+    )
+    bound_by_source = dict(zip(asset_ids, bound_assets))
+    for item in request.items:
+        document_request = requested[item.request_id]
+        document_request.state = "fulfilled"
+        document_request.fulfilled_asset_id = bound_by_source[item.asset_id].id
+        document_request.fulfilled_revision_id = revision.id
+        document_request.fulfilled_at = now_utc()
+    proposed.document_revision_id = revision.id
+
+    from .identity import mask
+    actor_identifier = user.email or user.phone
+    actor_channel = OtpChannel.EMAIL if user.email else OtpChannel.PHONE
+    accept_revision(
+        db,
+        document=document,
+        revision=revision,
+        participant=participant,
+        actor_user_id=user.id,
+        actor_identifier_masked=mask(actor_channel, actor_identifier) if actor_identifier else None,
+        actor_timezone=user.timezone,
+        request_ip_hash=request_ip_hash,
+        user_agent_hash=user_agent_hash,
+    )
+    record.row_version += 1
+    append_event(db, record, "document.evidence_fulfilled", actor_participant_id=participant.id, payload={
+        "requestIds": [str(item.request_id) for item in request.items],
+        "revisionId": str(revision.id),
+        "assetCount": len(bound_assets),
+    })
+    rebuild_projections(db, record, agreement)
+    finish_command(
+        db,
+        record=record,
+        actor_user_id=user.id,
+        command_type="personal_loan.fulfill_document_requests",
+        idempotency_key=idempotency_key,
+        request_payload=request_data,
+        response_payload={"loanId": str(agreement.id), "revisionId": str(revision.id)},
+    )
+    return agreement, False
+
+
+def record_funding(
+    db: Session,
+    *,
+    agreement_id: UUID,
+    user: User,
+    request: RecordLoanFundingIn,
+    idempotency_key: str,
+) -> tuple[LoanCashflow, bool]:
+    record, participant, agreement = _loan_context(db, agreement_id, user.id, lock=True)
+    request_data = request.model_dump(mode="json")
+    prior = begin_command(db, actor_user_id=user.id, command_type="personal_loan.record_funding", idempotency_key=idempotency_key, request_payload=request_data)
+    if prior is not None:
+        cashflow = db.get(LoanCashflow, UUID(prior.response_payload["cashflowId"]))
+        if cashflow is None:
+            raise PersonalLoanError("The previously recorded funding is no longer available.")
+        return cashflow, True
+    if agreement.status != "funding_pending" or agreement.funding_status != "pending_confirmation":
+        raise SharedRecordConflict("Funding can be recorded after both people accept an unfunded agreement.")
+    if participant.role != "lender":
+        raise PersonalLoanError("The lender records that the money was sent; the borrower confirms receipt.")
+    existing = db.scalar(select(LoanCashflow).where(LoanCashflow.agreement_id == agreement.id, LoanCashflow.kind == "disbursement"))
+    if existing is not None:
+        raise SharedRecordConflict("Funding has already been recorded for confirmation.")
+    term = _current_term(db, agreement)
+    cashflow = LoanCashflow(
+        agreement_id=agreement.id,
+        kind="disbursement",
+        state="proposed",
+        amount_minor=term.principal_minor,
+        principal_minor=term.principal_minor,
+        interest_minor=0,
+        occurred_on=request.occurred_on,
+        initiated_by_participant_id=participant.id,
+        note=request.note,
+        currency=agreement.currency,
+    )
+    db.add(cashflow)
+    record.row_version += 1
+    db.flush()
+    append_event(db, record, "funding.recorded", actor_participant_id=participant.id, payload={"cashflowId": str(cashflow.id), "amountMinor": cashflow.amount_minor, "occurredOn": cashflow.occurred_on.isoformat()})
+    rebuild_projections(db, record, agreement)
+    finish_command(db, record=record, actor_user_id=user.id, command_type="personal_loan.record_funding", idempotency_key=idempotency_key, request_payload=request_data, response_payload={"cashflowId": str(cashflow.id), "loanId": str(agreement.id)})
+    return cashflow, False
+
+
 def propose_terms(
     db: Session,
     *,
@@ -667,6 +1005,8 @@ def propose_terms(
     user: User,
     request: LoanTermProposalIn,
     idempotency_key: str,
+    request_ip_hash: str | None = None,
+    user_agent_hash: str | None = None,
 ) -> tuple[PersonalLoanAgreement, bool]:
     record, participant, agreement = _loan_context(db, agreement_id, user.id, lock=True)
     request_data = request.model_dump(mode="json")
@@ -690,7 +1030,9 @@ def propose_terms(
         currency=current.currency,
         money_date=current.money_date,
         due_date=request.due_date,
-        annual_rate_bps=request.annual_rate_bps,
+        interest_rate_bps=request.interest_rate_bps,
+        interest_period=request.interest_period,
+        interest_mode=request.interest_mode,
         note=request.note,
     )
     assurance_items = _security_items(db, agreement.id)
@@ -700,8 +1042,12 @@ def propose_terms(
         agreement_id=agreement.id,
         version=version,
         principal_minor=current.principal_minor,
-        annual_rate_bps=request.annual_rate_bps,
+        interest_rate_bps=request.interest_rate_bps,
+        interest_period=request.interest_period,
+        interest_mode=request.interest_mode,
         interest_method=data["interestMethod"],
+        calculation_basis=data["calculationBasis"],
+        rounding_policy=data["roundingPolicy"],
         money_date=current.money_date,
         due_date=request.due_date,
         note=request.note,
@@ -742,7 +1088,12 @@ def propose_terms(
             currency=proposed.currency,
             money_date=proposed.money_date.isoformat(),
             due_date=proposed.due_date.isoformat(),
-            annual_rate_bps=proposed.annual_rate_bps,
+            interest_rate_bps=proposed.interest_rate_bps,
+            interest_period=proposed.interest_period,
+            interest_mode=proposed.interest_mode,
+            interest_method=proposed.interest_method,
+            calculation_basis=proposed.calculation_basis,
+            rounding_policy=proposed.rounding_policy,
             total_interest_minor=proposed.total_interest_minor,
             total_repayable_minor=proposed.total_repayable_minor,
             note=proposed.note,
@@ -751,8 +1102,17 @@ def propose_terms(
         source_snapshot_hash=source_hash,
         base_revision=base_revision,
     )
+    carry_forward_revision_assets(db, base_revision_id=base_revision.id, revision=revision)
     proposed.document_revision_id = revision.id
-    accept_revision(db, document=document, revision=revision, participant=participant, actor_user_id=user.id)
+    accept_revision(
+        db,
+        document=document,
+        revision=revision,
+        participant=participant,
+        actor_user_id=user.id,
+        request_ip_hash=request_ip_hash,
+        user_agent_hash=user_agent_hash,
+    )
     record.row_version += 1
     append_event(db, record, "loan.terms_proposed", actor_participant_id=participant.id, payload={
         "termsVersion": version,
@@ -845,12 +1205,18 @@ def confirm_payment(
     cashflow.confirmed_by_participant_id = participant.id
     cashflow.confirmed_at = now_utc()
     record.row_version += 1
-    append_event(db, record, "payment.confirmed", actor_participant_id=participant.id, payload={
+    event_type = "funding.confirmed" if cashflow.kind == "disbursement" else "payment.confirmed"
+    append_event(db, record, event_type, actor_participant_id=participant.id, payload={
         "cashflowId": str(cashflow.id),
         "amountMinor": cashflow.amount_minor,
     })
-    principal, interest, _paid = _remaining(db, agreement)
-    if principal + interest == 0:
+    if cashflow.kind == "disbursement":
+        agreement.funding_status = "confirmed"
+        agreement.status = "active"
+        record.status = "active"
+    else:
+        principal, interest, _paid = _remaining(db, agreement)
+    if cashflow.kind == "repayment" and principal + interest == 0:
         agreement.status = "settlement_pending"
         record.status = "settlement_pending"
         append_event(db, record, "loan.ready_to_close", actor_participant_id=participant.id, payload={})
@@ -1003,6 +1369,7 @@ def _document_dict(db: Session, revision: DocumentRevision) -> dict[str, Any]:
     participants = {item.id: item for item in _participants(db, document.shared_record_id)} if document else {}
     changes = list(db.scalars(select(DocumentChange).where(DocumentChange.revision_id == revision.id).order_by(DocumentChange.created_at)))
     acceptances = list(db.scalars(select(DocumentAcceptance).where(DocumentAcceptance.revision_id == revision.id).order_by(DocumentAcceptance.accepted_at)))
+    assets = revision_assets(db, revision.id)
     return {
         "id": revision.id,
         "documentId": revision.document_id,
@@ -1015,6 +1382,8 @@ def _document_dict(db: Session, revision: DocumentRevision) -> dict[str, Any]:
         "changeSummary": revision.change_summary,
         "sourceSnapshotHash": revision.source_snapshot_hash,
         "contentHash": revision.content_hash,
+        "manifestHash": revision.manifest_hash,
+        "evidenceHash": revision.evidence_hash,
         "proposedAt": revision.proposed_at,
         "finalizedAt": revision.finalized_at,
         "changes": [{
@@ -1031,8 +1400,18 @@ def _document_dict(db: Session, revision: DocumentRevision) -> dict[str, Any]:
             "participantName": participants[acceptance.participant_id].display_name if acceptance.participant_id in participants else "Former participant",
             "action": acceptance.action,
             "contentHash": acceptance.content_hash,
+            "manifestHash": acceptance.manifest_hash,
+            "evidenceHash": acceptance.evidence_hash,
             "acceptedAt": acceptance.accepted_at,
+            "statementVersion": acceptance.statement_version,
+            "statementText": acceptance.statement_text,
+            "authMethod": acceptance.auth_method,
+            "actorIdentifierMasked": acceptance.actor_identifier_masked,
+            "actorTimezone": acceptance.actor_timezone,
+            "requestIpHash": acceptance.request_ip_hash,
+            "userAgentHash": acceptance.user_agent_hash,
         } for acceptance in acceptances],
+        "assets": [asset_dict(asset) for asset in assets],
     }
 
 
@@ -1058,7 +1437,12 @@ def detail_payload(db: Session, agreement: PersonalLoanAgreement, user: User, *,
         LoanCashflow.agreement_id == agreement.id,
         LoanCashflow.kind == "repayment",
     ).order_by(LoanCashflow.occurred_on.desc(), LoanCashflow.created_at.desc())))
+    funding_cashflow = db.scalar(select(LoanCashflow).where(
+        LoanCashflow.agreement_id == agreement.id,
+        LoanCashflow.kind == "disbursement",
+    ))
     participants_by_id = {item.id: item for item in parties}
+    document_requests = _document_requests(db, record.id)
     assurance_items = _security_items(db, agreement.id)
     events = list(db.scalars(select(SharedRecordEvent).where(
         SharedRecordEvent.shared_record_id == record.id
@@ -1071,6 +1455,7 @@ def detail_payload(db: Session, agreement: PersonalLoanAgreement, user: User, *,
         "counterpartyVerification": verification,
         "status": agreement.status,
         "fundingStatus": agreement.funding_status,
+        "intent": agreement.intent,
         "principalMinor": term.principal_minor,
         "outstandingPrincipalMinor": outstanding,
         "accruedInterestMinor": interest,
@@ -1088,14 +1473,21 @@ def detail_payload(db: Session, agreement: PersonalLoanAgreement, user: User, *,
     return {
         **summary,
         "note": term.note,
-        "annualRateBps": term.annual_rate_bps,
+        "interestRateBps": term.interest_rate_bps,
+        "interestPeriod": term.interest_period,
+        "interestMode": term.interest_mode,
         "currentTerms": {
             "id": term.id,
             "version": term.version,
             "principalMinor": term.principal_minor,
             "currency": term.currency,
-            "annualRateBps": term.annual_rate_bps,
+            "interestRateBps": term.interest_rate_bps,
+            "interestPeriod": term.interest_period,
+            "interestMode": term.interest_mode,
+            "annualizedRateBps": _annualized_rate_bps(term.interest_rate_bps, term.interest_period),
             "interestMethod": term.interest_method,
+            "calculationBasis": term.calculation_basis,
+            "roundingPolicy": term.rounding_policy,
             "moneyDate": term.money_date,
             "dueDate": term.due_date,
             "note": term.note,
@@ -1141,6 +1533,35 @@ def detail_payload(db: Session, agreement: PersonalLoanAgreement, user: User, *,
             "createdAt": item.created_at,
             "confirmedAt": item.confirmed_at,
         } for item in cashflows],
+        "fundingCashflow": ({
+            "id": funding_cashflow.id,
+            "kind": funding_cashflow.kind,
+            "state": funding_cashflow.state,
+            "amountMinor": funding_cashflow.amount_minor,
+            "principalMinor": funding_cashflow.principal_minor,
+            "interestMinor": funding_cashflow.interest_minor,
+            "currency": funding_cashflow.currency,
+            "occurredOn": funding_cashflow.occurred_on,
+            "initiatedBy": participants_by_id[funding_cashflow.initiated_by_participant_id].display_name,
+            "confirmedBy": participants_by_id[funding_cashflow.confirmed_by_participant_id].display_name if funding_cashflow.confirmed_by_participant_id else None,
+            "note": funding_cashflow.note,
+            "createdAt": funding_cashflow.created_at,
+            "confirmedAt": funding_cashflow.confirmed_at,
+        } if funding_cashflow else None),
+        "documentRequests": [{
+            "id": item.id,
+            "label": item.label,
+            "classification": item.classification,
+            "instructions": item.instructions,
+            "required": item.required,
+            "state": item.state,
+            "requestedBy": participants_by_id[item.requested_by_participant_id].display_name,
+            "requestedFrom": participants_by_id[item.requested_from_participant_id].display_name,
+            "requestedFromCurrentUser": item.requested_from_participant_id == participant.id,
+            "fulfilledAsset": asset_dict(asset) if item.fulfilled_asset_id and (asset := db.get(DocumentAsset, item.fulfilled_asset_id)) else None,
+            "fulfilledRevisionId": item.fulfilled_revision_id,
+            "fulfilledAt": item.fulfilled_at,
+        } for item in document_requests],
         "securityItems": [{
             "id": item.id,
             "kind": item.kind,
@@ -1171,7 +1592,7 @@ def summary_payload(db: Session, agreement: PersonalLoanAgreement, user: User) -
     detail = detail_payload(db, agreement, user)
     return {key: value for key, value in detail.items() if key in {
         "id", "sharedRecordId", "direction", "counterpartyName", "counterpartyVerification",
-        "status", "fundingStatus", "principalMinor", "outstandingPrincipalMinor",
+        "status", "fundingStatus", "intent", "principalMinor", "outstandingPrincipalMinor",
         "accruedInterestMinor", "totalRepayableMinor", "paidMinor", "currency",
         "moneyDate", "dueDate", "nextDueMinor", "responseNeeded", "rowVersion",
         "createdAt", "updatedAt",

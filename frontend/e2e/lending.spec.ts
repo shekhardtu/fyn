@@ -4,18 +4,24 @@ import { API_MOUNT_PATH } from "@/config/api-path";
 
 const COUNTERPARTY = "Browser lending fixture";
 
-test("new plans begin with an email-or-phone identity before financial details", async ({ page }) => {
+test("new plans begin with intent and gate email-or-phone identity before financial details", async ({ page }) => {
   await page.goto("/loans");
   await page.getByRole("button", { name: "New plan", exact: true }).click();
 
-  const dialog = page.getByRole("dialog", { name: "Create a shared plan" });
-  const email = dialog.getByRole("combobox", { name: /Email address/ });
+  const dialog = page.getByRole("dialog", { name: "Create a trusted agreement" });
+  const continueButton = dialog.getByRole("button", { name: "Continue" });
+  await expect(continueButton).toBeDisabled();
+  await dialog.getByRole("button", { name: /I already gave money/ }).click();
+  await expect(continueButton).toBeEnabled();
+  await continueButton.click();
+
+  const email = dialog.getByRole("combobox", { name: /Borrower’s email address/ });
   await expect(email).toBeFocused();
   await expect(dialog.getByRole("tab", { name: "Email" })).toHaveAttribute("aria-selected", "true");
   await expect(dialog.locator("input").first()).toHaveAttribute("type", "email");
 
   await dialog.getByRole("tab", { name: "Phone" }).click();
-  await expect(dialog.getByRole("combobox", { name: /Phone number/ })).toBeVisible();
+  await expect(dialog.getByRole("combobox", { name: /Borrower’s phone number/i })).toBeVisible();
   await expect(dialog.getByText(/Partial suggestions only include people you have already shared a record with/)).toBeVisible();
 });
 
@@ -38,7 +44,9 @@ test("a shared lending record is visible from portfolio through document evidenc
         currency: "INR",
         moneyDate: "2026-08-24",
         dueDate: "2027-08-24",
-        annualRateBps: 300,
+        interestRateBps: 300,
+        interestPeriod: "yearly",
+        interestMode: "simple",
         note: "Repeatable browser evidence fixture",
         securityItems: [{
           kind: "post_dated_cheque",
@@ -59,8 +67,8 @@ test("a shared lending record is visible from portfolio through document evidenc
 
   await page.getByText(COUNTERPARTY, { exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/loans/${loan.id}$`));
-  await expect(page.getByRole("heading", { name: "Shared repayment plan" })).toBeVisible();
-  await expect(page.getByText("Content fingerprint", { exact: false })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Shared Repayment Agreement" })).toBeVisible();
+  await expect(page.getByText("Evidence fingerprints", { exact: false })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Assurance and return record" })).toBeVisible();
   await expect(page.getByText("ending 4821", { exact: false })).toBeVisible();
   await expect(page.getByText("Fyn records what both people agreed", { exact: false })).toBeVisible();

@@ -40,8 +40,24 @@ class LoanSecurityItemIn(LendingContract):
         return normalized or None
 
 
+class DocumentRequestIn(LendingContract):
+    label: str = Field(min_length=2, max_length=120)
+    classification: Literal["external_agreement", "assurance_item", "transfer_receipt", "identity_evidence", "witness_statement", "supporting_evidence"] = "supporting_evidence"
+    instructions: str | None = Field(default=None, max_length=500)
+    required: bool = True
+
+    @field_validator("label", "instructions", mode="before")
+    @classmethod
+    def normalize_request_text(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        normalized = " ".join(str(value).split())
+        return normalized or None
+
+
 class CreatePersonalLoanIn(LendingContract):
     direction: Literal["lent", "borrowed"]
+    intent: Literal["record_given", "record_received", "offer_to_lend", "request_to_borrow"] | None = None
     counterparty_name: str = Field(min_length=1, max_length=120)
     invite_channel: Literal["phone", "email"]
     invite_value: str = Field(min_length=3, max_length=320)
@@ -49,9 +65,13 @@ class CreatePersonalLoanIn(LendingContract):
     currency: str = Field(default=DEFAULT_CURRENCY, min_length=3, max_length=3)
     money_date: date
     due_date: date
-    annual_rate_bps: int = Field(default=0, ge=0, le=10_000)
+    interest_rate_bps: int = Field(ge=0, le=10_000)
+    interest_period: Literal["monthly", "yearly"]
+    interest_mode: Literal["simple", "compound"]
     note: str | None = Field(default=None, max_length=2_000)
     security_items: list[LoanSecurityItemIn] = Field(default_factory=list, max_length=5)
+    document_requests: list[DocumentRequestIn] = Field(default_factory=list, max_length=8)
+    asset_ids: list[UUID] = Field(default_factory=list, max_length=8)
 
     @field_validator("counterparty_name", "note", mode="before")
     @classmethod
@@ -75,7 +95,9 @@ class CreatePersonalLoanIn(LendingContract):
 
 class LoanTermProposalIn(LendingContract):
     due_date: date
-    annual_rate_bps: int = Field(ge=0, le=10_000)
+    interest_rate_bps: int = Field(ge=0, le=10_000)
+    interest_period: Literal["monthly", "yearly"]
+    interest_mode: Literal["simple", "compound"]
     note: str | None = Field(default=None, max_length=2_000)
     expected_row_version: int = Field(gt=0)
 
@@ -102,7 +124,30 @@ class RecordLoanPaymentIn(LendingContract):
         return normalized or None
 
 
+class RecordLoanFundingIn(LendingContract):
+    occurred_on: date
+    note: str | None = Field(default=None, max_length=500)
+
+    @field_validator("note", mode="before")
+    @classmethod
+    def normalize_note(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        normalized = " ".join(str(value).split())
+        return normalized or None
+
+
 class ConfirmLoanPaymentIn(LendingContract):
+    expected_row_version: int = Field(gt=0)
+
+
+class DocumentRequestFulfillmentItemIn(LendingContract):
+    request_id: UUID
+    asset_id: UUID
+
+
+class FulfillDocumentRequestsIn(LendingContract):
+    items: list[DocumentRequestFulfillmentItemIn] = Field(min_length=1, max_length=8)
     expected_row_version: int = Field(gt=0)
 
 
@@ -145,8 +190,13 @@ class LoanTermOut(LendingContract):
     version: int
     principal_minor: int
     currency: str
-    annual_rate_bps: int
+    interest_rate_bps: int
+    interest_period: Literal["monthly", "yearly"]
+    interest_mode: Literal["simple", "compound"]
+    annualized_rate_bps: int
     interest_method: str
+    calculation_basis: str
+    rounding_policy: str
     money_date: date
     due_date: date
     note: str | None = None
@@ -173,7 +223,43 @@ class DocumentAcceptanceOut(LendingContract):
     participant_name: str
     action: str
     content_hash: str
+    manifest_hash: str
+    evidence_hash: str
     accepted_at: datetime
+    statement_version: int
+    statement_text: str
+    auth_method: str
+    actor_identifier_masked: str | None = None
+    actor_timezone: str
+    request_ip_hash: str | None = None
+    user_agent_hash: str | None = None
+
+
+class DocumentAssetOut(LendingContract):
+    id: UUID
+    original_filename: str
+    media_type: Literal["application/pdf", "image/png", "image/jpeg"]
+    byte_size: int
+    sha256: str
+    state: str
+    classification: str
+    description: str | None = None
+    created_at: datetime
+
+
+class DocumentRequestOut(LendingContract):
+    id: UUID
+    label: str
+    classification: str
+    instructions: str | None = None
+    required: bool
+    state: str
+    requested_by: str
+    requested_from: str
+    requested_from_current_user: bool
+    fulfilled_asset: DocumentAssetOut | None = None
+    fulfilled_revision_id: UUID | None = None
+    fulfilled_at: datetime | None = None
 
 
 class DocumentRevisionOut(LendingContract):
@@ -188,10 +274,13 @@ class DocumentRevisionOut(LendingContract):
     change_summary: list[dict[str, Any]]
     source_snapshot_hash: str
     content_hash: str
+    manifest_hash: str
+    evidence_hash: str
     proposed_at: datetime
     finalized_at: datetime | None = None
     changes: list[DocumentChangeOut] = Field(default_factory=list)
     acceptances: list[DocumentAcceptanceOut] = Field(default_factory=list)
+    assets: list[DocumentAssetOut] = Field(default_factory=list)
 
 
 class LoanCashflowOut(LendingContract):
@@ -243,6 +332,7 @@ class PersonalLoanSummaryOut(LendingContract):
     counterparty_verification: str | None = None
     status: str
     funding_status: str
+    intent: str
     principal_minor: int
     outstanding_principal_minor: int
     accrued_interest_minor: int
@@ -260,12 +350,16 @@ class PersonalLoanSummaryOut(LendingContract):
 
 class PersonalLoanDetailOut(PersonalLoanSummaryOut):
     note: str | None = None
-    annual_rate_bps: int
+    interest_rate_bps: int
+    interest_period: Literal["monthly", "yearly"]
+    interest_mode: Literal["simple", "compound"]
     current_terms: LoanTermOut
     participants: list[LoanParticipantOut]
     invitation: LoanInvitationOut | None = None
     document_revision: DocumentRevisionOut
     cashflows: list[LoanCashflowOut]
+    funding_cashflow: LoanCashflowOut | None = None
+    document_requests: list[DocumentRequestOut]
     security_items: list[LoanSecurityItemOut]
     activity: list[SharedRecordEventOut]
 

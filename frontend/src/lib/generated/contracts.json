@@ -124,6 +124,53 @@
     },
     "CreatePersonalLoanIn": {
       "$defs": {
+        "DocumentRequestIn": {
+          "additionalProperties": false,
+          "properties": {
+            "label": {
+              "maxLength": 120,
+              "minLength": 2,
+              "title": "Label",
+              "type": "string"
+            },
+            "classification": {
+              "default": "supporting_evidence",
+              "enum": [
+                "external_agreement",
+                "assurance_item",
+                "transfer_receipt",
+                "identity_evidence",
+                "witness_statement",
+                "supporting_evidence"
+              ],
+              "title": "Classification",
+              "type": "string"
+            },
+            "instructions": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Instructions"
+            },
+            "required": {
+              "default": true,
+              "title": "Required",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "label"
+          ],
+          "title": "DocumentRequestIn",
+          "type": "object"
+        },
         "LoanSecurityItemIn": {
           "additionalProperties": false,
           "properties": {
@@ -189,6 +236,24 @@
           "title": "Direction",
           "type": "string"
         },
+        "intent": {
+          "anyOf": [
+            {
+              "enum": [
+                "record_given",
+                "record_received",
+                "offer_to_lend",
+                "request_to_borrow"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Intent"
+        },
         "counterpartyName": {
           "maxLength": 120,
           "minLength": 1,
@@ -232,12 +297,27 @@
           "title": "Duedate",
           "type": "string"
         },
-        "annualRateBps": {
-          "default": 0,
+        "interestRateBps": {
           "maximum": 10000,
           "minimum": 0,
-          "title": "Annualratebps",
+          "title": "Interestratebps",
           "type": "integer"
+        },
+        "interestPeriod": {
+          "enum": [
+            "monthly",
+            "yearly"
+          ],
+          "title": "Interestperiod",
+          "type": "string"
+        },
+        "interestMode": {
+          "enum": [
+            "simple",
+            "compound"
+          ],
+          "title": "Interestmode",
+          "type": "string"
         },
         "note": {
           "anyOf": [
@@ -259,6 +339,23 @@
           "maxItems": 5,
           "title": "Securityitems",
           "type": "array"
+        },
+        "documentRequests": {
+          "items": {
+            "$ref": "#/$defs/DocumentRequestIn"
+          },
+          "maxItems": 8,
+          "title": "Documentrequests",
+          "type": "array"
+        },
+        "assetIds": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "maxItems": 8,
+          "title": "Assetids",
+          "type": "array"
         }
       },
       "required": [
@@ -268,9 +365,128 @@
         "inviteValue",
         "principalMinor",
         "moneyDate",
-        "dueDate"
+        "dueDate",
+        "interestRateBps",
+        "interestPeriod",
+        "interestMode"
       ],
       "title": "CreatePersonalLoanIn",
+      "type": "object"
+    },
+    "DocumentRequestIn": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "maxLength": 120,
+          "minLength": 2,
+          "title": "Label",
+          "type": "string"
+        },
+        "classification": {
+          "default": "supporting_evidence",
+          "enum": [
+            "external_agreement",
+            "assurance_item",
+            "transfer_receipt",
+            "identity_evidence",
+            "witness_statement",
+            "supporting_evidence"
+          ],
+          "title": "Classification",
+          "type": "string"
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instructions"
+        },
+        "required": {
+          "default": true,
+          "title": "Required",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "title": "DocumentRequestIn",
+      "type": "object"
+    },
+    "DocumentRequestFulfillmentItemIn": {
+      "additionalProperties": false,
+      "properties": {
+        "requestId": {
+          "format": "uuid",
+          "title": "Requestid",
+          "type": "string"
+        },
+        "assetId": {
+          "format": "uuid",
+          "title": "Assetid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "requestId",
+        "assetId"
+      ],
+      "title": "DocumentRequestFulfillmentItemIn",
+      "type": "object"
+    },
+    "FulfillDocumentRequestsIn": {
+      "$defs": {
+        "DocumentRequestFulfillmentItemIn": {
+          "additionalProperties": false,
+          "properties": {
+            "requestId": {
+              "format": "uuid",
+              "title": "Requestid",
+              "type": "string"
+            },
+            "assetId": {
+              "format": "uuid",
+              "title": "Assetid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "requestId",
+            "assetId"
+          ],
+          "title": "DocumentRequestFulfillmentItemIn",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/DocumentRequestFulfillmentItemIn"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "title": "Items",
+          "type": "array"
+        },
+        "expectedRowVersion": {
+          "exclusiveMinimum": 0,
+          "title": "Expectedrowversion",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "items",
+        "expectedRowVersion"
+      ],
+      "title": "FulfillDocumentRequestsIn",
       "type": "object"
     },
     "LoanSecurityItemIn": {
@@ -335,11 +551,27 @@
           "title": "Duedate",
           "type": "string"
         },
-        "annualRateBps": {
+        "interestRateBps": {
           "maximum": 10000,
           "minimum": 0,
-          "title": "Annualratebps",
+          "title": "Interestratebps",
           "type": "integer"
+        },
+        "interestPeriod": {
+          "enum": [
+            "monthly",
+            "yearly"
+          ],
+          "title": "Interestperiod",
+          "type": "string"
+        },
+        "interestMode": {
+          "enum": [
+            "simple",
+            "compound"
+          ],
+          "title": "Interestmode",
+          "type": "string"
         },
         "note": {
           "anyOf": [
@@ -362,7 +594,9 @@
       },
       "required": [
         "dueDate",
-        "annualRateBps",
+        "interestRateBps",
+        "interestPeriod",
+        "interestMode",
         "expectedRowVersion"
       ],
       "title": "LoanTermProposalIn",
@@ -400,6 +634,34 @@
         "occurredOn"
       ],
       "title": "RecordLoanPaymentIn",
+      "type": "object"
+    },
+    "RecordLoanFundingIn": {
+      "additionalProperties": false,
+      "properties": {
+        "occurredOn": {
+          "format": "date",
+          "title": "Occurredon",
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        }
+      },
+      "required": [
+        "occurredOn"
+      ],
+      "title": "RecordLoanFundingIn",
       "type": "object"
     },
     "ConfirmLoanPaymentIn": {
@@ -710,12 +972,40 @@
           "title": "Currency",
           "type": "string"
         },
-        "annualRateBps": {
-          "title": "Annualratebps",
+        "interestRateBps": {
+          "title": "Interestratebps",
+          "type": "integer"
+        },
+        "interestPeriod": {
+          "enum": [
+            "monthly",
+            "yearly"
+          ],
+          "title": "Interestperiod",
+          "type": "string"
+        },
+        "interestMode": {
+          "enum": [
+            "simple",
+            "compound"
+          ],
+          "title": "Interestmode",
+          "type": "string"
+        },
+        "annualizedRateBps": {
+          "title": "Annualizedratebps",
           "type": "integer"
         },
         "interestMethod": {
           "title": "Interestmethod",
+          "type": "string"
+        },
+        "calculationBasis": {
+          "title": "Calculationbasis",
+          "type": "string"
+        },
+        "roundingPolicy": {
+          "title": "Roundingpolicy",
           "type": "string"
         },
         "moneyDate": {
@@ -788,8 +1078,13 @@
         "version",
         "principalMinor",
         "currency",
-        "annualRateBps",
+        "interestRateBps",
+        "interestPeriod",
+        "interestMode",
+        "annualizedRateBps",
         "interestMethod",
+        "calculationBasis",
+        "roundingPolicy",
         "moneyDate",
         "dueDate",
         "totalInterestMinor",
@@ -882,10 +1177,70 @@
           "title": "Contenthash",
           "type": "string"
         },
+        "manifestHash": {
+          "title": "Manifesthash",
+          "type": "string"
+        },
+        "evidenceHash": {
+          "title": "Evidencehash",
+          "type": "string"
+        },
         "acceptedAt": {
           "format": "date-time",
           "title": "Acceptedat",
           "type": "string"
+        },
+        "statementVersion": {
+          "title": "Statementversion",
+          "type": "integer"
+        },
+        "statementText": {
+          "title": "Statementtext",
+          "type": "string"
+        },
+        "authMethod": {
+          "title": "Authmethod",
+          "type": "string"
+        },
+        "actorIdentifierMasked": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actoridentifiermasked"
+        },
+        "actorTimezone": {
+          "title": "Actortimezone",
+          "type": "string"
+        },
+        "requestIpHash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Requestiphash"
+        },
+        "userAgentHash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Useragenthash"
         }
       },
       "required": [
@@ -893,9 +1248,252 @@
         "participantName",
         "action",
         "contentHash",
-        "acceptedAt"
+        "manifestHash",
+        "evidenceHash",
+        "acceptedAt",
+        "statementVersion",
+        "statementText",
+        "authMethod",
+        "actorTimezone"
       ],
       "title": "DocumentAcceptanceOut",
+      "type": "object"
+    },
+    "DocumentAssetOut": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "originalFilename": {
+          "title": "Originalfilename",
+          "type": "string"
+        },
+        "mediaType": {
+          "enum": [
+            "application/pdf",
+            "image/png",
+            "image/jpeg"
+          ],
+          "title": "Mediatype",
+          "type": "string"
+        },
+        "byteSize": {
+          "title": "Bytesize",
+          "type": "integer"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "state": {
+          "title": "State",
+          "type": "string"
+        },
+        "classification": {
+          "title": "Classification",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "createdAt": {
+          "format": "date-time",
+          "title": "Createdat",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "originalFilename",
+        "mediaType",
+        "byteSize",
+        "sha256",
+        "state",
+        "classification",
+        "createdAt"
+      ],
+      "title": "DocumentAssetOut",
+      "type": "object"
+    },
+    "DocumentRequestOut": {
+      "$defs": {
+        "DocumentAssetOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "originalFilename": {
+              "title": "Originalfilename",
+              "type": "string"
+            },
+            "mediaType": {
+              "enum": [
+                "application/pdf",
+                "image/png",
+                "image/jpeg"
+              ],
+              "title": "Mediatype",
+              "type": "string"
+            },
+            "byteSize": {
+              "title": "Bytesize",
+              "type": "integer"
+            },
+            "sha256": {
+              "title": "Sha256",
+              "type": "string"
+            },
+            "state": {
+              "title": "State",
+              "type": "string"
+            },
+            "classification": {
+              "title": "Classification",
+              "type": "string"
+            },
+            "description": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Description"
+            },
+            "createdAt": {
+              "format": "date-time",
+              "title": "Createdat",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "originalFilename",
+            "mediaType",
+            "byteSize",
+            "sha256",
+            "state",
+            "classification",
+            "createdAt"
+          ],
+          "title": "DocumentAssetOut",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "classification": {
+          "title": "Classification",
+          "type": "string"
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instructions"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "state": {
+          "title": "State",
+          "type": "string"
+        },
+        "requestedBy": {
+          "title": "Requestedby",
+          "type": "string"
+        },
+        "requestedFrom": {
+          "title": "Requestedfrom",
+          "type": "string"
+        },
+        "requestedFromCurrentUser": {
+          "title": "Requestedfromcurrentuser",
+          "type": "boolean"
+        },
+        "fulfilledAsset": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DocumentAssetOut"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "fulfilledRevisionId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fulfilledrevisionid"
+        },
+        "fulfilledAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fulfilledat"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "classification",
+        "required",
+        "state",
+        "requestedBy",
+        "requestedFrom",
+        "requestedFromCurrentUser"
+      ],
+      "title": "DocumentRequestOut",
       "type": "object"
     },
     "LoanCashflowOut": {
@@ -1109,6 +1707,10 @@
           "title": "Fundingstatus",
           "type": "string"
         },
+        "intent": {
+          "title": "Intent",
+          "type": "string"
+        },
         "principalMinor": {
           "title": "Principalminor",
           "type": "integer"
@@ -1181,6 +1783,7 @@
         "counterpartyName",
         "status",
         "fundingStatus",
+        "intent",
         "principalMinor",
         "outstandingPrincipalMinor",
         "accruedInterestMinor",
@@ -1219,10 +1822,70 @@
               "title": "Contenthash",
               "type": "string"
             },
+            "manifestHash": {
+              "title": "Manifesthash",
+              "type": "string"
+            },
+            "evidenceHash": {
+              "title": "Evidencehash",
+              "type": "string"
+            },
             "acceptedAt": {
               "format": "date-time",
               "title": "Acceptedat",
               "type": "string"
+            },
+            "statementVersion": {
+              "title": "Statementversion",
+              "type": "integer"
+            },
+            "statementText": {
+              "title": "Statementtext",
+              "type": "string"
+            },
+            "authMethod": {
+              "title": "Authmethod",
+              "type": "string"
+            },
+            "actorIdentifierMasked": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Actoridentifiermasked"
+            },
+            "actorTimezone": {
+              "title": "Actortimezone",
+              "type": "string"
+            },
+            "requestIpHash": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Requestiphash"
+            },
+            "userAgentHash": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Useragenthash"
             }
           },
           "required": [
@@ -1230,9 +1893,83 @@
             "participantName",
             "action",
             "contentHash",
-            "acceptedAt"
+            "manifestHash",
+            "evidenceHash",
+            "acceptedAt",
+            "statementVersion",
+            "statementText",
+            "authMethod",
+            "actorTimezone"
           ],
           "title": "DocumentAcceptanceOut",
+          "type": "object"
+        },
+        "DocumentAssetOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "originalFilename": {
+              "title": "Originalfilename",
+              "type": "string"
+            },
+            "mediaType": {
+              "enum": [
+                "application/pdf",
+                "image/png",
+                "image/jpeg"
+              ],
+              "title": "Mediatype",
+              "type": "string"
+            },
+            "byteSize": {
+              "title": "Bytesize",
+              "type": "integer"
+            },
+            "sha256": {
+              "title": "Sha256",
+              "type": "string"
+            },
+            "state": {
+              "title": "State",
+              "type": "string"
+            },
+            "classification": {
+              "title": "Classification",
+              "type": "string"
+            },
+            "description": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Description"
+            },
+            "createdAt": {
+              "format": "date-time",
+              "title": "Createdat",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "originalFilename",
+            "mediaType",
+            "byteSize",
+            "sha256",
+            "state",
+            "classification",
+            "createdAt"
+          ],
+          "title": "DocumentAssetOut",
           "type": "object"
         },
         "DocumentChangeOut": {
@@ -1295,6 +2032,105 @@
             "createdAt"
           ],
           "title": "DocumentChangeOut",
+          "type": "object"
+        },
+        "DocumentRequestOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "label": {
+              "title": "Label",
+              "type": "string"
+            },
+            "classification": {
+              "title": "Classification",
+              "type": "string"
+            },
+            "instructions": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Instructions"
+            },
+            "required": {
+              "title": "Required",
+              "type": "boolean"
+            },
+            "state": {
+              "title": "State",
+              "type": "string"
+            },
+            "requestedBy": {
+              "title": "Requestedby",
+              "type": "string"
+            },
+            "requestedFrom": {
+              "title": "Requestedfrom",
+              "type": "string"
+            },
+            "requestedFromCurrentUser": {
+              "title": "Requestedfromcurrentuser",
+              "type": "boolean"
+            },
+            "fulfilledAsset": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DocumentAssetOut"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "fulfilledRevisionId": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fulfilledrevisionid"
+            },
+            "fulfilledAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fulfilledat"
+            }
+          },
+          "required": [
+            "id",
+            "label",
+            "classification",
+            "required",
+            "state",
+            "requestedBy",
+            "requestedFrom",
+            "requestedFromCurrentUser"
+          ],
+          "title": "DocumentRequestOut",
           "type": "object"
         },
         "DocumentRevisionOut": {
@@ -1360,6 +2196,14 @@
               "title": "Contenthash",
               "type": "string"
             },
+            "manifestHash": {
+              "title": "Manifesthash",
+              "type": "string"
+            },
+            "evidenceHash": {
+              "title": "Evidencehash",
+              "type": "string"
+            },
             "proposedAt": {
               "format": "date-time",
               "title": "Proposedat",
@@ -1391,6 +2235,13 @@
               },
               "title": "Acceptances",
               "type": "array"
+            },
+            "assets": {
+              "items": {
+                "$ref": "#/$defs/DocumentAssetOut"
+              },
+              "title": "Assets",
+              "type": "array"
             }
           },
           "required": [
@@ -1404,6 +2255,8 @@
             "changeSummary",
             "sourceSnapshotHash",
             "contentHash",
+            "manifestHash",
+            "evidenceHash",
             "proposedAt"
           ],
           "title": "DocumentRevisionOut",
@@ -1771,12 +2624,40 @@
               "title": "Currency",
               "type": "string"
             },
-            "annualRateBps": {
-              "title": "Annualratebps",
+            "interestRateBps": {
+              "title": "Interestratebps",
+              "type": "integer"
+            },
+            "interestPeriod": {
+              "enum": [
+                "monthly",
+                "yearly"
+              ],
+              "title": "Interestperiod",
+              "type": "string"
+            },
+            "interestMode": {
+              "enum": [
+                "simple",
+                "compound"
+              ],
+              "title": "Interestmode",
+              "type": "string"
+            },
+            "annualizedRateBps": {
+              "title": "Annualizedratebps",
               "type": "integer"
             },
             "interestMethod": {
               "title": "Interestmethod",
+              "type": "string"
+            },
+            "calculationBasis": {
+              "title": "Calculationbasis",
+              "type": "string"
+            },
+            "roundingPolicy": {
+              "title": "Roundingpolicy",
               "type": "string"
             },
             "moneyDate": {
@@ -1849,8 +2730,13 @@
             "version",
             "principalMinor",
             "currency",
-            "annualRateBps",
+            "interestRateBps",
+            "interestPeriod",
+            "interestMode",
+            "annualizedRateBps",
             "interestMethod",
+            "calculationBasis",
+            "roundingPolicy",
             "moneyDate",
             "dueDate",
             "totalInterestMinor",
@@ -1973,6 +2859,10 @@
           "title": "Fundingstatus",
           "type": "string"
         },
+        "intent": {
+          "title": "Intent",
+          "type": "string"
+        },
         "principalMinor": {
           "title": "Principalminor",
           "type": "integer"
@@ -2049,9 +2939,25 @@
           "default": null,
           "title": "Note"
         },
-        "annualRateBps": {
-          "title": "Annualratebps",
+        "interestRateBps": {
+          "title": "Interestratebps",
           "type": "integer"
+        },
+        "interestPeriod": {
+          "enum": [
+            "monthly",
+            "yearly"
+          ],
+          "title": "Interestperiod",
+          "type": "string"
+        },
+        "interestMode": {
+          "enum": [
+            "simple",
+            "compound"
+          ],
+          "title": "Interestmode",
+          "type": "string"
         },
         "currentTerms": {
           "$ref": "#/$defs/LoanTermOut"
@@ -2084,6 +2990,24 @@
           "title": "Cashflows",
           "type": "array"
         },
+        "fundingCashflow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LoanCashflowOut"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "documentRequests": {
+          "items": {
+            "$ref": "#/$defs/DocumentRequestOut"
+          },
+          "title": "Documentrequests",
+          "type": "array"
+        },
         "securityItems": {
           "items": {
             "$ref": "#/$defs/LoanSecurityItemOut"
@@ -2106,6 +3030,7 @@
         "counterpartyName",
         "status",
         "fundingStatus",
+        "intent",
         "principalMinor",
         "outstandingPrincipalMinor",
         "accruedInterestMinor",
@@ -2118,11 +3043,14 @@
         "rowVersion",
         "createdAt",
         "updatedAt",
-        "annualRateBps",
+        "interestRateBps",
+        "interestPeriod",
+        "interestMode",
         "currentTerms",
         "participants",
         "documentRevision",
         "cashflows",
+        "documentRequests",
         "securityItems",
         "activity"
       ],
@@ -2174,6 +3102,10 @@
             },
             "fundingStatus": {
               "title": "Fundingstatus",
+              "type": "string"
+            },
+            "intent": {
+              "title": "Intent",
               "type": "string"
             },
             "principalMinor": {
@@ -2248,6 +3180,7 @@
             "counterpartyName",
             "status",
             "fundingStatus",
+            "intent",
             "principalMinor",
             "outstandingPrincipalMinor",
             "accruedInterestMinor",
@@ -2343,6 +3276,10 @@
               "title": "Fundingstatus",
               "type": "string"
             },
+            "intent": {
+              "title": "Intent",
+              "type": "string"
+            },
             "principalMinor": {
               "title": "Principalminor",
               "type": "integer"
@@ -2415,6 +3352,7 @@
             "counterpartyName",
             "status",
             "fundingStatus",
+            "intent",
             "principalMinor",
             "outstandingPrincipalMinor",
             "accruedInterestMinor",
@@ -2544,10 +3482,70 @@
               "title": "Contenthash",
               "type": "string"
             },
+            "manifestHash": {
+              "title": "Manifesthash",
+              "type": "string"
+            },
+            "evidenceHash": {
+              "title": "Evidencehash",
+              "type": "string"
+            },
             "acceptedAt": {
               "format": "date-time",
               "title": "Acceptedat",
               "type": "string"
+            },
+            "statementVersion": {
+              "title": "Statementversion",
+              "type": "integer"
+            },
+            "statementText": {
+              "title": "Statementtext",
+              "type": "string"
+            },
+            "authMethod": {
+              "title": "Authmethod",
+              "type": "string"
+            },
+            "actorIdentifierMasked": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Actoridentifiermasked"
+            },
+            "actorTimezone": {
+              "title": "Actortimezone",
+              "type": "string"
+            },
+            "requestIpHash": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Requestiphash"
+            },
+            "userAgentHash": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Useragenthash"
             }
           },
           "required": [
@@ -2555,9 +3553,83 @@
             "participantName",
             "action",
             "contentHash",
-            "acceptedAt"
+            "manifestHash",
+            "evidenceHash",
+            "acceptedAt",
+            "statementVersion",
+            "statementText",
+            "authMethod",
+            "actorTimezone"
           ],
           "title": "DocumentAcceptanceOut",
+          "type": "object"
+        },
+        "DocumentAssetOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "originalFilename": {
+              "title": "Originalfilename",
+              "type": "string"
+            },
+            "mediaType": {
+              "enum": [
+                "application/pdf",
+                "image/png",
+                "image/jpeg"
+              ],
+              "title": "Mediatype",
+              "type": "string"
+            },
+            "byteSize": {
+              "title": "Bytesize",
+              "type": "integer"
+            },
+            "sha256": {
+              "title": "Sha256",
+              "type": "string"
+            },
+            "state": {
+              "title": "State",
+              "type": "string"
+            },
+            "classification": {
+              "title": "Classification",
+              "type": "string"
+            },
+            "description": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Description"
+            },
+            "createdAt": {
+              "format": "date-time",
+              "title": "Createdat",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "originalFilename",
+            "mediaType",
+            "byteSize",
+            "sha256",
+            "state",
+            "classification",
+            "createdAt"
+          ],
+          "title": "DocumentAssetOut",
           "type": "object"
         },
         "DocumentChangeOut": {
@@ -2685,6 +3757,14 @@
           "title": "Contenthash",
           "type": "string"
         },
+        "manifestHash": {
+          "title": "Manifesthash",
+          "type": "string"
+        },
+        "evidenceHash": {
+          "title": "Evidencehash",
+          "type": "string"
+        },
         "proposedAt": {
           "format": "date-time",
           "title": "Proposedat",
@@ -2716,6 +3796,13 @@
           },
           "title": "Acceptances",
           "type": "array"
+        },
+        "assets": {
+          "items": {
+            "$ref": "#/$defs/DocumentAssetOut"
+          },
+          "title": "Assets",
+          "type": "array"
         }
       },
       "required": [
@@ -2729,6 +3816,8 @@
         "changeSummary",
         "sourceSnapshotHash",
         "contentHash",
+        "manifestHash",
+        "evidenceHash",
         "proposedAt"
       ],
       "title": "DocumentRevisionOut",
@@ -2792,10 +3881,70 @@
               "title": "Contenthash",
               "type": "string"
             },
+            "manifestHash": {
+              "title": "Manifesthash",
+              "type": "string"
+            },
+            "evidenceHash": {
+              "title": "Evidencehash",
+              "type": "string"
+            },
             "acceptedAt": {
               "format": "date-time",
               "title": "Acceptedat",
               "type": "string"
+            },
+            "statementVersion": {
+              "title": "Statementversion",
+              "type": "integer"
+            },
+            "statementText": {
+              "title": "Statementtext",
+              "type": "string"
+            },
+            "authMethod": {
+              "title": "Authmethod",
+              "type": "string"
+            },
+            "actorIdentifierMasked": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Actoridentifiermasked"
+            },
+            "actorTimezone": {
+              "title": "Actortimezone",
+              "type": "string"
+            },
+            "requestIpHash": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Requestiphash"
+            },
+            "userAgentHash": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Useragenthash"
             }
           },
           "required": [
@@ -2803,9 +3952,83 @@
             "participantName",
             "action",
             "contentHash",
-            "acceptedAt"
+            "manifestHash",
+            "evidenceHash",
+            "acceptedAt",
+            "statementVersion",
+            "statementText",
+            "authMethod",
+            "actorTimezone"
           ],
           "title": "DocumentAcceptanceOut",
+          "type": "object"
+        },
+        "DocumentAssetOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "originalFilename": {
+              "title": "Originalfilename",
+              "type": "string"
+            },
+            "mediaType": {
+              "enum": [
+                "application/pdf",
+                "image/png",
+                "image/jpeg"
+              ],
+              "title": "Mediatype",
+              "type": "string"
+            },
+            "byteSize": {
+              "title": "Bytesize",
+              "type": "integer"
+            },
+            "sha256": {
+              "title": "Sha256",
+              "type": "string"
+            },
+            "state": {
+              "title": "State",
+              "type": "string"
+            },
+            "classification": {
+              "title": "Classification",
+              "type": "string"
+            },
+            "description": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Description"
+            },
+            "createdAt": {
+              "format": "date-time",
+              "title": "Createdat",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "originalFilename",
+            "mediaType",
+            "byteSize",
+            "sha256",
+            "state",
+            "classification",
+            "createdAt"
+          ],
+          "title": "DocumentAssetOut",
           "type": "object"
         },
         "DocumentChangeOut": {
@@ -2868,6 +4091,105 @@
             "createdAt"
           ],
           "title": "DocumentChangeOut",
+          "type": "object"
+        },
+        "DocumentRequestOut": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "label": {
+              "title": "Label",
+              "type": "string"
+            },
+            "classification": {
+              "title": "Classification",
+              "type": "string"
+            },
+            "instructions": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Instructions"
+            },
+            "required": {
+              "title": "Required",
+              "type": "boolean"
+            },
+            "state": {
+              "title": "State",
+              "type": "string"
+            },
+            "requestedBy": {
+              "title": "Requestedby",
+              "type": "string"
+            },
+            "requestedFrom": {
+              "title": "Requestedfrom",
+              "type": "string"
+            },
+            "requestedFromCurrentUser": {
+              "title": "Requestedfromcurrentuser",
+              "type": "boolean"
+            },
+            "fulfilledAsset": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DocumentAssetOut"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "fulfilledRevisionId": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fulfilledrevisionid"
+            },
+            "fulfilledAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fulfilledat"
+            }
+          },
+          "required": [
+            "id",
+            "label",
+            "classification",
+            "required",
+            "state",
+            "requestedBy",
+            "requestedFrom",
+            "requestedFromCurrentUser"
+          ],
+          "title": "DocumentRequestOut",
           "type": "object"
         },
         "DocumentRevisionOut": {
@@ -2933,6 +4255,14 @@
               "title": "Contenthash",
               "type": "string"
             },
+            "manifestHash": {
+              "title": "Manifesthash",
+              "type": "string"
+            },
+            "evidenceHash": {
+              "title": "Evidencehash",
+              "type": "string"
+            },
             "proposedAt": {
               "format": "date-time",
               "title": "Proposedat",
@@ -2964,6 +4294,13 @@
               },
               "title": "Acceptances",
               "type": "array"
+            },
+            "assets": {
+              "items": {
+                "$ref": "#/$defs/DocumentAssetOut"
+              },
+              "title": "Assets",
+              "type": "array"
             }
           },
           "required": [
@@ -2977,6 +4314,8 @@
             "changeSummary",
             "sourceSnapshotHash",
             "contentHash",
+            "manifestHash",
+            "evidenceHash",
             "proposedAt"
           ],
           "title": "DocumentRevisionOut",
@@ -3344,12 +4683,40 @@
               "title": "Currency",
               "type": "string"
             },
-            "annualRateBps": {
-              "title": "Annualratebps",
+            "interestRateBps": {
+              "title": "Interestratebps",
+              "type": "integer"
+            },
+            "interestPeriod": {
+              "enum": [
+                "monthly",
+                "yearly"
+              ],
+              "title": "Interestperiod",
+              "type": "string"
+            },
+            "interestMode": {
+              "enum": [
+                "simple",
+                "compound"
+              ],
+              "title": "Interestmode",
+              "type": "string"
+            },
+            "annualizedRateBps": {
+              "title": "Annualizedratebps",
               "type": "integer"
             },
             "interestMethod": {
               "title": "Interestmethod",
+              "type": "string"
+            },
+            "calculationBasis": {
+              "title": "Calculationbasis",
+              "type": "string"
+            },
+            "roundingPolicy": {
+              "title": "Roundingpolicy",
               "type": "string"
             },
             "moneyDate": {
@@ -3422,8 +4789,13 @@
             "version",
             "principalMinor",
             "currency",
-            "annualRateBps",
+            "interestRateBps",
+            "interestPeriod",
+            "interestMode",
+            "annualizedRateBps",
             "interestMethod",
+            "calculationBasis",
+            "roundingPolicy",
             "moneyDate",
             "dueDate",
             "totalInterestMinor",
@@ -3477,6 +4849,10 @@
             },
             "fundingStatus": {
               "title": "Fundingstatus",
+              "type": "string"
+            },
+            "intent": {
+              "title": "Intent",
               "type": "string"
             },
             "principalMinor": {
@@ -3555,9 +4931,25 @@
               "default": null,
               "title": "Note"
             },
-            "annualRateBps": {
-              "title": "Annualratebps",
+            "interestRateBps": {
+              "title": "Interestratebps",
               "type": "integer"
+            },
+            "interestPeriod": {
+              "enum": [
+                "monthly",
+                "yearly"
+              ],
+              "title": "Interestperiod",
+              "type": "string"
+            },
+            "interestMode": {
+              "enum": [
+                "simple",
+                "compound"
+              ],
+              "title": "Interestmode",
+              "type": "string"
             },
             "currentTerms": {
               "$ref": "#/$defs/LoanTermOut"
@@ -3590,6 +4982,24 @@
               "title": "Cashflows",
               "type": "array"
             },
+            "fundingCashflow": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/LoanCashflowOut"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "documentRequests": {
+              "items": {
+                "$ref": "#/$defs/DocumentRequestOut"
+              },
+              "title": "Documentrequests",
+              "type": "array"
+            },
             "securityItems": {
               "items": {
                 "$ref": "#/$defs/LoanSecurityItemOut"
@@ -3612,6 +5022,7 @@
             "counterpartyName",
             "status",
             "fundingStatus",
+            "intent",
             "principalMinor",
             "outstandingPrincipalMinor",
             "accruedInterestMinor",
@@ -3624,11 +5035,14 @@
             "rowVersion",
             "createdAt",
             "updatedAt",
-            "annualRateBps",
+            "interestRateBps",
+            "interestPeriod",
+            "interestMode",
             "currentTerms",
             "participants",
             "documentRevision",
             "cashflows",
+            "documentRequests",
             "securityItems",
             "activity"
           ],
@@ -16272,6 +17686,22 @@
       "title": "ProfileOut",
       "type": "object"
     },
+    "ProfileUpdateIn": {
+      "additionalProperties": false,
+      "properties": {
+        "display_name": {
+          "maxLength": 120,
+          "minLength": 2,
+          "title": "Display Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "display_name"
+      ],
+      "title": "ProfileUpdateIn",
+      "type": "object"
+    },
     "AuthStatusOut": {
       "$defs": {
         "IdentityOut": {
@@ -16843,5 +18273,5 @@
     "approve_operation": "OperationActionPayload",
     "cancel_operation": "OperationActionPayload"
   },
-  "schemaHash": "6efea9b87f0e9c8c026553ecba6de0d044be26171f44c022fce49d45e04274d3"
+  "schemaHash": "435b32cb53155ced565e8f92dc1b38b72470ecae986d27406d307030c509aaf0"
 }

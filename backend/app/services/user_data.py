@@ -59,8 +59,11 @@ from ..models import (
     SharedRecordInvitation,
     SharedRecordParticipant,
     DocumentAcceptance,
+    DocumentAsset,
     DocumentChange,
+    DocumentRequest,
     DocumentRevision,
+    DocumentRevisionAsset,
     NotificationOutbox,
     PersonalLoanAgreement,
     CommandReceipt,
@@ -165,6 +168,14 @@ OWNED_USER_DATA: tuple[OwnedDataSpec, ...] = (
     OwnedDataSpec(Subcategory, owner_column="owner_user_id"),
     OwnedDataSpec(Category, owner_column="owner_user_id"),
     OwnedDataSpec(AuditLog),
+    # Draft uploads are private user data. Once attached to a jointly
+    # acknowledged record they are detached from account ownership during
+    # deletion so the other participant's evidence remains intact.
+    OwnedDataSpec(
+        DocumentAsset,
+        owner_column="owner_user_id",
+        redacted_columns=("storage_key",),
+    ),
     # Deleting these is what releases the phone number and email address for a
     # different account to claim.
     OwnedDataSpec(UserIdentity, export_key="signInMethods"),
@@ -293,6 +304,15 @@ def export_user_data(db: Session, user: User) -> dict[str, Any]:
         )
         payload["sharedDocuments"] = serialize_rows(documents)
         payload["documentRevisions"] = serialize_rows(revisions)
+        payload["documentAssets"] = serialize_rows(list(db.scalars(
+            select(DocumentAsset).where(DocumentAsset.document_id.in_(document_ids))
+        )), redacted_columns=("storage_key",)) if document_ids else []
+        payload["documentRevisionAssets"] = serialize_rows(list(db.scalars(
+            select(DocumentRevisionAsset).where(DocumentRevisionAsset.revision_id.in_(revision_ids))
+        ))) if revision_ids else []
+        payload["documentRequests"] = serialize_rows(list(db.scalars(
+            select(DocumentRequest).where(DocumentRequest.shared_record_id.in_(record_ids))
+        )))
         payload["documentChanges"] = serialize_rows(list(db.scalars(select(DocumentChange).where(
             DocumentChange.revision_id.in_(revision_ids)
         )))) if revision_ids else []
@@ -320,7 +340,8 @@ def export_user_data(db: Session, user: User) -> dict[str, Any]:
         for key in (
             "sharedRecords", "sharedRecordParticipants", "sharedRecordInvitations",
             "sharedDocuments", "documentRevisions", "documentChanges",
-            "documentAcceptances", "personalLoanAgreements", "loanTermVersions",
+            "documentAssets", "documentRevisionAssets", "documentRequests", "documentAcceptances",
+            "personalLoanAgreements", "loanTermVersions",
             "loanSecurityItems", "loanCashflows", "loanReminders",
             "sharedRecordEvents", "notificationOutbox",
         ):
@@ -360,6 +381,13 @@ def delete_user_data(db: Session, user: User) -> int:
         db.execute(update(CommandReceipt).where(
             CommandReceipt.actor_user_id == user.id
         ).values(actor_user_id=None))
+        # Attached evidence belongs to the shared record, not exclusively to
+        # the uploader's account. Preserve the immutable bytes and attribution
+        # through the participant snapshot while releasing user ownership.
+        db.execute(update(DocumentAsset).where(
+            DocumentAsset.owner_user_id == user.id,
+            DocumentAsset.document_id.is_not(None),
+        ).values(owner_user_id=None))
     owned = _owned_rows(db, user.id)
     for dependent_spec in DEPENDENT_USER_DATA:
         parent_ids = [cast(UUID, getattr(item, "id")) for item in owned[dependent_spec.parent_model]]

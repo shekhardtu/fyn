@@ -30,7 +30,9 @@ import {
   type ContactSuggestionOut,
   type CreatePersonalLoanIn,
   type DataChartData,
+  type DocumentAssetOut,
   type DocumentRevisionOut,
+  type FulfillDocumentRequestsIn,
   type IdentityOut,
   type ImportResult,
   type InvitationPreviewOut,
@@ -45,6 +47,7 @@ import {
   type PersonalLoanSummaryOut,
   type PrivacyStatusOut,
   type ProfileOut,
+  type RecordLoanFundingIn,
   type RecordLoanPaymentIn,
   type ReminderOut,
   type SendLoanReminderIn,
@@ -76,7 +79,7 @@ export const dataChartDataSchema = generatedSchema<DataChartData>("DataChartData
 export const transactionRevisionSchema = generatedSchema<TransactionRevisionOut>("TransactionRevisionOut");
 export const transactionRevisionListSchema = transactionRevisionSchema.array();
 
-export type { TransactionRevisionOut };
+export type { FulfillDocumentRequestsIn, TransactionRevisionOut };
 
 /** Dashboards are a REST surface rather than a widget lane, so their envelope
  *  is written here against the fixed API contract; the tile's chart itself
@@ -155,6 +158,7 @@ export const personalLoanDetailSchema = generatedSchema<PersonalLoanDetailOut>("
 export const loanCommandSchema = generatedSchema<LoanCommandOut>("LoanCommandOut");
 export const invitationPreviewSchema = generatedSchema<InvitationPreviewOut>("InvitationPreviewOut");
 export const documentRevisionListSchema = generatedSchema<DocumentRevisionOut>("DocumentRevisionOut").array();
+export const documentAssetSchema = generatedSchema<DocumentAssetOut>("DocumentAssetOut");
 export const reminderSchema = generatedSchema<ReminderOut>("ReminderOut");
 
 export type {
@@ -175,6 +179,7 @@ export type {
   ContactSuggestionOut,
   CreatePersonalLoanIn,
   DataChartData,
+  DocumentAssetOut,
   DocumentRevisionOut,
   IdentityOut,
   ImportResult,
@@ -190,6 +195,7 @@ export type {
   PersonalLoanSummaryOut,
   PrivacyStatusOut,
   ProfileOut,
+  RecordLoanFundingIn,
   RecordLoanPaymentIn,
   ReminderOut,
   SendLoanReminderIn,

@@ -79,6 +79,17 @@ class Settings(BaseSettings):
     lending_notification_worker_enabled: bool = True
     lending_notification_poll_seconds: int = Field(default=5, ge=1, le=60)
     lending_notification_max_attempts: int = Field(default=5, ge=1, le=20)
+    # Private local adapter for document bytes. Production can mount this path
+    # on encrypted object storage without changing the document domain model.
+    document_storage_provider: Literal["local", "r2"] = "local"
+    document_storage_path: str = str(Path(__file__).resolve().parents[1] / "data" / "document-assets")
+    document_upload_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1024, le=50 * 1024 * 1024)
+    r2_account_id: str | None = None
+    r2_bucket: str | None = None
+    r2_access_key_id: str | None = None
+    r2_secret_access_key: str | None = None
+    r2_object_prefix: str = "document-evidence"
+    r2_presign_seconds: int = Field(default=300, ge=30, le=3600)
     google_client_id: str | None = None
     operator_model: str = "gpt-5.6-luna"
     # Complex SQL analysis gets a quality-first reasoning budget while routine

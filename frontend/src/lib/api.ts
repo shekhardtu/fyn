@@ -3,7 +3,7 @@ import { AgentCapabilitiesSchema, type AgentCapabilities, type Message as AgUiMe
 
 import { API_MOUNT_PATH } from "@/config/api-path";
 import { environment } from "@/config/environment";
-import { agentActivityEventSchema, agentResponseSchema, agentSettingsSchema, agentThreadStateSchema, authStatusSchema, bootstrapSchema, categoryDirectoryEntrySchema, categoryDirectorySchema, categorySubcategorySchema, contactSuggestionSchema, conversationCreatedSchema, conversationPageSchema, conversationSchema, conversationSummarySchema, dashboardDetailSchema, dashboardListSchema, documentRevisionListSchema, importResultSchema, invitationPreviewSchema, loanCommandSchema, locationResolveSchema, otpSentSchema, overviewSchema, parseActionPayload, personalLoanDetailSchema, personalLoanListSchema, privacyStatusSchema, profileSchema, reminderSchema, transactionCategoryHintSchema, transactionListItemSchema, transactionListSchema, transactionRevisionListSchema, type AgentActivityEvent, type AgentInterruptOut, type AgentResponse, type AgentSettingsOut, type AgentThreadStateOut, type AuthStatusOut, type Bootstrap, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type ContactSuggestionOut, type ConversationCreatedOut, type ConversationOut, type ConversationPage, type ConversationSummary, type CreatePersonalLoanIn, type DashboardDetail, type DashboardSummary, type DocumentRevisionOut, type ImportResult, type InvitationPreviewOut, type LoanCommandOut, type LoanTermProposalIn, type OtpSentOut, type OverviewOut, type PersonalLoanDetailOut, type PersonalLoanListOut, type PrivacyStatusOut, type ProfileOut, type RecordLoanPaymentIn, type ReminderOut, type SendLoanReminderIn, type TransactionCategoryHintOut, type TransactionListItemOut, type TransactionRevisionOut, type TransactionUpdateIn, type WidgetActionId } from "@/lib/protocol";
+import { agentActivityEventSchema, agentResponseSchema, agentSettingsSchema, agentThreadStateSchema, authStatusSchema, bootstrapSchema, categoryDirectoryEntrySchema, categoryDirectorySchema, categorySubcategorySchema, contactSuggestionSchema, conversationCreatedSchema, conversationPageSchema, conversationSchema, conversationSummarySchema, dashboardDetailSchema, dashboardListSchema, documentAssetSchema, documentRevisionListSchema, importResultSchema, invitationPreviewSchema, loanCommandSchema, locationResolveSchema, otpSentSchema, overviewSchema, parseActionPayload, personalLoanDetailSchema, personalLoanListSchema, privacyStatusSchema, profileSchema, reminderSchema, transactionCategoryHintSchema, transactionListItemSchema, transactionListSchema, transactionRevisionListSchema, type AgentActivityEvent, type AgentInterruptOut, type AgentResponse, type AgentSettingsOut, type AgentThreadStateOut, type AuthStatusOut, type Bootstrap, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type ContactSuggestionOut, type ConversationCreatedOut, type ConversationOut, type ConversationPage, type ConversationSummary, type CreatePersonalLoanIn, type DashboardDetail, type DashboardSummary, type DocumentAssetOut, type DocumentRevisionOut, type FulfillDocumentRequestsIn, type ImportResult, type InvitationPreviewOut, type LoanCommandOut, type LoanTermProposalIn, type OtpSentOut, type OverviewOut, type PersonalLoanDetailOut, type PersonalLoanListOut, type PrivacyStatusOut, type ProfileOut, type RecordLoanFundingIn, type RecordLoanPaymentIn, type ReminderOut, type SendLoanReminderIn, type TransactionCategoryHintOut, type TransactionListItemOut, type TransactionRevisionOut, type TransactionUpdateIn, type WidgetActionId } from "@/lib/protocol";
 import type { AgentClientTelemetryIn } from "@/lib/generated/contracts";
 
 const API_URL = environment.apiUrl;
@@ -47,7 +47,15 @@ function describe(payload: unknown, status: number) {
   if (typeof detail === "string" && detail.trim()) return detail;
   if (Array.isArray(detail)) {
     const first = detail.find((item) => item && typeof item === "object" && typeof (item as { msg?: unknown }).msg === "string");
-    if (first) return String((first as { msg: string }).msg);
+    if (first) {
+      const validation = first as { msg: string; loc?: unknown[] };
+      if (validation.msg === "Field required") {
+        const field = validation.loc?.filter((part) => part !== "body").at(-1);
+        const label = typeof field === "string" ? field.replaceAll("_", " ") : "required information";
+        return `Complete ${label} before continuing.`;
+      }
+      return validation.msg;
+    }
   }
   if (status === 401) return "Your session has ended. Sign in again to continue.";
   if (status === 409) return "That action isn’t available any more. Refresh the conversation to see where things stand.";
@@ -165,6 +173,39 @@ export async function createPersonalLoan(payload: CreatePersonalLoanIn, idempote
   return conform(loanCommandSchema, await lendingMutation("/loan-agreements", "POST", payload, idempotencyKey), "created personal loan");
 }
 
+export async function uploadDocumentAsset(file: File, classification: string, description?: string): Promise<DocumentAssetOut> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("classification", classification);
+  if (description?.trim()) form.append("description", description.trim());
+  const response = await send("/document-assets", { method: "POST", body: form });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    throw new ApiError(describe(payload, response.status), response.status);
+  }
+  return conform(documentAssetSchema, await response.json(), "supporting document");
+}
+
+export async function loadDocumentAssets(): Promise<DocumentAssetOut[]> {
+  return conform(documentAssetSchema.array(), await request("/document-assets"), "private document repository");
+}
+
+export async function deleteDocumentAsset(assetId: string): Promise<void> {
+  await request(`/document-assets/${encodeURIComponent(assetId)}`, { method: "DELETE" });
+}
+
+export function documentAssetDownloadUrl(assetId: string): string {
+  return apiUrl(`/document-assets/${encodeURIComponent(assetId)}/download`);
+}
+
+export function loanAgreementPdfUrl(loanId: string): string {
+  return apiUrl(`/loan-agreements/${encodeURIComponent(loanId)}/agreement.pdf`);
+}
+
+export function loanEvidenceBundleUrl(loanId: string): string {
+  return apiUrl(`/loan-agreements/${encodeURIComponent(loanId)}/evidence-bundle`);
+}
+
 export async function loadLoanInvitation(token: string): Promise<InvitationPreviewOut> {
   return conform(invitationPreviewSchema, await request(`/loan-invitations/${encodeURIComponent(token)}`), "loan invitation");
 }
@@ -180,12 +221,20 @@ export async function acceptPersonalLoan(id: string, expectedRowVersion: number,
   return conform(loanCommandSchema, await lendingMutation(`/loan-agreements/${encodeURIComponent(id)}/accept`, "POST", { expectedRowVersion }, idempotencyKey), "accepted personal loan");
 }
 
+export async function fulfillPersonalLoanDocumentRequests(id: string, payload: FulfillDocumentRequestsIn, idempotencyKey?: string): Promise<LoanCommandOut> {
+  return conform(loanCommandSchema, await lendingMutation(`/loan-agreements/${encodeURIComponent(id)}/document-requests/fulfill`, "POST", payload, idempotencyKey), "provided loan documents");
+}
+
 export async function proposePersonalLoanTerms(id: string, payload: LoanTermProposalIn, idempotencyKey?: string): Promise<LoanCommandOut> {
   return conform(loanCommandSchema, await lendingMutation(`/loan-agreements/${encodeURIComponent(id)}/term-proposals`, "POST", payload, idempotencyKey), "updated repayment plan");
 }
 
 export async function recordPersonalLoanPayment(id: string, payload: RecordLoanPaymentIn, idempotencyKey?: string): Promise<LoanCommandOut> {
   return conform(loanCommandSchema, await lendingMutation(`/loan-agreements/${encodeURIComponent(id)}/payments`, "POST", payload, idempotencyKey), "recorded loan payment");
+}
+
+export async function recordPersonalLoanFunding(id: string, payload: RecordLoanFundingIn, idempotencyKey?: string): Promise<LoanCommandOut> {
+  return conform(loanCommandSchema, await lendingMutation(`/loan-agreements/${encodeURIComponent(id)}/funding`, "POST", payload, idempotencyKey), "recorded loan funding");
 }
 
 export async function confirmPersonalLoanPayment(cashflowId: string, expectedRowVersion: number, idempotencyKey?: string): Promise<LoanCommandOut> {
@@ -904,6 +953,12 @@ export async function signOut(): Promise<void> {
 
 export async function getProfile(): Promise<Profile> {
   return conform(profileSchema, await request("/profile"), "profile");
+}
+
+export async function updateProfile(displayName: string): Promise<Profile> {
+  return conform(profileSchema, await request("/profile", {
+    method: "PATCH", body: JSON.stringify({ displayName }),
+  }), "profile");
 }
 
 /** Sends a code to a number or address this account wants to claim. Throws a

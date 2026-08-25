@@ -1383,6 +1383,19 @@ class ProfileOut(BaseModel):
     google_sign_in_available: bool = Field(serialization_alias="googleSignInAvailable")
 
 
+class ProfileUpdateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    display_name: str = Field(min_length=2, max_length=120, validation_alias="displayName")
+
+    @field_validator("display_name", mode="before")
+    @classmethod
+    def normalize_display_name(cls, value: Any) -> str:
+        normalized = " ".join(str(value).split())
+        if normalized.casefold() == "you":
+            raise ValueError("Enter the name the other person will recognize")
+        return normalized
+
+
 class AuthStatusOut(BaseModel):
     authenticated: bool
     profile: ProfileOut | None = None

@@ -1,16 +1,30 @@
 # Personal lending product plan
 
-Status: core end-to-end release implemented and verified on 24 Aug 2026
+Status: core end-to-end release implemented; creation and evidence journey expanded on 25 Aug 2026
 Product area: Loans
 Primary market: private loans between friends, family, colleagues, and other known contacts
 
 ## Current release checkpoint
 
-The first usable vertical slice is complete. It includes privacy-bounded lookup by email or phone sign-in identifier, phone- and email-bound private invitations, mutual acknowledgement of immutable document revisions, simple annual-interest terms, optional descriptive assurance items, two-party payment confirmation, rate-limited reminders, two-party closure and assurance return, per-user portfolio projections, export/deletion handling, deterministic copilot metrics, and a transactional notification outbox.
+The first usable vertical slice is complete. It includes privacy-bounded lookup by email or phone sign-in identifier, phone- and email-bound private invitations, mutual acknowledgement of immutable document revisions, explicit monthly or yearly interest with simple or compound calculation and visible bases, a reusable private document repository, lender-to-borrower evidence requests, optional descriptive assurance items, two-party payment confirmation, rate-limited reminders, two-party closure and assurance return, per-user portfolio projections, export/deletion handling, deterministic copilot metrics, and a transactional notification outbox.
 
 The shared-record, participant/invitation, document/revision, notification, event-history, and idempotent-command components are independent domain modules. Personal lending configures and composes them; they are not coupled to lending vocabulary or calculations.
 
-The current UI deliberately uses one return date and one optional assurance item to keep the first journey calm. Instalment schedules, uploaded/signed attachments, comments/disputes, reminder preferences/quiet hours, and relationship-level people pages remain subsequent increments. The data and document boundaries below are designed to add those without rewriting the shipped flow.
+The current UI deliberately uses one return date and one optional assurance item to keep the first journey calm. Repository-backed PDF/JPG/PNG evidence is implemented; a handwritten signature image is not required by the default workflow because each verified participant submits an authenticated electronic acknowledgement against an exact revision and attachment manifest. Certificate-based external eSign, instalment schedules, comments/disputes, reminder preferences/quiet hours, and relationship-level people pages remain subsequent increments. The data and document boundaries below are designed to add those without rewriting the shipped flow.
+
+### Creation and evidence gap closure — 25 Aug 2026
+
+- Creation begins with intent, then changes every person, amount, date, and role label to lender or borrower language.
+- Every step has an explicit validity gate. Clicking Continue, pressing Enter, or jumping through progress navigation cannot bypass a required field.
+- Interest requires monthly or yearly frequency. Simple interest on fixed principal is the default; compound interest is available under an advanced control. Both show the calculated rupee effect before review.
+- The lender can request required or optional evidence from the borrower without uploading it on the borrower’s behalf.
+- Each profile has a private reusable document repository. Sharing creates a separate immutable agreement copy, while the private original remains reusable and invisible to the other participant.
+- Fulfilling a borrower document request creates a replacement document revision. The borrower acknowledges its exact evidence manifest and the lender must independently review and acknowledge it.
+- Every acknowledgement records the verified session, masked sign-in identity, time, timezone, a privacy-preserving HMAC fingerprint of the observed client IP, and a user-agent fingerprint. Raw IP addresses are not exposed in the shared UI or evidence export.
+- The agreement workspace exposes all revisions. Either participant can open an older revision and inspect its terms, changes, files, acknowledgements, and evidence fingerprints.
+- Plain-language UI and PDF copy says “Electronically acknowledged by …”; the obscure `/s/` convention is not used.
+
+This closes the creation-flow gaps identified in the product review. Planned expansion items are tracked separately below and are not represented as shipped merely because the underlying modules can support them.
 
 Verification completed for this checkpoint:
 
@@ -166,7 +180,7 @@ Add **Loans** to the existing Money navigation.
 
 ```text
 /loans                         Portfolio: gave, received, upcoming, needs response
-/loans/new                     Four-step creation flow
+/loans/new                     Five-step creation flow (currently presented as a full-screen drawer)
 /loans/:loanId                 Shared loan workspace
 /loans/:loanId/activity        Complete human-readable history
 /loans/:loanId/settings        Reminder and visibility preferences
@@ -223,14 +237,15 @@ The header always states the relationship from the current user's perspective. T
 
 ### New-loan flow
 
-Keep creation to four understandable steps:
+Keep creation to five understandable steps:
 
-1. **Person** — “I gave money” or “I received money,” name, and one invitation channel.
-2. **Amount** — amount, date money moved or will move, and currency.
-3. **Return plan** — one date or instalments, optional interest, optional note.
-4. **Review** — exact summary, what the recipient will see, and “Send for review.”
+1. **Intent** — already gave/received, offering to lend, or requesting to borrow.
+2. **Person** — the other person’s email or phone sign-in identifier first, followed by a matched or entered name.
+3. **Terms** — contextual amount and date labels, one return date, optional interest, and optional note.
+4. **Documents** — lender requests from the borrower, optional repository files shared by the creator, and an optional assurance item.
+5. **Review** — exact summary, what the recipient will see or must provide, and “Acknowledge and send.”
 
-Optional details—attachments, assurance items, witnesses, external documents—sit behind “Add details” and never obstruct the ordinary path.
+Optional evidence and assurance details never obstruct the ordinary path unless the creator explicitly marks a borrower document request as required.
 
 For interest, require the period and calculation method and show the total rupee effect. Never accept a bare “3%.”
 

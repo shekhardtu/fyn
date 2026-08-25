@@ -19,6 +19,10 @@ from ..models import (
 from .shared_records import SharedRecordConflict, SharedRecordError, payload_hash
 
 
+ACCEPTANCE_STATEMENT_VERSION = 1
+ACCEPTANCE_STATEMENT = "I reviewed this exact revision and its supporting documents, and I acknowledge this shared record."
+
+
 def loan_document_content(
     *,
     lender_name: str,
@@ -27,7 +31,12 @@ def loan_document_content(
     currency: str,
     money_date: str,
     due_date: str,
-    annual_rate_bps: int,
+    interest_rate_bps: int,
+    interest_period: str,
+    interest_mode: str,
+    interest_method: str,
+    calculation_basis: str,
+    rounding_policy: str,
     total_interest_minor: int,
     total_repayable_minor: int,
     note: str | None,
@@ -35,7 +44,7 @@ def loan_document_content(
 ) -> dict[str, Any]:
     """The stable structured source rendered by every loan-facing surface."""
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "title": "Shared repayment plan",
         "parties": {
             "lender": lender_name,
@@ -46,7 +55,12 @@ def loan_document_content(
             "currency": currency,
             "moneyDate": money_date,
             "dueDate": due_date,
-            "annualRateBps": annual_rate_bps,
+            "interestRateBps": interest_rate_bps,
+            "interestPeriod": interest_period,
+            "interestMode": interest_mode,
+            "interestMethod": interest_method,
+            "calculationBasis": calculation_basis,
+            "roundingPolicy": rounding_policy,
             "totalInterestMinor": total_interest_minor,
             "totalRepayableMinor": total_repayable_minor,
             "note": note,
@@ -86,7 +100,12 @@ def _label(path: str) -> str:
         "terms.currency": "Currency",
         "terms.moneyDate": "Money date",
         "terms.dueDate": "Return date",
-        "terms.annualRateBps": "Annual interest",
+        "terms.interestRateBps": "Interest rate",
+        "terms.interestPeriod": "Interest period",
+        "terms.interestMode": "Interest calculation",
+        "terms.interestMethod": "Interest method",
+        "terms.calculationBasis": "Calculation basis",
+        "terms.roundingPolicy": "Rounding policy",
         "terms.totalInterestMinor": "Total interest",
         "terms.totalRepayableMinor": "Total repayable",
         "terms.note": "Note",
@@ -144,6 +163,7 @@ def create_revision(
             raise SharedRecordConflict("The document changed while you were editing. Review the latest revision before proposing again.")
 
     digest = payload_hash(content)
+    empty_manifest_hash = payload_hash([])
     revision = DocumentRevision(
         document_id=document.id,
         revision_number=latest + 1,
@@ -155,6 +175,8 @@ def create_revision(
         content_schema_version=1,
         source_snapshot_hash=source_snapshot_hash,
         content_hash=digest,
+        manifest_hash=empty_manifest_hash,
+        evidence_hash=payload_hash({"contentHash": digest, "manifestHash": empty_manifest_hash}),
         proposed_at=now_utc(),
     )
     db.add(revision)
@@ -196,6 +218,10 @@ def accept_revision(
     revision: DocumentRevision,
     participant: SharedRecordParticipant,
     actor_user_id: UUID,
+    actor_identifier_masked: str | None = None,
+    actor_timezone: str = "Asia/Kolkata",
+    request_ip_hash: str | None = None,
+    user_agent_hash: str | None = None,
 ) -> tuple[DocumentAcceptance, bool]:
     if revision.document_id != document.id or revision.state not in {"proposed", "accepted"}:
         raise SharedRecordConflict("That document revision is no longer awaiting agreement.")
@@ -203,6 +229,12 @@ def accept_revision(
         raise SharedRecordError("You are not a participant in this document.")
     if revision.content_hash != payload_hash(revision.content):
         raise SharedRecordConflict("The document content no longer matches its recorded hash.")
+    from .document_assets import refresh_revision_evidence
+    previous_manifest_hash = revision.manifest_hash
+    previous_evidence_hash = revision.evidence_hash
+    refresh_revision_evidence(db, revision)
+    if revision.manifest_hash != previous_manifest_hash or revision.evidence_hash != previous_evidence_hash:
+        raise SharedRecordConflict("The supporting-document manifest changed. Review the latest revision before acknowledging it.")
 
     acceptance = db.scalar(select(DocumentAcceptance).where(
         DocumentAcceptance.revision_id == revision.id,
@@ -213,13 +245,22 @@ def accept_revision(
             revision_id=revision.id,
             participant_id=participant.id,
             content_hash=revision.content_hash,
+            manifest_hash=revision.manifest_hash,
+            evidence_hash=revision.evidence_hash,
             action="accepted",
             actor_user_id=actor_user_id,
             accepted_at=now_utc(),
+            statement_version=ACCEPTANCE_STATEMENT_VERSION,
+            statement_text=ACCEPTANCE_STATEMENT,
+            auth_method="verified_session",
+            actor_identifier_masked=actor_identifier_masked,
+            actor_timezone=actor_timezone,
+            request_ip_hash=request_ip_hash,
+            user_agent_hash=user_agent_hash,
         )
         db.add(acceptance)
         db.flush()
-    elif acceptance.content_hash != revision.content_hash:
+    elif acceptance.evidence_hash != revision.evidence_hash:
         raise SharedRecordConflict("The saved acknowledgement refers to different content.")
 
     required = set(db.scalars(select(SharedRecordParticipant.id).where(
