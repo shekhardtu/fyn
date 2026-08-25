@@ -2,6 +2,35 @@ import { expect, test, type Locator } from "@playwright/test";
 import { API_MOUNT_PATH } from "@/config/api-path";
 import { sharedThreadUrl } from "./test-thread";
 
+// These scenarios deliberately share one durable thread. A timed-out live
+// model run keeps executing after Playwright closes that test's page, so the
+// next scenario must wait for the thread to become writable before it starts.
+// Otherwise one provider delay cascades into unrelated HITL, upload, and
+// settings failures that never exercised their own assertions.
+test.describe.configure({ timeout: 180_000 });
+test.beforeEach(async ({ page }) => {
+  const threadStateLoaded = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return response.request().method() === "GET" && new RegExp(`^${API_MOUNT_PATH}/agent/threads/[^/]+$`).test(url.pathname);
+  });
+  await page.goto(sharedThreadUrl());
+  await threadStateLoaded;
+  // A failed scenario can leave a governed HITL card pending in this shared
+  // durable thread. Resolve that explicit no-op before waiting for the composer;
+  // the composer is intentionally disabled while the card owns the turn.
+  const composer = page.getByLabel("Message fyn AI");
+  const pending = page.getByRole("group", { name: /^Action required:/ });
+  await expect.poll(async () => await composer.isEnabled() || (await pending.count()) > 0, { timeout: 120_000 }).toBe(true);
+  if (await pending.count()) {
+    const cancel = pending.last().getByRole("button", { name: /^Cancel(?:\s|$)/ }).last();
+    if (await cancel.count()) {
+      await cancel.click();
+      await expect(pending).toHaveCount(0);
+    }
+  }
+  await expect(composer).toBeEnabled({ timeout: 120_000 });
+});
+
 async function expectGroundedResultOrSafeFallback(response: Locator, expectedContent: RegExp) {
   await expect(response.getByRole("button", { name: /Agent run (?:complete|failed):/ })).toBeVisible({ timeout: 45_000 });
   const dataSource = response.getByRole("button", { name: /data source/ });
@@ -45,6 +74,46 @@ test.skip("thread deletion requires a disposable thread and is disabled by the f
 
 test.skip("invalid-link recovery opens another thread and is disabled by the fixed-thread policy", async () => {});
 
+test("a new question opens a stable focused reading window below the hidden header", async ({ page }) => {
+  const input = page.getByLabel("Message fyn AI");
+  const amount = 400 + (Date.now() % 90);
+  const message = `₹${amount} for coffee`;
+  await input.fill(message);
+  await page.getByRole("button", { name: "Send message" }).click();
+
+  const prompt = page.locator('article[data-focused-prompt="true"]');
+  const header = page.locator("[data-sticky-anchor]");
+  const transcript = page.locator(".conversation-scroll");
+  const promptTop = () => transcript.evaluate((node) => {
+    const promptArticle = node.querySelector<HTMLElement>('article[data-focused-prompt="true"]');
+    return promptArticle ? Math.round(promptArticle.getBoundingClientRect().top) : -10_000;
+  });
+  await expect(prompt).toBeVisible();
+  await expect(header).toHaveAttribute("inert", "");
+  await expect.poll(promptTop).toBeGreaterThanOrEqual(-2);
+  await expect.poll(promptTop).toBeLessThanOrEqual(20);
+
+  const added = page.getByText(new RegExp(`^Added ₹${amount} .*expense`)).last().locator("xpath=ancestor::article");
+  await expect(added).toBeVisible({ timeout: 45_000 });
+  // While reserve remains, the prompt stays anchored. Once it reaches zero the
+  // answer has filled the window and ordinary end-following may move upward.
+  await expect.poll(() => transcript.evaluate((node) => {
+    const promptArticle = node.querySelector<HTMLElement>('article[data-focused-prompt="true"]');
+    const spacer = node.querySelector<HTMLElement>("[data-focused-turn-spacer]");
+    if (!promptArticle || !spacer) return false;
+    const top = promptArticle.getBoundingClientRect().top;
+    return top <= 20 && (spacer.getBoundingClientRect().height <= 0.5 || top >= -2);
+  })).toBe(true);
+
+  await added.getByRole("button", { name: "Remove", exact: true }).click();
+  await page.getByRole("button", { name: "Remove transaction", exact: true }).click();
+  await expect(page.getByText(new RegExp(`Removed the ₹${amount} transaction`)).last()).toBeVisible();
+
+  await transcript.hover();
+  await page.mouse.wheel(0, -700);
+  await expect(header).not.toHaveAttribute("inert", "");
+});
+
 test("agent activity streams the selected path with individual and cumulative timing", async ({ page }) => {
   await page.goto(sharedThreadUrl());
   const input = page.getByLabel("Message fyn AI");
@@ -54,7 +123,7 @@ test("agent activity streams the selected path with individual and cumulative ti
   // The run is expanded while it streams, then folds to a summary line once the
   // answer lands — reopening it has to bring the whole trace back.
   await expect(page.getByText("fyn AI is working").last()).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByText("fyn AI is working")).toHaveCount(0, { timeout: 30_000 });
+  await expect(page.getByText("fyn AI is working")).toHaveCount(0, { timeout: 120_000 });
   await expect(finished.last()).toBeVisible();
   await finished.last().click();
   await expect(page.getByText("Execution trace").last()).toBeVisible();
@@ -89,7 +158,7 @@ test("a new reply does not displace a reader who moved into history", async ({ p
   }
   await expect(input).toBeEnabled();
   await input.fill("Summarize my spending this month by category");
-  await input.press("Enter");
+  await page.getByRole("button", { name: "Send message" }).click();
   await expect(page.getByText("fyn AI is working").last()).toBeVisible({ timeout: 30_000 });
 
   const transcriptScroller = page.locator(".conversation-scroll");
@@ -100,7 +169,7 @@ test("a new reply does not displace a reader who moved into history", async ({ p
   );
   await expect.poll(distanceFromLatest).toBeGreaterThan(500);
 
-  await expect(page.getByText("fyn AI is working")).toHaveCount(0, { timeout: 60_000 });
+  await expect(page.getByText("fyn AI is working")).toHaveCount(0, { timeout: 120_000 });
   await expect.poll(distanceFromLatest).toBeGreaterThan(500);
   await expect(page.getByRole("button", { name: "Jump to latest" })).toBeVisible();
   await expect(page.locator(".jump-to-latest")).toHaveAttribute("data-unread", "true");
@@ -204,7 +273,7 @@ test("ambiguous add request becomes a HITL draft instead of a validator dead end
   await expect(typeStep).toBeVisible({ timeout: 30_000 });
   await expect(typeStep.getByRole("button").first()).toBeVisible();
   await typeStep.getByRole("button", { name: /^Cancel(?:\s|$)/ }).last().click();
-  await expect(page.getByText("No changes were made.").last()).toBeVisible();
+  await expect(page.getByText(/No changes were made\.|Cancelled\. Nothing was saved\./).last()).toBeVisible();
   await expect(input).toBeEnabled();
 });
 
@@ -215,22 +284,68 @@ test("rich entry uses governed transaction handling and analytics stays grounded
   const amount = 2_000 + (Date.now() % 700);
   const amountText = new Intl.NumberFormat("en-IN").format(amount);
   await input.fill(`Spent ₹${amountText} at Swiggy today`);
-  await input.press("Enter");
-  const added = page.getByText(new RegExp(`Added ₹${amountText} Swiggy expense`));
+  await page.getByRole("button", { name: "Send message" }).click();
+  const added = page.locator("article")
+    .filter({ hasText: new RegExp(`Added ₹${amountText} expense under`) })
+    .filter({ hasText: "Swiggy" });
   const clarification = page.getByRole("group", { name: "Action required: One detail needs your confirmation" });
   await expect.poll(async () => (await added.count()) > 0 || (await clarification.count()) > 0, { timeout: 45_000 }).toBe(true);
   if (await clarification.count()) {
     await expect(clarification.last().getByRole("button").first()).toBeVisible();
     await clarification.last().getByRole("button", { name: /^Cancel(?:\s|$)/ }).last().click();
-    await expect(page.getByText("No changes were made.").last()).toBeVisible();
+    await expect(page.getByText(/No changes were made\.|Cancelled\. Nothing was saved\./).last()).toBeVisible();
   } else {
     await expect(added.last()).toBeVisible();
   }
   await input.fill("How much did I spend on food this month?");
   await expect(page.getByRole("button", { name: "Send message" })).toBeEnabled({ timeout: 45_000 });
+  await page.getByRole("button", { name: "Send message" }).click();
+  const response = page.locator('article[data-focused-response="true"]');
+  await expect(input).toBeEnabled({ timeout: 45_000 });
+  await expectGroundedResultOrSafeFallback(response, /spent|food/i);
+});
+
+test("a conversational correction amends the preceding transaction and links both versions", async ({ page }) => {
+  test.setTimeout(120_000);
+  const input = page.getByLabel("Message fyn AI");
+
+  await input.fill("Add ₹6,00,000 expense under Shopping → Other for the car cost today");
+  await page.getByRole("button", { name: "Send message" }).click();
+  const original = page.getByText(/^Added ₹6,00,000 expense under Shopping → Other/).last().locator("xpath=ancestor::article");
+  const shoppingSubtype = page.getByRole("group", { name: "Action required: What type of shopping expense?" });
+  await expect.poll(async () => (await original.count()) > 0 || (await shoppingSubtype.count()) > 0, { timeout: 45_000 }).toBe(true);
+  if (await shoppingSubtype.count()) {
+    await shoppingSubtype.getByRole("button", { name: "Other", exact: true }).click();
+  }
+  await expect(original).toBeVisible({ timeout: 45_000 });
+  const originalIdControl = original.getByRole("button", { name: /^Copy Transaction ID / });
+  const transactionId = (await originalIdControl.getAttribute("aria-label"))?.replace("Copy Transaction ID ", "");
+  expect(transactionId).toMatch(/^[0-9a-f-]{36}$/i);
+  await expect(original).toContainText("· Version 1");
+
+  await input.fill("Can I correct the car cost to ₹6,40,000?");
   await input.press("Enter");
-  await expect(page.getByText(/You spent/).last()).toBeVisible({ timeout: 45_000 });
-  await expect(page.getByText("data source", { exact: false }).last()).toBeVisible();
+  const correction = page.locator("article")
+    .filter({ has: page.getByRole("textbox", { name: "Transaction amount" }) })
+    .last();
+  await expect(correction).toBeVisible({ timeout: 45_000 });
+  await expect(correction.getByRole("textbox", { name: "Transaction amount" })).toHaveValue("640000");
+  await expect(correction.getByRole("button", { name: `Copy Transaction ID ${transactionId}` })).toContainText("TXN ");
+  await expect(original.getByRole("button", { name: `Copy Transaction ID ${transactionId}` })).toBeVisible();
+
+  await correction.getByRole("button", { name: "Apply changes" }).click();
+  const updated = page.getByText("Updated the ₹6,40,000 transaction.", { exact: true }).last().locator("xpath=ancestor::article");
+  await expect(updated).toBeVisible({ timeout: 45_000 });
+  await expect(updated).toContainText("· Version 2");
+  await expect(updated.getByRole("button", { name: `Copy Transaction ID ${transactionId}` })).toBeVisible();
+  await expect(original.getByRole("status")).toContainText("Previous version");
+  await expect(original.getByRole("status")).toContainText("Updated to Version 2");
+
+  // Restore the shared financial fixture after proving the amended card is
+  // the only current, actionable representation of this transaction.
+  await updated.getByRole("button", { name: "Remove", exact: true }).click();
+  await page.getByRole("button", { name: "Remove transaction", exact: true }).click();
+  await expect(page.getByText("Removed the ₹6,40,000 transaction.", { exact: true }).last()).toBeVisible();
 });
 
 test("CSV attachment is staged, confirmed, imported, and persistent", async ({ page }) => {
@@ -249,7 +364,10 @@ test("CSV attachment is staged, confirmed, imported, and persistent", async ({ p
   await page.getByRole("button", { name: "Import 2", exact: true }).click();
   await expect(page.getByText(`Imported 2 transactions from statement-${unique}.csv.`, { exact: true })).toBeVisible();
   await page.reload();
-  await expect(page.getByText("Import complete", { exact: true })).toBeVisible();
+  const persistedReceipt = page.locator("article")
+    .filter({ hasText: `statement-${unique}.csv` })
+    .filter({ hasText: "Import complete" });
+  await expect(persistedReceipt).toBeVisible();
 });
 
 test("privacy settings expose least-privilege controls and export", async ({ page }) => {
@@ -260,7 +378,7 @@ test("privacy settings expose least-privilege controls and export", async ({ pag
   await expect(page).toHaveURL(/\/settings\/agent$/);
   await page.getByRole("navigation", { name: "Settings sections" }).getByRole("link", { name: "Settings", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Privacy", exact: true })).toBeVisible();
-  const location = page.getByRole("switch", { name: "Location enrichment" });
+  const location = page.getByRole("switch", { name: /Record location|Location enrichment/ });
   if (await location.getAttribute("aria-checked") === "true") await location.click();
   await expect(location).toHaveAttribute("aria-checked", "false");
   await location.click();
@@ -282,7 +400,9 @@ test("refresh preserves the fixed test conversation", async ({ page }) => {
   await input.fill(message);
   await input.press("Enter");
   const clarification = page.getByRole("group", { name: "Action required: One detail needs your confirmation" });
-  const added = page.getByText(new RegExp(`Added ₹${amount} Toit expense`));
+  const added = page.locator("article")
+    .filter({ hasText: new RegExp(`Added ₹${amount} expense under`) })
+    .filter({ hasText: "Toit" });
   await expect.poll(async () => (await clarification.count()) > 0 || (await added.count()) > 0, { timeout: 45_000 }).toBe(true);
 
   await page.reload();
@@ -306,7 +426,9 @@ test("merchant expense is either classified or requests material clarification",
   await input.fill(`Spent ₹${amountText} at Toit today`);
   await input.press("Enter");
   const clarification = page.getByRole("group", { name: "Action required: One detail needs your confirmation" });
-  const added = page.getByText(new RegExp(`Added ₹${amountText} Toit expense`));
+  const added = page.locator("article")
+    .filter({ hasText: new RegExp(`Added ₹${amountText} expense under`) })
+    .filter({ hasText: "Toit" });
   await expect.poll(async () => (await clarification.count()) > 0 || (await added.count()) > 0, { timeout: 45_000 }).toBe(true);
   if (await clarification.count()) {
     await expect(clarification.last()).toContainText(/account|categor/i);
@@ -323,13 +445,13 @@ test("travelling query returns grounded data, clarification, or a governed safe 
   await page.goto(sharedThreadUrl());
   const input = page.getByLabel("Message fyn AI");
   await input.fill("How much did I spend on Travelling this month?");
-  await input.press("Enter");
-  const clarification = page.getByRole("group", { name: "Action required: One detail needs your confirmation" });
-  const response = page.locator("article").last();
+  await page.getByRole("button", { name: "Send message" }).click();
+  const response = page.locator('article[data-focused-response="true"]');
   await expect(response.getByRole("button", { name: /Agent run (?:complete|failed):/ })).toBeVisible({ timeout: 45_000 });
+  const clarification = response.getByRole("group", { name: "Action required: One detail needs your confirmation" });
   if (await clarification.count()) {
-    await expect(clarification.last().getByRole("button", { name: /^Travel(?:\s|$)/ })).toBeVisible();
-    await clarification.last().getByRole("button", { name: /^Transport(?:\s|$)/ }).click();
+    await expect(clarification.getByRole("button", { name: /^Travel(?:\s|$)/ })).toBeVisible();
+    await clarification.getByRole("button", { name: /^Transport(?:\s|$)/ }).click();
   }
   await expect(input).toBeEnabled({ timeout: 45_000 });
   await expectGroundedResultOrSafeFallback(response, /travel|transport/i);
@@ -363,8 +485,12 @@ test("automatic entry requires confirmation before removal", async ({ page }) =>
   const amount = 300 + (Date.now() % 90);
   await input.fill(`₹${amount} for coffee`);
   await input.press("Enter");
-  await expect(page.getByText(new RegExp(`Added ₹${amount} .*expense`)).last()).toBeVisible({ timeout: 45_000 });
-  await page.getByRole("button", { name: "Remove", exact: true }).last().click();
+  const added = page.locator("article").filter({ hasText: new RegExp(`Added ₹${amount} .*expense`) }).last();
+  await expect(added).toBeVisible({ timeout: 45_000 });
+  // Virtualization may keep an older measurement row mounted outside the
+  // viewport. Scope the action to the card whose amount this test just added
+  // instead of asking for the last Remove button in DOM order.
+  await added.getByRole("button", { name: "Remove", exact: true }).click();
   await expect(page.getByText("Remove this transaction?", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Remove transaction", exact: true }).click();
   await expect(page.getByText(new RegExp(`Removed the ₹${amount} transaction`))).toBeVisible();

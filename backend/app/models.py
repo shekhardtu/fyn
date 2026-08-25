@@ -7,6 +7,7 @@ from typing import Optional
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     CheckConstraint,
     Date,
@@ -405,7 +406,7 @@ class TransactionDraft(UUIDPrimaryKeyMixin, CurrencyMixin, UserOwnedMixin, Conve
     __tablename__ = "transaction_drafts"
     raw_text: Mapped[str] = mapped_column(Text)
     transaction_type: Mapped[str] = mapped_column(String(30), default=TransactionType.UNKNOWN.value)
-    amount_minor: Mapped[Optional[int]] = mapped_column(Integer)
+    amount_minor: Mapped[Optional[int]] = mapped_column(BigInteger)
     merchant_name: Mapped[Optional[str]] = mapped_column(String(160))
     account_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("accounts.id"))
     destination_account_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("accounts.id"))
@@ -434,7 +435,8 @@ class Transaction(UUIDPrimaryKeyMixin, CurrencyMixin, UserOwnedMixin, Confidence
     account_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("accounts.id"), index=True)
     destination_account_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("accounts.id"), index=True)
     transaction_type: Mapped[str] = mapped_column(String(30), index=True)
-    amount_minor: Mapped[int] = mapped_column(Integer)
+    amount_minor: Mapped[int] = mapped_column(BigInteger)
+    row_version: Mapped[int] = mapped_column(Integer, default=1)
     merchant_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("merchants.id"), index=True)
     merchant_name: Mapped[Optional[str]] = mapped_column(String(160), index=True)
     category_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("categories.id"), index=True)
@@ -453,6 +455,7 @@ class Transaction(UUIDPrimaryKeyMixin, CurrencyMixin, UserOwnedMixin, Confidence
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     sources: Mapped[list["TransactionSource"]] = relationship(back_populates="transaction", cascade="all, delete-orphan")
     __table_args__ = (
+        CheckConstraint("row_version > 0", name="ck_transaction_positive_version"),
         Index("ix_reconciliation_window", "user_id", "account_id", "amount_minor", "currency", "transaction_type", "transaction_at"),
         Index("ix_transaction_user_at_type", "user_id", "transaction_at", "transaction_type"),
         # Covers the evidence window the category recommender reads per draft.
@@ -484,19 +487,434 @@ class TransactionFieldValue(UUIDPrimaryKeyMixin, TransactionChildMixin, Confiden
     user_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class TransactionRevision(UUIDPrimaryKeyMixin, TransactionChildMixin, TimestampMixin, Base):
+    """Immutable, user-visible history for one canonical transaction.
+
+    ``row_version`` protects the live row from stale writes; this table explains
+    how each version came to exist. Snapshots make an amendment independently
+    auditable even when taxonomy labels or related records change later.
+    """
+
+    __tablename__ = "transaction_revisions"
+    revision_number: Mapped[int] = mapped_column(Integer)
+    actor_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        index=True,
+    )
+    source: Mapped[str] = mapped_column(String(40), index=True)
+    conversation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL"),
+        index=True,
+    )
+    widget_id: Mapped[Optional[str]] = mapped_column(String(160))
+    reason: Mapped[Optional[str]] = mapped_column(Text)
+    before_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    after_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    changes: Mapped[dict] = mapped_column(JSON, default=dict)
+    __table_args__ = (
+        CheckConstraint("revision_number > 0", name="ck_transaction_revision_positive_number"),
+        UniqueConstraint("transaction_id", "revision_number", name="uq_transaction_revision_number"),
+        Index("ix_transaction_revision_history", "transaction_id", "revision_number"),
+    )
+
+
+class SharedRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Reusable collaboration root for a two-sided financial record.
+
+    Product modules attach their own typed aggregate to this row. Participants,
+    invitations, documents, activity, and notification delivery can therefore
+    be reused without teaching them what a loan, reimbursement, or rent plan is.
+    """
+
+    __tablename__ = "shared_records"
+    kind: Mapped[str] = mapped_column(String(40), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="draft", index=True)
+    created_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        index=True,
+    )
+    row_version: Mapped[int] = mapped_column(Integer, default=1)
+    __table_args__ = (
+        CheckConstraint("row_version > 0", name="ck_shared_record_positive_version"),
+    )
+
+
+class SharedRecordParticipant(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "shared_record_participants"
+    shared_record_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("shared_records.id", ondelete="CASCADE"),
+        index=True,
+    )
+    # This is membership, not ownership: deleting an account detaches it while
+    # leaving an acknowledged record available to the other participant.
+    member_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        index=True,
+    )
+    role: Mapped[str] = mapped_column(String(30))
+    display_name: Mapped[str] = mapped_column(String(120))
+    state: Mapped[str] = mapped_column(String(30), default="invited", index=True)
+    verification_channel: Mapped[Optional[str]] = mapped_column(String(20))
+    verification_claim: Mapped[Optional[str]] = mapped_column(String(40))
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    hidden_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        UniqueConstraint("shared_record_id", "role", name="uq_shared_record_participant_role"),
+        UniqueConstraint("shared_record_id", "member_user_id", name="uq_shared_record_participant_member"),
+    )
+
+
+class SharedRecordInvitation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "shared_record_invitations"
+    shared_record_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("shared_records.id", ondelete="CASCADE"),
+        index=True,
+    )
+    participant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("shared_record_participants.id", ondelete="CASCADE"),
+        index=True,
+    )
+    channel: Mapped[str] = mapped_column(String(20))
+    destination_hash: Mapped[str] = mapped_column(String(64), index=True)
+    destination_ciphertext: Mapped[str] = mapped_column(Text)
+    destination_masked: Mapped[str] = mapped_column(String(320))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    exchanged_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    redeemed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    send_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        CheckConstraint("send_count >= 0", name="ck_shared_invitation_send_count"),
+    )
+
+
+class SharedDocument(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "shared_documents"
+    shared_record_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("shared_records.id", ondelete="CASCADE"),
+        index=True,
+    )
+    kind: Mapped[str] = mapped_column(String(40), index=True)
+    title: Mapped[str] = mapped_column(String(180))
+    status: Mapped[str] = mapped_column(String(30), default="draft", index=True)
+    current_revision_number: Mapped[Optional[int]] = mapped_column(Integer)
+    template_key: Mapped[str] = mapped_column(String(80), default="personal_loan_acknowledgement")
+    template_version: Mapped[int] = mapped_column(Integer, default=1)
+    __table_args__ = (
+        CheckConstraint("template_version > 0", name="ck_shared_document_template_version"),
+        CheckConstraint("current_revision_number IS NULL OR current_revision_number > 0", name="ck_shared_document_current_revision"),
+    )
+
+
+class DocumentRevision(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "document_revisions"
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("shared_documents.id", ondelete="CASCADE"),
+        index=True,
+    )
+    revision_number: Mapped[int] = mapped_column(Integer)
+    base_revision_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("document_revisions.id", ondelete="SET NULL"),
+        index=True,
+    )
+    authored_by_participant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("shared_record_participants.id"),
+        index=True,
+    )
+    state: Mapped[str] = mapped_column(String(30), default="proposed", index=True)
+    content: Mapped[dict] = mapped_column(JSON)
+    change_summary: Mapped[list] = mapped_column(JSON, default=list)
+    content_schema_version: Mapped[int] = mapped_column(Integer, default=1)
+    source_snapshot_hash: Mapped[str] = mapped_column(String(64))
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    proposed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now())
+    finalized_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        UniqueConstraint("document_id", "revision_number", name="uq_document_revision_number"),
+        CheckConstraint("revision_number > 0", name="ck_document_revision_positive_number"),
+        CheckConstraint("content_schema_version > 0", name="ck_document_revision_schema_version"),
+    )
+
+
+class DocumentChange(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "document_changes"
+    revision_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("document_revisions.id", ondelete="CASCADE"),
+        index=True,
+    )
+    authored_by_participant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("shared_record_participants.id"),
+        index=True,
+    )
+    field_path: Mapped[str] = mapped_column(String(160))
+    before_value: Mapped[Optional[dict]] = mapped_column(JSON)
+    after_value: Mapped[Optional[dict]] = mapped_column(JSON)
+    summary: Mapped[str] = mapped_column(String(240))
+
+
+class DocumentAcceptance(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "document_acceptances"
+    revision_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("document_revisions.id", ondelete="CASCADE"),
+        index=True,
+    )
+    participant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("shared_record_participants.id"),
+        index=True,
+    )
+    content_hash: Mapped[str] = mapped_column(String(64))
+    action: Mapped[str] = mapped_column(String(20), default="accepted")
+    actor_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        index=True,
+    )
+    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now())
+    __table_args__ = (
+        UniqueConstraint("revision_id", "participant_id", name="uq_document_acceptance_participant"),
+    )
+
+
+class PersonalLoanAgreement(UUIDPrimaryKeyMixin, CurrencyMixin, TimestampMixin, Base):
+    __tablename__ = "personal_loan_agreements"
+    shared_record_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("shared_records.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(String(30), default="pending_acceptance", index=True)
+    funding_status: Mapped[str] = mapped_column(String(30), default="pending_confirmation", index=True)
+    current_terms_version: Mapped[int] = mapped_column(Integer, default=1)
+    __table_args__ = (
+        CheckConstraint("current_terms_version > 0", name="ck_personal_loan_terms_version"),
+    )
+
+
+class LoanSecurityItem(UUIDPrimaryKeyMixin, CurrencyMixin, TimestampMixin, Base):
+    """A descriptive assurance item; Fyn never values, enforces, or holds it."""
+
+    __tablename__ = "loan_security_items"
+    agreement_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("personal_loan_agreements.id", ondelete="CASCADE"),
+        index=True,
+    )
+    kind: Mapped[str] = mapped_column(String(40), index=True)
+    description: Mapped[str] = mapped_column(String(240))
+    masked_identifier: Mapped[Optional[str]] = mapped_column(String(120))
+    stated_value_minor: Mapped[Optional[int]] = mapped_column(Integer)
+    provided_by_participant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("shared_record_participants.id"),
+        index=True,
+    )
+    held_by_participant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("shared_record_participants.id"),
+        index=True,
+    )
+    state: Mapped[str] = mapped_column(String(40), default="acknowledged", index=True)
+    returned_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    return_confirmed_by_participant_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("shared_record_participants.id"),
+        index=True,
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "stated_value_minor IS NULL OR stated_value_minor >= 0",
+            name="ck_loan_security_nonnegative_value",
+        ),
+        CheckConstraint(
+            "provided_by_participant_id <> held_by_participant_id",
+            name="ck_loan_security_distinct_custody",
+        ),
+    )
+
+
+class LoanTermVersion(UUIDPrimaryKeyMixin, CurrencyMixin, TimestampMixin, Base):
+    __tablename__ = "loan_term_versions"
+    agreement_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("personal_loan_agreements.id", ondelete="CASCADE"),
+        index=True,
+    )
+    version: Mapped[int] = mapped_column(Integer)
+    principal_minor: Mapped[int] = mapped_column(Integer)
+    annual_rate_bps: Mapped[int] = mapped_column(Integer, default=0)
+    interest_method: Mapped[str] = mapped_column(String(30), default="none")
+    money_date: Mapped[date] = mapped_column(Date)
+    due_date: Mapped[date] = mapped_column(Date, index=True)
+    note: Mapped[Optional[str]] = mapped_column(Text)
+    schedule: Mapped[list] = mapped_column(JSON, default=list)
+    total_interest_minor: Mapped[int] = mapped_column(Integer, default=0)
+    total_repayable_minor: Mapped[int] = mapped_column(Integer)
+    state: Mapped[str] = mapped_column(String(30), default="proposed", index=True)
+    proposed_by_participant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("shared_record_participants.id"),
+        index=True,
+    )
+    document_revision_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("document_revisions.id", ondelete="SET NULL"),
+        index=True,
+    )
+    source_hash: Mapped[str] = mapped_column(String(64), index=True)
+    effective_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        UniqueConstraint("agreement_id", "version", name="uq_loan_term_version"),
+        CheckConstraint("version > 0", name="ck_loan_term_positive_version"),
+        CheckConstraint("principal_minor > 0", name="ck_loan_term_positive_principal"),
+        CheckConstraint("annual_rate_bps >= 0", name="ck_loan_term_nonnegative_rate"),
+        CheckConstraint("total_interest_minor >= 0", name="ck_loan_term_nonnegative_interest"),
+        CheckConstraint("total_repayable_minor >= principal_minor", name="ck_loan_term_total_repayable"),
+        CheckConstraint("due_date >= money_date", name="ck_loan_term_date_order"),
+    )
+
+
+class LoanCashflow(UUIDPrimaryKeyMixin, CurrencyMixin, TimestampMixin, Base):
+    __tablename__ = "loan_cashflows"
+    agreement_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("personal_loan_agreements.id", ondelete="CASCADE"),
+        index=True,
+    )
+    kind: Mapped[str] = mapped_column(String(30), index=True)
+    state: Mapped[str] = mapped_column(String(30), default="proposed", index=True)
+    amount_minor: Mapped[int] = mapped_column(Integer)
+    principal_minor: Mapped[int] = mapped_column(Integer)
+    interest_minor: Mapped[int] = mapped_column(Integer, default=0)
+    occurred_on: Mapped[date] = mapped_column(Date, index=True)
+    initiated_by_participant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("shared_record_participants.id"),
+        index=True,
+    )
+    confirmed_by_participant_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("shared_record_participants.id"),
+        index=True,
+    )
+    note: Mapped[Optional[str]] = mapped_column(Text)
+    reversal_of_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("loan_cashflows.id", ondelete="SET NULL"),
+        index=True,
+    )
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        CheckConstraint("amount_minor > 0", name="ck_loan_cashflow_positive_amount"),
+        CheckConstraint("principal_minor >= 0", name="ck_loan_cashflow_nonnegative_principal"),
+        CheckConstraint("interest_minor >= 0", name="ck_loan_cashflow_nonnegative_interest"),
+        CheckConstraint("amount_minor = principal_minor + interest_minor", name="ck_loan_cashflow_breakdown"),
+    )
+
+
+class LoanReminder(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "loan_reminders"
+    agreement_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("personal_loan_agreements.id", ondelete="CASCADE"),
+        index=True,
+    )
+    requested_by_participant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("shared_record_participants.id"),
+        index=True,
+    )
+    recipient_participant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("shared_record_participants.id"),
+        index=True,
+    )
+    tone: Mapped[str] = mapped_column(String(30), default="friendly")
+    note: Mapped[Optional[str]] = mapped_column(String(500))
+    state: Mapped[str] = mapped_column(String(30), default="queued", index=True)
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now(), index=True)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class NotificationOutbox(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "notification_outbox"
+    shared_record_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("shared_records.id", ondelete="CASCADE"),
+        index=True,
+    )
+    recipient_participant_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("shared_record_participants.id", ondelete="CASCADE"),
+        index=True,
+    )
+    topic: Mapped[str] = mapped_column(String(60), index=True)
+    channel: Mapped[str] = mapped_column(String(20), index=True)
+    destination_ciphertext: Mapped[str] = mapped_column(Text)
+    destination_masked: Mapped[str] = mapped_column(String(320))
+    context_ciphertext: Mapped[Optional[str]] = mapped_column(Text)
+    payload: Mapped[dict] = mapped_column(JSON)
+    state: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    dedupe_key: Mapped[str] = mapped_column(String(160), unique=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now(), index=True)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[Optional[str]] = mapped_column(String(80))
+    __table_args__ = (
+        CheckConstraint("attempts >= 0", name="ck_notification_outbox_attempts"),
+    )
+
+
+class SharedRecordEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "shared_record_events"
+    shared_record_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("shared_records.id", ondelete="CASCADE"),
+        index=True,
+    )
+    sequence: Mapped[int] = mapped_column(Integer)
+    event_type: Mapped[str] = mapped_column(String(80), index=True)
+    actor_participant_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("shared_record_participants.id", ondelete="SET NULL"),
+        index=True,
+    )
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    previous_hash: Mapped[Optional[str]] = mapped_column(String(64))
+    event_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    __table_args__ = (
+        UniqueConstraint("shared_record_id", "sequence", name="uq_shared_record_event_sequence"),
+        CheckConstraint("sequence > 0", name="ck_shared_record_event_positive_sequence"),
+    )
+
+
+class CommandReceipt(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "command_receipts"
+    shared_record_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("shared_records.id", ondelete="CASCADE"),
+        index=True,
+    )
+    actor_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        index=True,
+    )
+    command_type: Mapped[str] = mapped_column(String(80))
+    idempotency_key: Mapped[str] = mapped_column(String(120))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    response_payload: Mapped[dict] = mapped_column(JSON)
+    __table_args__ = (
+        UniqueConstraint("actor_user_id", "command_type", "idempotency_key", name="uq_command_receipt_idempotency"),
+    )
+
+
 class Loan(UUIDPrimaryKeyMixin, CurrencyMixin, UserOwnedMixin, TimestampMixin, Base):
     __tablename__ = "loans"
     account_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("accounts.id", ondelete="SET NULL"), index=True)
+    shared_record_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("shared_records.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(140))
     loan_type: Mapped[str] = mapped_column(String(40), default="home")
     lender: Mapped[Optional[str]] = mapped_column(String(140))
+    direction: Mapped[Optional[str]] = mapped_column(String(20))
+    counterparty_name: Mapped[Optional[str]] = mapped_column(String(120))
     outstanding_principal_minor: Mapped[int] = mapped_column(Integer)
+    accrued_interest_minor: Mapped[int] = mapped_column(Integer, default=0)
     annual_rate_percent: Mapped[Decimal] = mapped_column(Numeric(7, 4))
     rate_type: Mapped[str] = mapped_column(String(20), default="floating")
     remaining_tenure_months: Mapped[int] = mapped_column(Integer)
     current_emi_minor: Mapped[Optional[int]] = mapped_column(Integer)
+    next_due_date: Mapped[Optional[date]] = mapped_column(Date, index=True)
+    next_due_minor: Mapped[Optional[int]] = mapped_column(Integer)
+    response_needed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    last_projected_event_sequence: Mapped[int] = mapped_column(Integer, default=0)
     prepayment_fee_percent: Mapped[Decimal] = mapped_column(Numeric(7, 4), default=Decimal("0"))
     status: Mapped[str] = mapped_column(String(20), default=ACTIVE_STATUS, index=True)
+    __table_args__ = (
+        UniqueConstraint("user_id", "shared_record_id", name="uq_loan_projection_shared_record"),
+        CheckConstraint("accrued_interest_minor >= 0", name="ck_loan_nonnegative_accrued_interest"),
+        CheckConstraint("last_projected_event_sequence >= 0", name="ck_loan_projection_event_sequence"),
+    )
 
 
 class LoanScenario(UUIDPrimaryKeyMixin, UserOwnedMixin, TimestampMixin, Base):

@@ -11,7 +11,8 @@ export function useWorkspaceOverlay<T extends HTMLElement = HTMLElement>(open: b
     const opener = document.activeElement as HTMLElement | null;
     const node = ref.current;
     const focusable = () => Array.from(node?.querySelectorAll<HTMLElement>('a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])') ?? []).filter((element) => element.offsetParent !== null);
-    focusable()[0]?.focus();
+    const initial = node?.querySelector<HTMLElement>("[data-overlay-initial-focus]");
+    (initial ?? focusable()[0])?.focus();
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") { event.preventDefault(); onClose(); return; }
       if (event.key !== "Tab") return;

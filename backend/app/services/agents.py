@@ -1118,6 +1118,7 @@ def run_operator(
         managed_only=False,
     ))
     raw_intent = (workflow_context or {}).get("intentContract")
+    turn_intent: TurnIntentContract | None = None
     if isinstance(raw_intent, dict):
         try:
             turn_intent = TurnIntentContract.model_validate(raw_intent)
@@ -1132,6 +1133,27 @@ def run_operator(
                 operation
                 for operation in operation_candidates
                 if operation.derived_effect is not DataEffect.MUTATION
+            ]
+    if (
+        (workflow_context or {}).get("kind") == "saved_transaction_card"
+        and (
+            turn_intent is None
+            or turn_intent.requested_effect is not RequestedEffect.NONE
+        )
+    ):
+        # A vague continuation such as "make it 640000" shares few lexical
+        # tokens with an edit manifest. Keep the relevant typed operation in
+        # the bounded tool set because the server, not text similarity, knows
+        # a transaction card is the active conversational surface.
+        edit_operation = operation_catalog().snapshot().operation("edit_transaction")
+        if (
+            edit_operation is not None
+            and edit_operation.definition.discovery.model_selectable
+            and edit_operation not in operation_candidates
+        ):
+            operation_candidates = [
+                *operation_candidates[:max(0, runtime_settings.operation_candidate_limit - 1)],
+                edit_operation,
             ]
     selected_presentation = presentation or answer_presentation(answer_style)
     operator = build_operator(

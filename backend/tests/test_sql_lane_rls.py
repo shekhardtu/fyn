@@ -102,7 +102,7 @@ def test_rls_returns_only_the_named_tenants_rows(two_tenants):
     assert result["rows"] == [["Blue Tokai", 40_000]]
     assert result["result_schema"] == [
         {"name": "merchant_name", "type": "character varying"},
-        {"name": "amount_minor", "type": "integer"},
+        {"name": "amount_minor", "type": "bigint"},
     ]
     assert result["semantic_compile_ms"] >= 0
     result = execute_governed_sql(session, bob.id, "SELECT merchant_name FROM transactions")

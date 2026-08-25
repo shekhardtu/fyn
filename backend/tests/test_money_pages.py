@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 
 from app.api import current_user, router
 from app.database import get_db
-from app.models import Category, Subcategory, Transaction, TransactionFieldValue, User
+from app.models import Category, Subcategory, Transaction, TransactionFieldValue, TransactionRevision, User
 from app.seed import DEFAULT_USER_EMAIL
 
 
@@ -53,6 +53,7 @@ def test_money_page_endpoints_share_taxonomy_and_transaction_truth(db):
         assert recent.status_code == 200
         assert recent.json()[0] == {
             "id": str(transaction.id),
+            "rowVersion": 1,
             "transactionType": "expense",
             "amountMinor": 54_000,
             "currency": "INR",
@@ -70,6 +71,7 @@ def test_money_page_endpoints_share_taxonomy_and_transaction_truth(db):
         }
 
         updated = client.patch(f"/transactions/{transaction.id}", json={
+            "expectedVersion": 1,
             "amountMinor": 72_500,
             "merchant": "Uber",
             "transactionAt": "2026-08-13T10:00:00Z",
@@ -112,7 +114,9 @@ def test_money_page_endpoints_share_taxonomy_and_transaction_truth(db):
     assert transaction.merchant_name == "Uber"
     assert transaction.category_id == travel.id
     assert transaction.subcategory_id == local_transport.id
-    assert db.scalar(select(func.count()).select_from(TransactionFieldValue).where(TransactionFieldValue.transaction_id == transaction.id)) == 8
+    # Provenance records only fields whose canonical value actually changed;
+    # unchanged form fields do not manufacture amendment history.
+    assert db.scalar(select(func.count()).select_from(TransactionFieldValue).where(TransactionFieldValue.transaction_id == transaction.id)) == 7
     assert db.scalar(select(func.count()).select_from(TransactionFieldValue).where(TransactionFieldValue.transaction_id == created_id)) == 8
     assert set(db.scalars(select(TransactionFieldValue.origin).where(TransactionFieldValue.transaction_id == created_id))) == {"manual_entry"}
 
@@ -179,6 +183,7 @@ def test_removed_transactions_stay_in_the_log_but_out_of_the_totals(db):
         restored = client.post(f"/transactions/{removed.id}/restore")
         assert restored.status_code == 200
         assert restored.json()["deletedAt"] is None
+        assert restored.json()["rowVersion"] == 2
         overview_after = client.get("/overview", params={"month": "2026-07-01"})
         assert overview_after.json()["summary"]["spentMinor"] == 80_000
         assert overview_after.json()["summary"]["expenseCount"] == 2
@@ -191,12 +196,17 @@ def test_removed_transactions_stay_in_the_log_but_out_of_the_totals(db):
         page_removed = client.delete(f"/transactions/{kept.id}")
         assert page_removed.status_code == 200
         assert page_removed.json()["deletedAt"] is not None
+        assert page_removed.json()["rowVersion"] == 2
         overview_final = client.get("/overview", params={"month": "2026-07-01"})
         assert overview_final.json()["summary"]["spentMinor"] == 50_000
         # A second delete of the same record is a refusal.
         assert client.delete(f"/transactions/{kept.id}").status_code == 404
         # And the round trip closes: restore brings it back.
-        assert client.post(f"/transactions/{kept.id}/restore").status_code == 200
+        restored_kept = client.post(f"/transactions/{kept.id}/restore")
+        assert restored_kept.status_code == 200
+        assert restored_kept.json()["rowVersion"] == 3
+        history = client.get(f"/transactions/{kept.id}/revisions").json()
+        assert [item["source"] for item in history] == ["restore", "remove", "legacy_baseline"]
 
 
 def test_transaction_page_edit_cannot_cross_the_user_boundary(db):
@@ -217,6 +227,7 @@ def test_transaction_page_edit_cannot_cross_the_user_boundary(db):
 
     with TestClient(_application(db, user)) as client:
         response = client.patch(f"/transactions/{transaction.id}", json={
+            "expectedVersion": 1,
             "amountMinor": 20_000,
             "merchant": "Should not change",
             "transactionAt": "2026-08-13T00:00:00Z",
@@ -254,6 +265,7 @@ def test_money_page_normalizes_non_expense_taxonomy_and_spend_nature(db):
 
     with TestClient(_application(db, user)) as client:
         response = client.patch(f"/transactions/{transaction.id}", json={
+            "expectedVersion": 1,
             "amountMinor": 50_000,
             "merchant": "Correction",
             "transactionAt": "2026-08-13T00:00:00Z",
@@ -270,6 +282,56 @@ def test_money_page_normalizes_non_expense_taxonomy_and_spend_nature(db):
     assert response.json()["category"] == "Income"
     assert response.json()["subcategory"] == "Other"
     assert response.json()["spendNature"] == "unknown"
+
+
+def test_transaction_patch_is_versioned_auditable_and_noop_safe(db):
+    user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
+    transaction = Transaction(
+        user_id=user.id,
+        transaction_type="expense",
+        amount_minor=25_000,
+        currency="INR",
+        merchant_name="Coffee",
+        transaction_at=datetime(2026, 8, 13, tzinfo=timezone.utc),
+        spend_nature="discretionary",
+        status="confirmed",
+    )
+    db.add(transaction)
+    db.commit()
+    payload = {
+        "expectedVersion": 1,
+        "amountMinor": 30_000,
+        "merchant": "Coffee",
+        "transactionAt": "2026-08-13T00:00:00Z",
+        "transactionType": "expense",
+        "categoryId": None,
+        "subcategoryId": None,
+        "spendNature": "discretionary",
+        "location": None,
+    }
+
+    with TestClient(_application(db, user)) as client:
+        updated = client.patch(f"/transactions/{transaction.id}", json=payload)
+        assert updated.status_code == 200
+        assert updated.json()["rowVersion"] == 2
+
+        stale = client.patch(f"/transactions/{transaction.id}", json={**payload, "amountMinor": 40_000})
+        assert stale.status_code == 409
+        assert "Reload and review" in stale.json()["detail"]
+
+        noop = client.patch(f"/transactions/{transaction.id}", json={**payload, "expectedVersion": 2})
+        assert noop.status_code == 200
+        assert noop.json()["rowVersion"] == 2
+
+        history = client.get(f"/transactions/{transaction.id}/revisions")
+        assert history.status_code == 200
+        assert [item["revisionNumber"] for item in history.json()] == [2, 1]
+        assert history.json()[0]["source"] == "ledger_edit"
+        assert history.json()[0]["changes"]["amount_minor"] == {"before": 25_000, "after": 30_000}
+
+    assert db.scalar(select(func.count()).select_from(TransactionRevision).where(
+        TransactionRevision.transaction_id == transaction.id,
+    )) == 2
 
 
 def test_creating_taxonomy_from_the_editor_is_user_scoped_and_idempotent_by_name(db):
@@ -435,7 +497,7 @@ def test_transaction_endpoints_store_a_device_fix_only_while_location_is_allowed
         assert saved.location_source == "device"
 
         # Renaming the place keeps the fix and its provenance.
-        renamed = client.patch(f"/transactions/{saved.id}", json={**entry, "location": "100 Feet Road"})
+        renamed = client.patch(f"/transactions/{saved.id}", json={**entry, "expectedVersion": saved.row_version, "location": "100 Feet Road"})
         assert renamed.status_code == 200
         db.refresh(saved)
         assert renamed.json()["location"] == "100 Feet Road"
@@ -443,7 +505,7 @@ def test_transaction_endpoints_store_a_device_fix_only_while_location_is_allowed
         assert saved.location_source == "device"
 
         moved = client.patch(f"/transactions/{saved.id}", json={
-            **entry, "latitude": 12.934533, "longitude": 77.626579, "locationAccuracy": 42,
+            **entry, "expectedVersion": saved.row_version, "latitude": 12.934533, "longitude": 77.626579, "locationAccuracy": 42,
         })
         assert moved.status_code == 200
         db.refresh(saved)
@@ -453,7 +515,7 @@ def test_transaction_endpoints_store_a_device_fix_only_while_location_is_allowed
         # Revoked afterwards: an edit from a device that has lost permission
         # neither records a new fix nor erases where the spend actually was.
         assert client.patch("/privacy/location", json={"enabled": False}).status_code == 200
-        edited = client.patch(f"/transactions/{saved.id}", json={**entry, "latitude": 1.0, "longitude": 1.0})
+        edited = client.patch(f"/transactions/{saved.id}", json={**entry, "expectedVersion": saved.row_version, "latitude": 1.0, "longitude": 1.0})
         assert edited.status_code == 200
         db.refresh(saved)
         assert float(saved.latitude) == 12.934533

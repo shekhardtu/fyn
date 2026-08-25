@@ -25,6 +25,12 @@ def test_persisted_instants_are_timezone_aware_and_calendar_dates_are_explicit()
         # deterministic replay re-derives relative date windows against.
         "analysis_tool_runs.run_date",
         "goals.target_date",
+        # Shared lending uses jointly chosen local calendar days. Converting
+        # these to instants would make the written return date change by zone.
+        "loan_cashflows.occurred_on",
+        "loan_term_versions.due_date",
+        "loan_term_versions.money_date",
+        "loans.next_due_date",
         "recurring_transactions.next_expected_date",
     }
 

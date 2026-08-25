@@ -8,7 +8,7 @@ import hashlib
 import json
 import re
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from time import perf_counter
 from typing import Any, Protocol
 from uuid import UUID, uuid4
@@ -19,10 +19,11 @@ from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
 from ..config import get_settings
-from ..event_time import as_utc, from_local_parts, local_date, local_now, now_utc, resolve_event_time, utc_range_for_local_dates
+from ..event_time import as_utc, from_local_parts, local_date, local_now, local_time, now_utc, resolve_event_time, utc_range_for_local_dates
 from ..domain import (
     CONVERSATION_TITLE_MAX,
     EDITABLE_TRANSACTION_TYPES,
+    MAX_TRANSACTION_AMOUNT_MINOR,
     DraftState,
     ExecutionStatus,
     FinancialSourceType,
@@ -137,7 +138,7 @@ from .runtime_tools import build_runtime_tools, capability_notes
 from .semantic import AnalysisPlan, AnalysisToolProposal, AnalysisTransform, FinanceFilter, FinanceQueryPlan
 from .tags import TagRepository
 from .taxonomy import TaxonomyRepository, agent_taxonomy as _agent_taxonomy
-from .transactions import UNSET, active_transaction, canonical_transactions, create_transaction, owned_transaction_source, update_saved_transaction
+from .transactions import UNSET, TransactionVersionConflict, active_transaction, canonical_transactions, create_transaction, owned_transaction_source, update_saved_transaction
 from .user_memory import remember_taxonomy_mapping
 
 
@@ -263,9 +264,14 @@ def resolve_widget_action(
     if origin is None:
         return None
     message, index, widget = origin
+    # Exact coordinates belong only on the transaction record. Keeping them a
+    # second time in the durable widget receipt would widen their exposure and
+    # is unnecessary for the compact "Updated" history state.
+    private_receipt_fields = {"latitude", "longitude", "locationAccuracy"}
     safe_payload = {
         key: value
         for key, value in payload.items()
+        if key not in private_receipt_fields
         if isinstance(value, (str, int, float, bool, list, dict)) or value is None
     }
     data = {
@@ -1928,6 +1934,7 @@ def _transaction_preview(db: Session, transaction: Transaction, draft_id: UUID |
         type=WidgetType.TRANSACTION_PREVIEW,
         data={
             "transactionId": str(transaction.id),
+            "rowVersion": transaction.row_version,
             "draftId": str(draft_id) if draft_id else None,
             "title": label,
             "amountMinor": transaction.amount_minor,
@@ -1947,6 +1954,403 @@ def _transaction_preview(db: Session, transaction: Transaction, draft_id: UUID |
             WidgetAction(id="remove", label="Remove", action=WidgetActionId.REQUEST_REMOVE_TRANSACTION, style="ghost", payload={"transactionId": str(transaction.id)}),
         ],
     )
+
+
+def _supersede_transaction_previews(
+    db: Session,
+    conversation: Conversation,
+    transaction: Transaction,
+    replacement: Widget,
+) -> list[WidgetUpdate]:
+    """Turn earlier cards for this ledger row into durable audit receipts.
+
+    A transaction UUID names the record; ``rowVersion`` names the snapshot a
+    card displayed. Without replacing the old persisted widgets, a correction
+    leaves several full-size cards that all appear current after a reload.
+    """
+    transaction_id = str(transaction.id)
+    updates: list[WidgetUpdate] = []
+    messages = list(db.scalars(
+        select(Message)
+        .where(Message.conversation_id == conversation.id)
+        .order_by(Message.created_at, Message.id)
+    ))
+    for message in messages:
+        stored = list(message.widgets or [])
+        changed = False
+        for index, raw_widget in enumerate(stored):
+            if not isinstance(raw_widget, dict):
+                continue
+            raw_data = raw_widget.get("data")
+            if (
+                raw_widget.get("type") != WidgetType.TRANSACTION_PREVIEW.value
+                or not isinstance(raw_data, dict)
+                or str(raw_data.get("transactionId")) != transaction_id
+                or raw_widget.get("id") == replacement.id
+                # Preserve the immediate version-to-version chain. Version 1
+                # should keep pointing to Version 2 after Version 3 appears.
+                or raw_data.get("supersededByWidgetId") is not None
+            ):
+                continue
+            data = {
+                **raw_data,
+                "lifecycle": WidgetLifecycle.COMPLETED,
+                "supersededByVersion": transaction.row_version,
+                "supersededByWidgetId": replacement.id,
+                "completion": {
+                    "action": "supersede_transaction_preview",
+                    "values": {
+                        "transactionId": transaction_id,
+                        "replacementWidgetId": replacement.id,
+                        "replacementVersion": transaction.row_version,
+                    },
+                },
+            }
+            resolved = Widget(
+                id=str(raw_widget["id"]),
+                type=WidgetType.TRANSACTION_PREVIEW,
+                version=raw_widget.get("version", 1),
+                data=data,
+                actions=[],
+            )
+            stored[index] = _serialize_widget(resolved)
+            updates.append(WidgetUpdate(widget_id=resolved.id, widget=resolved))
+            changed = True
+        if changed:
+            # JSON columns do not observe mutations within their nested list.
+            message.widgets = stored
+    return updates
+
+
+def _transaction_edit_action_patch(proposed: dict[str, Any]) -> dict[str, Any]:
+    aliases = {
+        "amount_minor": "amountMinor",
+        "transaction_date": "transactionDate",
+        "transaction_type": "transactionType",
+        "category_slug": "categorySlug",
+        "subcategory_slug": "subcategorySlug",
+        "spend_nature": "spendNature",
+    }
+    return {
+        aliases.get(key, key): value
+        for key, value in proposed.items()
+        if key in {
+            "amount_minor", "merchant", "transaction_date", "transaction_type",
+            "category_slug", "subcategory_slug", "location", "spend_nature", "tags",
+        }
+    }
+
+
+def _transaction_edit_candidate_preview(
+    db: Session,
+    transaction: Transaction,
+    proposed: dict[str, Any],
+) -> Widget:
+    """Keep a proposed patch attached while the user chooses an exact row."""
+    widget = _transaction_preview(db, transaction)
+    patch = _transaction_edit_action_patch(proposed)
+    widget.actions = [
+        action.model_copy(update={
+            "payload": {**action.payload, **patch},
+        })
+        if action.action is WidgetActionId.EDIT_SAVED_TRANSACTION
+        else action
+        for action in widget.actions
+    ]
+    return widget
+
+
+def _transaction_ids_on_message(message: Message) -> list[UUID]:
+    """Read server-issued transaction identities from one prior response."""
+    ids: list[UUID] = []
+    for widget in message.widgets or []:
+        if not isinstance(widget, dict) or widget.get("type") != WidgetType.TRANSACTION_PREVIEW:
+            continue
+        raw_data = widget.get("data")
+        data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
+        if data.get("status") == "Removed" or not data.get("transactionId"):
+            continue
+        try:
+            ids.append(UUID(str(data["transactionId"])))
+        except ValueError:
+            continue
+    return list(dict.fromkeys(ids))
+
+
+def _transaction_edit_targets(
+    db: Session,
+    user: User,
+    conversation: Conversation,
+    text: str,
+    inputs: dict[str, Any],
+) -> list[Transaction]:
+    """Resolve an edit target without exposing ledger IDs to the model.
+
+    The target mode and old-record selectors are a separate namespace from
+    replacement fields. Only server-issued card IDs or exact canonical fields
+    may select a row; prose keyword overlap is never mutation authority.
+    """
+    target_mode = str(inputs.get("target_mode") or "")
+    latest_assistant = db.scalar(
+        select(Message)
+        .where(
+            Message.conversation_id == conversation.id,
+            Message.role == "assistant",
+            Message.content != "",
+            *_history_only(),
+        )
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(1)
+    )
+    if latest_assistant is not None:
+        card_targets = [
+            transaction
+            for transaction_id in _transaction_ids_on_message(latest_assistant)
+            if (transaction := active_transaction(db, user.id, transaction_id)) is not None
+        ]
+        if target_mode == "preceding_card":
+            return card_targets
+        if (
+            not target_mode
+            and card_targets
+            and (
+                _is_correction_followup(text)
+                or re.search(r"\b(?:it|this|that|previous|above|same)\b", text, re.I)
+            )
+        ):
+            return card_targets
+
+    latest_by_entry = target_mode in {"latest", "latest_entered"}
+    order = (
+        (Transaction.created_at.desc(), Transaction.id.desc())
+        if latest_by_entry
+        else (Transaction.transaction_at.desc(), Transaction.created_at.desc(), Transaction.id.desc())
+    )
+    selector_used = False
+    statement = canonical_transactions(user.id).order_by(*order)
+    target_merchant = normalize_merchant(str(inputs.get("target_merchant") or ""))
+    if target_merchant:
+        selector_used = True
+    if inputs.get("target_amount_minor") is not None:
+        selector_used = True
+        statement = statement.where(Transaction.amount_minor == int(inputs["target_amount_minor"]))
+    if inputs.get("target_transaction_date"):
+        selector_used = True
+        try:
+            target_day = date.fromisoformat(str(inputs["target_transaction_date"]))
+        except ValueError:
+            return []
+        start_at, end_at = utc_range_for_local_dates(target_day, target_day, user.timezone)
+        statement = statement.where(
+            Transaction.transaction_at >= start_at,
+            Transaction.transaction_at < end_at,
+        )
+    if inputs.get("target_transaction_type"):
+        selector_used = True
+        statement = statement.where(Transaction.transaction_type == str(inputs["target_transaction_type"]))
+    if inputs.get("target_category_slug"):
+        selector_used = True
+        category = TaxonomyRepository(db, user.id).category_by_slug(
+            str(inputs["target_category_slug"]),
+            expense_only=True,
+        )
+        if category is None:
+            return []
+        statement = statement.where(Transaction.category_id == category.id)
+
+    if not selector_used and target_mode not in {"latest", "latest_entered", "latest_by_transaction_date"}:
+        return []
+    # An unqualified latest request needs one row. Exact selectors intentionally
+    # have no arbitrary recency ceiling: an older transaction remains editable
+    # no matter how large the user's ledger becomes.
+    if not selector_used:
+        statement = statement.limit(1)
+    candidates = list(db.scalars(statement))
+    if target_merchant:
+        candidates = [
+            item for item in candidates
+            if normalize_merchant(item.merchant_name) == target_merchant
+        ]
+    if target_mode in {"latest", "latest_entered", "latest_by_transaction_date"}:
+        # Qualifiers such as "last expense" are applied before latest wins.
+        # The model may propose a mode, but it never gets to erase an exact
+        # server-side selector and thereby select a different financial row.
+        return candidates[:1]
+    return candidates
+
+
+def _saved_transaction_edit_response(
+    db: Session,
+    user: User,
+    conversation: Conversation,
+    transaction: Transaction,
+    *,
+    proposed: dict[str, Any] | None = None,
+) -> AgentResponse:
+    """Render the one canonical saved-transaction editor, optionally prefilled."""
+    proposed = dict(proposed or {})
+    taxonomy = TaxonomyRepository(db, user.id)
+    categories = _expense_categories_for_user(db, user.id)
+    subcategories = [
+        item
+        for category in categories
+        for item in taxonomy.subcategories(category.id)
+    ]
+
+    transaction_type = str(proposed.get("transaction_type") or transaction.transaction_type)
+    category_id = transaction.category_id
+    subcategory_id = transaction.subcategory_id
+    if transaction_type == TransactionType.EXPENSE.value:
+        if "category_slug" in proposed:
+            category = taxonomy.category_by_slug(
+                str(proposed["category_slug"]),
+                expense_only=True,
+            )
+            if category is not None:
+                category_id = category.id
+                subcategory_id = None
+        if "subcategory_slug" in proposed and category_id is not None:
+            subcategory = taxonomy.subcategory_by_slug(
+                category_id,
+                str(proposed["subcategory_slug"]),
+            )
+            if subcategory is not None:
+                subcategory_id = subcategory.id
+    else:
+        category_id = None
+        subcategory_id = None
+
+    transaction_at = transaction.transaction_at
+    if proposed.get("transaction_date"):
+        try:
+            proposed_day = date.fromisoformat(str(proposed["transaction_date"]))
+        except ValueError:
+            proposed_day = None
+        if proposed_day is not None:
+            transaction_at = from_local_parts(
+                proposed_day,
+                local_time(transaction.transaction_at, user.timezone),
+                user.timezone,
+            )
+
+    current_tags = list(db.scalars(
+        select(Tag.name)
+        .join(TransactionTag, TransactionTag.tag_id == Tag.id)
+        .where(TransactionTag.transaction_id == transaction.id)
+        .order_by(Tag.name)
+    ))
+    amount_minor = int(proposed.get("amount_minor") or transaction.amount_minor)
+    data = {
+        "transactionId": str(transaction.id),
+        "rowVersion": transaction.row_version,
+        "title": "Edit saved transaction",
+        "amountMinor": amount_minor,
+        "currency": transaction.currency,
+        "merchant": proposed.get("merchant", transaction.merchant_name),
+        "transactionAt": as_utc(transaction_at),
+        "transactionType": transaction_type,
+        "location": proposed.get("location", transaction.location_label),
+        "spendNature": proposed.get("spend_nature", transaction.spend_nature),
+        "tags": proposed.get("tags", current_tags),
+        "categoryId": str(category_id) if category_id else None,
+        "subcategoryId": str(subcategory_id) if subcategory_id else None,
+        "categories": [{"id": str(category.id), "label": category.name} for category in categories],
+        "subcategories": [
+            {"id": str(item.id), "categoryId": str(item.category_id), "label": item.name}
+            for item in subcategories
+        ],
+        "fields": ["amount", "merchant", "transaction_at", "transaction_type", "location", "spend_nature", "tags", "category", "subcategory"],
+    }
+    widget = Widget(
+        id=f"edit-saved-{transaction.id}-{uuid4()}",
+        type=WidgetType.TRANSACTION_EDIT,
+        data=data,
+        actions=[
+            WidgetAction(id="update", label="Apply changes", action=WidgetActionId.UPDATE_SAVED_TRANSACTION, style="primary", payload={"transactionId": str(transaction.id), "expectedVersion": transaction.row_version}),
+            WidgetAction(id="cancel", label="Cancel", action=WidgetActionId.CANCEL_SAVED_TRANSACTION_EDIT, style="secondary", payload={"transactionId": str(transaction.id)}),
+        ],
+    )
+    if proposed:
+        content = (
+            f"I prepared the correction to {format_money_minor(amount_minor, transaction.currency)}. "
+            "Review the fields below, then press Apply changes."
+            if "amount_minor" in proposed
+            else "I prefilled the requested changes. Review them, then press Apply changes."
+        )
+    else:
+        content = "Update the fields below. Changes apply when you press Apply changes."
+    return persist_agent_response(
+        db,
+        conversation,
+        content,
+        widgets=[widget],
+        pending_action=PendingAction(
+            action=WidgetActionId.UPDATE_SAVED_TRANSACTION,
+            resource_id=str(transaction.id),
+        ),
+    )
+
+
+def _transaction_edit_response(
+    db: Session,
+    user: User,
+    conversation: Conversation,
+    text: str,
+    decision: CopilotDecision,
+) -> AgentResponse:
+    inputs = dict(decision.operation_inputs)
+    targets = _transaction_edit_targets(db, user, conversation, text, inputs)
+    if not targets:
+        return persist_agent_response(
+            db,
+            conversation,
+            "I couldn’t identify one active transaction to edit, so nothing was changed. Open the transaction’s Edit action or describe the old merchant, amount, or date.",
+            task_status="failed",
+            failure_stage="transaction_target_resolution",
+            error_code="transaction_edit_target_not_found",
+        )
+    if len(targets) > 1:
+        shown = targets[:5]
+        try:
+            proposals = {
+                item.id: _transaction_edit_proposal(inputs, text, item)
+                for item in shown
+            }
+        except ValueError as error:
+            return persist_agent_response(
+                db,
+                conversation,
+                f"I couldn’t prepare that correction: {error}. Nothing was changed.",
+                task_status="failed",
+                failure_stage="transaction_edit_validation",
+                error_code="invalid_transaction_edit",
+            )
+        return persist_agent_response(
+            db,
+            conversation,
+            f"I found {len(targets)} possible transactions. Choose Edit on the one you meant; nothing has changed yet.",
+            widgets=[
+                _transaction_edit_candidate_preview(db, item, proposals[item.id])
+                for item in shown
+            ],
+            citations=[DataReference(
+                label="Possible transactions to edit",
+                entity_type="transaction",
+                entity_ids=[str(item.id) for item in shown],
+            )],
+        )
+    try:
+        proposed = _transaction_edit_proposal(inputs, text, targets[0])
+    except ValueError as error:
+        return persist_agent_response(
+            db,
+            conversation,
+            f"I couldn’t prepare that correction: {error}. Nothing was changed.",
+            task_status="failed",
+            failure_stage="transaction_edit_validation",
+            error_code="invalid_transaction_edit",
+        )
+    return _saved_transaction_edit_response(db, user, conversation, targets[0], proposed=proposed)
 
 
 def _committed_response(db: Session, user: User, conversation: Conversation, draft: TransactionDraft) -> AgentResponse:
@@ -3253,6 +3657,125 @@ def _is_bare_amount(text: str) -> bool:
     )) and parse_amount_minor(text) is not None
 
 
+def _replacement_amount_minor(text: str) -> int | None:
+    """Read the replacement side of an amount correction.
+
+    ``parse_amount_minor`` intentionally returns the first financial amount in
+    ordinary prose. An edit such as ``change ₹500 to ₹640`` has a different
+    grammar: the value after ``to`` is the replacement. Composite Indian
+    amounts remain delegated to the canonical parser.
+    """
+    if _relative_amount_change(text) is not None:
+        return None
+    replacement_cues = list(re.finditer(
+        r"\b(?:to|with)\b|\bshould\s+(?:be|read)\b|\bmake(?:\s+it|\s+the\s+amount)?\b|(?:->|→)",
+        text,
+        re.I,
+    ))
+    for cue in reversed(replacement_cues):
+        tail = text[cue.end():]
+        # ``with`` may introduce another field ("with merchant Toit"). It is
+        # an amount replacement only when the value starts immediately after
+        # the cue.
+        if not re.match(r"\s*(?:(?:₹|rs\.?|inr)\s*)?[0-9]", tail, re.I):
+            continue
+        replacement = parse_amount_minor(tail)
+        if replacement is not None:
+            return replacement
+    return parse_amount_minor(text)
+
+
+def _relative_amount_change(text: str) -> tuple[str, int] | None:
+    """Return a deterministic relative amount instruction from user text.
+
+    Keywords here describe arithmetic only; they never identify the row. The
+    target remains a server-issued card ID or exact canonical selectors.
+    """
+    lowered = text.casefold()
+    direction: str | None = None
+    if re.search(r"\b(?:increase|raise|add|increment|more)\b", lowered):
+        direction = "add"
+    elif re.search(r"\b(?:decrease|reduce|lower|subtract|deduct|less)\b", lowered):
+        direction = "subtract"
+    if direction is None:
+        return None
+    # "Increase to ₹500" is a replacement, not current + ₹500.
+    if re.search(r"\b(?:increase|raise|decrease|reduce|lower)\b[^.!?]*\bto\b", lowered):
+        return None
+
+    percent = re.search(r"(\d+(?:\.\d+)?)\s*(?:%|percent\b)", lowered)
+    if percent:
+        bps = int((Decimal(percent.group(1)) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        return (f"percentage_{'increase' if direction == 'add' else 'decrease'}", bps)
+
+    cue = re.search(r"\bby\b", text, re.I)
+    if cue:
+        delta = parse_amount_minor(text[cue.end():])
+    else:
+        verb = re.search(r"\b(?:increase|raise|add|increment|decrease|reduce|lower|subtract|deduct)\b", text, re.I)
+        delta = parse_amount_minor(text[verb.end():]) if verb else None
+    if delta is None:
+        direction_word = re.search(r"\b(?:more|less)\b", text, re.I)
+        delta = parse_amount_minor(text[:direction_word.start()]) if direction_word else None
+    return (direction, delta) if delta is not None else None
+
+
+def _transaction_edit_proposal(
+    inputs: dict[str, Any],
+    text: str,
+    transaction: Transaction,
+) -> dict[str, Any]:
+    metadata = {"target_mode", "amount_change_kind", "amount_delta_minor", "amount_percent_bps"}
+    proposed = {
+        key: value
+        for key, value in inputs.items()
+        if not key.startswith("target_") and key not in metadata
+    }
+
+    relative = _relative_amount_change(text)
+    if relative is None and inputs.get("amount_change_kind") in {
+        "add", "subtract", "percentage_increase", "percentage_decrease",
+    }:
+        kind = str(inputs["amount_change_kind"])
+        operand = inputs.get("amount_percent_bps") if kind.startswith("percentage_") else inputs.get("amount_delta_minor")
+        if operand is not None:
+            relative = kind, int(operand)
+
+    if relative is not None:
+        kind, operand = relative
+        if operand <= 0:
+            raise ValueError("the increase or decrease must be greater than zero")
+        if kind in {"add", "subtract"}:
+            amount_minor = transaction.amount_minor + operand if kind == "add" else transaction.amount_minor - operand
+        else:
+            delta = int(
+                (Decimal(transaction.amount_minor) * Decimal(operand) / Decimal(10_000))
+                .quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            )
+            amount_minor = transaction.amount_minor + delta if kind == "percentage_increase" else transaction.amount_minor - delta
+        proposed["amount_minor"] = amount_minor
+    else:
+        explicit_replacement = re.search(
+            r"\b(?:to|with)\b|\bshould\s+(?:be|read)\b|\bmake(?:\s+it|\s+the\s+amount)?\b|(?:->|→)",
+            text,
+            re.I,
+        )
+        replacement = _replacement_amount_minor(text) if explicit_replacement else None
+        if replacement is not None and "amount_minor" in inputs:
+            # The user's digits outrank the model-authored copy of those digits.
+            proposed["amount_minor"] = replacement
+
+    amount = proposed.get("amount_minor")
+    if amount is not None:
+        amount = int(amount)
+        if amount <= 0:
+            raise ValueError("the corrected amount must be greater than zero")
+        if amount > MAX_TRANSACTION_AMOUNT_MINOR:
+            raise ValueError("the corrected amount exceeds the supported maximum")
+        proposed["amount_minor"] = amount
+    return proposed
+
+
 def _is_amount_led_shorthand(text: str) -> bool:
     """Narrow ledger shorthand such as '₹250 for coffee'; not a general intent classifier."""
     return bool(
@@ -3280,10 +3803,11 @@ def _is_correction_followup(text: str) -> bool:
     bounded grounding lineage supplied with recent turns before responding.
     """
     return bool(re.search(
-        r"^\s*(?:no\b|but\b|i\s+mean\b)"
+        r"^\s*(?:no\b|but\b|i\s+mean\b|(?:can|could|would)\s+i\s+(?:correct|fix)\b)"
         r"|\b(?:not\s+what\s+i\s+(?:asked|meant)|you\s+(?:said|showed)|earlier\s+you|"
         r"seem(?:s|ed)?\s+to\s+be|that(?:'s|\s+is)\s+(?:wrong|incorrect)|"
-        r"why\s+(?:is|are|did)|does(?:n['’]t|\s+not)\s+match)\b",
+        r"why\s+(?:is|are|did)|does(?:n['’]t|\s+not)\s+match|"
+        r"(?:correct|fix)\s+(?:it|this|that|the\s+(?:amount|cost|transaction|entry)))\b",
         text,
         re.I,
     ))
@@ -4671,6 +5195,15 @@ class _ConversationPrimitiveRuntime:
         )
         return _draft_or_commit(self.db, self.user, self.conversation, draft)
 
+    def edit_transaction(self, _arguments: dict[str, Any]) -> AgentResponse:
+        return _transaction_edit_response(
+            self.db,
+            self.user,
+            self.conversation,
+            self.text,
+            self.decision,
+        )
+
     def remove_transaction(self, _arguments: dict[str, Any]) -> AgentResponse:
         return _transaction_removal_response(
             self.db, self.user, self.conversation, self.text
@@ -6014,6 +6547,27 @@ def _run_turn(
             "intentContract": turn_intent.model_dump(mode="json"),
             "correctionRequested": _is_correction_followup(text),
         }
+        latest_contextual_assistant = next((
+            item for item in reversed(recent_context)
+            if item.get("role") == "assistant"
+        ), None)
+        transaction_surface_count = sum(
+            1
+            for surface in (
+                latest_contextual_assistant.get("responseSurfaces", [])
+                if latest_contextual_assistant
+                else []
+            )
+            if surface.get("type") == WidgetType.TRANSACTION_PREVIEW
+        )
+        if transaction_surface_count:
+            # This is a capability hint, not financial context: the model gets
+            # no row ID or value. The runtime later binds the server-issued
+            # card identity if and only if the edit proposal chooses it.
+            workflow_context.update({
+                "kind": "saved_transaction_card",
+                "transactionCardCount": transaction_surface_count,
+            })
         if active_draft:
             workflow_context.update({
                 "kind": "transaction_draft",
@@ -7344,36 +7898,31 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
         transaction = active_transaction(db, user.id, UUID(str(transaction_id))) if transaction_id else None
         if not transaction:
             raise ValueError("Unknown transaction")
-        # Always supply expense choices because Type is editable. An income or
-        # transfer can become an expense inside this form; withholding the
-        # taxonomy until after the save made that transition impossible to
-        # classify correctly.
-        categories = _expense_categories_for_user(db, user.id)
-        subcategories = [
-            item
-            for category in categories
-            for item in taxonomy.subcategories(category.id)
-        ]
-        tags = list(db.scalars(select(Tag.name).join(TransactionTag, TransactionTag.tag_id == Tag.id).where(TransactionTag.transaction_id == transaction.id).order_by(Tag.name)))
-        widget = Widget(
-            id=f"edit-saved-{transaction.id}-{uuid4()}",
-            type=WidgetType.TRANSACTION_EDIT,
-            data={"transactionId": str(transaction.id), "title": "Edit saved transaction", "amountMinor": transaction.amount_minor, "currency": transaction.currency, "merchant": transaction.merchant_name, "transactionAt": as_utc(transaction.transaction_at), "transactionType": transaction.transaction_type, "location": transaction.location_label, "spendNature": transaction.spend_nature, "tags": tags, "categoryId": str(transaction.category_id) if transaction.category_id else None, "subcategoryId": str(transaction.subcategory_id) if transaction.subcategory_id else None, "categories": [{"id": str(category.id), "label": category.name} for category in categories], "subcategories": [{"id": str(item.id), "categoryId": str(item.category_id), "label": item.name} for item in subcategories], "fields": ["amount", "merchant", "transaction_at", "transaction_type", "location", "spend_nature", "tags", "category", "subcategory"]},
-            actions=[
-                WidgetAction(id="update", label="Apply changes", action=WidgetActionId.UPDATE_SAVED_TRANSACTION, style="primary", payload={"transactionId": str(transaction.id)}),
-                WidgetAction(id="cancel", label="Cancel", action=WidgetActionId.CANCEL_SAVED_TRANSACTION_EDIT, style="secondary", payload={"transactionId": str(transaction.id)}),
-            ],
-        )
-        content = "Update the fields below. Changes apply when you press Apply changes."
-        return persist_agent_response(
+        proposed_aliases = {
+            "amountMinor": "amount_minor",
+            "merchant": "merchant",
+            "transactionDate": "transaction_date",
+            "transactionType": "transaction_type",
+            "categorySlug": "category_slug",
+            "subcategorySlug": "subcategory_slug",
+            "location": "location",
+            "spendNature": "spend_nature",
+            "tags": "tags",
+        }
+        proposed = {
+            field: payload[source]
+            for source, field in proposed_aliases.items()
+            # The action transport materializes optional schema fields as null.
+            # Opening an editor with those placeholders must not be mistaken
+            # for a request to clear every nullable transaction field.
+            if source in payload and payload[source] is not None
+        }
+        return _saved_transaction_edit_response(
             db,
+            user,
             conversation,
-            content,
-            widgets=[widget],
-            pending_action=PendingAction(
-                action=WidgetActionId.UPDATE_SAVED_TRANSACTION,
-                resource_id=str(transaction.id),
-            ),
+            transaction,
+            proposed=proposed,
         )
     if action is WidgetActionId.CANCEL_SAVED_TRANSACTION_EDIT:
         transaction_id = payload.get("transactionId")
@@ -7387,28 +7936,64 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
         transaction_id = payload.get("transactionId")
         if not transaction_id:
             raise ValueError("Unknown transaction")
+        existing_transaction = active_transaction(db, user.id, UUID(str(transaction_id)))
+        if existing_transaction is None:
+            raise ValueError("Unknown transaction")
+        opening_version = existing_transaction.row_version
         transaction_at = (
             datetime.fromisoformat(str(payload["transactionAt"]).replace("Z", "+00:00"))
             if payload.get("transactionAt")
             else UNSET
         )
-        transaction = update_saved_transaction(
-            db,
-            user.id,
-            UUID(str(transaction_id)),
-            amount_minor=int(payload["amountMinor"]),
-            merchant=payload["merchant"] if "merchant" in payload else UNSET,
-            transaction_at=transaction_at,
-            transaction_type=payload["transactionType"] if "transactionType" in payload else UNSET,
-            location=payload["location"] if "location" in payload else UNSET,
-            spend_nature=payload["spendNature"] if "spendNature" in payload else UNSET,
-            category_id=payload["categoryId"] if "categoryId" in payload else UNSET,
-            subcategory_id=payload["subcategoryId"] if "subcategoryId" in payload else UNSET,
-            tags=payload["tags"] if "tags" in payload else UNSET,
+        try:
+            transaction = update_saved_transaction(
+                db,
+                user.id,
+                UUID(str(transaction_id)),
+                amount_minor=int(payload["amountMinor"]),
+                merchant=payload["merchant"] if "merchant" in payload else UNSET,
+                transaction_at=transaction_at,
+                transaction_type=payload["transactionType"] if "transactionType" in payload else UNSET,
+                location=payload["location"] if "location" in payload else UNSET,
+                spend_nature=payload["spendNature"] if "spendNature" in payload else UNSET,
+                category_id=payload["categoryId"] if "categoryId" in payload else UNSET,
+                subcategory_id=payload["subcategoryId"] if "subcategoryId" in payload else UNSET,
+                latitude=payload.get("latitude"),
+                longitude=payload.get("longitude"),
+                location_accuracy=payload.get("locationAccuracy"),
+                tags=payload["tags"] if "tags" in payload else UNSET,
+                expected_version=payload.get("expectedVersion"),
+                source="conversation_edit",
+                conversation_id=conversation.id,
+            )
+        except TransactionVersionConflict:
+            current_transaction = active_transaction(db, user.id, UUID(str(transaction_id)))
+            if current_transaction is None:
+                raise ValueError("Unknown transaction")
+            return persist_agent_response(
+                db,
+                conversation,
+                "This transaction changed after the editor opened, so I did not overwrite it. Review the latest version and choose Edit again.",
+                widgets=[_transaction_preview(db, current_transaction, status="Changed since opened")],
+                task_status="needs_input",
+                failure_stage="transaction_version_conflict",
+                error_code="stale_transaction_edit",
+            )
+        amended = transaction.row_version > opening_version
+        content = (
+            f"Updated the {format_money_minor(transaction.amount_minor, transaction.currency)} transaction."
+            if amended
+            else "No changes were needed; this transaction is already up to date."
         )
-        content = f"Updated the {format_money_minor(transaction.amount_minor, transaction.currency)} transaction."
-        widget = _transaction_preview(db, transaction, status="Updated")
-        return persist_agent_response(db, conversation, content, widgets=[widget])
+        widget = _transaction_preview(db, transaction, status="Updated" if amended else "Unchanged")
+        superseded = _supersede_transaction_previews(db, conversation, transaction, widget)
+        return persist_agent_response(
+            db,
+            conversation,
+            content,
+            widgets=[widget],
+            widget_updates=superseded,
+        )
     if action is WidgetActionId.REQUEST_REMOVE_TRANSACTION:
         transaction_id = payload.get("transactionId")
         transaction = active_transaction(db, user.id, UUID(str(transaction_id))) if transaction_id else None

@@ -8,9 +8,14 @@ export const appPaths = Object.freeze({
   dashboards: "/dashboards",
   transactions: "/transactions",
   categories: "/categories",
+  loans: "/loans",
+  loan: (loanId: string) => `/loans/${encodeURIComponent(loanId)}`,
+  loanInvitation: (token: string) => `/loan-invitations/${encodeURIComponent(token)}`,
   conversation: (conversationId: string) => `/c/${encodeURIComponent(conversationId)}`,
 });
 
 export const appRoutePatterns = Object.freeze({
   conversation: "/c/:conversationId",
+  loan: "/loans/:loanId",
+  loanInvitation: "/loan-invitations/:token",
 });

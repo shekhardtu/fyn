@@ -7,6 +7,7 @@ function Harness() {
   return <div>
     <SiteHeader title="Transactions" subtitle="Ledger" hidden={!headerVisible} navOpen={false} onOpenNav={() => undefined} />
     <button onClick={() => updateHeaderForScroll(120)}>Content moves up</button>
+    <button onClick={() => updateHeaderForScroll(116)}>Tiny reverse</button>
     <button onClick={() => updateHeaderForScroll(60)}>Content moves down</button>
   </div>;
 }
@@ -19,6 +20,14 @@ describe("universal site header", () => {
     expect(header).toHaveClass("-translate-y-full");
     fireEvent.click(screen.getByRole("button", { name: "Content moves down" }));
     expect(header).not.toHaveClass("-translate-y-full");
+  });
+
+  it("ignores a trackpad-sized direction reversal while hidden", () => {
+    render(<Harness />);
+    const header = screen.getByRole("banner");
+    fireEvent.click(screen.getByRole("button", { name: "Content moves up" }));
+    fireEvent.click(screen.getByRole("button", { name: "Tiny reverse" }));
+    expect(header).toHaveClass("-translate-y-full");
   });
 
   it("keeps a fixed page heading inert: no rename handler, no editing", () => {

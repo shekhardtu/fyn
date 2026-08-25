@@ -20,7 +20,7 @@ from app.services.agui import execute_widget_action
 from app.services.calculators import loan_amortization_schedule
 from app.schemas import ActionRequest, PendingAction, Widget, WidgetAction, WidgetType
 from app.services.conversation import get_or_create_conversation, handle_action, handle_chat
-from app.services.preferences import AnswerStyle, AnswerValidationMode, set_answer_style, set_answer_validation_mode
+from app.services.preferences import AnswerStyle, AnswerValidationMode, set_answer_style, set_answer_validation_mode, set_user_preference
 
 
 def _operator_proposal(operation_id: str, inputs: dict) -> OperatorResult:
@@ -1974,6 +1974,327 @@ def test_user_can_edit_an_automatically_saved_transaction(db):
     assert response.widgets[0].data["transactionAt"] == datetime(2026, 8, 9, tzinfo=timezone.utc)
 
 
+def test_saved_transaction_edit_ignores_null_transport_placeholders(db):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    created = handle_chat(db, user, conversation, "Spent ₹2,000 at Toit today")
+
+    response = execute_widget_action(ActionRequest(
+        conversation_id=conversation.id,
+        widget_id=created.widgets[0].id,
+        action="edit_saved_transaction",
+        payload={
+            "transactionId": created.widgets[0].data["transactionId"],
+            "amountMinor": None,
+            "merchant": None,
+            "transactionDate": None,
+            "transactionType": None,
+            "categorySlug": None,
+            "subcategorySlug": None,
+            "location": None,
+            "spendNature": None,
+            "tags": None,
+        },
+    ), db, user)
+
+    assert response.widgets[0].type == "transaction_edit"
+    assert response.widgets[0].data["amountMinor"] == 200_000
+    assert response.widgets[0].data["merchant"] == "Toit"
+
+
+def test_noop_conversation_edit_is_truthful_and_does_not_invent_a_version(db):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    created = handle_chat(db, user, conversation, "Spent ₹2,000 at Toit today")
+
+    unchanged = handle_action(db, user, conversation, "update_saved_transaction", {
+        "transactionId": created.widgets[0].data["transactionId"],
+        "amountMinor": 200_000,
+    })
+
+    assert unchanged.message == "No changes were needed; this transaction is already up to date."
+    assert unchanged.widgets[0].data["status"] == "Unchanged"
+    assert unchanged.widgets[0].data["rowVersion"] == 1
+    replaced = next(update.widget for update in unchanged.widget_updates if update.widget_id == created.widgets[0].id)
+    assert replaced.data["rowVersion"] == replaced.data["supersededByVersion"] == 1
+
+
+def test_conversational_amount_correction_prefills_the_preceding_saved_transaction(db, monkeypatch, agent_enabled):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    created = handle_chat(
+        db,
+        user,
+        conversation,
+        "Spent ₹6,00,000 on clothing for the car cost today",
+    )
+    transaction_id = created.widgets[0].data["transactionId"]
+    monkeypatch.setattr(
+        conversation_service,
+        "run_operator",
+        lambda *args, **kwargs: _operator_proposal(
+            "edit_transaction",
+            {"target_mode": "preceding_card", "amount_minor": 64_000_000},
+        ),
+    )
+
+    prepared = handle_chat(
+        db,
+        user,
+        conversation,
+        "Can I correct the car cost to ₹6,40,000?",
+    )
+
+    # Conversation can now enter the canonical saved-edit workflow. Merely
+    # preparing the correction does not mutate the ledger before HITL Apply.
+    transaction = db.get(Transaction, UUID(transaction_id))
+    assert transaction.amount_minor == 60_000_000
+    assert prepared.widgets[0].type == "transaction_edit"
+    assert prepared.widgets[0].data["transactionId"] == transaction_id
+    assert prepared.widgets[0].data["amountMinor"] == 64_000_000
+    assert prepared.pending_action.action == "update_saved_transaction"
+    assert "Apply changes" in prepared.message
+
+    updated = handle_action(
+        db,
+        user,
+        conversation,
+        "update_saved_transaction",
+        {"transactionId": transaction_id, "amountMinor": 64_000_000},
+    )
+
+    assert db.get(Transaction, UUID(transaction_id)).amount_minor == 64_000_000
+    assert updated.widgets[0].data["status"] == "Updated"
+    prior_card = next(
+        update.widget
+        for update in updated.widget_updates
+        if update.widget_id == created.widgets[0].id
+    )
+    assert prior_card.actions == []
+    assert prior_card.data["lifecycle"] == "completed"
+    assert prior_card.data["rowVersion"] == 1
+    assert prior_card.data["supersededByVersion"] == 2
+    assert prior_card.data["supersededByWidgetId"] == updated.widgets[0].id
+    stored_created = db.get(Message, created.message_id)
+    assert stored_created.widgets[0]["data"]["supersededByVersion"] == 2
+
+    amended_again = handle_action(
+        db,
+        user,
+        conversation,
+        "update_saved_transaction",
+        {"transactionId": transaction_id, "amountMinor": 65_000_000},
+    )
+    version_two_card = next(
+        update.widget
+        for update in amended_again.widget_updates
+        if update.widget_id == updated.widgets[0].id
+    )
+    assert version_two_card.data["rowVersion"] == 2
+    assert version_two_card.data["supersededByVersion"] == 3
+    assert all(update.widget_id != created.widgets[0].id for update in amended_again.widget_updates)
+    db.refresh(stored_created)
+    assert stored_created.widgets[0]["data"]["supersededByVersion"] == 2
+
+
+def test_latest_expense_qualifier_is_applied_before_latest_selection(db, monkeypatch, agent_enabled):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    expense = handle_chat(db, user, conversation, "Spent ₹250 on coffee today")
+    handle_chat(db, user, conversation, "Salary ₹500 credited today")
+    monkeypatch.setattr(
+        conversation_service,
+        "run_operator",
+        lambda *args, **kwargs: _operator_proposal(
+            "edit_transaction",
+            {
+                "target_mode": "latest_entered",
+                "target_transaction_type": "expense",
+                "amount_minor": 30_000,
+            },
+        ),
+    )
+
+    prepared = handle_chat(db, user, conversation, "Correct my last expense to ₹300")
+
+    assert prepared.widgets[0].type == "transaction_edit"
+    assert prepared.widgets[0].data["transactionId"] == expense.widgets[0].data["transactionId"]
+    assert prepared.widgets[0].data["transactionType"] == "expense"
+    assert prepared.widgets[0].data["amountMinor"] == 30_000
+
+
+def test_relative_amount_correction_uses_the_existing_amount_as_its_base(db, monkeypatch, agent_enabled):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    created = handle_chat(db, user, conversation, "Spent ₹250 on coffee today")
+    monkeypatch.setattr(
+        conversation_service,
+        "run_operator",
+        lambda *args, **kwargs: _operator_proposal(
+            "edit_transaction",
+            {
+                "target_mode": "preceding_card",
+                # Mirrors the dangerous model interpretation the old path
+                # made; deterministic arithmetic must still recover ₹350.
+                "amount_minor": 10_000,
+            },
+        ),
+    )
+
+    prepared = handle_chat(db, user, conversation, "Increase that transaction by ₹100")
+
+    assert prepared.widgets[0].data["transactionId"] == created.widgets[0].data["transactionId"]
+    assert prepared.widgets[0].data["amountMinor"] == 35_000
+
+
+def test_stale_conversation_editor_does_not_overwrite_a_newer_version(db):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    created = handle_chat(db, user, conversation, "₹250 for coffee")
+    transaction_id = created.widgets[0].data["transactionId"]
+    edit = handle_action(db, user, conversation, "edit_saved_transaction", {"transactionId": transaction_id})
+
+    handle_action(db, user, conversation, "update_saved_transaction", {
+        "transactionId": transaction_id,
+        "expectedVersion": edit.widgets[0].data["rowVersion"],
+        "amountMinor": 30_000,
+    })
+    stale = execute_widget_action(ActionRequest(
+        conversation_id=conversation.id,
+        widget_id=edit.widgets[0].id,
+        action="update_saved_transaction",
+        payload={"transactionId": transaction_id, "amountMinor": 40_000},
+    ), db, user)
+
+    transaction = db.get(Transaction, UUID(transaction_id))
+    assert transaction.amount_minor == 30_000
+    assert transaction.row_version == 2
+    assert "did not overwrite" in stale.message
+    assert stale.widgets[0].data["rowVersion"] == 2
+
+
+def test_saved_edit_cannot_create_a_transfer_without_accounts(db):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    created = handle_chat(db, user, conversation, "₹250 for coffee")
+    transaction_id = created.widgets[0].data["transactionId"]
+    transaction = db.get(Transaction, UUID(transaction_id))
+
+    with pytest.raises(ValueError, match="requires both a source and destination account"):
+        handle_action(db, user, conversation, "update_saved_transaction", {
+            "transactionId": transaction_id,
+            "expectedVersion": transaction.row_version,
+            "amountMinor": transaction.amount_minor,
+            "transactionType": "transfer",
+        })
+
+    db.refresh(transaction)
+    assert transaction.transaction_type == "expense"
+    assert transaction.row_version == 1
+
+
+def test_operator_can_prepare_non_amount_edits_through_the_same_saved_editor(db, monkeypatch, agent_enabled):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    created = handle_chat(db, user, conversation, "Spent ₹900 at Toit today")
+    transaction_id = created.widgets[0].data["transactionId"]
+    monkeypatch.setattr(
+        conversation_service,
+        "run_operator",
+        lambda *args, **kwargs: _operator_proposal(
+            "edit_transaction",
+            {"target_mode": "preceding_card", "merchant": "Local Coffee"},
+        ),
+    )
+
+    prepared = handle_chat(
+        db,
+        user,
+        conversation,
+        "Change the merchant on that transaction to Local Coffee",
+    )
+
+    assert db.get(Transaction, UUID(transaction_id)).merchant_name == "Toit"
+    assert prepared.widgets[0].type == "transaction_edit"
+    assert prepared.widgets[0].data["merchant"] == "Local Coffee"
+    assert prepared.widgets[0].data["transactionId"] == transaction_id
+
+
+def test_ambiguous_structured_edit_preserves_the_patch_until_the_user_selects_a_row(db, monkeypatch, agent_enabled):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    handle_chat(db, user, conversation, "Spent ₹900 at Toit today")
+    handle_chat(db, user, conversation, "Spent ₹1,100 at Toit today")
+    monkeypatch.setattr(
+        conversation_service,
+        "run_operator",
+        lambda *args, **kwargs: _operator_proposal(
+            "edit_transaction",
+            {
+                "target_mode": "matching",
+                "target_merchant": "Toit",
+                "amount_minor": 120_000,
+            },
+        ),
+    )
+
+    candidates = handle_chat(
+        db,
+        user,
+        conversation,
+        "Change a Toit transaction to ₹1,200",
+    )
+
+    assert len(candidates.widgets) == 2
+    first_edit = next(
+        action for action in candidates.widgets[0].actions
+        if action.action == "edit_saved_transaction"
+    )
+    assert first_edit.payload["amountMinor"] == 120_000
+
+    prepared = handle_action(
+        db,
+        user,
+        conversation,
+        first_edit.action,
+        first_edit.payload,
+    )
+
+    assert prepared.widgets[0].data["transactionId"] == candidates.widgets[0].data["transactionId"]
+    assert prepared.widgets[0].data["amountMinor"] == 120_000
+
+
+def test_structured_old_values_select_one_row_without_using_the_replacement_as_a_filter(db, monkeypatch, agent_enabled):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    first = handle_chat(db, user, conversation, "Spent ₹900 at Toit today")
+    handle_chat(db, user, conversation, "Spent ₹1,100 at Toit today")
+    monkeypatch.setattr(
+        conversation_service,
+        "run_operator",
+        lambda *args, **kwargs: _operator_proposal(
+            "edit_transaction",
+            {
+                "target_mode": "matching",
+                "target_merchant": "Toit",
+                "target_amount_minor": 90_000,
+                "amount_minor": 120_000,
+            },
+        ),
+    )
+
+    prepared = handle_chat(
+        db,
+        user,
+        conversation,
+        "Change the ₹900 Toit transaction to ₹1,200",
+    )
+
+    assert prepared.widgets[0].type == "transaction_edit"
+    assert prepared.widgets[0].data["transactionId"] == first.widgets[0].data["transactionId"]
+    assert prepared.widgets[0].data["amountMinor"] == 120_000
+
+
 def test_user_can_cancel_saved_transaction_edit_without_mutation(db):
     user = default_user(db)
     conversation = get_or_create_conversation(db, user)
@@ -2084,6 +2405,37 @@ def test_structured_transaction_edit_records_user_corrections(db):
         TransactionFieldValue.origin == "user_correction",
     )))
     assert {item.field_name for item in corrections} >= {"amount_minor", "location", "spend_nature", "tags"}
+
+
+def test_saved_transaction_hitl_edit_records_device_fix_without_copying_it_to_the_widget_receipt(db):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    transaction_id = handle_chat(db, user, conversation, "₹250 for coffee").widgets[0].data["transactionId"]
+    set_user_preference(db, user.id, "location:enabled", {"enabled": True})
+    edit = handle_action(db, user, conversation, "edit_saved_transaction", {"transactionId": transaction_id})
+
+    response = execute_widget_action(ActionRequest(
+        conversation_id=conversation.id,
+        widget_id=edit.widgets[0].id,
+        action="update_saved_transaction",
+        payload={
+            "transactionId": transaction_id,
+            "amountMinor": 25_000,
+            "location": "Bengaluru, Karnataka",
+            "latitude": 12.971599,
+            "longitude": 77.594566,
+            "locationAccuracy": 18,
+        },
+    ), db, user)
+
+    transaction = db.get(Transaction, UUID(transaction_id))
+    assert float(transaction.latitude) == 12.971599
+    assert float(transaction.longitude) == 77.594566
+    assert transaction.location_accuracy == 18
+    assert transaction.location_label == "Bengaluru, Karnataka"
+    receipt = response.widget_updates[0].widget.data["completion"]["values"]
+    assert receipt["location"] == "Bengaluru, Karnataka"
+    assert {"latitude", "longitude", "locationAccuracy"}.isdisjoint(receipt)
 
 
 def test_rich_transfer_resolves_accounts_when_automatically_applied(db):
@@ -2526,6 +2878,13 @@ def test_semantic_removal_route_handles_natural_wording_and_typo_without_creatin
 def test_explicit_expense_amount_does_not_turn_a_removal_into_a_new_draft():
     assert conversation_service._fast_path_decision(
         "Remove the ₹500 expense",
+        date(2026, 8, 15),
+    ) is None
+
+
+def test_selector_amount_does_not_become_a_replacement_amount():
+    assert conversation_service._fast_path_decision(
+        "Correct the ₹500 transaction with merchant Toit",
         date(2026, 8, 15),
     ) is None
 

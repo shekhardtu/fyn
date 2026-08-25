@@ -14,6 +14,8 @@ TAXONOMY_FIELD_NAMES = ("category", "subcategory")
 # Single source for the conversation title bound: the column, the rename
 # schema, and the generated frontend contract all derive from this value.
 CONVERSATION_TITLE_MAX = 160
+# Exact across PostgreSQL, Python, JSON, and JavaScript Number.
+MAX_TRANSACTION_AMOUNT_MINOR = 9_000_000_000_000_000
 
 
 class TransactionType(ValueEnum):

@@ -10,7 +10,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import TypedDict, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..domain import ACTIVE_STATUS, SpendNature, TransactionType, WidgetActionId
@@ -74,6 +74,7 @@ def _active_loans(db: Session, user_id: UUID, currency: str) -> list[Loan]:
             Loan.user_id == user_id,
             Loan.currency == currency,
             Loan.status == ACTIVE_STATUS,
+            or_(Loan.direction.is_(None), Loan.direction == "borrowed"),
         ).order_by(Loan.outstanding_principal_minor.desc())
     ))
 

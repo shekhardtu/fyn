@@ -32,10 +32,10 @@ _AMOUNT_COMPARISON = re.compile(
     r"\s*(?:(?:₹|rs\.?|inr|usd|eur|gbp)\s*)?[0-9]",
     re.I,
 )
-_MUTATION_VERB = r"(?:add|create|delete|edit|enter|log|make|record|remove|rename|save|set|setup|set\s+up|update)"
+_MUTATION_VERB = r"(?:add|change|correct|create|delete|edit|enter|log|make|record|remove|rename|replace|save|set|setup|set\s+up|update)"
 _MUTATION_REQUEST = re.compile(
     rf"^\s*(?:okay[, ]+|ok[, ]+)?(?:please\s+)?{_MUTATION_VERB}\b"
-    rf"|\b(?:can|could|would)\s+you\s+(?:please\s+)?{_MUTATION_VERB}\b"
+    rf"|\b(?:can|could|would)\s+(?:you|i)\s+(?:please\s+)?{_MUTATION_VERB}\b"
     rf"|\b(?:want|need|would\s+like)\s+to\s+{_MUTATION_VERB}\b",
     re.I,
 )

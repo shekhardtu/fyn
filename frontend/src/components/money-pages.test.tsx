@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { TransactionEditor, TransactionRow } from "@/components/money-pages";
 import * as api from "@/lib/api";
 import type { CategoryDirectoryOut, TransactionListItemOut } from "@/lib/protocol";
+import { groupTransactionsByDay } from "@/lib/transaction-groups";
 
 /** The dropdowns are Base UI comboboxes now: open the trigger, press the row. */
 function chooseOption(label: string, option: string | RegExp) {
@@ -22,6 +23,7 @@ const categories: CategoryDirectoryOut[] = [{
 
 const transaction: TransactionListItemOut = {
   id: "16a3ff79-4035-427b-a538-6ce4bf2b608b",
+  rowVersion: 1,
   transactionType: "expense",
   amountMinor: 54_000,
   currency: "INR",
@@ -80,7 +82,29 @@ describe("TransactionRow", () => {
   });
 });
 
+describe("transaction day groups", () => {
+  it("preserves every stable transaction row while producing contiguous group counts", () => {
+    const items = [
+      transaction,
+      { ...transaction, id: "97975fca-938d-493b-a163-7dcf393849fa", merchant: "Auto rides", transactionAt: "2026-08-13T07:30:00Z" },
+      { ...transaction, id: "d7e7b57f-48a7-4ed0-a839-dba471aff18e", merchant: "School fees", transactionAt: "2026-08-12T08:30:00Z" },
+    ];
+
+    const groups = groupTransactionsByDay(items);
+
+    expect(groups.map((group) => group.transactions.length)).toEqual([2, 1]);
+    expect(groups.flatMap((group) => group.transactions).map((item) => item.id)).toEqual(items.map((item) => item.id));
+  });
+});
+
 describe("TransactionEditor", () => {
+  it("shows the same canonical transaction reference and current version as conversation cards", () => {
+    render(<TransactionEditor transaction={{ ...transaction, rowVersion: 3 }} categories={categories} saving={false} problem={null} onClose={() => undefined} onSave={() => undefined} />);
+
+    expect(screen.getByRole("button", { name: `Copy Transaction ID ${transaction.id}` })).toHaveTextContent("TXN 16A3FF79…BF2B608B");
+    expect(screen.getByText("· Version 3")).toBeInTheDocument();
+  });
+
   it("shows and saves a browser fix while prefilling its resolved place", async () => {
     const onSave = vi.fn();
     const getCurrentPosition = vi.fn((success: PositionCallback) => success({
@@ -161,12 +185,39 @@ describe("TransactionEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
 
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      expectedVersion: 1,
       amountMinor: 72_500,
       merchant: "Uber",
       categoryId: categories[0].id,
       subcategoryId: categories[0].subcategories[0].id,
       location: "Bengaluru",
     }));
+  });
+
+  it("shows immutable amendment history and does not offer an accountless transfer conversion", () => {
+    render(<TransactionEditor
+      transaction={transaction}
+      categories={categories}
+      revisions={[{
+        revisionNumber: 2,
+        source: "conversation_edit",
+        reason: null,
+        changes: { amount_minor: { before: 25_000, after: 54_000 } },
+        createdAt: "2026-08-14T10:15:00Z",
+      }]}
+      saving={false}
+      problem={null}
+      onClose={() => undefined}
+      onSave={() => undefined}
+    />);
+
+    fireEvent.click(screen.getByText("Amendment history"));
+    expect(screen.getByText("Version 2")).toBeInTheDocument();
+    expect(screen.getByText(/Conversation edit/)).toBeInTheDocument();
+    expect(screen.getByText(/₹250.*₹540/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Transaction type" }));
+    expect(screen.queryByRole("option", { name: "Transfer" })).not.toBeInTheDocument();
   });
 
   it("creates a subcategory from inside the dropdown and saves with it", async () => {

@@ -38,6 +38,7 @@ from .models import (
     Subcategory,
     Transaction,
     TransactionDraft,
+    TransactionRevision,
     User,
     UserPreference,
 )
@@ -99,6 +100,7 @@ from .schemas import (
     TransactionCategoryHintIn,
     TransactionCategoryHintOut,
     TransactionListItemOut,
+    TransactionRevisionOut,
     TransactionUpdateIn,
     Widget,
     WidgetAction,
@@ -144,6 +146,7 @@ from .services.transactions import (
     remove_transaction as remove_active_transaction,
     restore_transaction as restore_removed_transaction,
     transaction_log,
+    TransactionVersionConflict,
     update_saved_transaction as apply_transaction_update,
 )
 from .services.user_data import delete_user_data, export_user_data
@@ -904,6 +907,7 @@ def _record_import_preview(
 def _transaction_list_item(item: Transaction, category: str | None, subcategory: str | None) -> TransactionListItemOut:
     return TransactionListItemOut(
         id=item.id,
+        row_version=item.row_version,
         transaction_type=item.transaction_type,
         amount_minor=item.amount_minor,
         currency=item.currency,
@@ -953,6 +957,32 @@ def transactions(
             Subcategory.name.ilike(pattern),
         ))
     return [_transaction_list_item(item, category, subcategory) for item, category, subcategory in db.execute(statement)]
+
+
+@router.get("/transactions/{transaction_id}/revisions", response_model=list[TransactionRevisionOut])
+def transaction_revisions(
+    transaction_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> list[TransactionRevisionOut]:
+    owned = db.scalar(transaction_log(user.id).where(Transaction.id == transaction_id))
+    if owned is None:
+        raise HTTPException(status_code=404, detail="Unknown transaction")
+    revisions = db.scalars(
+        select(TransactionRevision)
+        .where(TransactionRevision.transaction_id == transaction_id)
+        .order_by(TransactionRevision.revision_number.desc())
+    )
+    return [
+        TransactionRevisionOut(
+            revision_number=revision.revision_number,
+            source=revision.source,
+            reason=revision.reason,
+            changes=revision.changes,
+            created_at=as_utc(revision.created_at),
+        )
+        for revision in revisions
+    ]
 
 
 def _saved_transaction_item(db: Session, user_id: UUID, transaction: Transaction) -> TransactionListItemOut:
@@ -1273,6 +1303,13 @@ def update_transaction(
     # side — which is how three fields were once accepted by this endpoint's
     # schema and silently dropped before the row was written. Named arguments
     # make that a type error instead of a quiet omission.
+    if db.scalar(canonical_transactions(user.id).where(Transaction.id == transaction_id)) is None:
+        raise HTTPException(status_code=404, detail="Unknown transaction")
+    if request.expected_version is None:
+        raise HTTPException(
+            status_code=status.HTTP_428_PRECONDITION_REQUIRED,
+            detail="expectedVersion is required when editing a transaction",
+        )
     expense = request.transaction_type == TransactionType.EXPENSE
     try:
         transaction = apply_transaction_update(
@@ -1288,6 +1325,8 @@ def update_transaction(
             latitude=request.latitude,
             longitude=request.longitude,
             location_accuracy=request.location_accuracy,
+            expected_version=request.expected_version,
+            source="ledger_edit",
             # Category payloads are meaningful only for expenses. UNSET for
             # every other direction leaves the stored taxonomy to be normalized
             # from the new type, so a stale hidden form value cannot preserve
@@ -1295,6 +1334,8 @@ def update_transaction(
             category_id=request.category_id if expense else UNSET,
             subcategory_id=request.subcategory_id if expense else UNSET,
         )
+    except TransactionVersionConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except ValueError as error:
         status_code = 404 if str(error) == "Unknown transaction" else 422
         raise HTTPException(status_code=status_code, detail=str(error)) from error

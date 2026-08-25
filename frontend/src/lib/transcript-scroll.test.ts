@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { transcriptElementOffset } from "@/lib/transcript-scroll";
+import { focusedTurnSpacerHeight, transcriptElementOffset } from "@/lib/transcript-scroll";
 
 function dimensions(element: HTMLElement, values: { top: number; scrollTop?: number; scrollHeight?: number; clientHeight?: number }) {
   element.getBoundingClientRect = () => ({
@@ -45,5 +45,20 @@ describe("transcriptElementOffset", () => {
     dimensions(target, { top: 40 });
 
     expect(transcriptElementOffset(scroller, target)).toBe(0);
+  });
+});
+
+describe("focusedTurnSpacerHeight", () => {
+  it("reserves the unanswered part of the reading viewport", () => {
+    expect(focusedTurnSpacerHeight(800, 72, 208)).toBe(520);
+  });
+
+  it("shrinks to zero once an answer fills the focused window", () => {
+    expect(focusedTurnSpacerHeight(800, 72, 900)).toBe(0);
+  });
+
+  it("cannot publish negative or non-finite layout values", () => {
+    expect(focusedTurnSpacerHeight(800, -10, -20)).toBe(800);
+    expect(focusedTurnSpacerHeight(Number.NaN, 72, 208)).toBe(0);
   });
 });

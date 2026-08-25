@@ -100,6 +100,37 @@ def test_operator_places_the_selected_style_contract_after_the_current_message(m
     assert "adjacent plain-language interpretation" in prompt
 
 
+def test_active_transaction_card_keeps_the_edit_operation_in_the_bounded_tool_set(monkeypatch):
+    captured = {}
+
+    class StubOperator:
+        def run(self, *_args, **_kwargs):
+            return iter([RunOutput(content="I need the typed edit operation.")])
+
+    def build_stub(*_args, **kwargs):
+        captured["operation_ids"] = {
+            operation.id for operation in kwargs["operation_candidates"]
+        }
+        return StubOperator()
+
+    monkeypatch.setattr(agents, "build_operator", build_stub)
+
+    agents.run_operator(
+        "Make it 640000",
+        [],
+        date(2026, 8, 19),
+        "Asia/Kolkata",
+        [],
+        workflow_context={
+            "kind": "saved_transaction_card",
+            "transactionCardCount": 1,
+            "intentContract": {"requested_effect": "mutation"},
+        },
+    )
+
+    assert "edit_transaction" in captured["operation_ids"]
+
+
 def test_related_question_suggester_disables_blocking_vendor_telemetry(monkeypatch):
     captured = {}
 

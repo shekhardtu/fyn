@@ -71,6 +71,14 @@ class Settings(BaseSettings):
     postmark_from_email: str | None = None
     postmark_message_stream: str = "outbound"
     otp_email_subject: str = "Your fyn AI sign-in code"
+    # Shared-record notifications use the same providers through a separate
+    # transactional outbox. SMS needs its own DLT-registered template because
+    # an invitation/reminder is not an OTP message.
+    msg91_lending_template_id: str | None = None
+    lending_web_url: str = "http://localhost:3000"
+    lending_notification_worker_enabled: bool = True
+    lending_notification_poll_seconds: int = Field(default=5, ge=1, le=60)
+    lending_notification_max_attempts: int = Field(default=5, ge=1, le=20)
     google_client_id: str | None = None
     operator_model: str = "gpt-5.6-luna"
     # Complex SQL analysis gets a quality-first reasoning budget while routine

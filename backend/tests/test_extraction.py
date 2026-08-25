@@ -11,6 +11,8 @@ from app.services.turn_signals import expects_value_answer, has_amount_compariso
     ("Salary of ₹3 lakh", 30_000_000),
     ("received Rs. 50,000", 5_000_000),
     ("invested 20k in mutual funds", 2_000_000),
+    ("Similarly add 6 lakh 40,000 as a car cost", 64_000_000),
+    ("Paid 1 crore 20 lakh 40 thousand for the property", 1_204_000_000),
     ("200 rupees for ice cream", 20_000),
     ("200 rupess for ice cream", 20_000),
 ])
