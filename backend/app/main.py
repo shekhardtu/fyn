@@ -168,7 +168,7 @@ async def lifespan(_: FastAPI):
     # The cutoff excludes runs accepted by this process: their request handlers
     # already own execution, so recovery can never race them for the same row.
     _agent_recovery_task = asyncio.create_task(_drain_agent_recovery_backlog(now_utc()))
-    if settings.lending_notification_worker_enabled:
+    if settings.personal_lending_available and settings.lending_notification_worker_enabled:
         _lending_notification_task = asyncio.create_task(_deliver_lending_notifications())
     try:
         yield
@@ -201,5 +201,6 @@ app.add_middleware(
 )
 app.include_router(auth_router)
 app.include_router(contacts_router)
-app.include_router(lending_router)
+if settings.personal_lending_available:
+    app.include_router(lending_router)
 app.include_router(router)

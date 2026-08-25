@@ -226,7 +226,7 @@ describe("personal lending UI", () => {
 
   it("keeps the private invitation path through sign-in", async () => {
     api.loadLoanInvitation.mockResolvedValue({ tokenValid: true, senderName: "Hari", recipientName: "Rahul", channel: "email", destinationMasked: "r***@example.com", expiresAt: "2026-09-01T10:00:00Z", canRedeem: false, loan: null });
-    api.getAuthStatus.mockResolvedValue({ authenticated: false, profile: null, googleSignInAvailable: false });
+    api.getAuthStatus.mockResolvedValue({ authenticated: false, profile: null, googleSignInAvailable: false, features: { personalLending: true } });
     renderRoute("/loan-invitations/private-token", "/loan-invitations/:token", <LoanInvitationPage />);
     const link = await screen.findByRole("link", { name: /Sign in to review/ });
     expect(link).toHaveAttribute("href", "/login?next=%2Floan-invitations%2Fprivate-token");

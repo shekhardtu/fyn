@@ -57,7 +57,7 @@ const SENT = {
 
 describe("session-carrying requests", () => {
   it("includes credentials on every authenticated call", async () => {
-    fetchMock.mockResolvedValue(respond({ authenticated: true, profile: PROFILE, googleSignInAvailable: true }));
+    fetchMock.mockResolvedValue(respond({ authenticated: true, profile: PROFILE, googleSignInAvailable: true, features: { personalLending: true } }));
     await getAuthStatus();
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ credentials: "include" });
 

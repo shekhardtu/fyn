@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
+from .config import get_settings
 from .database import get_db
 from .domain import IdentityProvider
 from .models import User, UserIdentity
@@ -125,6 +126,7 @@ def _signed_in(db: Session, response: Response, user: User) -> AuthStatusOut:
         "authenticated": True,
         "profile": _profile(db, user),
         "google_sign_in_available": google_sign_in_enabled(),
+        "features": {"personal_lending": get_settings().personal_lending_available},
     })
 
 
@@ -138,6 +140,7 @@ def auth_session(db: Session = Depends(get_db), user: User | None = Depends(opti
         "authenticated": user is not None,
         "profile": _profile(db, user) if user else None,
         "google_sign_in_available": google_sign_in_enabled(),
+        "features": {"personal_lending": get_settings().personal_lending_available},
     })
 
 

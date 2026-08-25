@@ -233,6 +233,9 @@ export const AgentThreadStateOut = z.looseObject({
   "latestRun": z.union([AgentRunOut, z.null()]).default(null),
   "interrupts": z.array(AgentInterruptOut).optional(),
 });
+export const FeatureAvailabilityOut = z.looseObject({
+  "personalLending": z.boolean(),
+});
 export const IdentityProvider = z.enum(["phone", "email", "google"]);
 export const IdentitySource = z.enum(["otp", "google"]);
 export const IdentityOut = z.looseObject({
@@ -257,6 +260,7 @@ export const AuthStatusOut = z.looseObject({
   "authenticated": z.boolean(),
   "profile": z.union([ProfileOut, z.null()]).default(null),
   "googleSignInAvailable": z.boolean(),
+  "features": FeatureAvailabilityOut,
 });
 export const AvoidableExpensesData = z.looseObject({
   "lifecycle": z.union([WidgetLifecycle, z.null()]).default(null),
@@ -291,6 +295,7 @@ export const ConversationOut = z.looseObject({
 export const BootstrapResponse = z.looseObject({
   "user": BootstrapUser,
   "active_conversation": ConversationOut,
+  "features": FeatureAvailabilityOut,
 });
 export const BudgetActionPayload = z.looseObject({
   "budgetId": z.uuid(),
@@ -1336,6 +1341,7 @@ export const schemas = {
   DocumentRevisionOut,
   DraftActionPayload,
   EditSavedTransactionPayload,
+  FeatureAvailabilityOut,
   FinancialMessageOut,
   FulfillDocumentRequestsIn,
   GoalProgressData,

@@ -181,6 +181,21 @@ class Settings(BaseSettings):
             return self.email_provider
         return "postmark" if self.postmark_server_token and self.postmark_from_email else "console"
 
+    @property
+    def r2_document_storage_ready(self) -> bool:
+        """Whether private document evidence has durable production storage."""
+        return self.document_storage_provider == "r2" and all((
+            (self.r2_account_id or "").strip(),
+            (self.r2_bucket or "").strip(),
+            (self.r2_access_key_id or "").strip(),
+            (self.r2_secret_access_key or "").strip(),
+        ))
+
+    @property
+    def personal_lending_available(self) -> bool:
+        """Keep unfinished storage infrastructure out of the production product."""
+        return self.environment.strip().lower() != "production" or self.r2_document_storage_ready
+
 
 @lru_cache
 def get_settings() -> Settings:

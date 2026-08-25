@@ -79,7 +79,14 @@ from .services.shared_records import (
 )
 
 
-router = APIRouter(tags=["personal-lending"])
+def _require_personal_lending(settings: Settings = Depends(get_settings)) -> None:
+    if not settings.personal_lending_available:
+        # A disabled product surface is indistinguishable from one that does
+        # not exist. This prevents stale clients from bypassing the UI gate.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+
+router = APIRouter(tags=["personal-lending"], dependencies=[Depends(_require_personal_lending)])
 IdempotencyKey = Annotated[str, Header(alias="Idempotency-Key", min_length=8, max_length=200)]
 
 

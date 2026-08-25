@@ -14417,6 +14417,19 @@
       "title": "BootstrapUser",
       "type": "object"
     },
+    "FeatureAvailabilityOut": {
+      "properties": {
+        "personalLending": {
+          "title": "Personallending",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "personalLending"
+      ],
+      "title": "FeatureAvailabilityOut",
+      "type": "object"
+    },
     "BootstrapResponse": {
       "$defs": {
         "BootstrapUser": {
@@ -14511,6 +14524,19 @@
             "entity_type"
           ],
           "title": "DataReference",
+          "type": "object"
+        },
+        "FeatureAvailabilityOut": {
+          "properties": {
+            "personalLending": {
+              "title": "Personallending",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "personalLending"
+          ],
+          "title": "FeatureAvailabilityOut",
           "type": "object"
         },
         "MessageOut": {
@@ -14726,11 +14752,15 @@
         },
         "active_conversation": {
           "$ref": "#/$defs/ConversationOut"
+        },
+        "features": {
+          "$ref": "#/$defs/FeatureAvailabilityOut"
         }
       },
       "required": [
         "user",
-        "active_conversation"
+        "active_conversation",
+        "features"
       ],
       "title": "BootstrapResponse",
       "type": "object"
@@ -17704,6 +17734,19 @@
     },
     "AuthStatusOut": {
       "$defs": {
+        "FeatureAvailabilityOut": {
+          "properties": {
+            "personalLending": {
+              "title": "Personallending",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "personalLending"
+          ],
+          "title": "FeatureAvailabilityOut",
+          "type": "object"
+        },
         "IdentityOut": {
           "properties": {
             "id": {
@@ -17857,11 +17900,15 @@
         "googleSignInAvailable": {
           "title": "Googlesigninavailable",
           "type": "boolean"
+        },
+        "features": {
+          "$ref": "#/$defs/FeatureAvailabilityOut"
         }
       },
       "required": [
         "authenticated",
-        "googleSignInAvailable"
+        "googleSignInAvailable",
+        "features"
       ],
       "title": "AuthStatusOut",
       "type": "object"
@@ -18273,5 +18320,5 @@
     "approve_operation": "OperationActionPayload",
     "cancel_operation": "OperationActionPayload"
   },
-  "schemaHash": "435b32cb53155ced565e8f92dc1b38b72470ecae986d27406d307030c509aaf0"
+  "schemaHash": "7c203d8da79e8efea99e6bf3269e1b12901d97c688c4bf77bbcdac0a0c889ef7"
 }

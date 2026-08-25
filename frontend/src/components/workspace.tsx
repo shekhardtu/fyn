@@ -244,12 +244,13 @@ const MONEY_PAGES = [
   { label: "Categories", icon: Tags, path: "/categories" },
 ] as const;
 
-const ConversationRail = memo(function ConversationRail({ conversations, activeId, activePage, user, open, docked, switching, loading, loadingMore, hasMore, settingsOpen, onClose, onOpenPage, onSelect, onPrefetch, onDelete, onRename, onLoadMore, onNew, onLeaveSettings, onOpenSection, onOpenSettings, onOpenProfile }: {
+const ConversationRail = memo(function ConversationRail({ conversations, activeId, activePage, user, personalLendingAvailable, open, docked, switching, loading, loadingMore, hasMore, settingsOpen, onClose, onOpenPage, onSelect, onPrefetch, onDelete, onRename, onLoadMore, onNew, onLeaveSettings, onOpenSection, onOpenSettings, onOpenProfile }: {
   conversations: ConversationSummary[];
   activeId: string;
   activePage: string | null;
   /** Null until bootstrap answers; the rail draws its own placeholder. */
   user: Bootstrap["user"] | null;
+  personalLendingAvailable: boolean;
   open: boolean;
   docked: boolean;
   switching: boolean;
@@ -289,7 +290,7 @@ const ConversationRail = memo(function ConversationRail({ conversations, activeI
     {settingsOpen ? <SettingsRailIndex onLeave={onLeaveSettings} onNavigate={onOpenSection} /> : <>
       <nav aria-label="Money pages" className="py-2">
         <p className="ledger-meta px-3 pt-1 pb-2">Money</p>
-        {MONEY_PAGES.map((item) => {
+        {MONEY_PAGES.filter((item) => item.path !== appPaths.loans || personalLendingAvailable).map((item) => {
           const Icon = item.icon;
           return <div key={item.label} className="ledger-row">
             <button
@@ -2303,6 +2304,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
           activeId={conversationId}
           activePage={MONEY_PAGES.find((item) => pathname === item.path || pathname.startsWith(`${item.path}/`))?.path ?? null}
           user={initial.data?.user ?? null}
+          personalLendingAvailable={initial.data?.features.personalLending ?? false}
           open={sidebarOpen}
           docked={isDesktop}
           switching={creating}

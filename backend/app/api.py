@@ -260,6 +260,7 @@ def agent_diagnostics(db: Session = Depends(get_db), user: User = Depends(curren
 
 @router.get("/bootstrap", response_model=BootstrapResponse)
 def bootstrap(db: Session = Depends(get_db), user: User = Depends(current_user)) -> BootstrapResponse:
+    settings = get_settings()
     latest = db.scalar(
         select(Conversation)
         .where(Conversation.user_id == user.id, Conversation.archived.is_(False))
@@ -271,6 +272,7 @@ def bootstrap(db: Session = Depends(get_db), user: User = Depends(current_user))
     return BootstrapResponse(
         user={"id": str(user.id), "name": user.display_name, "currency": user.currency, "timezone": user.timezone},
         active_conversation=ConversationOut.model_validate(loaded),
+        features={"personal_lending": settings.personal_lending_available},
     )
 
 

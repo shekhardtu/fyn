@@ -177,6 +177,32 @@ def test_a_fully_configured_deployment_starts():
     assert _startup() is None
 
 
+def test_personal_lending_requires_complete_r2_storage_in_production():
+    local = Settings(_env_file=None, environment="development", document_storage_provider="local")
+    missing = Settings(_env_file=None, environment="production", document_storage_provider="local")
+    partial = Settings(
+        _env_file=None,
+        environment="production",
+        document_storage_provider="r2",
+        r2_account_id="account",
+        r2_bucket="documents",
+    )
+    ready = Settings(
+        _env_file=None,
+        environment="production",
+        document_storage_provider="r2",
+        r2_account_id="account",
+        r2_bucket="documents",
+        r2_access_key_id="access",
+        r2_secret_access_key="secret",
+    )
+
+    assert local.personal_lending_available is True
+    assert missing.personal_lending_available is False
+    assert partial.personal_lending_available is False
+    assert ready.personal_lending_available is True
+
+
 def test_development_reports_the_same_findings_without_refusing(capsys):
     """Local work must stay possible without an SMS account — but never quietly."""
     assert _startup(environment="development", auth_secret="", otp_debug_echo=True) is None
@@ -505,6 +531,7 @@ def test_the_session_endpoint_answers_for_a_visitor_who_is_not_signed_in(client)
         "authenticated": False,
         "profile": None,
         "googleSignInAvailable": True,
+        "features": {"personalLending": True},
     }
 
 

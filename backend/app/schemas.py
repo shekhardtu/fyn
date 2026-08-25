@@ -978,9 +978,14 @@ class BootstrapUser(BaseModel):
     timezone: str
 
 
+class FeatureAvailabilityOut(BaseModel):
+    personal_lending: bool = Field(serialization_alias="personalLending")
+
+
 class BootstrapResponse(BaseModel):
     user: BootstrapUser
     active_conversation: ConversationOut
+    features: FeatureAvailabilityOut
 
 
 class OverviewPeriodOut(BaseModel):
@@ -1400,6 +1405,7 @@ class AuthStatusOut(BaseModel):
     authenticated: bool
     profile: ProfileOut | None = None
     google_sign_in_available: bool = Field(serialization_alias="googleSignInAvailable")
+    features: FeatureAvailabilityOut
 
 
 class SignOutOut(BaseModel):

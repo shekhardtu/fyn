@@ -73,6 +73,24 @@ def _key(prefix: str) -> str:
     return f"{prefix}-{uuid4()}"
 
 
+def test_production_lending_api_is_absent_without_complete_r2_credentials(db):
+    hari = default_user(db)
+    assert hari is not None
+    settings = get_settings().model_copy(update={
+        "environment": "production",
+        "document_storage_provider": "local",
+        "r2_account_id": None,
+        "r2_bucket": None,
+        "r2_access_key_id": None,
+        "r2_secret_access_key": None,
+    })
+
+    response = _client(db, hari, settings=settings).get("/loan-agreements")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not found"}
+
+
 def test_creator_cannot_invite_their_own_sign_in_identifier(db):
     hari = default_user(db)
     assert hari is not None and hari.email is not None
