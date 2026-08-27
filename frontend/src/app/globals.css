@@ -1916,7 +1916,7 @@ html[data-focus-modality="keyboard"] .entry-card:has(textarea:focus) {
   line-height: 1.45;
   color: var(--ink-body);
   border-top: 1px solid var(--rule);
-  transition: color var(--m-state) linear, padding-left var(--m-enter) var(--ease);
+  transition: color var(--m-state) linear;
   animation: widget-enter var(--m-enter) var(--ease) backwards;
 }
 
@@ -1929,9 +1929,20 @@ html[data-focus-modality="keyboard"] .entry-card:has(textarea:focus) {
   transform: none;
 }
 
+.next-entry-label {
+  display: block;
+  transform: translateX(0);
+  transition: transform var(--m-enter) var(--ease);
+}
+
 .next-entry:hover {
-  padding-left: 36px;
   color: var(--ink);
+}
+
+.next-entry:hover .next-entry-label {
+  /* Motion stays on the compositor: the label's layout width never changes,
+     so a one-line question cannot reflow to two lines while it moves. */
+  transform: translateX(8px);
 }
 
 .next-entry:hover .ledger-mark {
@@ -1943,8 +1954,12 @@ html[data-focus-modality="keyboard"] .entry-card:has(textarea:focus) {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .next-entry:hover {
-    padding-left: 28px;
+  .next-entry-label {
+    transition: none;
+  }
+
+  .next-entry:hover .next-entry-label {
+    transform: none;
   }
 }
 
@@ -2003,15 +2018,64 @@ html[data-focus-modality="keyboard"] .entry-card:has(textarea:focus) {
   height: 5px;
   border-radius: 999px;
   background: var(--ink-muted);
-  animation: typing 1.1s infinite ease-in-out;
+  animation: typing 1.45s infinite cubic-bezier(.4, 0, .2, 1);
 }
 
-.typing-dot:nth-child(2) { animation-delay: 120ms; }
-.typing-dot:nth-child(3) { animation-delay: 240ms; }
+.typing-dot:nth-child(2) { animation-delay: 160ms; }
+.typing-dot:nth-child(3) { animation-delay: 320ms; }
 
 @keyframes typing {
   0%, 60%, 100% { opacity: .25; transform: translateY(0); }
   30% { opacity: 1; transform: translateY(-2px); }
+}
+
+/* One identity mark carries the run through routing, reasoning, tools, writing,
+   and completion. The glyph morph is short; the slow breathing belongs only
+   to live work and stops the instant the response is prepared. */
+.fyn-state-mark {
+  position: relative;
+  isolation: isolate;
+  background: var(--secondary-tint);
+  color: var(--secondary);
+  transition: background-color var(--m-state) ease, color var(--m-state) ease,
+    box-shadow var(--m-state) ease;
+}
+
+.fyn-state-mark[data-state="tool"] {
+  background: color-mix(in srgb, var(--secondary-tint) 72%, var(--surface));
+  box-shadow: inset 0 0 0 1px var(--secondary-line);
+}
+
+.fyn-state-mark[data-state="prepared"] {
+  background: var(--secondary);
+  color: var(--on-secondary);
+}
+
+.fyn-state-mark[data-state="failed"] {
+  background: var(--danger-tint);
+  color: var(--danger-ink);
+}
+
+.fyn-state-mark[data-live="true"] {
+  animation: fyn-state-breathe 1.8s ease-in-out infinite;
+}
+
+.fyn-state-icon {
+  animation: fyn-state-morph var(--m-enter) var(--ease);
+}
+
+.assistant-byline-activity .agent-activity {
+  margin-left: 0;
+}
+
+@keyframes fyn-state-morph {
+  from { opacity: .25; transform: scale(.62) rotate(-18deg); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes fyn-state-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--secondary) 0%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--secondary) 12%, transparent); }
 }
 
 /* Decoration stops; information does not. Scoped to transform and opacity so

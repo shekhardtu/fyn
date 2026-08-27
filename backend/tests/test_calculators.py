@@ -1,4 +1,13 @@
-from app.services.calculators import affordability, fixed_payment_amortization_schedule, investment_projection, loan_amortization_schedule, loan_payment, loan_strategy_options, loan_with_prepayment
+from app.services.calculators import (
+    affordability,
+    fixed_payment_amortization_schedule,
+    investment_projection,
+    loan_amortization_schedule,
+    loan_payment,
+    loan_strategy_options,
+    loan_with_prepayment,
+    loan_with_timed_prepayment,
+)
 
 
 def test_zero_interest_loan_is_exact():
@@ -11,6 +20,25 @@ def test_prepayment_never_increases_interest():
     result = loan_with_prepayment(50_000_000, 8.5, 240, 5_000_000)
     assert result["interest_saved_minor"] > 0
     assert result["after_prepayment"]["total_interest_minor"] < result["baseline"]["total_interest_minor"]
+
+
+def test_timed_prepayment_returns_the_complete_fixed_emi_comparison():
+    result = loan_with_timed_prepayment(
+        120_000_000,
+        8,
+        60,
+        10_000_000,
+        12,
+    )
+
+    assert result["emi_minor"] == 2_433_167
+    assert result["prepayment_after_months"] == 12
+    assert result["applied_prepayment_minor"] == 10_000_000
+    assert result["with_prepayment_tenure_months"] == 55
+    assert result["months_saved"] == 5
+    assert result["interest_saved_minor"] > 0
+    assert result["with_prepayment_total_interest_minor"] < result["baseline_total_interest_minor"]
+    assert result["final_payment_minor"] == 1_052_307
 
 
 def test_full_prepayment_has_one_canonical_zero_tenure_result():

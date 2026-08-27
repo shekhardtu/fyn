@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Message, Widget } from "@/lib/protocol";
-import { activeWidgetId, adoptUserMessageIdentity, applyWidgetUpdates, completedWidgetIds, mergeAgentResponse, reconcileUsedWidgetIds, shouldAdoptServerTranscript, transcriptRevision } from "@/lib/widget-state";
+import { activeWidgetId, adoptUserMessageIdentity, applyWidgetUpdates, completedWidgetIds, mergeAgentResponse, mergeMessageWidget, reconcileUsedWidgetIds, shouldAdoptServerTranscript, transcriptRevision } from "@/lib/widget-state";
 
 function widget(id: string, actionable = true): Widget {
   return {
@@ -85,6 +85,26 @@ describe("completedWidgetIds", () => {
       "budget-resource",
       [receipt],
     )).toEqual(new Set(["budget-resource"]));
+  });
+});
+
+describe("mergeMessageWidget", () => {
+  it("adds late enrichment to its existing answer exactly once", () => {
+    const related: Widget = {
+      id: "related-answer",
+      type: "related_questions",
+      version: 1,
+      data: { questions: ["What changed this month?"] },
+      actions: [],
+    };
+    const original = [message("answer", "assistant", [])];
+
+    const once = mergeMessageWidget(original, "answer", related);
+    const twice = mergeMessageWidget(once, "answer", related);
+
+    expect(once[0].widgets).toEqual([related]);
+    expect(twice[0].widgets).toEqual([related]);
+    expect(mergeMessageWidget(original, "different-answer", related)).toEqual(original);
   });
 });
 

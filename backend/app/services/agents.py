@@ -3,8 +3,10 @@ from __future__ import annotations
 import ast
 import re
 from datetime import date
+from hashlib import sha256
 import json
 from collections.abc import Callable
+from time import perf_counter
 from types import SimpleNamespace
 from typing import Annotated, Any, Literal, Union
 from uuid import UUID
@@ -12,6 +14,8 @@ from uuid import UUID
 from agno.agent import Agent
 from agno.models.openai import OpenAIResponses
 from agno.run.agent import (
+    ModelRequestCompletedEvent,
+    ModelRequestStartedEvent,
     ReasoningContentDeltaEvent,
     ReasoningStep,
     ReasoningStepEvent,
@@ -40,6 +44,7 @@ from ..operations.tools import (
 )
 from .agent_policies import AgentMode, policy_instructions, policy_name
 from .agent_run_metrics import agent_instructions, agent_reasoning_profile, mounted_tool_names, record_agno_run_metrics
+from .agent_tools import bind_schema_tool
 from .answer_presentation import (
     AnswerPresentation,
     answer_presentation,
@@ -64,6 +69,7 @@ from .user_memory import agent_memory_manager
 
 
 RECENT_CONTEXT_TURN_LIMIT = 5
+STANDALONE_RECENT_CONTEXT_TURN_LIMIT = 2
 QueryOperation = Literal["total", "breakdown", "rank", "list"]
 QueryGroupBy = Literal["none", "category", "subcategory", "merchant", "account", "month"]
 GROUPED_QUERY_OPERATIONS = frozenset({"rank", "breakdown"})
@@ -71,6 +77,7 @@ TEMPORAL_PRESENTATION_UNITS = frozenset({"date", "month"})
 # FinanceQueryPlan caps a governed window at five years, so this is the widest
 # period an "all records" request can be compiled into without being rejected.
 _WIDEST_GOVERNED_WINDOW_DAYS = 1825
+ANALYSIS_DELEGATE_TOOL_NAME = "delegate_complex_analysis"
 
 
 def _agent_enabled(settings) -> bool:
@@ -90,6 +97,7 @@ def _responses_model(
     reasoning_summary: str | None = None,
     verbosity: Literal["low", "medium", "high"] = "low",
     timeout: int | None = None,
+    prompt_cache_key: str | None = None,
 ) -> OpenAIResponses:
     options = {
         "id": model_id,
@@ -99,30 +107,36 @@ def _responses_model(
         "verbosity": verbosity,
         "max_retries": 1,
     }
+    if prompt_cache_key:
+        options["request_params"] = {
+            "prompt_cache_key": prompt_cache_key,
+            "prompt_cache_options": {"mode": "implicit", "ttl": "30m"},
+        }
     if timeout is not None:
         options["timeout"] = timeout
     return OpenAIResponses(**options)
 
 
-def _taxonomy_prompt(categories: list[dict]) -> str:
-    """Render stable slugs together with the names users actually type."""
-    rendered = []
-    for item in categories:
-        subcategories = []
-        for subcategory in item.get("subcategories", []):
-            if isinstance(subcategory, dict):
-                subcategories.append(f"{subcategory.get('slug')} ({subcategory.get('name')})")
-            else:  # Backward-compatible with tests and older callers.
-                subcategories.append(str(subcategory))
-        rendered.append(
-            f"{item['slug']} ({item['name']}): {', '.join(subcategories)}"
-        )
-    return "; ".join(rendered)
+def _operator_prompt_cache_key(
+    *,
+    model: str,
+    presentation: AnswerPresentation,
+    tools: list[Any],
+    operation_ids: set[str],
+    analysis_mode: str,
+) -> str:
+    """Bucket only identical content-free Operator capability prefixes."""
 
-
-def _agent_context(categories: list[dict]) -> tuple[Settings | None, str]:
-    settings = _enabled_agent_settings()
-    return settings, _taxonomy_prompt(categories) if settings else ""
+    capability_shape = "\0".join([
+        "operator-prompt-v1",
+        model,
+        presentation.style.value,
+        presentation.provider_verbosity,
+        analysis_mode,
+        *sorted(str(getattr(tool, "name", "") or "") for tool in tools),
+        *sorted(operation_ids),
+    ])
+    return f"fyn-operator-v1-{sha256(capability_shape.encode()).hexdigest()[:32]}"
 
 
 def _with_user_memory(agent: Agent, user_id: UUID | str | None) -> Agent:
@@ -933,15 +947,38 @@ def build_operator(
     or richer governed workflow can only emit one strict, operation-specific
     proposal; proposals stop the model turn and never execute directly.
     """
-    settings, taxonomy = _agent_context(categories)
+    settings = _enabled_agent_settings()
     if settings is None:
         return None
     selected_presentation = presentation or answer_presentation(answer_style)
-    operation_tools = build_operation_proposal_tools(operation_candidates or [])
+    selected_operations = operation_candidates or []
+    operation_tools = build_operation_proposal_tools(selected_operations)
     tools = [*(runtime_tools or []), *(analysis_tools or []), *operation_tools]
+    operation_ids = {operation.id for operation in selected_operations}
+    clarification_rules = ([
+        "Never silently discard, override, or guess a supplied input when two plausible interpretations would materially change the result. Select the strict clarification operation with two to six concise choices only for an explicit material conflict or two genuinely plausible supplied interpretations; include a custom-answer path when the listed choices may not cover the customer’s intent. Do not select clarification merely because a valid read or analysis omits a period, filter, grouping, or optional preference: the selected operation owns safe defaults and missing-input collection. Set disposition=cancel on an option that abandons the request or makes no change.",
+    ] if "request_clarification" in operation_ids else [])
+    has_effectful_operation = any(
+        operation.derived_effect is not DataEffect.NONE
+        and operation.id != "request_clarification"
+        for operation in selected_operations
+    )
+    effectful_operation_rules = ([
+        "Select exactly one filesystem operation proposal for any transaction create/update/delete/removal, category or subcategory change, budget or goal workflow, or export. Charts, dashboards, prior-result refinements and advanced analysis are NOT operations: they are answered by the analysis tools on this turn, which own the governed chart grammar. Listing individual transactions is NOT an operation either: call the transaction_list tool and write the answer yourself.",
+        "Populate the selected operation's typed fields from the current message and explicit conversation context. Use null for unknown optional values. A category plus its requested subcategories is one taxonomy operation, never several partial proposals.",
+        "For a planner-backed analysis operation, pass a self-contained request that preserves the requested layout, mark, analytical grain, value semantics, filters, and period.",
+        "For charts, dashboards, or exports, populate presentation independently from query semantics and preserve the requested layout, mark, analytical grain, value semantics, and time grain when stated.",
+        "Filesystem operation tools are terminal control decisions. Call exactly one before writing any answer; supply null instead of guessing missing values. The server validates, asks for missing data, and applies approval before execution.",
+    ] if has_effectful_operation else [])
+    operation_common_rules = (
+        list(operation_catalog().snapshot().common_instructions)
+        if has_effectful_operation
+        else []
+    )
     analysis_tool_names = {
         getattr(tool, "name", None) for tool in (analysis_tools or [])
     }
+    delegate_available = ANALYSIS_DELEGATE_TOOL_NAME in analysis_tool_names
     sql_only_analysis = (
         RUN_SQL_TOOL_NAME in analysis_tool_names
         and "run_financial_analysis" not in analysis_tool_names
@@ -949,17 +986,43 @@ def build_operator(
     )
     if sql_only_analysis:
         analysis_rules = [
-            f"For every native-ledger financial analysis, call {RUN_SQL_TOOL_NAME}. Author the complete answer as one arbitrary PostgreSQL SELECT using the full schema in the tool description.",
+            (
+                f"For a native-ledger financial analysis you can solve reliably, call {RUN_SQL_TOOL_NAME} directly and author the complete answer as one arbitrary PostgreSQL SELECT using the full schema in the tool description."
+                if delegate_available
+                else f"For every native-ledger financial analysis, call {RUN_SQL_TOOL_NAME}. Author the complete answer as one arbitrary PostgreSQL SELECT using the full schema in the tool description."
+            ),
             "Use CTEs, joins, subqueries, conditional aggregation, window functions, statistical functions, and derived expressions as needed. Compute averages, deltas, percentages, thresholds, rankings, and other answer fields inside SQL; never ask the reader to combine intermediate tables.",
             "Shape the SELECT for the final presentation: return one row per unit the user is comparing and only columns that help answer the question. Raw intermediate relations belong in CTEs, not in the response.",
+            "Make every requested answer obligation an explicit final-result column with its semantic name and unit, such as historical_average_minor, fixed_monthly_cap_minor, reduction_minor, or rank. Do not hide an average, cap, delta, or ranking only inside an intermediate expression.",
+            "For complete-period comparisons, optimizations, or rankings that must remain valid when activity is absent, build the requested periods explicitly and left join the ledger. Return the summary and any ranked subgroup in one final result (nullable entity/rank fields are valid) so zero-activity periods and an empty ranked subgroup are both authenticated without a confirmation query.",
             "For partial-period comparisons, align like-for-like elapsed days or label a projection explicitly. Treat a missing period as zero only when the data establishes that it is a real zero rather than missing coverage.",
             "The database injects and enforces the authenticated tenant. Never add or accept a user_id supplied by the model or user. Money is stored in integer minor units; alias money outputs with an _minor suffix.",
             "Tool rows are authoritative. Compose the answer from them using the most graspable single table or chart-like Markdown shape; do not expose SQL or invent arithmetic outside the returned columns.",
             "Answer in plain financial language: define terms such as baseline or average when they matter, explain what drove the result and why it matters, and include a short comparison-method note when useful. Never mention query plans, transforms, CTEs, executors, or other implementation vocabulary.",
             "Do not make the reader retain values across sections or perform mental subtraction. Put each compared value, its baseline, absolute difference, percentage difference, and meaningful driver together in the same row or adjacent callout.",
             "Before querying, privately check the requested grain, date alignment, canonical transaction types, currency, missing-period coverage, join fanout, denominators, money units, and whether the question permits causation or only association. After querying, sanity-check totals and identities before answering; correct the SQL if a result violates them. Do not reveal this internal checklist or chain of thought.",
+            "A successful run_governed_sql result with empty_result=true is authoritative for that exact statement. Do not issue a second query merely to confirm the same absence; answer no matching records, or zero only when the requested arithmetic makes that interpretation valid.",
             "Product date policy: 'last three months' means the current month-to-date plus the two preceding calendar months unless complete/full months are requested. 'Current' in a metric request means month-to-date.",
         ]
+        semantic_fast_tools = sorted(
+            str(name)
+            for name in analysis_tool_names
+            if str(name).startswith("analyze_")
+        )
+        if semantic_fast_tools:
+            analysis_rules.insert(
+                0,
+                "Prefer an exact supplied semantic analysis tool when its description matches "
+                f"the request ({', '.join(semantic_fast_tools)}). It is the fastest authenticated "
+                "path and already handles periods, empty data, financial direction, and result "
+                "shape. Keep governed SQL as the agentic fallback for anything the semantic "
+                "capability does not cover.",
+            )
+        if delegate_available:
+            analysis_rules.extend([
+                f"Use {ANALYSIS_DELEGATE_TOOL_NAME} only for the complexity stated in its description. It is an optional slower tool you choose from inside this same turn, never a required router or a second opinion for routine work.",
+                f"Never call both {ANALYSIS_DELEGATE_TOOL_NAME} and {RUN_SQL_TOOL_NAME} for the same analysis. If you delegate, answer from the delegate result and its promoted authenticated evidence; do not repeat its queries yourself.",
+            ])
     else:
         analysis_rules = [
             "For any derived or complex financial question — summaries, breakdowns, comparisons, rankings, shares, trends, change drivers, projections, scenarios — run a governed analysis tool and compose the answer from its results.",
@@ -975,6 +1038,7 @@ def build_operator(
             f"When neither a stored template nor the AnalysisPlan grammar can express the request — an unusual join, exclusion, compound condition, window function, or custom aggregation — author one PostgreSQL SELECT with {RUN_SQL_TOOL_NAME}. Its tool description carries the exact table/column contract, this user's value catalog, and worked examples; use only tables and columns it lists.",
             f"{RUN_SQL_TOOL_NAME} rules: never filter by user_id (the database enforces tenancy), and alias money results with an _minor suffix. If its result carries an `error` key, correct the SQL against the reported code and retry at most twice; then answer from other evidence or say plainly what could not be verified.",
         ])
+    resolved_model_id = model_id or settings.operator_model
     return _with_user_memory(Agent(
         name=policy_name(AgentMode.OPERATE),
         # Agno sends vendor telemetry synchronously after yielding the final
@@ -984,7 +1048,7 @@ def build_operator(
         telemetry=False,
         model=_responses_model(
             settings,
-            model_id or settings.operator_model,
+            resolved_model_id,
             reasoning_effort=(
                 getattr(settings, "operator_analysis_reasoning_effort", "high")
                 if enable_reasoning and sql_only_analysis
@@ -992,13 +1056,25 @@ def build_operator(
                 if enable_reasoning
                 else "none"
             ),
-            reasoning_summary=(
-                ("detailed" if settings.environment != "production" else "concise")
-                if enable_reasoning
-                else None
-            ),
+            # Responses reasoning summaries are a safe observable stage, not
+            # raw chain of thought. Keep the same concise contract in local
+            # and production environments so browser verification is faithful.
+            reasoning_summary="concise" if enable_reasoning else None,
             timeout=35,
             verbosity=selected_presentation.provider_verbosity,
+            prompt_cache_key=_operator_prompt_cache_key(
+                model=resolved_model_id,
+                presentation=selected_presentation,
+                tools=tools,
+                operation_ids=operation_ids,
+                analysis_mode=(
+                    "sql"
+                    if sql_only_analysis
+                    else "hybrid"
+                    if analysis_tools
+                    else "runtime"
+                ),
+            ),
         ),
         tools=tools or None,
         tool_call_limit=(8 if analysis_tools else 4) if tools else None,
@@ -1011,19 +1087,17 @@ def build_operator(
                     "Read the recent complete turns and active domain context first. Resolve references to prior turns, but never copy a prior answer as the answer to a different current question.",
                     "For a claim about the user's records, taxonomy, spending, income, balances, recurring expenses, or a numeric scenario, call the smallest sufficient authenticated tool before answering. Tool results are the only source of financial facts.",
                     "When several supplied tools are independently required for the requested comparison, call only those tools. Do not repeat a tool call with identical arguments.",
+                    "When one supplied deterministic calculator exactly matches the requested scenario, call it directly and answer from its complete result. Do not delegate that scenario or reconstruct it from multiple schedules.",
+                    "Calculator money fields ending in _minor are integer minor units. Copy their matching values from the calculator's display object exactly; never rescale them yourself or replace Indian comma grouping with a different magnitude.",
                     "Answer directly from successful tool results. Start with the result, then explain the relevant scope, comparison, implication, or assumption. Preserve dates, currency, uncertainty, and record limits exactly.",
                     "Never estimate, extrapolate, or infer a financial figure, and never present taxonomy prompt context as if it were a database result. You may state one exact difference or total between figures a tool returned when it makes the comparison clearer — that is arithmetic over evidence, not a new fact. Anything further, including shares, percentages, ratios, multiples, and averages, must come from the tool that computed it.",
                     "When asked which subcategories a category has, call read_user_expense_taxonomy and list exactly the children it returned for exactly the category asked about — every one of them, nothing added, nothing renamed. Answering a subcategory question with the list of categories is answering a different question. If the category has no children, say so; if the name is not in the taxonomy, say that instead of offering the nearest match.",
-                    "Never silently discard, override, or guess a supplied input when two plausible interpretations would materially change the result. Select the strict clarification operation with two to six concise choices only for an explicit material conflict or two genuinely plausible supplied interpretations; include a custom-answer path when the listed choices may not cover the customer’s intent. Do not select clarification merely because a valid read or analysis omits a period, filter, grouping, or optional preference: the selected operation owns safe defaults and missing-input collection. Set disposition=cancel on an option that abandons the request or makes no change.",
-                    "Select exactly one filesystem operation proposal for any transaction create/update/delete/removal, category or subcategory change, budget or goal workflow, or export. Charts, dashboards, prior-result refinements and advanced analysis are NOT operations: they are answered by the analysis tools on this turn, which own the governed chart grammar. Listing individual transactions is NOT an operation either: call the transaction_list tool and write the answer yourself.",
-                    "Populate the selected operation's typed fields from the current message and explicit conversation context. Use null for unknown optional values. A category plus its requested subcategories is one taxonomy operation, never several partial proposals.",
-                    "For a planner-backed analysis operation, pass a self-contained request that preserves the requested layout, mark, analytical grain, value semantics, filters, and period.",
-                    "For charts, dashboards, or exports, populate presentation independently from query semantics and preserve the requested layout, mark, analytical grain, value semantics, and time grain when stated.",
+                    *clarification_rules,
+                    *effectful_operation_rules,
                     "When query inherits a prior analytical request, copy its exact dates, filters, direction, grouping, ordering, and limit from the recent grounding lineage unless the user changes them. Never replace an all-time period with this month merely because the current message omits dates.",
                     "Inherit that prior query only for an explicit continuation such as those, same, again, previous, and, or what about. A self-contained request starts a new query and must not copy an unstated transaction type, merchant, category, account, tag, amount bound, or date from recent grounding.",
                     "Treat correction language such as 'no', 'but', 'I mean', 'that is not what I asked', or a challenged count as a reconciliation request. Compare the relevant recent answers and their grounding scopes, identify which filter or period differs, acknowledge the mismatch, and issue the corrected tool call or handoff. Do not repeat only the latest answer.",
                     "When the current question repeats a recent question from this conversation, the earlier answer evidently did not satisfy them: never re-issue it verbatim. Acknowledge it was answered, answer again with a different framing or breakdown, and ask specifically what was missing or what they expected to see.",
-                    "Filesystem operation tools are terminal control decisions. Call exactly one before writing any answer; supply null instead of guessing missing values. The server validates, asks for missing data, and applies approval before execution.",
                     "For ordinary conversation, respond naturally to the current message. Do not use a canned greeting, repeat the user's wording, append a generic question, or describe internal routing.",
                     "Requests to rename this chat, conversation, thread, or its page title are app-settings requests, not finance analysis: a deterministic confirmation flow already handles them, including asking for a missing title. If one still reaches you, ask conversationally what the new title should be; never hand such a request to a governed workflow and never claim a rename happened — you have no tool that renames.",
                     "'Current' in a metric request ('current ratio', 'current spending') means the month-to-date window from the first day of this month through today; call the right tool with those dates instead of asking which period.",
@@ -1032,9 +1106,9 @@ def build_operator(
                     "When the user wants the records themselves — a list, a table, 'show me', 'in tabular form' — call transaction_list and write the answer yourself in whatever Markdown presents it best for that question. Nothing downstream reshapes your Markdown, so the layout is entirely your call. Copy each amount, date, and name exactly as the tool returned it, and when the tool reports truncated, say the list is capped and give the tool's total for the full match.",
                     *operator_style_rules(selected_presentation),
                     *analysis_rules,
-                    *operation_catalog().snapshot().common_instructions,
+                    *operation_common_rules,
                     "Use the finance_runtime dependency as the authoritative local date, timezone, and inclusive-date policy for this run.",
-                    f"Available expense taxonomy names for tool arguments only: {taxonomy}",
+                    "Expense taxonomy is authenticated runtime data. Call read_user_expense_taxonomy only when the current task needs category names; never infer it from prompt context.",
                 ]
             ),
             output_contract="Return either grounded prose or one terminal strict filesystem operation proposal.",
@@ -1070,6 +1144,23 @@ def _runtime_tool_grounding(run_output: Any, runtime_tools: list[Any] | None) ->
                     structured = ast.literal_eval(result)
                 except (ValueError, SyntaxError):
                     continue
+        if (
+            name == ANALYSIS_DELEGATE_TOOL_NAME
+            and isinstance(structured, dict)
+            and structured.get("kind") == "delegated_financial_analysis"
+        ):
+            # The delegate is a server-built read-only tool. It serializes the
+            # exact ToolGrounding objects captured from its own installed
+            # tools; promote those objects back to the ordinary evidence lane
+            # instead of treating the delegate's prose as evidence. Arguments
+            # remain citation lineage, while validators still read facts only
+            # from each nested result.
+            for item in structured.get("grounding") or []:
+                try:
+                    grounding.append(ToolGrounding.model_validate(item))
+                except Exception:
+                    continue
+            continue
         contract = runtime_tool_contract(name)
         schema_name = None
         if contract and contract.output_model:
@@ -1085,6 +1176,202 @@ def _runtime_tool_grounding(run_output: Any, runtime_tools: list[Any] | None) ->
             result=ToolResultEnvelope(tool=name, schema_name=schema_name, data=structured),
         ))
     return grounding[:8]
+
+
+def _completed_tool_executions(
+    final_output: RunOutput | None,
+    completed_tools: list[Any],
+) -> list[Any]:
+    """Recover completed evidence if the terminal tool copy lost its result.
+
+    A provider stream can retain a terminal ``ToolExecution`` for metrics while
+    omitting its result; the earlier ``ToolCallCompletedEvent`` still carries
+    the authenticated payload. Merge only matching calls, preserving order.
+    """
+
+    terminal = list(final_output.tools or []) if final_output else []
+    if not terminal:
+        return list(completed_tools)
+    merged = list(terminal)
+    for completed in completed_tools:
+        completed_id = getattr(completed, "tool_call_id", None)
+        match_index = next((
+            index
+            for index, item in enumerate(merged)
+            if completed_id
+            and getattr(item, "tool_call_id", None) == completed_id
+        ), None)
+        if match_index is None:
+            match_index = next((
+                index
+                for index, item in enumerate(merged)
+                if getattr(item, "tool_name", None) == getattr(completed, "tool_name", None)
+                and getattr(item, "tool_args", None) == getattr(completed, "tool_args", None)
+                and getattr(item, "result", None) is None
+            ), None)
+        if match_index is None:
+            merged.append(completed)
+        elif (
+            getattr(merged[match_index], "result", None) is None
+            and getattr(completed, "result", None) is not None
+        ):
+            merged[match_index] = completed
+    return merged
+
+
+def build_analysis_delegate_tool(
+    question: str,
+    current_date: date,
+    user_timezone: str,
+    recent_context: list[dict],
+    *,
+    user_id: UUID | str | None = None,
+    read_tools: list[Any] | None = None,
+    presentation: AnswerPresentation | None = None,
+):
+    """Expose one optional stronger read-only pass to the universal Operator.
+
+    The outer Operator still receives every turn and decides whether this tool
+    is worth its latency. The closure installs only already-bound read tools,
+    allows one attempt, records its own content-free provider metrics, and
+    converts every exception into a typed tool error.
+    """
+
+    settings = _enabled_agent_settings()
+    available_tools = [
+        tool
+        for tool in (read_tools or [])
+        if getattr(tool, "name", None) != ANALYSIS_DELEGATE_TOOL_NAME
+        and not str(getattr(tool, "name", "")).startswith("propose_operation__")
+    ]
+    if (
+        settings is None
+        or not getattr(settings, "analysis_delegation_enabled", False)
+        or not available_tools
+    ):
+        return None
+
+    selected_presentation = presentation or answer_presentation(AnswerStyle.EXPLAINED)
+    recent_dialogue = _format_recent_context(recent_context)
+    called = False
+
+    def delegate_complex_analysis(analysis_focus: str) -> dict[str, Any]:
+        nonlocal called
+        if called:
+            return {"error": {
+                "stage": "delegation",
+                "code": "delegate_call_limit",
+                "detail": "The stronger analysis delegate is limited to one call per turn.",
+            }}
+        called = True
+        prompt = (
+            f"Recent complete conversation turns:\n{recent_dialogue or '(none)'}\n\n"
+            f"Exact current user question:\n{question}\n\n"
+            f"Primary Operator's requested analytical focus:\n{analysis_focus}"
+        )
+        try:
+            delegate = Agent(
+                name="Complex financial analysis delegate",
+                telemetry=False,
+                model=_responses_model(
+                    settings,
+                    settings.analysis_delegate_model,
+                    reasoning_effort=settings.analysis_delegate_reasoning_effort,
+                    reasoning_summary="concise",
+                    timeout=settings.analysis_delegate_timeout_seconds,
+                    verbosity=selected_presentation.provider_verbosity,
+                ),
+                tools=available_tools,
+                tool_call_limit=6,
+                reasoning=False,
+                instructions=[
+                    "You are a read-only specialist called by the primary Operator for a genuinely complex financial analysis.",
+                    "Resolve the exact current question end to end with the smallest sufficient set of supplied authenticated tools.",
+                    "Use tools for every financial fact. Never treat the prompt, prior prose, tool arguments, or taxonomy context as result evidence.",
+                    "Compute joins, projections, scenarios, optimizations, ratios, and comparisons inside a governed tool. Never invent or privately calculate a figure.",
+                    "Return a complete user-facing answer that leads with the conclusion and preserves exact dates, currency, assumptions, uncertainty, and result limits.",
+                    "You have no mutation, approval, or operation tools. Never claim that a record, setting, budget, goal, category, or transaction changed.",
+                    "Do not mention delegation, models, tools, SQL, databases, prompts, or internal policy in the answer.",
+                    "Use the finance_runtime dependency as the authoritative local date, timezone, and inclusive-date policy for this run.",
+                ],
+                **FinanceRunContext(current_date, user_timezone, user_id).agno_options(),
+            )
+            output = delegate.run(prompt, user_id=str(user_id) if user_id else None)
+            record_agno_run_metrics(
+                output,
+                stage="analysis_delegate",
+                model=settings.analysis_delegate_model,
+                reasoning_profile=agent_reasoning_profile(delegate),
+                prompt_characters=len(prompt),
+                prompt_components={
+                    "recentContext": recent_dialogue,
+                    "currentQuestion": question,
+                    "analysisFocus": analysis_focus,
+                },
+                mounted_tools=mounted_tool_names(delegate),
+            )
+            grounding = _runtime_tool_grounding(output, available_tools)
+            successful = [
+                item
+                for item in grounding
+                if not (
+                    isinstance(item.result.data, dict)
+                    and isinstance(item.result.data.get("error"), dict)
+                )
+            ]
+            answer = output.content.strip() if isinstance(output.content, str) else ""
+            if not successful:
+                return {"error": {
+                    "stage": "delegation",
+                    "code": "delegate_no_evidence",
+                    "detail": "The delegate did not produce a successful authenticated result.",
+                }}
+            if not answer:
+                return {"error": {
+                    "stage": "delegation",
+                    "code": "delegate_empty_answer",
+                    "detail": "The delegate returned evidence but no written answer.",
+                }}
+            return {
+                "kind": "delegated_financial_analysis",
+                "message": answer,
+                "grounding": [
+                    item.model_dump(mode="json", exclude_none=True)
+                    for item in successful
+                ],
+            }
+        except Exception as error:
+            return {"error": {
+                "stage": "delegation",
+                "code": "delegate_unavailable",
+                "detail": f"The optional delegate was unavailable ({type(error).__name__}).",
+            }}
+
+    return bind_schema_tool(
+        delegate_complex_analysis,
+        name=ANALYSIS_DELEGATE_TOOL_NAME,
+        description=(
+            "Escalate this turn once to the stronger read-only financial analyst. Use only when "
+            "the question genuinely needs an unusual multi-source join, constrained projection, "
+            "multi-step scenario, statistical inference, or optimization that the current pass "
+            "cannot answer reliably. Never use for greetings, explanations, totals, record lists, "
+            "taxonomy, calculators, ordinary breakdowns/comparisons, or merely to improve wording. "
+            "This is slower than using the supplied tools directly. analysis_focus must state the "
+            "specific complexity and the complete answer obligations; call at most once."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "analysis_focus": {
+                    "type": "string",
+                    "description": "The precise complex reasoning task and required answer coverage.",
+                },
+            },
+            "required": ["analysis_focus"],
+            "additionalProperties": False,
+        },
+        strict=True,
+    )
 
 
 def run_operator(
@@ -1125,14 +1412,21 @@ def run_operator(
         except ValueError:
             turn_intent = None
         if turn_intent and turn_intent.requested_effect is RequestedEffect.NONE:
-            # Least privilege starts before planning: a read-only turn never
-            # exposes mutation proposal tools to the model. The dispatcher
-            # repeats the effect check so deterministic and replay paths have
-            # the same invariant.
+            # Least privilege starts before planning: an explicitly read-only
+            # turn receives only read proposals, not unrelated edit/planning
+            # drafts or a redundant clarification proposal. The model can
+            # still ask a plain follow-up question and the conversation layer
+            # turns it into a durable continuation. Unknown or ambiguous turns
+            # retain the broader candidate set, so this scopes capability
+            # exposure without becoming a deterministic answer router. The
+            # dispatcher repeats the effect check downstream.
             operation_candidates = [
                 operation
                 for operation in operation_candidates
-                if operation.derived_effect is not DataEffect.MUTATION
+                if (
+                    operation.derived_effect is DataEffect.NONE
+                    and operation.id != "request_clarification"
+                )
             ]
     if (
         (workflow_context or {}).get("kind") == "saved_transaction_card"
@@ -1155,6 +1449,23 @@ def run_operator(
                 *operation_candidates[:max(0, runtime_settings.operation_candidate_limit - 1)],
                 edit_operation,
             ]
+    if analysis_tools:
+        # Runtime/SQL tools already own every authenticated read path. Keeping
+        # search-as-operation beside them adds a competing model choice and a
+        # sizeable duplicate schema without adding capability.
+        operation_candidates = [
+            operation
+            for operation in operation_candidates
+            if operation.id != "search_transactions"
+        ]
+    if (workflow_context or {}).get("kind") == "calculator_scenario":
+        operation_candidates = [
+            operation
+            for operation in operation_candidates
+            if operation.id == "request_clarification"
+        ]
+    elif (workflow_context or {}).get("kind") in {"conversation_only", "knowledge_only"}:
+        operation_candidates = []
     selected_presentation = presentation or answer_presentation(answer_style)
     operator = build_operator(
         categories,
@@ -1184,6 +1495,8 @@ def run_operator(
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
     completed_tools = []
+    provider_request_starts: list[dict[str, Any]] = []
+    provider_requests: list[dict[str, Any]] = []
     final_output: RunOutput | None = None
     streamed_live = False
     stream = operator.run(
@@ -1194,6 +1507,46 @@ def run_operator(
         yield_run_output=True,
     )
     for event in stream:
+        # Capturing two monotonic timestamps and scalar event fields is the
+        # only work performed on the response loop. It has no callback, I/O,
+        # serialization, or persistence, and every branch is fail-contained.
+        # The detached metrics pipeline receives the bounded snapshot later.
+        try:
+            if isinstance(event, ModelRequestStartedEvent):
+                if len(provider_request_starts) < 32:
+                    provider_request_starts.append({
+                        "startedAt": perf_counter(),
+                        "model": event.model,
+                        "provider": event.model_provider,
+                    })
+            elif isinstance(event, ModelRequestCompletedEvent):
+                completed_at = perf_counter()
+                started = provider_request_starts.pop(0) if provider_request_starts else {}
+                started_at = started.get("startedAt")
+                if len(provider_requests) < 32:
+                    provider_requests.append({
+                        "model": event.model or started.get("model"),
+                        "provider": event.model_provider or started.get("provider"),
+                        "durationMs": (
+                            round(max(0.0, completed_at - float(started_at)) * 1000, 1)
+                            if started_at is not None
+                            else None
+                        ),
+                        "timeToFirstTokenMs": (
+                            round(max(0.0, float(event.time_to_first_token)) * 1000, 1)
+                            if event.time_to_first_token is not None
+                            else None
+                        ),
+                        "inputTokens": event.input_tokens,
+                        "outputTokens": event.output_tokens,
+                        "totalTokens": event.total_tokens,
+                        "cacheReadTokens": event.cache_read_tokens,
+                        "cacheWriteTokens": event.cache_write_tokens,
+                        "reasoningTokens": event.reasoning_tokens,
+                    })
+        except Exception:
+            pass
+
         reasoning_delta = ""
         if isinstance(event, ReasoningContentDeltaEvent):
             reasoning_delta = event.reasoning_content
@@ -1242,6 +1595,7 @@ def run_operator(
                 "presentationContract": presentation_contract,
             },
             mounted_tools=mounted_tool_names(operator),
+            provider_requests=provider_requests,
         )
 
     final_reasoning = (
@@ -1262,9 +1616,7 @@ def run_operator(
                 on_reasoning_delta(remainder)
     reasoning_trace = "".join(reasoning_parts)
 
-    executions = list(final_output.tools or []) if final_output else completed_tools
-    if not executions:
-        executions = completed_tools
+    executions = _completed_tool_executions(final_output, completed_tools)
     operation_proposal = next(
         (
             proposal
@@ -1374,7 +1726,18 @@ def repair_grounded_answer(
 
 
 class RelatedQuestionSuggestions(BaseModel):
-    questions: list[str] = Field(default_factory=list, max_length=3)
+    """Three deliberately different continuations, in insight-depth order."""
+
+    contextual_drill_down: str = Field(default="", max_length=160)
+    behavioral_pattern: str = Field(default="", max_length=160)
+    strategic_outlook: str = Field(default="", max_length=160)
+
+    def ordered_questions(self) -> list[str]:
+        return [
+            self.contextual_drill_down,
+            self.behavioral_pattern,
+            self.strategic_outlook,
+        ]
 
 
 def suggest_related_questions(
@@ -1404,12 +1767,14 @@ def suggest_related_questions(
         instructions=policy_instructions(
             AgentMode.SUGGEST,
             task_rules=[
-                "Propose up to three follow-up questions, written in the user's own voice, that they are most likely to want next.",
+                "Produce three complementary follow-up questions, written in the user's own voice. They are continuity prompts for a person who may not know what to investigate next, not generic FAQ suggestions.",
                 "Weight the just-completed question and answer far above older turns. Reference the concrete entities, categories, merchants, periods, or figures that answer actually contains.",
-                "Prefer this progression: one drill-down into the current answer, one comparison or trend over time, and one action step (budget, goal, or cleanup) when the context genuinely supports it.",
-                "Each question must be short enough to scan as a tappable chip — at most about nine words — and fully self-contained, with an explicit period and no pronouns that need this conversation to resolve.",
+                "contextual_drill_down investigates what drove the current answer: a named category, merchant, account, period, outlier, or subgroup. It should uncover detail rather than merely request the same total again.",
+                "behavioral_pattern examines habits and mechanisms across the available context: recurrence, timing, volatility, trade-offs, changes, or a comparison that can explain why the pattern exists.",
+                "strategic_outlook is the deeper next step: a grounded projection, scenario, sensitivity, prioritised optimization, budget intervention, or goal trade-off that the product can calculate from recorded evidence.",
+                "Make each question research-oriented but scannable, usually 12–20 words. It must be fully self-contained, name the relevant subject and period, and avoid pronouns that require this conversation to resolve.",
                 "Only suggest what the listed capabilities can answer end to end. Never suggest connecting accounts, exporting, charts of unsupported grains, or anything outside them.",
-                "Never repeat or trivially rephrase a question the user already asked in this conversation. If nothing genuinely useful remains, return fewer questions or none.",
+                "Never repeat or trivially rephrase a question the user already asked. Keep a field empty only when that insight lane genuinely cannot be supported; do not fill it with a vague substitute.",
                 "Use the finance_runtime dependency as the authoritative local date, timezone, and inclusive-date policy for this run.",
                 "Capabilities that can answer suggested questions:\n" + "\n".join(f"- {note}" for note in capability_notes),
             ],
@@ -1444,7 +1809,7 @@ def suggest_related_questions(
         if turn.get("role") == "user"
     }
     suggestions: list[str] = []
-    for item in content.questions:
+    for item in content.ordered_questions():
         text = " ".join(str(item).split())
         if not text or len(text) > 160:
             continue

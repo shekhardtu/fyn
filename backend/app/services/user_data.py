@@ -16,6 +16,7 @@ from ..models import (
     Account,
     AccountBalanceSnapshot,
     AgentEvent,
+    AgentEnrichment,
     AgentInterrupt,
     AgentRun,
     AnalysisToolRun,
@@ -127,6 +128,9 @@ class DependentDataSpec:
 # This order is also a safe explicit deletion order when a database does not
 # enforce every ON DELETE action (for example, a lightweight test database).
 OWNED_USER_DATA: tuple[OwnedDataSpec, ...] = (
+    # Enrichment references runs/messages and must be removed before either
+    # parent in databases that do not enforce cascading foreign keys.
+    OwnedDataSpec(AgentEnrichment),
     OwnedDataSpec(AgentRun),
     OwnedDataSpec(AnalysisToolRun),
     OwnedDataSpec(AIAction),

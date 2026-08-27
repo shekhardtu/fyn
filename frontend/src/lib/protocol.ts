@@ -15,6 +15,7 @@ import {
   type AgentResponse,
   type AgentSettingsOut,
   type AgentActivityEvent,
+  type AgentEnrichmentOut,
   type AgentInterruptOut,
   type AgentRunMetrics,
   type AgentRunOut,
@@ -151,6 +152,7 @@ export const profileSchema = generatedSchema<ProfileOut>("ProfileOut");
 export const otpSentSchema = generatedSchema<OtpSentOut>("OtpSentOut");
 export const importResultSchema = generatedSchema<ImportResult>("ImportResultOut");
 export const agentActivityEventSchema = generatedSchema<AgentActivityEvent>("AgentActivityEvent");
+export const agentEnrichmentSchema = generatedSchema<AgentEnrichmentOut>("AgentEnrichmentOut");
 export const agentThreadStateSchema = generatedSchema<AgentThreadStateOut>("AgentThreadStateOut");
 export const personalLoanListSchema = generatedSchema<PersonalLoanListOut>("PersonalLoanListOut");
 export const contactSuggestionSchema = generatedSchema<ContactSuggestionOut>("ContactSuggestionOut");
@@ -165,6 +167,7 @@ export type {
   AgentResponse,
   AgentSettingsOut,
   AgentActivityEvent,
+  AgentEnrichmentOut,
   AgentInterruptOut,
   AgentRunMetrics,
   AgentRunOut,

@@ -1,5 +1,4 @@
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
 from uuid import UUID, uuid4
 
 import pytest
@@ -17,7 +16,6 @@ from app.seed import default_user
 from app.services.agents import ClarificationOption, ClarificationRequest, CopilotDecision, QueryInterpretation, TaxonomyInterpretation, ToolGrounding, OperatorResult
 from app.services import conversation as conversation_service
 from app.services.agui import execute_widget_action
-from app.services.calculators import loan_amortization_schedule
 from app.schemas import ActionRequest, PendingAction, Widget, WidgetAction, WidgetType
 from app.services.conversation import get_or_create_conversation, handle_action, handle_chat
 from app.services.preferences import AnswerStyle, AnswerValidationMode, set_answer_style, set_answer_validation_mode, set_user_preference
@@ -381,7 +379,7 @@ def test_compound_taxonomy_mutation_rolls_back_parent_when_a_child_fails(db, mon
     )) == 0
 
 
-def test_every_semantic_turn_receives_five_complete_unclipped_turns(db, monkeypatch, agent_enabled):
+def test_context_window_is_small_for_standalone_and_full_for_follow_up(db, monkeypatch, agent_enabled):
     user = default_user(db)
     conversation = get_or_create_conversation(db, user)
     routed_contexts = []
@@ -397,9 +395,18 @@ def test_every_semantic_turn_receives_five_complete_unclipped_turns(db, monkeypa
     for prompt in ("first", "second", "third", "fourth", "fifth", "sixth", "seventh"):
         handle_chat(db, user, conversation, prompt)
 
-    expected = [
-        {"role": "user", "content": "second"},
-        {"role": "assistant", "content": "Answer to second."},
+    assert routed_contexts[-1] == [
+        {"role": "user", "content": "fifth"},
+        {"role": "assistant", "content": "Answer to fifth."},
+        {"role": "user", "content": "sixth"},
+        # Direct replies are stripped before they are persisted.
+        {"role": "assistant", "content": long_reply.strip()},
+    ]
+    assert len(routed_contexts[-1][-1]["content"]) > 500
+
+    handle_chat(db, user, conversation, "What about that?")
+
+    assert routed_contexts[-1] == [
         {"role": "user", "content": "third"},
         {"role": "assistant", "content": "Answer to third."},
         {"role": "user", "content": "fourth"},
@@ -407,11 +414,10 @@ def test_every_semantic_turn_receives_five_complete_unclipped_turns(db, monkeypa
         {"role": "user", "content": "fifth"},
         {"role": "assistant", "content": "Answer to fifth."},
         {"role": "user", "content": "sixth"},
-        # Direct replies are stripped before they are persisted.
         {"role": "assistant", "content": long_reply.strip()},
+        {"role": "user", "content": "seventh"},
+        {"role": "assistant", "content": "Answer to seventh."},
     ]
-    assert routed_contexts[-1] == expected
-    assert len(routed_contexts[-1][-1]["content"]) > 500
 
 
 def test_category_count_uses_authenticated_runtime_taxonomy_tool(db, monkeypatch, agent_enabled):
@@ -791,6 +797,50 @@ def test_sql_mode_never_replaces_rejected_evidence_with_legacy_analysis(
         event["label"] == "Offline capability compiler selected a validated plan"
         for event in activity
     )
+
+
+def test_authoritative_empty_sql_result_is_a_successful_comparison_answer(
+    db, monkeypatch, agent_enabled
+):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    grounding = ToolGrounding(
+        name="run_governed_sql",
+        arguments={"purpose": "Compare the last three completed months."},
+        result={
+            "tool": "run_governed_sql",
+            "data": {
+                "kind": "governed_sql",
+                "columns": ["category", "difference_minor", "volatility_rank"],
+                "rows": [],
+                "row_count": 0,
+                "empty_result": True,
+            },
+        },
+    )
+    answer = (
+        "No recorded expenses were available across the last three full months, "
+        "so the months cannot be compared and no highest category can be identified."
+    )
+    monkeypatch.setattr(
+        conversation_service,
+        "run_operator",
+        lambda *args, **kwargs: OperatorResult(
+            reply=answer,
+            tool_grounding=[grounding],
+        ),
+    )
+
+    response = handle_chat(
+        db,
+        user,
+        conversation,
+        "Compare the last three full months and identify the highest category.",
+    )
+
+    assert response.task_status == "succeeded"
+    assert response.error_code is None
+    assert response.message == answer
 
 
 def test_grounded_answer_repairs_missing_coverage_without_rerunning_sql(
@@ -1397,6 +1447,10 @@ def test_context_relationship_uses_one_typed_contract_and_distinguishes_amount_b
         "show expenses above 5000",
         active_state,
     ) is ContextRelationship.STANDALONE
+    assert conversation_service._context_relationship(
+        "Compare my spending this month with the same elapsed days last month",
+        active_state,
+    ) is ContextRelationship.STANDALONE
 
 
 def test_expense_pattern_savings_request_runs_contextual_governed_analysis(db, monkeypatch):
@@ -1651,6 +1705,144 @@ def test_derived_financial_analysis_reaches_the_agent_loop_with_analysis_tools(d
     assert captured["presentation"].style is AnswerStyle.CONCISE
     assert captured["presentation"].provider_verbosity == "low"
     get_settings.cache_clear()
+
+
+def test_self_contained_calculator_keeps_agent_but_prunes_ledger_capabilities(
+    db,
+    monkeypatch,
+    agent_enabled,
+):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    captured: dict = {}
+
+    def capture_operator(*_args, **kwargs):
+        captured.update(kwargs)
+        return OperatorResult(reply="I could not complete the calculation.")
+
+    monkeypatch.setattr(conversation_service, "run_operator", capture_operator)
+    monkeypatch.setattr(
+        conversation_service,
+        "get_traits",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("stored traits must not load for a hypothetical calculator")
+        ),
+    )
+    monkeypatch.setattr(
+        conversation_service,
+        "current_insights",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("stored insights must not load for a hypothetical calculator")
+        ),
+    )
+
+    handle_chat(
+        db,
+        user,
+        conversation,
+        "What is the monthly EMI on a ₹12 lakh loan at 8% for 5 years?",
+    )
+
+    assert [tool.name for tool in captured["runtime_tools"]] == [
+        conversation_service.FINANCIAL_CALCULATOR_TOOL_NAME,
+    ]
+    assert captured["analysis_tools"] == []
+    assert "userTraits" not in captured["workflow_context"]
+    assert "verifiedInsights" not in captured["workflow_context"]
+    assert conversation_service._is_self_contained_calculator_request(
+        "What is the EMI on ₹12 lakh at 8% for 5 years?",
+        ContextRelationship.STANDALONE,
+    )
+    assert not conversation_service._is_self_contained_calculator_request(
+        "Compare my spending with the EMI on ₹12 lakh at 8% for 5 years.",
+        ContextRelationship.STANDALONE,
+    )
+    assert not conversation_service._is_self_contained_calculator_request(
+        "What about a 7-year tenure?",
+        ContextRelationship.FOLLOW_UP,
+    )
+
+
+def test_social_greeting_keeps_contextual_agent_without_finance_capabilities(
+    db,
+    monkeypatch,
+    agent_enabled,
+):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    captured: dict = {}
+
+    def capture_operator(*_args, **kwargs):
+        captured.update(kwargs)
+        return OperatorResult(reply="Doing well—glad you're here.")
+
+    monkeypatch.setattr(conversation_service, "run_operator", capture_operator)
+    monkeypatch.setattr(
+        conversation_service,
+        "get_traits",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("stored traits must not load for a greeting")
+        ),
+    )
+    monkeypatch.setattr(
+        conversation_service,
+        "current_insights",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("stored insights must not load for a greeting")
+        ),
+    )
+
+    response = handle_chat(db, user, conversation, "How are you doing?")
+
+    assert response.message == "Doing well—glad you're here."
+    assert captured["runtime_tools"] == []
+    assert captured["analysis_tools"] == []
+    assert captured["workflow_context"]["kind"] == "conversation_only"
+    assert conversation_service._is_social_conversation_only("Hi")
+    assert conversation_service._is_social_conversation_only("Hello, how are you doing?")
+    assert not conversation_service._is_social_conversation_only("Hi, log ₹500 for lunch")
+
+
+def test_explicit_no_record_explanation_keeps_model_but_loads_no_user_data(
+    db,
+    monkeypatch,
+    agent_enabled,
+):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    captured: dict = {}
+
+    def capture_operator(*_args, **kwargs):
+        captured.update(kwargs)
+        return OperatorResult(reply="Principal is the amount borrowed; interest is its borrowing cost.")
+
+    monkeypatch.setattr(conversation_service, "run_operator", capture_operator)
+    monkeypatch.setattr(
+        conversation_service,
+        "get_traits",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("stored traits must not load when the user excludes records")
+        ),
+    )
+    monkeypatch.setattr(
+        conversation_service,
+        "current_insights",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("stored insights must not load when the user excludes records")
+        ),
+    )
+
+    response = handle_chat(
+        db,
+        user,
+        conversation,
+        "Explain principal versus interest without using my records.",
+    )
+
+    assert response.task_status == "succeeded"
+    assert captured["runtime_tools"] == []
+    assert captured["analysis_tools"] == []
+    assert captured["workflow_context"]["kind"] == "knowledge_only"
 
 def test_chat_reports_safe_timed_agent_activity(db):
     user = default_user(db)
@@ -2825,9 +3017,8 @@ def test_remove_merchant_expense_searches_candidates_before_confirming(db, monke
     user = default_user(db)
     conversation = get_or_create_conversation(db, user)
     first = handle_chat(db, user, conversation, "Spent ₹900 at Toit today")
-    second = handle_chat(db, user, conversation, "Spent ₹1,100 at Toit today")
+    handle_chat(db, user, conversation, "Spent ₹1,100 at Toit today")
     first_id = first.widgets[0].data["transactionId"]
-    second_id = second.widgets[0].data["transactionId"]
     handle_chat(db, user, conversation, "₹333")
     abandoned_draft = db.scalar(select(TransactionDraft).where(TransactionDraft.raw_text == "₹333"))
     assert abandoned_draft.state == DraftState.NEEDS_CLARIFICATION.value

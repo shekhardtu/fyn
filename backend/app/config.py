@@ -92,9 +92,14 @@ class Settings(BaseSettings):
     r2_presign_seconds: int = Field(default=300, ge=30, le=3600)
     google_client_id: str | None = None
     operator_model: str = "gpt-5.6-luna"
-    # Complex SQL analysis gets a quality-first reasoning budget while routine
-    # conversational turns keep the lower-latency operator baseline.
-    operator_analysis_reasoning_effort: Literal["low", "medium", "high", "xhigh"] = "high"
+    # Luna remains a genuine reasoning/tool loop at low effort. Complex work
+    # can escalate from inside that loop through the bounded delegate below;
+    # ordinary reads never pay a higher deliberation budget or a serial router.
+    operator_analysis_reasoning_effort: Literal["low", "medium", "high", "xhigh"] = "low"
+    analysis_delegation_enabled: bool = True
+    analysis_delegate_model: str = "gpt-5.6-terra"
+    analysis_delegate_reasoning_effort: Literal["low", "medium", "high", "xhigh"] = "medium"
+    analysis_delegate_timeout_seconds: int = Field(default=35, ge=5, le=120)
     planner_model: str = "gpt-5.6-terra"
     validator_model: str = "gpt-5.6-luna"
     reconciler_model: str = "gpt-5.6-luna"
@@ -148,6 +153,13 @@ class Settings(BaseSettings):
     agent_recovery_max_postprocess_attempts: int = Field(default=2, ge=0, le=10)
     agent_recovery_min_interval_ms: int = Field(default=50, ge=0, le=5000)
     agent_recovery_idle_poll_seconds: int = Field(default=5, ge=1, le=60)
+    # Optional answer enrichment owns a distinct, continuously drained queue.
+    # Its model traffic and failures are isolated from the AG-UI run worker.
+    agent_enrichment_max_concurrency: int = Field(default=2, ge=1, le=16)
+    agent_enrichment_claim_ttl_seconds: int = Field(default=60, ge=15, le=600)
+    agent_enrichment_max_attempts: int = Field(default=2, ge=1, le=5)
+    agent_enrichment_retry_seconds: int = Field(default=3, ge=1, le=60)
+    agent_enrichment_idle_poll_ms: int = Field(default=250, ge=50, le=5000)
     default_currency: str = DEFAULT_CURRENCY
     default_timezone: str = DEFAULT_TIMEZONE
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

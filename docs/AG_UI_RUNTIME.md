@@ -4,7 +4,7 @@ Fyn uses AG-UI as its only interactive-agent transport.
 
 ## Client adapters
 
-- Web keeps one official `@ag-ui/client` `HttpAgent` per thread. Its native message, state, pending-interrupt, lifecycle-verification, and capability-discovery behavior survives multiple runs and in-process reconnects.
+- Web keeps one official `@ag-ui/client` `HttpAgent` per thread. Its native message, state, pending-interrupt, lifecycle-verification, and capability-discovery behavior survives multiple runs and in-process reconnects. Capability discovery is prefetched and never blocks an ordinary message; interrupt resume keeps it as a hard safety precondition.
 - Fyn widgets remain the product's typed, versioned UI contract. Their validated result is carried in the namespaced `fyn.response.v1` custom event; protocol lifecycle and orchestration use standard AG-UI events.
 
 ## Run lifecycle
@@ -28,7 +28,12 @@ provider's native token, cache, cost, duration, and time-to-first-token values.
 Each model pass may add its reasoning profile, prompt/component character
 counts, initially mounted tool names/count, and tool-call duration/error state.
 It never stores prompt components, tool arguments/results, financial values, or
-raw reasoning.
+raw reasoning. A pass also records a bounded list of provider-request timing
+and token counters, because one agent pass may contain several serial provider
+requests around tool actions. This distinction prevents the UI and report from
+calling a multi-request loop a “single model pass.” Collection is in-memory,
+scalar-only, and exception-contained; it performs no callback, I/O, or commit
+inside the provider event loop.
 
 The durable publisher observes lifecycle events in memory and derives queue
 wait, first activity/reasoning/tool/text, first-text-to-finish, total server
@@ -58,7 +63,7 @@ POST /agent
      or RUN_ERROR
 ```
 
-The event sequence is durable and monotonic per run. An event is committed before it is delivered live, and terminal events commit atomically with terminal run state. Leaving a thread or losing the network detaches the listener; it does not cancel the server run. Both clients retain the last replay-safe SSE sequence and continue from that cursor. A fresh client replays from the beginning; a connected client receives a verifier-compatible continuation beginning with a synthetic, non-persisted `RUN_STARTED` boundary.
+The event sequence is durable and monotonic per run. An event is committed before it is delivered live, and terminal events commit atomically with terminal run state. The first activity, first reasoning content, and first answer text commit immediately; later burst fragments commit in bounded 32 ms / 12-event groups. A terminal commit always drains the remainder, so batching changes neither sequence nor replay bytes. Leaving a thread or losing the network detaches the listener; it does not cancel the server run. Both clients retain the last replay-safe SSE sequence and continue from that cursor. A fresh client replays from the beginning; a connected client receives a verifier-compatible continuation beginning with a synthetic, non-persisted `RUN_STARTED` boundary.
 
 At startup, old work drains through leased database claims and a fixed-size
 worker pool; backlog size never creates an equivalent number of tasks or model
@@ -67,11 +72,19 @@ never replayed blindly because a governed action may have crossed its
 side-effect boundary before the process exited, so recovery appends a durable
 `RUN_ERROR(code: "server_restart")`. There is one narrower checkpoint: once a
 successful canonical answer is committed, the run records
-`postprocess_pending`. Recovery may resume only the idempotent activity and
-related-question enrichment after that checkpoint, then continue the same
-event stream through `fyn.response.v1` and `RUN_FINISHED`. Repeated process
-exits are capped; after the cap, the committed answer finishes without the
-optional suggestion pass.
+`postprocess_pending`. Recovery may resume only the idempotent activity trace
+after that checkpoint, then continue the same event stream through
+`fyn.response.v1` and `RUN_FINISHED`; it never replays the financial turn.
+
+Related questions are deliberately outside that checkpoint and event stream.
+The answer checkpoint transaction inserts one `agent_enrichments` outbox row
+without another query or commit. A continuously drained, leased,
+fixed-concurrency worker owns the suggestion model call, retry, and failure,
+and releases its database connection while waiting on the provider. The
+browser polls the authenticated enrichment status only after the canonical
+response resolves and never awaits that polling from its chat mutation. The
+composer and run outcome therefore cannot depend on optional chips, while a
+completed widget remains persisted on the original message after reload.
 
 ## Human-in-the-loop actions
 
@@ -93,8 +106,9 @@ The server accepts only one of three reduced commands from a run input:
 
 ## Conversation context and validation
 
-The conversation table remains the authoritative thread history. A new model
-turn receives the five most recent complete user/assistant turns with their
+The conversation table remains the authoritative thread history. A standalone
+model turn receives the two most recent complete user/assistant turns; an
+explicit follow-up or correction receives up to five, with their
 full message text, plus bounded grounding lineage for assistant answers: query
 dates, filters, direction, grouping and result shape. Ledger rows and entity
 IDs are not copied into general model context. The last complete structured
@@ -166,12 +180,16 @@ an enumerated taxonomy answer must carry exactly the children the tool returned
 for every category it names — coverage is intent, not grounding, so a correct
 answer about one category is not rejected for omitting the rest.
 
-Analytical reads have one path. Totals, breakdowns, comparisons, cash position
-and recurring patterns execute through the template pool and the governed
-harness, so validation, tenancy, template caching, chart grammar and the audit
-trail apply to every one of them. The Operator's typed runtime tools are the
-record listing the semantic layer cannot express, the taxonomy metadata read,
-and the calculators — none of which is a query over ledger facts.
+Analytical reads share one authority boundary but may expose several
+agent-selectable capabilities. Common, failure-prone shapes such as
+month-to-date totals, same-elapsed-day comparisons, three-month volatility,
+and discretionary caps have small semantic tools with fixed financial and time
+semantics. Governed SQL remains mounted as the arbitrary long-tail fallback,
+and optional stronger delegation remains a model-selected quality lane. This
+is capability retrieval, not a deterministic response router: the universal
+Operator still receives the turn, selects the action, and authors the grounded
+answer. Runtime tools continue to own record listing, taxonomy metadata, and
+calculators.
 
 A reply that fails a postcondition is replaced by a rendering of the tool result
 itself. For a governed analysis that rendering is the harness's own verified

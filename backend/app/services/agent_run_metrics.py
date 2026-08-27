@@ -23,6 +23,7 @@ class _MetricPass:
     prompt_components: dict[str, int]
     mounted_tools: list[str]
     tool_calls: list[dict[str, Any]]
+    provider_requests: list[dict[str, Any]]
     input_tokens: int
     output_tokens: int
     total_tokens: int
@@ -77,6 +78,15 @@ def _cost(value: Any) -> float | None:
         return None
     try:
         return round(max(0.0, float(value)), 10)
+    except (TypeError, ValueError):
+        return None
+
+
+def _non_negative_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return round(max(0.0, float(value)), 1)
     except (TypeError, ValueError):
         return None
 
@@ -151,6 +161,40 @@ def _tool_call_metrics(run_output: Any) -> list[dict[str, Any]]:
     return calls
 
 
+def _provider_request_metrics(
+    requests: list[dict[str, Any]] | None,
+    *,
+    default_model: str,
+) -> list[dict[str, Any]]:
+    """Sanitize content-free request events without serializing provider data."""
+
+    values: list[dict[str, Any]] = []
+    for item in (requests or [])[:32]:
+        try:
+            if not isinstance(item, dict):
+                continue
+            input_tokens = _non_negative_int(item.get("inputTokens"))
+            output_tokens = _non_negative_int(item.get("outputTokens"))
+            total_tokens = _non_negative_int(item.get("totalTokens"))
+            if total_tokens == 0 and input_tokens + output_tokens:
+                total_tokens = input_tokens + output_tokens
+            values.append({
+                "model": str(item.get("model") or default_model)[:160],
+                "provider": str(item.get("provider") or "").strip()[:80] or None,
+                "durationMs": _non_negative_float(item.get("durationMs")),
+                "timeToFirstTokenMs": _non_negative_float(item.get("timeToFirstTokenMs")),
+                "inputTokens": input_tokens,
+                "outputTokens": output_tokens,
+                "totalTokens": total_tokens,
+                "cacheReadTokens": _non_negative_int(item.get("cacheReadTokens")),
+                "cacheWriteTokens": _non_negative_int(item.get("cacheWriteTokens")),
+                "reasoningTokens": _non_negative_int(item.get("reasoningTokens")),
+            })
+        except Exception:
+            continue
+    return values
+
+
 def record_agno_run_metrics(
     run_output: Any,
     *,
@@ -160,6 +204,7 @@ def record_agno_run_metrics(
     prompt_characters: int | None = None,
     prompt_components: dict[str, Any] | None = None,
     mounted_tools: list[str] | None = None,
+    provider_requests: list[dict[str, Any]] | None = None,
 ) -> None:
     """Add one completed Agno ``RunOutput.metrics`` to the active turn.
 
@@ -190,9 +235,10 @@ def record_agno_run_metrics(
             for name in (mounted_tools or [])
             if str(name).strip()
         ))[:64]
+        resolved_model = str(getattr(run_output, "model", None) or model)[:160]
         collection.passes.append(_MetricPass(
             stage=str(stage)[:80],
-            model=str(getattr(run_output, "model", None) or model)[:160],
+            model=resolved_model,
             provider=(
                 str(getattr(run_output, "model_provider", "")).strip()[:80] or None
             ),
@@ -205,6 +251,10 @@ def record_agno_run_metrics(
             prompt_components=safe_components,
             mounted_tools=safe_tools,
             tool_calls=_tool_call_metrics(run_output),
+            provider_requests=_provider_request_metrics(
+                provider_requests,
+                default_model=resolved_model,
+            ),
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             total_tokens=total_tokens,
@@ -220,12 +270,61 @@ def record_agno_run_metrics(
         return
 
 
+def non_overlapping_model_duration_ms(passes: list[Any]) -> float | None:
+    """Sum provider-pass durations without double-counting nested delegates.
+
+    Agno's outer Operator duration already spans a synchronous delegate tool
+    call. The delegate remains a separate pass for tokens, cost, TTFT, and
+    diagnostics, but adding both durations would report more time than the
+    customer actually waited. Independent validation/repair passes remain
+    additive because they execute after the Operator returns.
+    """
+    try:
+        def field(item: Any, name: str) -> Any:
+            return item.get(name) if isinstance(item, dict) else getattr(item, name, None)
+
+        has_outer_operator = any(
+            field(item, "stage") == "operator_response" for item in passes
+        )
+        durations = [
+            float(duration)
+            for item in passes
+            if not (
+                has_outer_operator
+                and field(item, "stage") == "analysis_delegate"
+            )
+            and (duration := field(item, "duration_ms") if not isinstance(item, dict)
+                 else item.get("durationMs")) is not None
+        ]
+        return round(sum(durations), 1) if durations else None
+    except Exception:
+        # Aggregation is observational only. If a future framework object is
+        # unusual, omit this field instead of affecting the customer run.
+        return None
+
+
 def agent_metric_snapshot() -> dict[str, Any]:
     """Return the current turn's JSON-safe aggregate and per-pass evidence."""
     collection = _active_collection.get()
     passes = list(collection.passes) if collection is not None else []
+    # A nested delegate completes and records before the outer Operator can
+    # finish, even though the Operator was the first provider pass to start.
+    # Restore chronological presentation so first-model TTFT and the execution
+    # trace continue to mean the customer's first pass, not the first pass that
+    # happened to return.
+    operator_index = next(
+        (index for index, item in enumerate(passes) if item.stage == "operator_response"),
+        None,
+    )
+    if operator_index is not None:
+        delegates = [item for item in passes if item.stage == "analysis_delegate"]
+        if delegates:
+            passes = [item for item in passes if item.stage != "analysis_delegate"]
+            operator_index = next(
+                index for index, item in enumerate(passes) if item.stage == "operator_response"
+            )
+            passes[operator_index + 1:operator_index + 1] = delegates
     costs = [item.cost_usd for item in passes if item.cost_usd is not None]
-    durations = [item.duration_ms for item in passes if item.duration_ms is not None]
     first_token = next(
         (item.time_to_first_token_ms for item in passes if item.time_to_first_token_ms is not None),
         None,
@@ -235,13 +334,14 @@ def agent_metric_snapshot() -> dict[str, Any]:
     return {
         "source": "agno_run_output",
         "modelPasses": len(passes),
+        "providerRequestCount": sum(len(item.provider_requests) for item in passes),
         "inputTokens": sum(item.input_tokens for item in passes),
         "outputTokens": sum(item.output_tokens for item in passes),
         "totalTokens": sum(item.total_tokens for item in passes),
         "cacheReadTokens": sum(item.cache_read_tokens for item in passes),
         "cacheWriteTokens": sum(item.cache_write_tokens for item in passes),
         "reasoningTokens": sum(item.reasoning_tokens for item in passes),
-        "modelDurationMs": round(sum(durations), 1) if durations else None,
+        "modelDurationMs": non_overlapping_model_duration_ms(passes),
         "firstModelTimeToFirstTokenMs": first_token,
         "costUsd": exact_cost,
         "costCoverage": round(cost_coverage, 4),
@@ -256,6 +356,7 @@ def agent_metric_snapshot() -> dict[str, Any]:
                 "mountedToolCount": len(item.mounted_tools),
                 "mountedTools": item.mounted_tools,
                 "toolCalls": item.tool_calls,
+                "providerRequests": item.provider_requests,
                 "inputTokens": item.input_tokens,
                 "outputTokens": item.output_tokens,
                 "totalTokens": item.total_tokens,

@@ -51,7 +51,7 @@ Direct imports are preferred over barrel files because they make dependency owne
 - Remote/server state: TanStack Query.
 - Form, overlay, draft, and transient interaction state: local React state in the owning feature.
 - Durable financial and agent-run state: FastAPI/PostgreSQL, never browser storage.
-- AG-UI stream projection: `lib/api.ts`, consumed through callbacks by the conversation workspace.
+- AG-UI stream projection: `lib/api.ts`, consumed through callbacks by the conversation workspace. The first answer fragment is delivered immediately; subsequent fragments coalesce to the latest value once per animation frame, and the terminal fragment is synchronously flushed before the run resolves.
 
 Do not add another global store unless a concrete state domain cannot fit one of these owners.
 
@@ -76,7 +76,8 @@ The parent element survives conversation-ID changes. Preserve the lifecycle test
 - one AG-UI agent per conversation thread;
 - persisted run IDs and monotonic replay cursors;
 - replay-event deduplication;
-- capability checks before streaming/resume;
+- non-blocking capability prefetch for ordinary streaming and a hard check
+  before interrupt resume;
 - typed custom response, activity, reasoning, and interrupt projection;
 - cooperative run cancellation.
 

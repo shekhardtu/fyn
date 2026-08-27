@@ -435,6 +435,22 @@ class AgentToolCallMetrics(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class AgentProviderRequestMetrics(BaseModel):
+    """Content-free timing and token counts for one provider round trip."""
+
+    model: str
+    provider: str | None = None
+    duration_ms: float | None = Field(default=None, alias="durationMs", ge=0)
+    time_to_first_token_ms: float | None = Field(default=None, alias="timeToFirstTokenMs", ge=0)
+    input_tokens: int = Field(default=0, alias="inputTokens", ge=0)
+    output_tokens: int = Field(default=0, alias="outputTokens", ge=0)
+    total_tokens: int = Field(default=0, alias="totalTokens", ge=0)
+    cache_read_tokens: int = Field(default=0, alias="cacheReadTokens", ge=0)
+    cache_write_tokens: int = Field(default=0, alias="cacheWriteTokens", ge=0)
+    reasoning_tokens: int = Field(default=0, alias="reasoningTokens", ge=0)
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class AgentModelPassMetrics(BaseModel):
     stage: str
     model: str
@@ -445,6 +461,11 @@ class AgentModelPassMetrics(BaseModel):
     mounted_tool_count: int = Field(default=0, alias="mountedToolCount", ge=0)
     mounted_tools: list[str] = Field(default_factory=list, alias="mountedTools", max_length=64)
     tool_calls: list[AgentToolCallMetrics] = Field(default_factory=list, alias="toolCalls", max_length=64)
+    provider_requests: list[AgentProviderRequestMetrics] = Field(
+        default_factory=list,
+        alias="providerRequests",
+        max_length=32,
+    )
     input_tokens: int = Field(alias="inputTokens", ge=0)
     output_tokens: int = Field(alias="outputTokens", ge=0)
     total_tokens: int = Field(alias="totalTokens", ge=0)
@@ -494,6 +515,7 @@ class AgentClientTelemetryIn(AgentClientTimingMetrics):
 class AgentRunMetrics(BaseModel):
     source: Literal["agno_run_output"] = "agno_run_output"
     model_passes: int = Field(default=0, alias="modelPasses", ge=0)
+    provider_request_count: int = Field(default=0, alias="providerRequestCount", ge=0)
     input_tokens: int = Field(default=0, alias="inputTokens", ge=0)
     output_tokens: int = Field(default=0, alias="outputTokens", ge=0)
     total_tokens: int = Field(default=0, alias="totalTokens", ge=0)
@@ -517,6 +539,8 @@ class AgentRunMetrics(BaseModel):
     def validate_pass_count(self):
         if self.model_passes != len(self.passes):
             raise ValueError("modelPasses must equal the number of per-pass metrics")
+        if self.provider_request_count != sum(len(item.provider_requests) for item in self.passes):
+            raise ValueError("providerRequestCount must equal the number of per-request metrics")
         if self.cost_usd is not None and self.cost_coverage != 1:
             raise ValueError("costUsd is exact only when costCoverage is 1")
         return self
@@ -863,6 +887,17 @@ class AgentResponse(BaseModel):
     failure_stage: str | None = Field(default=None, exclude=True)
     error_code: str | None = Field(default=None, exclude=True)
     model_config = ConfigDict(populate_by_name=True)
+
+
+class AgentEnrichmentOut(BaseModel):
+    """Public status for optional work that follows a completed answer."""
+
+    run_id: UUID = Field(serialization_alias="runId")
+    message_id: UUID = Field(serialization_alias="messageId")
+    kind: Literal["related_questions"]
+    status: Literal["pending", "running", "completed", "skipped", "failed"]
+    widget: Widget | None = None
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AgentInterruptOut(BaseModel):

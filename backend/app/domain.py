@@ -203,6 +203,16 @@ class AgentRunStatus(ValueEnum):
     CANCELLED = "cancelled"
 
 
+class AgentEnrichmentStatus(ValueEnum):
+    """Lifecycle for optional work that must never hold an agent run open."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
+
 class AgentTaskStatus(ValueEnum):
     """Whether the requested domain task completed, independent of transport."""
 

@@ -122,11 +122,13 @@ class CoverageValidation:
 
 _NUMBER = r"[-+]?\d[\d,]*(?:\.\d+)?"
 _MONEY_PREFIX = re.compile(
-    rf"(?P<full>(?:₹|\bINR\b|\bRs\.?|\brupees?)\s*(?P<number>{_NUMBER}))",
+    rf"(?P<full>(?:₹|\bINR\b|\bRs\.?|\brupees?)\s*(?P<number>{_NUMBER})"
+    r"(?:\s*(?P<scale>lakhs?|crores?))?)",
     re.I,
 )
 _MONEY_SUFFIX = re.compile(
-    rf"(?P<full>(?P<number>{_NUMBER})\s*(?:₹|\bINR\b|\brupees?\b))",
+    rf"(?P<full>(?P<number>{_NUMBER})(?:\s*(?P<scale>lakhs?|crores?))?\s*"
+    r"(?:₹|\bINR\b|\brupees?\b))",
     re.I,
 )
 _PERCENT = re.compile(rf"(?P<full>(?P<number>{_NUMBER})\s*%)", re.I)
@@ -139,11 +141,36 @@ _DATE = re.compile(r"^\d{4}-\d{2}(?:-\d{2})?(?:[T ][\d:.+\-Z]+)?$")
 _MONEY_FIELD = re.compile(r"(?:^|_)(?:amount|spend|spent|total|value|balance|income|expense|cost|delta|difference|change|average|avg|baseline).*minor$|_minor$", re.I)
 _PERCENT_FIELD = re.compile(r"(?:pct|percent|percentage|rate)(?:$|_)", re.I)
 _BASIS_POINT_FIELD = re.compile(r"(?:bps|basis_points?)(?:$|_)", re.I)
-_COUNT_FIELD = re.compile(r"(?:^|_)(?:count|quantity|frequency|rank)(?:$|_)", re.I)
+_COUNT_FIELD = re.compile(
+    r"(?:^|_)(?:count|quantity|frequency|rank|returned|tenure_months|"
+    r"months_saved|prepayment_after_months)(?:$|_)",
+    re.I,
+)
 _OPERATIONAL_FIELDS = {
     "limit", "offset", "row_count", "duration_ms", "template_saved",
     "dataset_name", "sql", "columns", "tables", "kind", "purpose",
+    "fields", "result_schema", "display",
 }
+_EMPTY_RESULT_FIELD = "authoritative_empty_result"
+_EMPTY_RANKING_FIELD = "authoritative_empty_ranking"
+_NO_RESULT_ANSWER = re.compile(
+    r"\b(?:no\b.{0,50}\b(?:transactions?|records?|expenses?|data|results?|activity)\b|"
+    r"no\s+(?:matching|recorded|available)?\s*(?:transactions?|records?|expenses?|data|"
+    r"results?|activity|categories|merchants?)|nothing\s+(?:matched|was\s+recorded)|"
+    r"zero\s+(?:transactions?|records?|expenses?)|cannot\s+be\s+(?:compared|identified)|"
+    r"can(?:not|['’]t)\s+(?:compare|identify)|(?:comparison|ranking|volatility)"
+    r".{0,24}\bcan(?:not|['’]t)\s+be\s+(?:calculated|identified))\b",
+    re.I,
+)
+_DATA_DEPENDENT_OBLIGATIONS = frozenset({
+    ObligationCode.MONTHLY_BREAKDOWN,
+    ObligationCode.MERCHANT_DRIVERS,
+    ObligationCode.HISTORICAL_AVERAGE,
+    ObligationCode.ABSOLUTE_COMPARISON,
+    ObligationCode.PERCENTAGE_COMPARISON,
+    ObligationCode.RANKING,
+    ObligationCode.PARTIAL_PERIOD_ALIGNMENT,
+})
 
 _MONTHS = (
     "january", "february", "march", "april", "may", "june",
@@ -199,6 +226,11 @@ def extract_evidence_claims(content: str) -> list[EvidenceClaim]:
             value = _decimal(match.group("number"))
             if value is None:
                 continue
+            scale = (match.groupdict().get("scale") or "").casefold()
+            if scale.startswith("lakh"):
+                value *= Decimal(100_000)
+            elif scale.startswith("crore"):
+                value *= Decimal(10_000_000)
             claims.append(EvidenceClaim(
                 kind=kind,
                 value=value,
@@ -245,6 +277,57 @@ def _dimensions(row: dict[str, Any]) -> tuple[tuple[str, str], ...]:
     return tuple(values)
 
 
+def _count_unit(field_name: str, tool: str) -> str | None:
+    """Give explicit count facts a semantic unit when their result supplies one."""
+
+    field = field_name.casefold()
+    tool_name = tool.casefold()
+    if "month" in field or "tenure" in field:
+        return "months"
+    if "subcategor" in field:
+        return "subcategories"
+    if "categor" in field:
+        return "categories"
+    if "merchant" in field:
+        return "merchants"
+    if "account" in field:
+        return "accounts"
+    if "transaction" in field or (
+        tool_name in {"transaction_list", "spending_summary"}
+        and field in {"count", "returned"}
+    ):
+        return "transactions"
+    return None
+
+
+def _list_count_fact(
+    tool: str,
+    tool_index: int,
+    path: str,
+    value: list[Any],
+    dimensions: tuple[tuple[str, str], ...],
+) -> EvidenceFact | None:
+    """Count only lists whose runtime contract gives the collection a meaning."""
+
+    if tool == "read_user_expense_taxonomy" and path == "result":
+        field, unit = "category_count", "categories"
+    elif tool == "read_user_expense_taxonomy" and path.endswith(":subcategories"):
+        field, unit = "subcategory_count", "subcategories"
+    elif tool == "transaction_list" and path.endswith(":rows"):
+        field, unit = "transaction_count", "transactions"
+    else:
+        return None
+    return EvidenceFact(
+        f"{tool}:{tool_index}:{path}:count",
+        EvidenceKind.COUNT,
+        Decimal(len(value)),
+        field,
+        tool,
+        unit=unit,
+        dimensions=dimensions,
+    )
+
+
 def _fact(
     tool: str,
     path: str,
@@ -276,7 +359,15 @@ def _fact(
                 unit="percent", dimensions=dimensions,
             )
         if _COUNT_FIELD.search(field_name):
-            return EvidenceFact(path, EvidenceKind.COUNT, number, field_name, tool, dimensions=dimensions)
+            return EvidenceFact(
+                path,
+                EvidenceKind.COUNT,
+                number,
+                field_name,
+                tool,
+                unit=_count_unit(field_name, tool),
+                dimensions=dimensions,
+            )
         return EvidenceFact(path, EvidenceKind.NUMBER, number, field_name, tool, dimensions=dimensions)
     if isinstance(value, str) and value.strip():
         return EvidenceFact(path, EvidenceKind.TEXT, value.strip(), field_name, tool, dimensions=dimensions)
@@ -293,6 +384,15 @@ def _walk_result(
     inherited_currency: str | None = None,
 ) -> None:
     if isinstance(value, list):
+        count_fact = _list_count_fact(
+            tool,
+            tool_index,
+            path,
+            value,
+            inherited_dimensions,
+        )
+        if count_fact is not None:
+            facts.append(count_fact)
         for index, item in enumerate(value):
             _walk_result(
                 facts, tool, tool_index, item, f"{path}:{index}",
@@ -309,6 +409,8 @@ def _walk_result(
     for field_name, item in value.items():
         field_path = f"{path}:{field_name}"
         if isinstance(item, (dict, list)):
+            if str(field_name).casefold() in _OPERATIONAL_FIELDS:
+                continue
             _walk_result(
                 facts, tool, tool_index, item, field_path,
                 local_dimensions, currency,
@@ -328,11 +430,107 @@ def evidence_facts(grounding: Iterable[Any]) -> list[EvidenceFact]:
     facts: list[EvidenceFact] = []
     for tool_index, item in enumerate(grounding):
         result = _tool_result(item)
-        if not isinstance(result, dict) or isinstance(result.get("error"), dict):
+        if not isinstance(result, (dict, list)):
             continue
         tool = str(getattr(item, "name", f"tool_{tool_index}"))
-        if result.get("kind") == "governed_sql":
+        if isinstance(result, dict) and isinstance(result.get("error"), dict):
+            continue
+        if isinstance(result, dict) and result.get("empty_result") is True:
+            facts.append(EvidenceFact(
+                f"{tool}:{tool_index}:result:{_EMPTY_RESULT_FIELD}",
+                EvidenceKind.TEXT,
+                "true",
+                _EMPTY_RESULT_FIELD,
+                tool,
+            ))
+        if isinstance(result, dict) and result.get("kind") == "governed_sql":
             rows = result.get("rows") or []
+            # A UNION-style analysis can return summary rows while its ranked
+            # subgroup is authentically empty. Treat that as proof only when
+            # the result contract contains both an explicit rank and ranked
+            # entity column, and both are null across every returned row. This
+            # is deliberately narrower than an empty result: it can satisfy a
+            # ranking obligation, but cannot stand in for unrelated evidence.
+            columns = {
+                str(column).casefold()
+                for column in result.get("columns", [])
+                if isinstance(column, str)
+            }
+            if not columns and rows:
+                columns = {
+                    str(column).casefold()
+                    for row in rows
+                    if isinstance(row, dict)
+                    for column in row
+                }
+            rank_columns = {
+                column for column in columns
+                if re.search(r"(?:^|_)(?:rank|ranking)(?:$|_)", column, re.I)
+            }
+            entity_columns = {
+                column for column in columns
+                if re.search(
+                    r"(?:^|_)(?:category|subcategory|merchant|vendor|account|item|driver|name)(?:$|_)",
+                    column,
+                    re.I,
+                )
+            }
+            normalized_rows = [
+                {str(key).casefold(): value for key, value in row.items()}
+                for row in rows
+                if isinstance(row, dict)
+            ]
+            explicit_empty_rank = bool(
+                normalized_rows
+                and rank_columns
+                and entity_columns
+                and all(
+                    all(row.get(column) in {None, ""} for column in rank_columns)
+                    and all(row.get(column) in {None, ""} for column in entity_columns)
+                    for row in normalized_rows
+                )
+            )
+            row_type_columns = {
+                column for column in columns
+                if column in {"row_type", "result_type", "record_type"}
+            }
+            ranked_measure_columns = {
+                column for column in columns
+                if re.search(
+                    r"(?:^|_)(?:reduction|saving|opportunity)(?:$|_).*minor$",
+                    column,
+                    re.I,
+                )
+            }
+            no_ranked_subgroup_rows = bool(
+                normalized_rows
+                and row_type_columns
+                and ranked_measure_columns
+                and ObligationCode.RANKING.value in result.get("answer_contract", [])
+                and all(
+                    not any(
+                        re.search(
+                            r"category|subcategory|merchant|vendor|driver|rank",
+                            str(row.get(column) or ""),
+                            re.I,
+                        )
+                        for column in row_type_columns
+                    )
+                    and all(
+                        row.get(column) in {None, "", 0}
+                        for column in ranked_measure_columns
+                    )
+                    for row in normalized_rows
+                )
+            )
+            if explicit_empty_rank or no_ranked_subgroup_rows:
+                facts.append(EvidenceFact(
+                    f"{tool}:{tool_index}:result:{_EMPTY_RANKING_FIELD}",
+                    EvidenceKind.TEXT,
+                    "true",
+                    _EMPTY_RANKING_FIELD,
+                    tool,
+                ))
             for row_index, row in enumerate(rows):
                 if not isinstance(row, dict):
                     continue
@@ -354,6 +552,19 @@ def evidence_facts(grounding: Iterable[Any]) -> list[EvidenceFact]:
                         facts.append(fact)
             continue
         _walk_result(facts, tool, tool_index, result, "result")
+        if (
+            isinstance(result, dict)
+            and isinstance(result.get("rows"), list)
+            and not result["rows"]
+            and result.get("returned") == 0
+        ):
+            facts.append(EvidenceFact(
+                f"{tool}:{tool_index}:result:{_EMPTY_RESULT_FIELD}",
+                EvidenceKind.TEXT,
+                "true",
+                _EMPTY_RESULT_FIELD,
+                tool,
+            ))
     return facts
 
 
@@ -381,6 +592,29 @@ def _value_matches(claim: EvidenceClaim, fact: EvidenceFact) -> bool:
     if not isinstance(fact.value, Decimal):
         return False
     if claim.kind is EvidenceKind.COUNT:
+        claim_unit_match = re.search(
+            r"\b(transactions?|purchases?|payments?|merchants?|categories|accounts?|"
+            r"months?|days?|records?|items?)\b",
+            claim.text,
+            re.I,
+        )
+        claim_unit = claim_unit_match.group(1).casefold() if claim_unit_match else None
+        if claim_unit:
+            aliases = {
+                "transaction": "transactions", "transactions": "transactions",
+                "purchase": "transactions", "purchases": "transactions",
+                "payment": "transactions", "payments": "transactions",
+                "category": "categories", "categories": "categories",
+                "merchant": "merchants", "merchants": "merchants",
+                "account": "accounts", "accounts": "accounts",
+                "month": "months", "months": "months",
+                "day": "days", "days": "days",
+                "record": "records", "records": "records",
+                "item": "items", "items": "items",
+            }
+            normalized_claim_unit = aliases.get(claim_unit, claim_unit)
+            if fact.unit and normalized_claim_unit != fact.unit:
+                return False
         return fact.value == claim.value
     quantum = Decimal(1).scaleb(-claim.decimals)
     if fact.value.quantize(quantum, rounding=ROUND_HALF_UP) == claim.value:
@@ -399,6 +633,10 @@ def validate_evidence(
     claims = extract_evidence_claims(content)
     requested_claims = extract_evidence_claims(request_text)
     validation = EvidenceValidation(facts=facts, claims=claims)
+    authoritative_empty_result = any(
+        fact.field == _EMPTY_RESULT_FIELD and fact.value == "true"
+        for fact in facts
+    )
     for claim in claims:
         mentioned = _mentioned_dimensions(claim.sentence, facts)
         candidates = [
@@ -412,14 +650,46 @@ def validate_evidence(
             )
             and re.search(
                 r"\b(?:assum(?:e|ed|ption)|scenario|target|goal|if|purchase|principal|"
+                r"cap|requested|specified|"
                 r"can(?:not|['’]t)\s+guarantee|unable\s+to\s+guarantee|"
                 r"not\s+(?:a\s+)?guarantee)\b",
                 claim.sentence,
                 re.I,
             )
         )
-        if not supported_as_declared_input and not any(
+        supported_as_empty_zero = bool(
+            authoritative_empty_result
+            and claim.value == 0
+            and claim.kind in {EvidenceKind.MONEY, EvidenceKind.COUNT}
+            and re.search(
+                r"\b(?:no|none|zero|recorded|result|total|found|matching)\b",
+                claim.sentence,
+                re.I,
+            )
+        )
+        supported_as_unfulfilled_requested_count = bool(
+            claim.kind is EvidenceKind.COUNT
+            and any(
+                requested.kind is EvidenceKind.COUNT
+                and requested.value == claim.value
+                for requested in requested_claims
+            )
+            and re.search(
+                r"\b(?:no|none|not|cannot|can['’]t|couldn['’]t|unable|nothing)\b"
+                r".{0,80}\b(?:available|found|identify|rank|show|recorded|returned|drivers?)\b"
+                r"|\b(?:available|found|identify|rank|show|recorded|returned|drivers?)\b"
+                r".{0,80}\b(?:no|none|not|cannot|can['’]t|couldn['’]t|unable|nothing)\b",
+                claim.sentence,
+                re.I,
+            )
+        )
+        if (
+            not supported_as_declared_input
+            and not supported_as_empty_zero
+            and not supported_as_unfulfilled_requested_count
+            and not any(
             _value_matches(claim, fact) for fact in candidates
+            )
         ):
             validation.unsupported.append(claim)
     return validation
@@ -467,7 +737,15 @@ def compile_answer_contract(question: str) -> AnswerContract:
         require(ObligationCode.HISTORICAL_AVERAGE, "Show and explain the requested historical average or baseline.")
     if re.search(r"\b(?:compare|versus|vs\.?|difference|delta|higher|lower|more|less)\b", question, re.I):
         require(ObligationCode.ABSOLUTE_COMPARISON, "Put the compared values and their absolute difference together.")
-    if re.search(r"(?:%|\bpercent(?:age)?\b|\brate\s+of\s+change\b)", question, re.I):
+    if re.search(
+        r"\b(?:percent(?:age)?\s+(?:change|difference|increase|decrease)|"
+        r"rate\s+of\s+change|how\s+much\s+(?:higher|lower)\s+in\s+percent)\b|"
+        r"(?:%|\bpercent(?:age)?\b).{0,24}\b(?:change|difference|increase|decrease|"
+        r"higher|lower)\b|\b(?:change|difference|increase|decrease|higher|lower)\b"
+        r".{0,24}(?:%|\bpercent(?:age)?\b)",
+        question,
+        re.I,
+    ):
         require(ObligationCode.PERCENTAGE_COMPARISON, "Include the requested percentage comparison.")
     if re.search(r"\b(?:largest|biggest|highest|lowest|top|rank)\b", question, re.I):
         require(ObligationCode.RANKING, "Identify the requested largest, top, or ranked result.")
@@ -511,12 +789,30 @@ def validate_coverage(
     fields = _field_names(facts)
     text_facts = [fact for fact in facts if fact.kind in {EvidenceKind.TEXT, EvidenceKind.DATE}]
     lowered = content.casefold()
+    authoritative_empty_result = any(
+        fact.field == _EMPTY_RESULT_FIELD and fact.value == "true"
+        for fact in facts
+    )
+    authoritative_empty_ranking = any(
+        fact.field == _EMPTY_RANKING_FIELD and fact.value == "true"
+        for fact in facts
+    )
+    acknowledges_empty_result = bool(_NO_RESULT_ANSWER.search(content))
 
     for obligation in contract.obligations:
         code = obligation.code
         evidence_ok = True
         answer_ok = True
-        if code is ObligationCode.MONTHLY_BREAKDOWN:
+        if (
+            authoritative_empty_result
+            and code in _DATA_DEPENDENT_OBLIGATIONS
+        ):
+            # An authenticated successful query that returned no rows is a
+            # complete answer for that exact scope. Require the prose to say
+            # so, rather than pretending the requested comparison exists.
+            evidence_ok = True
+            answer_ok = acknowledges_empty_result
+        elif code is ObligationCode.MONTHLY_BREAKDOWN:
             if contract.period_markers:
                 evidence_text = " ".join(
                     [fact.field for fact in facts] + [str(fact.value) for fact in text_facts]
@@ -536,14 +832,30 @@ def validate_coverage(
             evidence_ok = _has_field(fields, r"avg|average|baseline")
             answer_ok = bool(re.search(r"\b(?:average|baseline|usual|normal)\b", content, re.I))
         elif code is ObligationCode.ABSOLUTE_COMPARISON:
-            evidence_ok = _has_field(fields, r"delta|difference|change.*minor|variance")
-            answer_ok = bool(re.search(r"\b(?:difference|delta|above|below|higher|lower|more|less|increase|decrease)\b", content, re.I))
+            evidence_ok = _has_field(
+                fields,
+                r"delta|difference|change.*minor|variance|range|saved|reduction",
+            )
+            answer_ok = acknowledges_empty_result or bool(re.search(
+                r"\b(?:difference|delta|above|below|higher|lower|more|less|"
+                r"increase|decrease|reduc(?:e|ed|es|tion)|sav(?:e|ed|es|ing|ings))\b",
+                content,
+                re.I,
+            ))
         elif code is ObligationCode.PERCENTAGE_COMPARISON:
             evidence_ok = any(fact.kind is EvidenceKind.PERCENT for fact in facts)
             answer_ok = bool(_PERCENT.search(content))
         elif code is ObligationCode.RANKING:
-            evidence_ok = _has_field(fields, r"rank|merchant|top|largest|highest|lowest")
-            answer_ok = bool(re.search(r"\b(?:largest|biggest|highest|lowest|top|main)\b", content, re.I))
+            if authoritative_empty_ranking:
+                evidence_ok = True
+                answer_ok = acknowledges_empty_result or bool(re.search(
+                    r"\b(?:nothing|none)\s+to\s+rank\b",
+                    content,
+                    re.I,
+                ))
+            else:
+                evidence_ok = _has_field(fields, r"rank|merchant|top|largest|highest|lowest")
+                answer_ok = bool(re.search(r"\b(?:largest|biggest|highest|lowest|top|main)\b", content, re.I))
         elif code is ObligationCode.PARTIAL_PERIOD_ALIGNMENT:
             evidence_ok = _has_field(fields, r"comparable|same_day|through_day|baseline|avg|average")
             answer_ok = bool(re.search(

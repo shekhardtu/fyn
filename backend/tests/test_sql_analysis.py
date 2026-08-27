@@ -13,9 +13,11 @@ from app.services import analysis_tools as analysis_tools_module
 from app.services import sql_analysis
 from app.services.analysis_tools import AnalysisToolContext, build_analysis_tools
 from app.services.sql_analysis import (
+    DESCRIBE_SQL_SCHEMA_TOOL_NAME,
     RUN_SQL_TOOL_NAME,
     SQL_TEMPLATE_VERSION,
     build_sql_analysis_tool,
+    build_sql_analysis_tools,
     memorize_sql_template,
     sql_examples,
 )
@@ -82,6 +84,24 @@ def test_successful_sql_returns_named_rows_and_saves_a_template(db):
     assert "Blue Tokai" not in template.capability_name
     assert "Blue Tokai" not in template.capability_description
     assert "Blue Tokai" not in template.capability_signature
+
+
+def test_empty_sql_result_is_explicit_authoritative_evidence(db):
+    user = default_user(db)
+    tool = build_sql_analysis_tool(context_for(db, user))
+
+    payload = tool.entrypoint(
+        purpose="month-to-date spending",
+        sql=(
+            "SELECT currency, SUM(amount_minor) AS total_minor FROM transactions "
+            "WHERE transaction_at >= '2026-08-01' GROUP BY currency"
+        ),
+    )
+
+    assert payload["rows"] == []
+    assert payload["row_count"] == 0
+    assert payload["empty_result"] is True
+    assert "do not rerun" in payload["empty_result_guidance"]
 
 
 def test_identical_structure_dedupes_instead_of_duplicating(db):
@@ -178,7 +198,7 @@ def test_sql_mode_exposes_one_unrestricted_native_analysis_author(db, monkeypatc
     assert not any(name.startswith("bind_template__") for name in names)
 
 
-def test_the_tool_description_carries_only_this_users_values(db):
+def test_user_values_are_loaded_only_by_optional_schema_discovery(db):
     user = default_user(db)
     stranger = User(email="stranger@example.com", display_name="Stranger")
     db.add(stranger)
@@ -187,14 +207,56 @@ def test_the_tool_description_carries_only_this_users_values(db):
     db.add(expense(stranger.id, "Third Wave", 90_000))
     db.commit()
 
-    tool = build_sql_analysis_tool(context_for(db, user))
+    tools = build_sql_analysis_tools(context_for(db, user))
+    run_tool = next(tool for tool in tools if tool.name == RUN_SQL_TOOL_NAME)
+    describe_tool = next(
+        tool for tool in tools if tool.name == DESCRIBE_SQL_SCHEMA_TOOL_NAME
+    )
 
-    assert "transactions" in tool.description
-    assert "Blue Tokai" in tool.description
-    assert "Third Wave" not in tool.description
-    assert "description" in tool.description
-    assert "location_label" in tool.description
-    assert "Forbidden sensitive columns" not in tool.description
+    # Initial tool definitions are stable and value-free, so provider prompt
+    # caching can be shared across users and no catalog query sits on the
+    # critical path.
+    assert "transactions" in run_tool.description
+    assert "Blue Tokai" not in run_tool.description
+    assert "Third Wave" not in run_tool.description
+    assert "Blue Tokai" not in describe_tool.description
+
+    payload = describe_tool.entrypoint(entities=["transactions"])
+
+    assert "Blue Tokai" in payload["user_values"]["transactions"]["merchant"]["values"]
+    assert "Third Wave" not in str(payload)
+    assert "description" in payload["schema"]
+    assert "location_label" in payload["schema"]
+    assert "Forbidden sensitive columns" not in payload["schema"]
+
+
+def test_initial_sql_tools_are_compact_stable_and_keep_the_common_direct_path(db):
+    user = default_user(db)
+
+    first = build_sql_analysis_tools(context_for(db, user, "How much did I spend?"))
+    second = build_sql_analysis_tools(context_for(db, user, "Forecast my net worth."))
+
+    assert [tool.name for tool in first] == [
+        RUN_SQL_TOOL_NAME,
+        DESCRIBE_SQL_SCHEMA_TOOL_NAME,
+    ]
+    assert first[0].description == second[0].description
+    assert first[1].description == second[1].description
+    assert len(first[0].description) < 5_000
+    assert "transactions" in first[0].description
+    assert "investment_holdings" not in first[0].description
+    assert "investment_holdings" in first[1].description
+
+    # Keep provider-facing strict schemas within the supported Structured
+    # Outputs subset. Cardinality and de-duplication remain deterministic
+    # server-side validation concerns.
+    discovery_schema = first[1].parameters
+    entities_schema = discovery_schema["properties"]["entities"]
+    assert first[1].strict is True
+    assert discovery_schema["additionalProperties"] is False
+    assert discovery_schema["required"] == ["entities"]
+    assert "minItems" not in entities_schema
+    assert "uniqueItems" not in entities_schema
 
 
 def test_execution_errors_are_fed_back_not_raised(db, monkeypatch):

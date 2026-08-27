@@ -823,6 +823,7 @@ describe("persisted agent activity", () => {
         metrics: {
           source: "agno_run_output",
           modelPasses: 1,
+          providerRequestCount: 2,
           inputTokens: 160,
           outputTokens: 30,
           totalTokens: 190,
@@ -837,6 +838,32 @@ describe("persisted agent activity", () => {
             stage: "operator_decision",
             model: "gpt-test",
             provider: "OpenAI",
+            providerRequests: [
+              {
+                model: "gpt-test",
+                provider: "OpenAI",
+                durationMs: 700,
+                timeToFirstTokenMs: 300,
+                inputTokens: 80,
+                outputTokens: 10,
+                totalTokens: 90,
+                cacheReadTokens: 2,
+                cacheWriteTokens: 0,
+                reasoningTokens: 1,
+              },
+              {
+                model: "gpt-test",
+                provider: "OpenAI",
+                durationMs: 1300,
+                timeToFirstTokenMs: 400,
+                inputTokens: 80,
+                outputTokens: 20,
+                totalTokens: 100,
+                cacheReadTokens: 2,
+                cacheWriteTokens: 0,
+                reasoningTokens: 1,
+              },
+            ],
             inputTokens: 160,
             outputTokens: 30,
             totalTokens: 190,
@@ -871,7 +898,7 @@ describe("persisted agent activity", () => {
     const reasoning = screen.getByRole("button");
     expect(reasoning).toHaveAttribute("data-inline-disclosure", "true");
     expect(within(reasoning).getByText("7.36 s")).toBeInTheDocument();
-    expect(within(reasoning).getByText("Single model pass")).toBeInTheDocument();
+    expect(within(reasoning).getByText("2 model requests")).toBeInTheDocument();
     const details = screen.getByTestId("agent-activity-details");
     const transition = details.parentElement;
     expect(details).toHaveAttribute("aria-hidden", "true");
@@ -882,7 +909,8 @@ describe("persisted agent activity", () => {
     expect(reasoning).toHaveAttribute("aria-expanded", "true");
     expect(details).toHaveAttribute("aria-hidden", "false");
     expect(screen.getByTestId("agent-run-metrics")).toHaveTextContent("190 tokens (160 in / 30 out)");
-    expect(screen.getByTestId("agent-run-metrics")).toHaveTextContent("2.00 s model time");
+    expect(screen.getByTestId("agent-run-metrics")).toHaveTextContent("2 provider requests");
+    expect(screen.getByTestId("agent-run-metrics")).toHaveTextContent("2.00 s model-path time");
     expect(screen.getByTestId("agent-run-metrics")).toHaveTextContent("provider cost unavailable (0% coverage)");
     expect(transition).toHaveClass("grid-rows-[1fr]", "opacity-100");
     expect(details).toHaveTextContent("Kept the July scope.");
@@ -998,6 +1026,11 @@ describe("related questions", () => {
     render(<WidgetRenderer widget={widget} disabled onAction={onAction} onPostPrompt={onPostPrompt} />);
 
     const chip = screen.getByRole("button", { name: "What did I spend on food in August 2026?" });
+    expect(chip.querySelector(".next-entry-label")).toHaveTextContent(
+      "What did I spend on food in August 2026?",
+    );
+    expect(screen.queryByText("Explore the drivers")).not.toBeInTheDocument();
+    expect(screen.queryByText("Understand the pattern")).not.toBeInTheDocument();
     fireEvent.click(chip);
 
     expect(onPostPrompt).toHaveBeenCalledWith("What did I spend on food in August 2026?");
@@ -1006,6 +1039,7 @@ describe("related questions", () => {
     // `.widget-readonly` applies in a real browser, so pin the opt-out
     // attribute that keeps chips tappable after the turn completes.
     expect(chip).toHaveAttribute("data-readonly-keep", "true");
+    expect(chip.closest("[aria-disabled='true']")).toBeNull();
   });
 
   it("renders nothing without a post callback", () => {

@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
-import { Activity, ArrowDown, Check, CheckCircle2, ChartColumn, Copy, FileText, HandCoins, LayoutDashboard, Loader2, MessageSquareText, Paperclip, ReceiptText, RotateCcw, SendHorizontal, Settings, ShieldCheck, Sparkles, Square, SquarePen, Tags, Trash2, TriangleAlert, X } from "lucide-react";
+import { ArrowDown, BrainCircuit, Check, CheckCircle2, ChartColumn, Copy, FileText, HandCoins, LayoutDashboard, Loader2, MessageSquareText, Paperclip, ReceiptText, RotateCcw, Route, SendHorizontal, Settings, ShieldCheck, Sparkles, Square, SquarePen, Tags, Trash2, TriangleAlert, Wrench, X } from "lucide-react";
 import { createContext, FormEvent, memo, RefObject, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useLocation, useMatch, useNavigate } from "react-router";
@@ -17,7 +17,7 @@ import { DayDivider, localDayKey } from "@/components/day-divider";
 import { MessageDeliveryTime } from "@/components/message-delivery-time";
 import { MessageIdentifier } from "@/components/message-identifier";
 import { environment } from "@/config/environment";
-import { bootstrap, cancelAgentRun, createCategory, createConversation, createSubcategory, deleteConversation, flushConversationDeletion, getPrivacyStatus, isUnauthorized, listConversations, loadAgentThreadState, loadConversation, renameConversation, openInterrupts, reconnectAgentRun, resumeAgentInterrupt, sendAgentAction, sendAgentMessage, uploadCsv, type AgentActivity, type AgentRunPhase, type FynInterrupt } from "@/lib/api";
+import { bootstrap, cancelAgentRun, createCategory, createConversation, createSubcategory, deleteConversation, flushConversationDeletion, getPrivacyStatus, isUnauthorized, listConversations, loadAgentThreadState, loadConversation, renameConversation, openInterrupts, reconnectAgentRun, resumeAgentInterrupt, sendAgentAction, sendAgentMessage, uploadCsv, waitForAgentRelatedQuestions, type AgentActivity, type AgentRunPhase, type FynInterrupt } from "@/lib/api";
 import { AgentRunTelemetry } from "@/lib/agent-telemetry";
 import { formatBytes, formatMoney, readComposerEntry } from "@/lib/format";
 import { takeSharedText } from "@/lib/share-target";
@@ -29,7 +29,7 @@ import { usePlainKey } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
 import { subscribeToViewport } from "@/lib/viewport";
 import { contractLimits } from "@/lib/generated/contracts";
-import { activeWidgetId, completedWidgetIds, mergeAgentResponse, reconcileUsedWidgetIds, shouldAdoptServerTranscript, transcriptRevision } from "@/lib/widget-state";
+import { activeWidgetId, completedWidgetIds, mergeAgentResponse, mergeMessageWidget, reconcileUsedWidgetIds, shouldAdoptServerTranscript, transcriptRevision } from "@/lib/widget-state";
 import { interruptActionResolution, recoverInterruptWidget } from "@/lib/interrupt-widget";
 import { appPaths, appRoutePatterns } from "@/routing/paths";
 
@@ -61,6 +61,44 @@ function csvProblem(file: File) {
 
 function prefersReducedMotion() {
   return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+/** Reveal provider chunks at a short, bounded cadence instead of letting large
+ *  network frames snap whole paragraphs onto the page. The first characters
+ *  appear immediately and the adaptive catch-up stays under roughly half a
+ *  second, so this is visual interpolation rather than artificial latency. */
+function useSmoothedStreamingText(rawText: string) {
+  const target = useRef(rawText);
+  const [visible, setVisible] = useState("");
+  useEffect(() => {
+    target.current = rawText;
+    const frame = window.requestAnimationFrame(() => {
+      if (!rawText || prefersReducedMotion()) {
+        setVisible(rawText);
+        return;
+      }
+      setVisible((current) => {
+        if (rawText.startsWith(current) && current) return current;
+        return rawText.slice(0, Math.min(14, rawText.length));
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [rawText]);
+  useEffect(() => {
+    if (prefersReducedMotion()) return;
+    const timer = window.setInterval(() => {
+      setVisible((current) => {
+        const latest = target.current;
+        if (!latest || current === latest) return latest;
+        if (!latest.startsWith(current)) return latest.slice(0, Math.min(14, latest.length));
+        const remaining = latest.length - current.length;
+        const step = Math.max(2, Math.ceil(remaining / 10));
+        return latest.slice(0, Math.min(latest.length, current.length + step));
+      });
+    }, 42);
+    return () => window.clearInterval(timer);
+  }, []);
+  return visible;
 }
 
 /** The rail is a drawer below `md` and a docked column above it; the layout,
@@ -361,13 +399,66 @@ function useSignInGuard(error: unknown) {
  *  new prop on every render and defeat its memoisation. */
 const noAction = () => undefined;
 
-/** Marks where the copilot's turn starts. Shared so the reply being written and
- *  the reply already written begin at exactly the same pixel. */
-function AssistantByline({ thinking = false, live = false }: { thinking?: boolean; live?: boolean }) {
-  return <div className="mb-2 flex items-center gap-2">
-    <span className="grid size-6 place-items-center rounded-full bg-secondary-tint text-secondary"><Sparkles size={14} /></span>
-    <span className="text-meta font-semibold tracking-[0.08em] text-ink-muted uppercase">fyn AI</span>
-    {thinking ? <span aria-label={live ? "Thinking" : "Thinking transcript"} className="text-ink-muted"><Activity size={15} className={live ? "animate-pulse" : undefined} /></span> : null}
+type FynResponseState = "turn" | "routing" | "reasoning" | "tool" | "responding" | "prepared" | "failed";
+
+const responseStateLabels: Record<FynResponseState, string> = {
+  turn: "Receiving your turn",
+  routing: "Choosing the best path",
+  reasoning: "Reasoning through the request",
+  tool: "Working with your financial records",
+  responding: "Writing the response",
+  prepared: "Response prepared",
+  failed: "Response needs attention",
+};
+
+function FynStateMark({ state, live = false }: { state: FynResponseState; live?: boolean }) {
+  const Icon = state === "routing"
+    ? Route
+    : state === "reasoning"
+      ? BrainCircuit
+      : state === "tool"
+        ? Wrench
+        : state === "responding"
+          ? MessageSquareText
+          : state === "prepared"
+            ? Check
+            : state === "failed"
+              ? TriangleAlert
+              : Sparkles;
+  return <span
+    role="img"
+    aria-label={responseStateLabels[state]}
+    data-state={state}
+    data-live={live || undefined}
+    className="fyn-state-mark grid size-6 shrink-0 place-items-center rounded-full"
+  >
+    <Icon key={state} size={14} className="fyn-state-icon" />
+  </span>;
+}
+
+function responseStateFor(steps: AgentActivity[], live: boolean, responding = false, failed = false): FynResponseState {
+  if (failed || steps.some((step) => step.status === "failed")) return "failed";
+  if (!live) return "prepared";
+  if (responding) return "responding";
+  const latest = steps.at(-1);
+  if (!latest) return "turn";
+  const stage = `${latest.stageId ?? ""} ${latest.id} ${latest.label}`.toLocaleLowerCase();
+  if (latest.tool || /tool|execution|grounding|analysis/.test(stage)) return "tool";
+  if (/operator|reason|model|compose/.test(stage)) return "reasoning";
+  if (/classif|retriev|rout|select/.test(stage)) return "routing";
+  return "turn";
+}
+
+/** One stable response header: the mark morphs with execution state, while the
+ *  expandable run summary lives on the right instead of occupying a second
+ *  full-width row above the answer. */
+function AssistantByline({ state = "prepared", live = false, activity }: { state?: FynResponseState; live?: boolean; activity?: ReactNode }) {
+  return <div className="assistant-byline mb-2 grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3">
+    <div className="flex min-h-8 items-center gap-2">
+      <FynStateMark state={state} live={live} />
+      <span className="text-meta font-semibold tracking-[0.08em] text-ink-muted uppercase">fyn AI</span>
+    </div>
+    {activity ? <div className="assistant-byline-activity min-w-0 justify-self-stretch">{activity}</div> : null}
   </div>;
 }
 
@@ -385,7 +476,7 @@ const idleAgentRun: LiveAgentRun = { steps: [], failureSummary: null, modelPassC
 /** The reply forming in place: same byline and same run card the finished message
  *  will carry, in the same spot, so landing the answer collapses the run and
  *  fills in the prose rather than moving anything. */
-function AgentActivityIndicator({ run, reasoningSummary }: { run: LiveAgentRun; reasoningSummary: string }) {
+function AgentActivityIndicator({ run, reasoningSummary, responding }: { run: LiveAgentRun; reasoningSummary: string; responding: boolean }) {
   // Rebuilt only when a step actually streams in. A fresh object every render
   // would be a fresh `widget` prop, and the run card would re-render along with
   // whatever else moved on the page.
@@ -415,9 +506,9 @@ function AgentActivityIndicator({ run, reasoningSummary }: { run: LiveAgentRun; 
       actions: [],
     };
   }, [run, reasoningSummary]);
+  const state = responseStateFor(run.steps, true, responding, Boolean(run.failureSummary));
   return <div className="max-w-[680px]">
-    <AssistantByline thinking live />
-    <div className="pl-0 sm:pl-8"><WidgetRenderer widget={widget} disabled onAction={noAction} /></div>
+    <AssistantByline state={state} live activity={<WidgetRenderer widget={widget} disabled onAction={noAction} />} />
   </div>;
 }
 
@@ -635,10 +726,45 @@ type WidgetAction = (widgetId: string, action: WidgetActionId, payload: Record<s
  *  backwards. Nothing in a finished turn reads what is being typed, so nothing
  *  in one needs to re-render while it is. The same boundary keeps a streaming
  *  reply from re-rendering the turns above it on every tick. */
-const MessageArticle = memo(function MessageArticle({ message, focusedPrompt = false, focusedResponse = false, activeWidget, cancelWidget, usedWidgets, pendingWidget, busy, locationAllowed, citationsOpen, onToggleCitations, onAction, onCreateCategory, onCreateSubcategory, onCancelWidget, onPostPrompt }: {
+const ActiveWidgetBoundary = memo(function ActiveWidgetBoundary({ active, title, onMount, children }: {
+  active: boolean;
+  title: string;
+  onMount: (target: HTMLElement) => boolean;
+  children: ReactNode;
+}) {
+  const boundaryRef = useRef<HTMLDivElement>(null);
+  const focusClaimed = useRef(false);
+  useLayoutEffect(() => {
+    const target = boundaryRef.current;
+    if (!active || !target) {
+      focusClaimed.current = false;
+      return;
+    }
+    // A same-thread reconciliation can replace the focused transcript DOM
+    // without changing this widget's identity. The browser then falls back to
+    // <body>, but a dependency-keyed effect does not run again because the
+    // action itself is unchanged. Reclaim only that dropped focus; never pull
+    // focus away from another control the reader deliberately chose.
+    const focusDropped = focusClaimed.current && document.activeElement === document.body;
+    if (!focusClaimed.current || focusDropped) {
+      focusClaimed.current = onMount(target);
+    }
+  });
+  return <div
+    ref={boundaryRef}
+    role={active ? "group" : undefined}
+    aria-label={active ? `Action required: ${title}` : undefined}
+    data-active-widget={active || undefined}
+    tabIndex={active ? -1 : undefined}
+    className="scroll-mt-4"
+  >{children}</div>;
+});
+
+const MessageArticle = memo(function MessageArticle({ message, focusedPrompt = false, focusedResponse = false, showAssistantByline = true, activeWidget, cancelWidget, usedWidgets, pendingWidget, busy, locationAllowed, citationsOpen, onToggleCitations, onAction, onCreateCategory, onCreateSubcategory, onCancelWidget, onActiveWidgetMount, onPostPrompt }: {
   message: Message;
   focusedPrompt?: boolean;
   focusedResponse?: boolean;
+  showAssistantByline?: boolean;
   activeWidget: string | null;
   cancelWidget: string | null;
   usedWidgets: Set<string>;
@@ -652,21 +778,35 @@ const MessageArticle = memo(function MessageArticle({ message, focusedPrompt = f
   onCreateSubcategory: CreateSubcategory;
   onPostPrompt: (text: string) => void;
   onCancelWidget: (widgetId: string) => void;
+  onActiveWidgetMount: (target: HTMLElement) => boolean;
 }) {
   // The run trace is how the answer was reached, so it reads above the answer —
   // not appended after the widgets it produced, which is the order the backend
   // stores it in.
   const trace = message.widgets.find((widget) => widget.type === widgetTypeIds.agent_activity);
   const widgets = message.widgets.filter((widget) => widget.id !== trace?.id);
+  const traceSteps = Array.isArray(trace?.data.steps) ? trace.data.steps as unknown as AgentActivity[] : [];
+  const responseState = responseStateFor(traceSteps, false, false, traceSteps.some((step) => step.status === "failed"));
+  const [metadataOpen, setMetadataOpen] = useState(false);
+  const metadataId = `${message.id}-metadata`;
   return <article data-message-id={message.id} data-message-role={message.role} data-focused-prompt={focusedPrompt || undefined} data-focused-response={focusedResponse || undefined} className={cn("group", message.role === "user" ? "flex justify-end" : "max-w-[680px]")}>
     <div className={cn("min-w-0", message.role === "user" && "max-w-[82%]")}>
-      {message.role === "assistant" ? <AssistantByline thinking={Boolean(trace)} /> : null}
-      {trace ? <div className="mb-3 pl-0 sm:pl-8"><WidgetRenderer widget={trace} disabled onAction={noAction} /></div> : null}
+      {message.role === "assistant" && showAssistantByline ? <AssistantByline
+        state={responseState}
+        activity={trace ? <WidgetRenderer widget={trace} disabled onAction={noAction} /> : undefined}
+      /> : null}
       {message.content ? message.role === "user"
-        ? <div className="ml-auto w-fit max-w-full break-words whitespace-pre-wrap rounded-xl rounded-br-sm bg-secondary px-4 py-3 text-body leading-6 text-on-secondary">{message.content}</div>
+        ? <button
+          type="button"
+          aria-expanded={metadataOpen}
+          aria-controls={metadataId}
+          aria-label={`${metadataOpen ? "Hide" : "Show"} delivery details for: ${message.content}`}
+          onClick={() => setMetadataOpen((current) => !current)}
+          className="ml-auto block w-fit max-w-full break-words whitespace-pre-wrap rounded-xl rounded-br-sm bg-secondary px-4 py-3 text-left text-body leading-6 text-on-secondary"
+        >{message.content}</button>
         : <div className="transcript-answer break-words"><MarkdownMessage id={message.id}>{message.content}</MarkdownMessage></div>
       : null}
-      {message.content ? <div className={cn("mt-1.5", message.role === "user" ? "text-right" : "pl-8")}>
+      {message.content && (message.role !== "user" || metadataOpen) ? <div id={message.role === "user" ? metadataId : undefined} className={cn("mt-1.5", message.role === "user" ? "text-right" : "pl-8")}>
         <div className={cn("flex items-center gap-2 whitespace-nowrap", message.role === "user" && "justify-end")}>
           {message.delivered_at ? <>
             <MessageDeliveryTime deliveredAt={message.delivered_at} />
@@ -683,16 +823,14 @@ const MessageArticle = memo(function MessageArticle({ message, focusedPrompt = f
       {widgets.length ? <div className="mt-3 space-y-3 pl-0 sm:pl-8">{widgets.map((widget) => {
         const active = widget.id === activeWidget;
         const title = typeof widget.data.title === "string" && widget.data.title.trim() ? widget.data.title : "Follow-up";
-        return <div
+        return <ActiveWidgetBoundary
           key={widget.id}
-          role={active ? "group" : undefined}
-          aria-label={active ? `Action required: ${title}` : undefined}
-          data-active-widget={active || undefined}
-          tabIndex={active ? -1 : undefined}
-          className="scroll-mt-4"
+          active={active}
+          title={title}
+          onMount={onActiveWidgetMount}
         >
           <WidgetRenderer widget={widget} disabled={!active || usedWidgets.has(widget.id) || busy} pending={pendingWidget === widget.id} locationAllowed={locationAllowed} onCancel={widget.id === cancelWidget ? () => onCancelWidget(widget.id) : undefined} onAction={onAction} onCreateCategory={onCreateCategory} onCreateSubcategory={onCreateSubcategory} onPostPrompt={onPostPrompt} />
-        </div>;
+        </ActiveWidgetBoundary>;
       })}</div> : null}
     </div>
   </article>;
@@ -734,7 +872,7 @@ const Transcript = memo(function Transcript({ messages, agentRun, reasoningSumma
   onCreateSubcategory: CreateSubcategory;
   onPostPrompt: (text: string) => void;
   onCancelWidget: (widgetId: string) => void;
-  onActiveWidgetReveal: (target: HTMLElement) => boolean;
+  onActiveWidgetReveal: (target: HTMLElement, focusInPlace?: boolean) => boolean;
   onFocusedPromptReveal: () => void;
   onListHeightChanged: () => void;
   onToggleCitations: (messageId: string) => void;
@@ -887,31 +1025,37 @@ const Transcript = memo(function Transcript({ messages, agentRun, reasoningSumma
   // (possibly very tall) widget left the reader far from the transcript's end.
   // The active turn can initially be outside the virtual window, so first ask
   // the virtualiser to mount its row and then focus the semantic boundary.
-  const previousFocusKey = useRef(activeWidgetFocusKey);
+  // Start empty so an actionable card present on this transcript's first
+  // committed render receives focus too. Initialising from the current key
+  // made a remount between run completion and the interrupt silently treat a
+  // newly arrived card as already focused.
+  const focusedWidgetKey = useRef<string | null>(null);
   const focusFrame = useRef(0);
   useLayoutEffect(() => {
     cancelAnimationFrame(focusFrame.current);
-    // A reply arriving while the reader is in history is announced by the
-    // workspace's "Jump to latest" control. It must not steal their viewport
-    // or keyboard focus merely because the reply contains an actionable card.
-    if (!followEnd) return;
-    const changed = previousFocusKey.current !== activeWidgetFocusKey;
-    previousFocusKey.current = activeWidgetFocusKey;
-    if (!changed || !activeWidgetFocusKey || !activeWidget) return;
+    if (!activeWidgetFocusKey || !activeWidget) {
+      focusedWidgetKey.current = null;
+      return;
+    }
+    if (focusedWidgetKey.current === activeWidgetFocusKey) return;
 
     const rowIndex = messages.length - 1;
     let attempts = 0;
     let stableFrames = 0;
+    let revealAuthorized = false;
     const reveal = () => {
       const scroller = scrollRef.current;
       if (!scroller) return;
       const target = scroller.querySelector<HTMLElement>('[data-active-widget="true"]');
       if (!target) {
         if (attempts === 0) virtuosoRef.current?.scrollToIndex({ index: rowIndex, align: "start", behavior: "auto" });
-        if (++attempts < 12) focusFrame.current = requestAnimationFrame(reveal);
+        // A long restored thread can need more than a handful of frames for
+        // Virtuoso to replace its estimate and mount the final row. Keep this
+        // bounded by roughly two seconds instead of silently abandoning the
+        // keyboard hand-off after ~200 ms.
+        if (++attempts < 120) focusFrame.current = requestAnimationFrame(reveal);
         return;
       }
-
       // A short answer is already inside the focused question's reserved
       // viewport. Focus its decision surface without moving the prompt; once
       // the answer is taller than the window, the existing exact alignment is
@@ -922,11 +1066,26 @@ const Transcript = memo(function Transcript({ messages, agentRun, reasoningSumma
         const header = scroller.querySelector<HTMLElement>("[data-sticky-anchor]");
         const visibleTop = scrollerRect.top + (header?.hasAttribute("inert") ? 0 : (header?.offsetHeight ?? 56));
         if (targetRect.top >= visibleTop && targetRect.bottom <= scrollerRect.bottom) {
-          if (!(document.activeElement instanceof HTMLElement) || !target.contains(document.activeElement)) {
-            target.focus({ preventScroll: true });
+          if (onActiveWidgetReveal(target, true)) {
+            focusedWidgetKey.current = activeWidgetFocusKey;
+            return;
           }
+          if (++attempts < 120) focusFrame.current = requestAnimationFrame(reveal);
           return;
         }
+      }
+
+      // `atBottom` can be briefly false while Virtuoso replaces estimates or
+      // the focused-turn reserve settles. Reader intent, tracked synchronously
+      // by the workspace callback, is the authority for whether focus may
+      // move; a transient scroll measurement must not suppress the hand-off.
+      if (!revealAuthorized) {
+        if (!onActiveWidgetReveal(target)) {
+          if (++attempts < 120) focusFrame.current = requestAnimationFrame(reveal);
+          return;
+        }
+        revealAuthorized = true;
+        focusedWidgetKey.current = activeWidgetFocusKey;
       }
 
       // The virtualizer remains the sole writer of this scroller's position.
@@ -938,7 +1097,6 @@ const Transcript = memo(function Transcript({ messages, agentRun, reasoningSumma
       // Reader intent can arrive between this animation frame being scheduled
       // and executed. The workspace rejects the reveal synchronously in that
       // case, before the virtualizer writes another scroll position.
-      if (!onActiveWidgetReveal(target)) return;
       const offset = transcriptElementOffset(scroller, target);
       const aligned = Math.abs(scroller.scrollTop - offset) <= 1;
       if (!aligned) virtuosoRef.current?.scrollTo({ top: offset, behavior: "auto" });
@@ -947,7 +1105,7 @@ const Transcript = memo(function Transcript({ messages, agentRun, reasoningSumma
     };
     focusFrame.current = requestAnimationFrame(reveal);
     return () => cancelAnimationFrame(focusFrame.current);
-  }, [activeWidget, activeWidgetFocusKey, focusedPromptIndex, followEnd, messages.length, onActiveWidgetReveal, scrollRef]);
+  }, [activeWidget, activeWidgetFocusKey, focusedPromptIndex, messages.length, onActiveWidgetReveal, scrollRef]);
 
   // Which rows open a day. A thread is read back long after it was written —
   // often across several sittings — so the transcript is dated: the first entry
@@ -1005,14 +1163,16 @@ const Transcript = memo(function Transcript({ messages, agentRun, reasoningSumma
             onCreateSubcategory={onCreateSubcategory}
             onPostPrompt={onPostPrompt}
             onCancelWidget={onCancelWidget}
+            onActiveWidgetMount={onActiveWidgetReveal}
           />
         </div>;
       }}
     /> : null}
-    {streaming ? <div aria-hidden><AgentActivityIndicator run={agentRun} reasoningSummary={reasoningSummary} /></div> : null}
+    {streaming ? <div><AgentActivityIndicator run={agentRun} reasoningSummary={reasoningSummary} responding={Boolean(streamingText)} /></div> : null}
     {streamingMessage ? <div className="pb-6"><MessageArticle
       message={streamingMessage}
       focusedResponse={focusedPromptIndex !== null}
+      showAssistantByline={false}
       activeWidget={null}
       cancelWidget={null}
       usedWidgets={usedWidgets}
@@ -1026,8 +1186,9 @@ const Transcript = memo(function Transcript({ messages, agentRun, reasoningSumma
       onCreateSubcategory={onCreateSubcategory}
       onPostPrompt={onPostPrompt}
       onCancelWidget={onCancelWidget}
+      onActiveWidgetMount={onActiveWidgetReveal}
     /></div> : null}
-    {busy && !streaming ? <div className="mt-6 flex items-center gap-3 px-1 py-2 text-control text-ink-muted"><span className="grid size-7 place-items-center rounded-full bg-secondary-tint text-secondary"><Sparkles size={14} /></span><span className="flex gap-1" aria-hidden><i className="typing-dot" /><i className="typing-dot" /><i className="typing-dot" /></span><span className="sr-only">Working on it</span></div> : null}
+    {busy && !streaming ? <div className="mt-6 flex items-center gap-3 px-1 py-2 text-control text-ink-muted"><FynStateMark state="turn" live /><span className="flex gap-1" aria-hidden><i className="typing-dot" /><i className="typing-dot" /><i className="typing-dot" /></span><span className="sr-only">Working on it</span></div> : null}
     {error ? <div role="alert" className="mt-6 flex flex-wrap items-center gap-3 gap-2 rounded-lg border border-danger-line bg-danger-tint px-4 py-3 text-note leading-5 text-danger-ink sm:mx-8"><TriangleAlert className="shrink-0" /><span className="min-w-0 flex-1">{error}</span>{retry ? <Button type="button" variant="outline" size="lg" onClick={onRetry} className="rounded-xl border-danger-line text-danger-ink hover:bg-danger-tint"><RotateCcw size={14} /> Try again</Button> : null}</div> : null}
     </div>
     <div ref={focusSpacerRef} data-focused-turn-spacer aria-hidden className="pointer-events-none h-0" />
@@ -1107,6 +1268,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   const [interrupts, setInterrupts] = useState<FynInterrupt[] | null>(null);
   const [reasoningSummary, setReasoningSummary] = useState("");
   const [streamingText, setStreamingText] = useState("");
+  const smoothedStreamingText = useSmoothedStreamingText(streamingText);
   // The optimistic UUID is replaced with the server-authored user-message ID
   // when the response lands. Resolving the index from that identity keeps the
   // focus window attached to the same question when a background transcript
@@ -1208,6 +1370,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   // Scheduled work that can outlive the render that started it, so it is held
   // rather than fired and forgotten.
   const copiedTimer = useRef<number | undefined>(undefined);
+  const copiedFrame = useRef<number | undefined>(undefined);
   const scrollSettleTimer = useRef<number | undefined>(undefined);
   // True from the first upward gesture until the reader reaches the exact end
   // again. This is deliberately imperative: it closes the frame-sized gap
@@ -1253,6 +1416,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     inFlight.current = controller;
     return () => {
       window.clearTimeout(copiedTimer.current);
+      window.cancelAnimationFrame(copiedFrame.current ?? 0);
       window.clearTimeout(scrollSettleTimer.current);
       window.clearTimeout(followSettleTimer.current);
       window.clearTimeout(widgetRevealSettleTimer.current);
@@ -1287,6 +1451,22 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
       queryClient.invalidateQueries({ queryKey: ["overview"] }),
     ]);
   }, [queryClient, conversationId]);
+
+  const watchRelatedQuestions = useCallback((runId: string, response: AgentResponse) => {
+    if (
+      response.pendingAction
+      || response.widgets.some((widget) => widget.type === widgetTypeIds.related_questions)
+    ) return;
+    // This promise is intentionally detached from the mutation. The composer
+    // becomes usable as soon as the canonical response resolves; late garnish
+    // is merged only if this thread is still mounted.
+    void waitForAgentRelatedQuestions(runId, inFlight.current?.signal)
+      .then((enrichment) => {
+        if (!enrichment) return;
+        setMessages((current) => mergeMessageWidget(current, enrichment.messageId, enrichment.widget));
+      })
+      .catch(() => undefined);
+  }, []);
 
   const failed = useCallback((cause: Error, next: Retry) => {
     // An abort is this thread being closed, not something that went wrong with
@@ -1359,8 +1539,8 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   }, []);
 
   useEffect(() => {
-    if (streamingText) clientRunTelemetry.current?.answerVisible();
-  }, [streamingText]);
+    if (smoothedStreamingText) clientRunTelemetry.current?.answerVisible();
+  }, [smoothedStreamingText]);
 
   const agentRunCallbacks = useMemo(() => ({
     onRunCreated: (runId: string) => {
@@ -1395,6 +1575,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
       setInterrupts(result.interrupts);
       succeeded(result.response);
       finishClientRunTelemetry(result.interrupts.length === 0);
+      watchRelatedQuestions(result.runId, result.response);
     },
     // A message that never reached the server should not look delivered: drop
     // the bubble and put the text back where the user can send it again.
@@ -1545,8 +1726,25 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     control.setAttribute("aria-hidden", String(!resolvedVisible));
   }, []);
 
-  const revealActiveWidget = useCallback((target: HTMLElement) => {
+  const revealActiveWidget = useCallback((target: HTMLElement, focusInPlace = false) => {
     if (readerScrolled.current) return false;
+    const scroller = scrollRef.current;
+    const targetRect = target.getBoundingClientRect();
+    const scrollerRect = scroller?.getBoundingClientRect();
+    const alreadyVisibleInFocusedWindow = Boolean(
+      focusedPromptId
+      && scrollerRect
+      && targetRect.top >= scrollerRect.top
+      && targetRect.bottom <= scrollerRect.bottom
+    );
+    // The focused-turn window already placed this card. Move semantic focus
+    // without changing scroll ownership or the spacer equation.
+    if (focusInPlace || alreadyVisibleInFocusedWindow) {
+      if (!(document.activeElement instanceof HTMLElement) || !target.contains(document.activeElement)) {
+        target.focus({ preventScroll: true });
+      }
+      return document.activeElement instanceof HTMLElement && target.contains(document.activeElement);
+    }
     // This hand-off is application navigation, not evidence that the reader
     // took over the scrollbar. Keep it distinct so the scroll events emitted
     // by list alignment cannot permanently disable response following.
@@ -1566,8 +1764,8 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     if (!(document.activeElement instanceof HTMLElement) || !target.contains(document.activeElement)) {
       target.focus({ preventScroll: true });
     }
-    return true;
-  }, [updateJumpControl]);
+    return document.activeElement instanceof HTMLElement && target.contains(document.activeElement);
+  }, [focusedPromptId, updateJumpControl]);
 
   const followNextResponse = useCallback(() => {
     // Once the reader answers the active card, their attention transfers to
@@ -1605,7 +1803,14 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
       // earlier timer to reset the label out from under the later one, and
       // cancelled on unmount so it cannot fire into a thread that has gone.
       window.clearTimeout(copiedTimer.current);
-      copiedTimer.current = window.setTimeout(() => setLinkCopied(false), 1800);
+      window.cancelAnimationFrame(copiedFrame.current ?? 0);
+      // Count the confirmation window from a frame in which React has had the
+      // chance to paint it. On a very long transcript, starting the timer in
+      // the click handler can otherwise expire before the receipt is visible.
+      copiedFrame.current = window.requestAnimationFrame(() => {
+        copiedFrame.current = undefined;
+        copiedTimer.current = window.setTimeout(() => setLinkCopied(false), 1800);
+      });
     } catch {
       failed(new Error("The link couldn’t be copied. Copy it from the address bar instead."), null);
     }
@@ -2023,7 +2228,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
               messages={messages}
               agentRun={agentRun}
               reasoningSummary={reasoningSummary}
-              streamingText={streamingText}
+              streamingText={smoothedStreamingText}
               streaming={agentRunning}
               busy={busy}
               locationAllowed={locationAllowed}

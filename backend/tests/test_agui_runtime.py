@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from ag_ui.core import RunAgentInput
+from ag_ui.core import RunAgentInput, RunStartedEvent
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -12,9 +12,9 @@ from sqlalchemy.orm import sessionmaker
 
 from app.api import _record_import_preview, router
 from app.database import get_db
-from app.domain import AgentInterruptStatus, AgentRunStatus, FinancialSourceType, ImportStatus
+from app.domain import AgentEnrichmentStatus, AgentInterruptStatus, AgentRunStatus, FinancialSourceType, ImportStatus
 from app.event_time import now_utc
-from app.models import AgentEvent, AgentInterrupt, AgentRun, Budget, Category, Goal, Import, Message, Subcategory, TaxonomyScope, User
+from app.models import AgentEnrichment, AgentEvent, AgentInterrupt, AgentRun, Budget, Category, Goal, Import, Message, Subcategory, TaxonomyScope, User
 from app.operations import operation_catalog
 from app.operations.tools import OperationProposal
 from app.seed import DEFAULT_USER_EMAIL
@@ -29,11 +29,31 @@ from app.services.agui import (
     recover_agent_runs,
 )
 from app.services import agui as agui_service
+from app.services import agent_enrichment as enrichment_service
 from app.services import conversation as conversation_service
 from app.services.adapters import import_summary
 from app.services.agents import ClarificationOption, ClarificationRequest, CopilotDecision, OperatorResult, TaxonomyInterpretation
 from app.services.capabilities import CapabilityId
 from app.services.conversation import get_or_create_conversation, persist_agent_response
+
+
+def _process_one_enrichment(db, *, max_attempts=2):
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, expire_on_commit=False)
+    work = enrichment_service.claim_agent_enrichment_work(
+        factory,
+        claim_ttl_seconds=60,
+        max_attempts=max_attempts,
+    )
+    assert work is not None and work.enrichment_id is not None and work.user_id is not None
+    enrichment_service.process_agent_enrichment(
+        factory,
+        work.enrichment_id,
+        work.user_id,
+        max_attempts=max_attempts,
+        retry_seconds=1,
+    )
+    db.expire_all()
+    return db.get(AgentEnrichment, work.enrichment_id)
 
 
 def _execute(db, user, conversation, payload, client_message_id=None):
@@ -210,7 +230,7 @@ def test_provider_reasoning_stream_is_durable_and_persisted_as_one_line_summary(
     message = db.get(Message, run.final_message_id)
     trace = next(widget for widget in message.widgets if widget["type"] == "agent_activity")
     assert trace["data"]["summary"] == reasoning
-    assert trace["data"]["reasoningTrace"] == reasoning
+    assert "reasoningTrace" not in trace["data"]
 
 
 def test_model_pass_count_uses_provider_calls_not_orchestration_stages():
@@ -1742,6 +1762,43 @@ def test_live_events_are_committed_before_delivery_and_terminal_status_is_atomic
     assert observed[-1][1] == AgentRunStatus.SUCCEEDED.value
 
 
+def test_followup_progress_events_batch_without_changing_replay_order(db, monkeypatch):
+    user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
+    conversation = get_or_create_conversation(db, user)
+    run = AgentRun(
+        id=uuid4(),
+        user_id=user.id,
+        conversation_id=conversation.id,
+        status=AgentRunStatus.RUNNING.value,
+        input_payload={"kind": "message", "text": "Hi"},
+        last_sequence=0,
+    )
+    db.add(run)
+    db.commit()
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, expire_on_commit=False)
+    clock = iter([10.0, 10.01, 10.04, 10.04])
+    monkeypatch.setattr(agui_service.time, "monotonic", lambda: next(clock))
+    delivered: list[tuple[int, dict]] = []
+    publisher = DurableEventPublisher(
+        factory,
+        run.id,
+        user.id,
+        0,
+        lambda sequence, event: delivered.append((sequence, event)),
+    )
+    event_one = RunStartedEvent(thread_id=str(conversation.id), run_id=str(run.id))
+    publisher.emit(event_one)
+    assert publisher.flush_if_due(max_delay_ms=32, max_events=12) is False
+    publisher.emit(event_one)
+    assert publisher.flush_if_due(max_delay_ms=32, max_events=12) is True
+
+    stored = list(
+        db.scalars(select(AgentEvent).where(AgentEvent.run_id == run.id).order_by(AgentEvent.sequence))
+    )
+    assert [event.sequence for event in stored] == [1, 2]
+    assert [sequence for sequence, _event in delivered] == [1, 2]
+
+
 def test_recovery_terminates_an_uncertain_running_command_without_replaying_it(db):
     user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
     conversation = get_or_create_conversation(db, user)
@@ -1840,11 +1897,6 @@ def test_recovery_resumes_failed_answer_postprocessing_without_replaying_the_tur
         "handle_chat",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("financial turn replayed")),
     )
-    monkeypatch.setattr(
-        agui_service,
-        "suggest_related_questions",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("failed recovery used a model")),
-    )
 
     queued = recover_agent_runs(factory, limit=1, created_before=now_utc() + timedelta(seconds=1))
     assert queued == [(run.id, user.id, 3)]
@@ -1860,7 +1912,9 @@ def test_recovery_resumes_failed_answer_postprocessing_without_replaying_the_tur
     assert recovered.status == AgentRunStatus.SUCCEEDED.value
     assert recovered.task_status == "failed"
     assert recovered.recovery_phase is None
-    assert [item["type"] for item in stored.widgets].count("related_questions") == 1
+    # Optional enrichment no longer runs inside recovery or delays the
+    # recovered answer's terminal event.
+    assert [item["type"] for item in stored.widgets].count("related_questions") == 0
     assert [item["type"] for item in stored.widgets].count("agent_activity") == 1
     assert [event.event_type for event in events].count("TEXT_MESSAGE_START") == 1
     assert [event.event_type for event in events].count("TEXT_MESSAGE_CONTENT") == 1
@@ -1869,7 +1923,7 @@ def test_recovery_resumes_failed_answer_postprocessing_without_replaying_the_tur
     assert custom.payload["value"]["response"]["user_message_id"] == str(question.id)
 
 
-def test_recovery_is_idempotent_when_suggestions_already_committed(db, monkeypatch):
+def test_recovery_leaves_already_committed_suggestions_untouched(db):
     user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
     conversation = get_or_create_conversation(db, user)
     widget_id = f"related-questions-{uuid4()}"
@@ -1904,12 +1958,6 @@ def test_recovery_is_idempotent_when_suggestions_already_committed(db, monkeypat
     db.add_all([answer, run])
     db.commit()
     factory = sessionmaker(bind=db.get_bind(), autoflush=False, expire_on_commit=False)
-    monkeypatch.setattr(
-        agui_service,
-        "suggest_related_questions",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("suggestions regenerated")),
-    )
-
     queued = recover_agent_runs(factory, limit=1, created_before=now_utc() + timedelta(seconds=1))
     publisher = DurableEventPublisher(factory, run.id, user.id, queued[0][2], lambda _sequence, _event: None)
     execute_run(factory, run.id, user.id, publisher)
@@ -1949,7 +1997,7 @@ def test_recovery_batch_claims_are_bounded_even_with_a_large_backlog(db):
     assert statuses.count(AgentRunStatus.QUEUED.value) == 37
 
 
-def test_recovery_attempt_cap_finishes_answer_without_another_suggestion_call(db, monkeypatch):
+def test_recovery_attempt_cap_finishes_answer_without_optional_enrichment(db):
     user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
     conversation = get_or_create_conversation(db, user)
     answer = Message(
@@ -1975,12 +2023,6 @@ def test_recovery_attempt_cap_finishes_answer_without_another_suggestion_call(db
     db.add_all([answer, run])
     db.commit()
     factory = sessionmaker(bind=db.get_bind(), autoflush=False, expire_on_commit=False)
-    monkeypatch.setattr(
-        agui_service,
-        "suggest_related_questions",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("retry cap ignored")),
-    )
-
     work = claim_agent_recovery_work(
         factory,
         created_before=now_utc() + timedelta(seconds=1),
@@ -2093,7 +2135,7 @@ def test_thread_rename_request_offers_hitl_confirmation_and_resume_renames(db):
     assert "Renamed this thread" in reply.content
 
 
-def test_successful_message_turn_attaches_related_questions(db, monkeypatch):
+def test_successful_message_turn_finishes_before_related_questions(db, monkeypatch):
     user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
     conversation = get_or_create_conversation(db, user)
     seen = {}
@@ -2104,7 +2146,7 @@ def test_successful_message_turn_attaches_related_questions(db, monkeypatch):
         seen["capabilities"] = capability_notes
         return ["What did I spend on food in August 2026?"]
 
-    monkeypatch.setattr(agui_service, "suggest_related_questions", fake_suggest)
+    monkeypatch.setattr(enrichment_service, "suggest_related_questions", fake_suggest)
 
     run, live = _execute(
         db,
@@ -2116,8 +2158,32 @@ def test_successful_message_turn_attaches_related_questions(db, monkeypatch):
 
     assert run.status == AgentRunStatus.SUCCEEDED.value
     message = db.get(Message, run.final_message_id)
+    assert all(item["type"] != "related_questions" for item in message.widgets)
+    custom = next(event for _sequence, event in live if event["type"] == "CUSTOM")
+    assert all(
+        item["type"] != "related_questions"
+        for item in custom["value"]["response"]["widgets"]
+    )
+    # The run is already terminal and usable before the worker is allowed to
+    # claim the independent queue item.
+    pending = db.scalar(select(AgentEnrichment).where(AgentEnrichment.run_id == run.id))
+    assert pending is not None
+    assert pending.status == AgentEnrichmentStatus.PENDING.value
+
+    enrichment = _process_one_enrichment(db)
+    assert enrichment.status == AgentEnrichmentStatus.COMPLETED.value
+    message = db.get(Message, run.final_message_id)
     widget = next(item for item in message.widgets if item["type"] == "related_questions")
     assert widget["data"]["questions"] == ["What did I spend on food in August 2026?"]
+    application = FastAPI()
+    application.include_router(router)
+    application.dependency_overrides[get_db] = lambda: db
+    application.dependency_overrides[current_user] = lambda: user
+    with TestClient(application) as client:
+        payload = client.get(f"/agent/runs/{run.id}/related-questions")
+    assert payload.status_code == 200
+    assert payload.json()["status"] == AgentEnrichmentStatus.COMPLETED.value
+    assert payload.json()["widget"]["data"]["questions"] == ["What did I spend on food in August 2026?"]
     # The suggester saw the finished Q&A and the real capability surface.
     assert seen["question"] == "Spent ₹300 on coffee today"
     assert seen["answer"] == message.content
@@ -2125,25 +2191,16 @@ def test_successful_message_turn_attaches_related_questions(db, monkeypatch):
     # the surface the suggester sees must still describe them.
     assert any("transaction_list" in note for note in seen["capabilities"])
     assert any("Governed analyses:" in note for note in seen["capabilities"])
-    # The widget rides the run's own response event, not a side channel.
-    custom = next(event for _sequence, event in live if event["type"] == "CUSTOM")
-    assert any(
-        item["type"] == "related_questions"
+    # Enrichment never rewrites the completed run's immutable event stream.
+    assert all(
+        item["type"] != "related_questions"
         for item in custom["value"]["response"]["widgets"]
     )
 
 
-def test_pending_hitl_turn_skips_related_question_model_pass(db, monkeypatch):
+def test_pending_hitl_turn_does_not_enqueue_related_questions(db):
     user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
     conversation = get_or_create_conversation(db, user)
-
-    monkeypatch.setattr(
-        agui_service,
-        "suggest_related_questions",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("A pending HITL card must be released before optional suggestions")
-        ),
-    )
 
     run, live = _execute(
         db,
@@ -2162,18 +2219,14 @@ def test_pending_hitl_turn_skips_related_question_model_pass(db, monkeypatch):
         item["type"] != "related_questions"
         for item in custom["value"]["response"]["widgets"]
     )
+    assert db.scalar(select(AgentEnrichment).where(AgentEnrichment.run_id == run.id)) is None
 
 
 def test_failed_message_turn_attaches_recovery_questions(db, monkeypatch):
     user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
     conversation = get_or_create_conversation(db, user)
     monkeypatch.setattr(
-        agui_service,
-        "suggest_related_questions",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("failed turn used a model")),
-    )
-    monkeypatch.setattr(
-        agui_service,
+        enrichment_service,
         "now_utc",
         lambda: datetime(2026, 8, 19, 3, 0, tzinfo=timezone.utc),
     )
@@ -2193,17 +2246,22 @@ def test_failed_message_turn_attaches_recovery_questions(db, monkeypatch):
     assert run.status == AgentRunStatus.SUCCEEDED.value
     assert run.task_status == "failed"
     message = db.get(Message, run.final_message_id)
+    assert all(item["type"] != "related_questions" for item in message.widgets)
+    custom = next(event for _sequence, event in live if event["type"] == "CUSTOM")
+    assert all(
+        item["type"] != "related_questions"
+        for item in custom["value"]["response"]["widgets"]
+    )
+
+    enrichment = _process_one_enrichment(db)
+    assert enrichment.status == AgentEnrichmentStatus.COMPLETED.value
+    message = db.get(Message, run.final_message_id)
     widget = next(item for item in message.widgets if item["type"] == "related_questions")
     assert widget["data"]["questions"] == [
         "Which August 2026 categories cost the most?",
         "Which August 2026 expenses were discretionary?",
         "How did August 2026 spending compare with July 2026?",
     ]
-    custom = next(event for _sequence, event in live if event["type"] == "CUSTOM")
-    assert any(
-        item["type"] == "related_questions"
-        for item in custom["value"]["response"]["widgets"]
-    )
 
 
 def test_related_question_failures_never_harm_the_answer(db, monkeypatch):
@@ -2213,7 +2271,7 @@ def test_related_question_failures_never_harm_the_answer(db, monkeypatch):
     def unavailable(*_args, **_kwargs):
         raise RuntimeError("suggestion model outage")
 
-    monkeypatch.setattr(agui_service, "suggest_related_questions", unavailable)
+    monkeypatch.setattr(enrichment_service, "suggest_related_questions", unavailable)
 
     run, _live = _execute(
         db,
@@ -2227,6 +2285,8 @@ def test_related_question_failures_never_harm_the_answer(db, monkeypatch):
     message = db.get(Message, run.final_message_id)
     assert message.content
     assert all(item["type"] != "related_questions" for item in message.widgets)
+    enrichment = _process_one_enrichment(db, max_attempts=1)
+    assert enrichment.status == AgentEnrichmentStatus.FAILED.value
     # The failure is durably recorded instead of silently swallowed.
     from app.models import AIAction
 
@@ -2252,7 +2312,7 @@ def test_explicit_ask_for_question_ideas_answers_with_chips_once(db, monkeypatch
     def must_not_run(*_args, **_kwargs):
         raise AssertionError("The garnish pass must not duplicate an ideas answer")
 
-    monkeypatch.setattr(agui_service, "suggest_related_questions", must_not_run)
+    monkeypatch.setattr(enrichment_service, "suggest_related_questions", must_not_run)
 
     run, _live = _execute(
         db,
@@ -2268,3 +2328,4 @@ def test_explicit_ask_for_question_ideas_answers_with_chips_once(db, monkeypatch
     assert len(chip_widgets) == 1
     assert chip_widgets[0]["data"]["questions"] == ["How much did I spend in August 2026?"]
     assert "tap one" in message.content
+    assert db.scalar(select(AgentEnrichment).where(AgentEnrichment.run_id == run.id)) is None

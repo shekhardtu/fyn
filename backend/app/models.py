@@ -25,7 +25,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .config import DEFAULT_CURRENCY, DEFAULT_TIMEZONE
 from .database import Base
-from .domain import ACTIVE_STATUS, AgentInterruptStatus, AgentRunStatus, AnalysisToolStatus, CONVERSATION_TITLE_MAX, DraftState, FinancialSourceType, IdentitySource, ImportStatus, ObservationProcessingState, SpendNature, TaxonomyScope, TransactionStatus, TransactionType
+from .domain import ACTIVE_STATUS, AgentEnrichmentStatus, AgentInterruptStatus, AgentRunStatus, AnalysisToolStatus, CONVERSATION_TITLE_MAX, DraftState, FinancialSourceType, IdentitySource, ImportStatus, ObservationProcessingState, SpendNature, TaxonomyScope, TransactionStatus, TransactionType
 from .event_time import as_utc, now_utc
 
 
@@ -368,6 +368,54 @@ class AgentRun(UUIDPrimaryKeyMixin, UserOwnedMixin, ConversationChildMixin, Time
         if self.started_at is None or self.first_response_at is None:
             return None
         return round((as_utc(self.first_response_at) - as_utc(self.started_at)).total_seconds() * 1000, 1)
+
+
+class AgentEnrichment(UUIDPrimaryKeyMixin, UserOwnedMixin, ConversationChildMixin, TimestampMixin, Base):
+    """Optional post-answer work owned by an independent durable worker.
+
+    The canonical answer and its run are already usable before this row is
+    claimed. A failure here can therefore remove garnish, but it can never
+    change the outcome of the financial turn that created it.
+    """
+
+    __tablename__ = "agent_enrichments"
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"),
+        index=True,
+    )
+    message_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("messages.id", ondelete="CASCADE"),
+        index=True,
+    )
+    kind: Mapped[str] = mapped_column(String(60))
+    status: Mapped[str] = mapped_column(
+        String(24),
+        default=AgentEnrichmentStatus.PENDING.value,
+        index=True,
+    )
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=now_utc,
+        server_default=func.now(),
+        index=True,
+    )
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), index=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    error_code: Mapped[Optional[str]] = mapped_column(String(80))
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    __table_args__ = (
+        UniqueConstraint("run_id", "kind", name="uq_agent_enrichment_run_kind"),
+        Index(
+            "ix_agent_enrichment_queue",
+            "status",
+            "available_at",
+            "created_at",
+            "id",
+            "claimed_at",
+        ),
+        CheckConstraint("attempts >= 0", name="ck_agent_enrichment_attempts_nonnegative"),
+    )
 
 
 class AgentEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):

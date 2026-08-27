@@ -41,8 +41,8 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from ..config import get_settings
 from ..domain import AgentInterruptStatus, AgentRunStatus, DraftState, ExecutionStatus, WidgetActionId
-from ..event_time import local_date, now_utc
-from ..models import AIAction, AgentEvent, AgentInterrupt, AgentRun, Conversation, Message, TransactionDraft, User
+from ..event_time import now_utc
+from ..models import AgentEvent, AgentInterrupt, AgentRun, Conversation, Message, TransactionDraft, User
 from ..schemas import (
     ACTION_PAYLOAD_MODELS,
     ActionRequest,
@@ -53,12 +53,13 @@ from ..schemas import (
     WidgetType,
     WidgetUpdate,
 )
-from .agents import suggest_related_questions
 from .agent_run_metrics import (
     agent_metric_snapshot,
     begin_agent_metric_collection,
     end_agent_metric_collection,
+    non_overlapping_model_duration_ms,
 )
+from .agent_enrichment import enqueue_related_questions
 from .conversation import (
     handle_action,
     handle_chat,
@@ -68,7 +69,6 @@ from .conversation import (
     prepare_widget_cancellation,
     resolve_widget_action,
 )
-from .runtime_tools import capability_notes
 from .run_telemetry import RunTelemetryObserver
 from .continuations import (
     CancelContinuation,
@@ -87,6 +87,8 @@ FYN_RESPONSE_EVENT = "fyn.response.v1"
 FYN_ACTIVITY_TYPE = "fyn.agent_activity.v1"
 FYN_ACTION_TOOL = "fyn.widget_action"
 POSTPROCESS_RECOVERY_PHASE = "postprocess_pending"
+PROGRESS_BATCH_DELAY_MS = 32.0
+PROGRESS_BATCH_MAX_EVENTS = 12
 
 # Bytes of serialized payload a persisted trace step may keep. The complete
 # payload always survives in agent_events; the widget is a bounded view of it.
@@ -196,20 +198,22 @@ def _merge_metric_snapshots(base: dict[str, Any], extra: dict[str, Any]) -> dict
     """Join pre-restart and resumed model-pass evidence without estimates."""
     passes = [*(base.get("passes") or []), *(extra.get("passes") or [])]
     costs = [item.get("costUsd") for item in passes if item.get("costUsd") is not None]
-    durations = [item.get("durationMs") for item in passes if item.get("durationMs") is not None]
     first_token = base.get("firstModelTimeToFirstTokenMs")
     if first_token is None:
         first_token = extra.get("firstModelTimeToFirstTokenMs")
     merged = {
         "source": "agno_run_output",
         "modelPasses": len(passes),
+        "providerRequestCount": sum(
+            len(item.get("providerRequests") or []) for item in passes
+        ),
         "inputTokens": sum(int(item.get("inputTokens") or 0) for item in passes),
         "outputTokens": sum(int(item.get("outputTokens") or 0) for item in passes),
         "totalTokens": sum(int(item.get("totalTokens") or 0) for item in passes),
         "cacheReadTokens": sum(int(item.get("cacheReadTokens") or 0) for item in passes),
         "cacheWriteTokens": sum(int(item.get("cacheWriteTokens") or 0) for item in passes),
         "reasoningTokens": sum(int(item.get("reasoningTokens") or 0) for item in passes),
-        "modelDurationMs": round(sum(float(value) for value in durations), 1) if durations else None,
+        "modelDurationMs": non_overlapping_model_duration_ms(passes),
         "firstModelTimeToFirstTokenMs": first_token,
         "costUsd": round(sum(float(value) for value in costs), 10) if passes and len(costs) == len(passes) else None,
         "costCoverage": round(len(costs) / len(passes), 4) if passes else 0.0,
@@ -370,6 +374,7 @@ class DurableEventPublisher:
         self._task_error_code: str | None = None
         self._metrics: dict[str, Any] | None = None
         self._telemetry = RunTelemetryObserver()
+        self._last_commit_monotonic = time.monotonic()
 
     @property
     def supports_incremental_flush(self) -> bool:
@@ -500,11 +505,33 @@ class DurableEventPublisher:
                     )
             db.commit()
         del self._pending[: len(committed)]
+        self._last_commit_monotonic = time.monotonic()
         for sequence, payload in committed:
             self._publish_live(sequence, payload)
 
     def flush(self) -> None:
         self._commit()
+
+    def flush_if_due(
+        self,
+        *,
+        max_delay_ms: float = PROGRESS_BATCH_DELAY_MS,
+        max_events: int = PROGRESS_BATCH_MAX_EVENTS,
+    ) -> bool:
+        """Commit a burst once its small time or size bound is reached.
+
+        Callers explicitly flush the first useful event. This method is only
+        for later progress fragments, preserving commit-before-delivery and
+        exact replay while avoiding one database transaction per token-sized
+        provider event. A terminal ``finish`` always drains what remains.
+        """
+        if not self._pending:
+            return False
+        elapsed_ms = (time.monotonic() - self._last_commit_monotonic) * 1000
+        if len(self._pending) < max(1, max_events) and elapsed_ms < max(0.0, max_delay_ms):
+            return False
+        self._commit()
+        return True
 
     def finish(self, status: AgentRunStatus, *, error_code: str | None = None) -> None:
         if status.value not in TERMINAL_RUN_STATUSES:
@@ -1397,122 +1424,10 @@ def _attach_activity_trace(
         "totalMs": total_ms,
         "live": False,
     }
-    if settings.environment != "production" and reasoning_trace:
-        # Development keeps the complete provider-emitted reasoning for run
-        # inspection even though the transcript deliberately renders one line.
-        widget_data["reasoningTrace"] = reasoning_trace
     widget = Widget(
         id=widget_id,
         type=WidgetType.AGENT_ACTIVITY,
         data=widget_data,
-    )
-    response.widgets.append(widget)
-    message = db.get(Message, response.message_id)
-    if message:
-        message.widgets = [*message.widgets, widget.model_dump(mode="json")]
-        db.commit()
-    return response
-
-
-def _attach_related_questions(
-    db: Session,
-    response: AgentResponse,
-    user: User,
-    conversation: Conversation,
-    question: str,
-) -> AgentResponse:
-    """Offer tap-to-post follow-ups after a completed assistant answer.
-
-    Generated by a dedicated fast pass once the answer is settled, so it can
-    reference the finished Q&A; suggestions are optional garnish, so any
-    failure here leaves the answer untouched. Capability grounding comes from
-    the runtime tool registry — the same source the Operator reads — so a
-    tapped suggestion is always a question the system can actually answer.
-    Failed governed tasks are included deliberately: their suggestions are the
-    recovery path that helps the user ask a narrower, answerable question.
-    """
-    # A pending HITL card is already the next question. Generating optional
-    # follow-up suggestions here delays delivery (and the suggestions are
-    # disabled until the card resolves anyway), so release the interaction as
-    # soon as its deterministic response is ready.
-    if not response.message.strip() or response.pending_action is not None:
-        return response
-    widget_id = f"related-questions-{response.message_id}"
-    if any(
-        widget.type == WidgetType.RELATED_QUESTIONS or widget.id == widget_id
-        for widget in response.widgets
-    ):
-        # The turn already answered with suggestions (an explicit ask for
-        # question ideas); generating a second garnish set would be noise.
-        return response
-    message = db.get(Message, response.message_id)
-    stored = next(
-        (
-            item
-            for item in (message.widgets if message else [])
-            if item.get("type") == WidgetType.RELATED_QUESTIONS.value or item.get("id") == widget_id
-        ),
-        None,
-    )
-    if stored is not None:
-        response.widgets.append(Widget.model_validate(stored))
-        return response
-    if response.task_status == "failed":
-        # A failed answer contains little useful grounding for a model pass and
-        # often causes the Suggester to return an empty set. Recovery questions
-        # are therefore deterministic, cheap, and guaranteed answerable by the
-        # governed transaction surface. This also avoids adding model traffic
-        # when the main task already failed.
-        today = local_date(now_utc(), user.timezone)
-        current_month = today.strftime("%B %Y")
-        previous_month = (today.replace(day=1) - timedelta(days=1)).strftime("%B %Y")
-        questions = [
-            f"Which {current_month} categories cost the most?",
-            f"Which {current_month} expenses were discretionary?",
-            f"How did {current_month} spending compare with {previous_month}?",
-        ]
-    else:
-        try:
-            rows = list(
-                db.scalars(
-                    select(Message)
-                    .where(Message.conversation_id == conversation.id)
-                    .order_by(Message.created_at.desc(), Message.id.desc())
-                    .limit(8)
-                )
-            )
-            recent_turns = [
-                {"role": row.role, "content": row.content}
-                for row in reversed(rows)
-                if row.content.strip()
-            ]
-            questions = suggest_related_questions(
-                question,
-                response.message,
-                recent_turns,
-                capability_notes(),
-                local_date(now_utc(), user.timezone),
-                user.timezone,
-            )
-        except Exception as error:
-            # Suggestions stay optional, but their failures stay diagnosable: a
-            # silent swallow here is the same blind spot this codebase has been
-            # paying down all day.
-            db.add(AIAction(
-                user_id=user.id,
-                conversation_id=conversation.id,
-                action_type="suggester",
-                payload_redacted={"errorType": type(error).__name__, "message": str(error)[:300]},
-                status=ExecutionStatus.FAILED,
-            ))
-            db.commit()
-            return response
-    if not questions:
-        return response
-    widget = Widget(
-        id=widget_id,
-        type=WidgetType.RELATED_QUESTIONS,
-        data={"questions": questions},
     )
     response.widgets.append(widget)
     message = db.get(Message, response.message_id)
@@ -1549,6 +1464,7 @@ def _checkpoint_postprocessing(
             for update in response.widget_updates
         ],
     }
+    enqueue_related_questions(db, run, response)
     db.commit()
 
 
@@ -1822,21 +1738,9 @@ def _resume_postprocessing(
     _update_run(session_factory, run_id, user_id, AgentRunStatus.RUNNING)
     with session_factory() as db:
         run = _owned_run(db, run_id, user_id)
-        user = db.scalar(select(User).where(User.id == user_id))
-        if user is None:
-            raise ValueError("User not found")
-        conversation = _owned_conversation(db, run.conversation_id, user_id)
         response = _checkpointed_response(db, run)
         if publisher.cancellation_requested():
             raise RunCancelled
-        if not bool((run.recovery_payload or {}).get("skipSuggestions")):
-            response = _attach_related_questions(
-                db,
-                response,
-                user,
-                conversation,
-                str(run.input_payload.get("text") or ""),
-            )
         activities, reasoning_trace = _checkpointed_activity(db, run.id)
         response = _attach_activity_trace(
             db,
@@ -1942,6 +1846,9 @@ def execute_run(
         reasoning_parts: list[str] = []
         reasoning_started = False
         reasoning_closed = False
+        first_activity_flushed = False
+        first_reasoning_flushed = False
+        first_text_flushed = False
         with session_factory() as db:
             run = _owned_run(db, run_id, user_id)
             user = db.scalar(select(User).where(User.id == user_id))
@@ -1950,6 +1857,7 @@ def execute_run(
             conversation = _owned_conversation(db, run.conversation_id, user_id)
 
             def on_activity(event: dict[str, Any]) -> None:
+                nonlocal first_activity_flushed
                 stage_id = str(event["id"])
                 traced_event = _record_activity_event(
                     activities,
@@ -1982,7 +1890,11 @@ def execute_run(
                     )
                 )
                 if publisher.supports_incremental_flush:
-                    publisher.flush()
+                    if not first_activity_flushed:
+                        publisher.flush()
+                        first_activity_flushed = True
+                    else:
+                        publisher.flush_if_due()
 
             def close_reasoning() -> None:
                 nonlocal reasoning_closed
@@ -1993,10 +1905,10 @@ def execute_run(
                 publisher.emit(ReasoningEndEvent(message_id=reasoning_id, timestamp=timestamp_ms()))
                 reasoning_closed = True
                 if publisher.supports_incremental_flush:
-                    publisher.flush()
+                    publisher.flush_if_due()
 
             def on_reasoning_delta(delta: str) -> None:
-                nonlocal reasoning_started
+                nonlocal reasoning_started, first_reasoning_flushed
                 if not delta:
                     return
                 reasoning_parts.append(delta)
@@ -2020,10 +1932,14 @@ def execute_run(
                     timestamp=timestamp_ms(),
                 ))
                 if publisher.supports_incremental_flush:
-                    publisher.flush()
+                    if not first_reasoning_flushed:
+                        publisher.flush()
+                        first_reasoning_flushed = True
+                    else:
+                        publisher.flush_if_due()
 
             def on_text_delta(message_id: UUID, delta: str) -> None:
-                nonlocal streamed_message_id
+                nonlocal streamed_message_id, first_text_flushed
                 if not delta:
                     return
                 if streamed_message_id is None:
@@ -2048,7 +1964,11 @@ def execute_run(
                     )
                 )
                 if publisher.supports_incremental_flush:
-                    publisher.flush()
+                    if not first_text_flushed:
+                        publisher.flush()
+                        first_text_flushed = True
+                    else:
+                        publisher.flush_if_due()
 
             command = run.input_payload
             kind = command.get("kind")
@@ -2068,13 +1988,6 @@ def execute_run(
                 reasoning_trace = "".join(reasoning_parts)
                 close_reasoning()
                 _checkpoint_postprocessing(db, run, response)
-                response = _attach_related_questions(
-                    db,
-                    response,
-                    user,
-                    conversation,
-                    str(command["text"]),
-                )
                 response = _attach_activity_trace(
                     db,
                     response,
