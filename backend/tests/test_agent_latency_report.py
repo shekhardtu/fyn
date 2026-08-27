@@ -24,6 +24,7 @@ def run(
     failure_stage: str | None = None,
     error_code: str | None = None,
     provider_requests: tuple[tuple[float, float], ...] = ((1_500, 500),),
+    rollouts: dict[str, str] | None = None,
 ):
     passes = [
         {
@@ -54,6 +55,7 @@ def run(
             "reasoningTokens": 10,
             "modelDurationMs": 2_000,
             "firstModelTimeToFirstTokenMs": 500,
+            "rollouts": rollouts or {},
             "server": {
                 "queueWaitMs": 8,
                 "startedToFirstActivityMs": 20,
@@ -148,6 +150,17 @@ def test_report_groups_content_free_execution_scenarios_and_tool_health():
         "transaction_list": 1,
     }
     assert report["gates"]["commonRead.mountedToolCount.p95"]["passed"] is True
+
+
+def test_report_groups_stable_content_free_rollout_cohorts():
+    report = summarize_agent_latency([
+        run("A", 1_000, rollouts={"analysis_delegation": "control"}),
+        run("B", 2_000, rollouts={"analysis_delegation": "canary_5"}),
+    ])
+
+    cohorts = report["rollouts"]["analysis_delegation"]
+    assert cohorts["control"]["runs"] == 1
+    assert cohorts["canary_5"]["acceptedToFirstTextMs"]["p50"] == 2_000
 
 
 def test_report_counts_authenticated_semantic_reads_as_governed_analysis():

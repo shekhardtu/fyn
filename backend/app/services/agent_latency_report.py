@@ -316,6 +316,29 @@ def summarize_agent_latency(
         name: scenario_summary([run for run in run_rows if _scenario_class(run) == name])
         for name in scenario_names
     }
+    rollout_features = sorted({
+        str(feature)
+        for run in run_rows
+        for feature in (
+            (_attribute(run, "metrics", {}) or {}).get("rollouts", {})
+        )
+    })
+    rollout_cohorts = {
+        feature: {
+            label: scenario_summary([
+                run
+                for run in run_rows
+                if ((_attribute(run, "metrics", {}) or {}).get("rollouts", {})).get(feature)
+                == label
+            ])
+            for label in sorted({
+                str(((_attribute(run, "metrics", {}) or {}).get("rollouts", {})).get(feature))
+                for run in run_rows
+                if ((_attribute(run, "metrics", {}) or {}).get("rollouts", {})).get(feature)
+            })
+        }
+        for feature in rollout_features
+    }
     common_read_rows = [
         run
         for run in model_backed
@@ -429,6 +452,7 @@ def summarize_agent_latency(
         },
         "commonRead": scenario_summary(common_read_rows),
         "scenarios": scenarios,
+        "rollouts": rollout_cohorts,
         "tools": {
             "calls": len(all_tool_calls),
             "failedCalls": failed_tool_calls,

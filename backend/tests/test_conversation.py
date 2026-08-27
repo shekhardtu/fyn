@@ -892,6 +892,63 @@ def test_grounded_answer_repairs_missing_coverage_without_rerunning_sql(
     assert len(repairs) == 1
 
 
+def test_grounded_answer_repairs_unsupported_claim_without_weakening_validation(
+    db, monkeypatch, agent_enabled
+):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    grounding = ToolGrounding(
+        name="run_governed_sql",
+        arguments={"purpose": "Show daily Food shares."},
+        result={
+            "tool": "run_governed_sql",
+            "data": {
+                "kind": "governed_sql",
+                "columns": ["day", "share_percent"],
+                "rows": [
+                    {"day": "2026-08-24", "share_percent": 24.19},
+                    {"day": "2026-08-26", "share_percent": 23.34},
+                ],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        conversation_service,
+        "run_operator",
+        lambda *args, **kwargs: OperatorResult(
+            reply="August 24 and 26 together accounted for 47.53%.",
+            tool_grounding=[grounding],
+        ),
+    )
+    repairs = []
+
+    def repair(*args, **kwargs):
+        repairs.append((args, kwargs))
+        return "August 24 accounted for 24.19%, and August 26 accounted for 23.34%."
+
+    monkeypatch.setattr(conversation_service, "repair_grounded_answer", repair)
+
+    response = handle_chat(db, user, conversation, "Show daily Food spending shares.")
+
+    assert response.task_status == "succeeded"
+    assert response.error_code is None
+    assert response.message == (
+        "August 24 accounted for 24.19%, and August 26 accounted for 23.34%."
+    )
+    assert len(repairs) == 1
+    action = db.scalar(
+        select(AIAction)
+        .where(
+            AIAction.conversation_id == conversation.id,
+            AIAction.action_type == "answer_evidence_repair",
+        )
+        .order_by(AIAction.created_at.desc())
+    )
+    assert action is not None
+    assert action.status == "completed"
+    assert action.payload_redacted["passed"] is True
+
+
 def test_evidence_only_mode_skips_coverage_repair(db, monkeypatch, agent_enabled):
     user = default_user(db)
     set_answer_validation_mode(db, user.id, AnswerValidationMode.EVIDENCE_ONLY)

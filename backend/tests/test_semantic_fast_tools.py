@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from sqlalchemy import select
 
+from app.config import get_settings
 from app.event_time import from_local_parts
 from app.models import Category, Transaction
 from app.seed import default_user
@@ -117,6 +118,21 @@ def test_exact_semantic_capability_keeps_sql_fallback_without_schema_turn(db):
     assert DISCRETIONARY_CAP_TOOL_NAME in names
     assert RUN_SQL_TOOL_NAME in names
     assert DESCRIBE_SQL_SCHEMA_TOOL_NAME not in names
+
+
+def test_semantic_capability_rollout_has_an_immediate_sql_fallback(db, monkeypatch):
+    user = default_user(db)
+    context = _context(db, user, "How much did I spend this month?")
+
+    with monkeypatch.context() as scoped:
+        scoped.setenv("SEMANTIC_FAST_TOOLS_ROLLOUT_PERCENT", "0")
+        get_settings.cache_clear()
+        names = {tool.name for tool in build_analysis_tools(context)}
+
+    get_settings.cache_clear()
+    assert MONTH_TO_DATE_SPENDING_TOOL_NAME not in names
+    assert RUN_SQL_TOOL_NAME in names
+    assert DESCRIBE_SQL_SCHEMA_TOOL_NAME in names
 
 
 def test_elapsed_month_comparison_aligns_days_and_ranks_category_drivers(db):

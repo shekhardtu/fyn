@@ -122,7 +122,7 @@ class CoverageValidation:
 
 _NUMBER = r"[-+]?\d[\d,]*(?:\.\d+)?"
 _MONEY_PREFIX = re.compile(
-    rf"(?P<full>(?:₹|\bINR\b|\bRs\.?|\brupees?)\s*(?P<number>{_NUMBER})"
+    rf"(?P<full>(?P<leading_sign>[-+])?(?:₹|\bINR\b|\bRs\.?|\brupees?)\s*(?P<number>{_NUMBER})"
     r"(?:\s*(?P<scale>lakhs?|crores?))?)",
     re.I,
 )
@@ -134,7 +134,7 @@ _MONEY_SUFFIX = re.compile(
 _PERCENT = re.compile(rf"(?P<full>(?P<number>{_NUMBER})\s*%)", re.I)
 _COUNT = re.compile(
     rf"(?P<full>(?P<number>{_NUMBER})(?:\s+(?:expense|income|financial|recent|recorded|total)){{0,2}}\s+(?:transactions?|purchases?|payments?|"
-    r"merchants?|categories|accounts?|months?|days?|records?|items?))",
+    r"merchants?|categories|accounts?|months?|days?|records?|items?)\b)",
     re.I,
 )
 _DATE = re.compile(r"^\d{4}-\d{2}(?:-\d{2})?(?:[T ][\d:.+\-Z]+)?$")
@@ -151,6 +151,10 @@ _OPERATIONAL_FIELDS = {
     "dataset_name", "sql", "columns", "tables", "kind", "purpose",
     "fields", "result_schema", "display",
 }
+_SQL_GROUP_DISCRIMINATOR_FIELDS = (
+    "breakdown", "distribution", "dimension", "dimension_type", "group_type",
+    "row_type", "result_type", "record_type", "section",
+)
 _EMPTY_RESULT_FIELD = "authoritative_empty_result"
 _EMPTY_RANKING_FIELD = "authoritative_empty_ranking"
 _NO_RESULT_ANSWER = re.compile(
@@ -226,6 +230,8 @@ def extract_evidence_claims(content: str) -> list[EvidenceClaim]:
             value = _decimal(match.group("number"))
             if value is None:
                 continue
+            if match.groupdict().get("leading_sign") == "-" and value > 0:
+                value = -value
             scale = (match.groupdict().get("scale") or "").casefold()
             if scale.startswith("lakh"):
                 value *= Decimal(100_000)
@@ -326,6 +332,140 @@ def _list_count_fact(
         unit=unit,
         dimensions=dimensions,
     )
+
+
+def _grouped_sql_count_facts(
+    tool: str,
+    tool_index: int,
+    rows: list[Any],
+) -> list[EvidenceFact]:
+    """Derive distinct group counts from explicit long-form SQL breakdown rows.
+
+    UNION-style analysis queries commonly return one row per day, merchant, or
+    category and identify the row kind with a discriminator such as
+    ``breakdown`` or ``dimension``. Counting only the distinct labels in those
+    explicitly typed groups lets prose say "7 days" without treating the total
+    SQL row count as financial evidence.
+    """
+
+    group_specs = (
+        ("subcategories", re.compile(r"\bsubcategor(?:y|ies)\b", re.I), ("subcategory",)),
+        ("categories", re.compile(r"\bcategor(?:y|ies)\b", re.I), ("category",)),
+        ("merchants", re.compile(r"\b(?:merchant|vendor)s?\b", re.I), ("merchant", "vendor")),
+        ("accounts", re.compile(r"\baccounts?\b", re.I), ("account",)),
+        ("months", re.compile(r"\bmonths?\b", re.I), ("month",)),
+        ("days", re.compile(r"\b(?:day|date)s?\b", re.I), ("spend_date", "date", "day")),
+    )
+    labels_by_unit: dict[str, set[str]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        normalized = {str(key).casefold(): value for key, value in row.items()}
+        discriminator = next(
+            (
+                str(normalized[field])
+                for field in _SQL_GROUP_DISCRIMINATOR_FIELDS
+                if normalized.get(field) not in {None, ""}
+            ),
+            "",
+        )
+        if not discriminator:
+            continue
+        for unit, pattern, semantic_fields in group_specs:
+            if not pattern.search(discriminator):
+                continue
+            label = next(
+                (
+                    normalized[field]
+                    for field in (*semantic_fields, "group_name", "label", "name")
+                    if normalized.get(field) not in {None, ""}
+                ),
+                None,
+            )
+            if label is not None:
+                labels_by_unit.setdefault(unit, set()).add(str(label))
+            break
+
+    return [
+        EvidenceFact(
+            f"{tool}:{tool_index}:result:grouped_{unit}_count",
+            EvidenceKind.COUNT,
+            Decimal(len(labels)),
+            f"grouped_{unit}_count",
+            tool,
+            unit=unit,
+        )
+        for unit, labels in labels_by_unit.items()
+    ]
+
+
+def _reconciled_sql_total_facts(
+    tool: str,
+    tool_index: int,
+    rows: list[Any],
+) -> list[EvidenceFact]:
+    """Expose a total only when independent long-form breakdowns reconcile.
+
+    A result may contain category and merchant sections without a separate
+    overall row. Their sums are safe evidence for the period total only when
+    at least two explicitly named sections independently produce the same
+    value. This avoids treating a truncated top-N section as a grand total.
+    """
+
+    totals: dict[tuple[str, str, str], Decimal] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        normalized = {str(key).casefold(): value for key, value in row.items()}
+        discriminator = next(
+            (
+                (field, str(normalized[field]))
+                for field in _SQL_GROUP_DISCRIMINATOR_FIELDS
+                if normalized.get(field) not in {None, ""}
+            ),
+            None,
+        )
+        if discriminator is None:
+            continue
+        discriminator_field, discriminator_value = discriminator
+        for field_name, value in normalized.items():
+            number = _decimal(value) if isinstance(value, (int, float, Decimal)) else None
+            if number is None or not _MONEY_FIELD.search(field_name):
+                continue
+            key = (field_name, discriminator_field, discriminator_value.casefold())
+            totals[key] = totals.get(key, Decimal(0)) + (number / 100)
+
+    facts: list[EvidenceFact] = []
+    measure_fields = {field for field, _, _ in totals}
+    for field_name in measure_fields:
+        section_totals = {
+            (discriminator_field, discriminator_value): total
+            for (field, discriminator_field, discriminator_value), total in totals.items()
+            if field == field_name
+        }
+        reconciled_values = {
+            total
+            for total in section_totals.values()
+            if sum(1 for candidate in section_totals.values() if candidate == total) >= 2
+        }
+        for value in reconciled_values:
+            matching_sections = [
+                section
+                for section, total in section_totals.items()
+                if total == value
+            ]
+            for section in [None, *matching_sections]:
+                suffix = "all" if section is None else ":".join(section)
+                facts.append(EvidenceFact(
+                    f"{tool}:{tool_index}:result:reconciled_{field_name}:{value}:{suffix}",
+                    EvidenceKind.MONEY,
+                    value,
+                    f"reconciled_{field_name}",
+                    tool,
+                    unit="major",
+                    dimensions=() if section is None else (section,),
+                ))
+    return facts
 
 
 def _fact(
@@ -445,6 +585,8 @@ def evidence_facts(grounding: Iterable[Any]) -> list[EvidenceFact]:
             ))
         if isinstance(result, dict) and result.get("kind") == "governed_sql":
             rows = result.get("rows") or []
+            facts.extend(_grouped_sql_count_facts(tool, tool_index, rows))
+            facts.extend(_reconciled_sql_total_facts(tool, tool_index, rows))
             # A UNION-style analysis can return summary rows while its ranked
             # subgroup is authentically empty. Treat that as proof only when
             # the result contract contains both an explicit rank and ranked
@@ -638,10 +780,18 @@ def validate_evidence(
         for fact in facts
     )
     for claim in claims:
-        mentioned = _mentioned_dimensions(claim.sentence, facts)
+        facts_by_tool = {
+            fact.tool: [candidate for candidate in facts if candidate.tool == fact.tool]
+            for fact in facts
+        }
+        mentioned_by_tool = {
+            tool: _mentioned_dimensions(claim.sentence, tool_facts)
+            for tool, tool_facts in facts_by_tool.items()
+        }
         candidates = [
             fact for fact in facts
-            if fact.kind is claim.kind and _scope_matches(fact, mentioned)
+            if fact.kind is claim.kind
+            and _scope_matches(fact, mentioned_by_tool.get(fact.tool, {}))
         ]
         supported_as_declared_input = bool(
             any(
@@ -780,6 +930,50 @@ def _answer_has_period(content: str, marker: str) -> bool:
     return any(re.search(rf"(?<![a-z]){re.escape(alias)}(?![a-z])", content, re.I) for alias in aliases)
 
 
+def _merchant_values(facts: list[EvidenceFact]) -> list[str]:
+    """Return merchant entities from wide or normalized long-form results.
+
+    A single SQL statement commonly represents several requested breakdowns
+    as ``dimension, group_name, value`` UNION rows. In those rows the merchant
+    meaning lives in the row dimensions rather than in ``group_name`` itself;
+    retain that typed row context instead of falsely declaring the evidence
+    incomplete.
+    """
+
+    values: list[str] = []
+    for fact in facts:
+        if fact.kind in {EvidenceKind.TEXT, EvidenceKind.DATE} and re.search(
+            r"merchant|vendor", fact.field, re.I
+        ):
+            values.append(str(fact.value))
+        dimensions = tuple(
+            (str(key), str(value)) for key, value in fact.dimensions
+        )
+        is_merchant_row = any(
+            re.search(
+                r"(?:breakdown|distribution|dimension|group|entity|record|result|row|section)"
+                r".*(?:type|kind|name)?",
+                key,
+                re.I,
+            )
+            and re.search(r"merchant|vendor", value, re.I)
+            for key, value in dimensions
+        )
+        if not is_merchant_row:
+            continue
+        values.extend(
+            value
+            for key, value in dimensions
+            if re.search(
+                r"(?:^|_)(?:group_?)?name$|label$|entity$|item$|value$",
+                key,
+                re.I,
+            )
+            and not re.fullmatch(r"merchants?|vendors?", value, re.I)
+        )
+    return list(dict.fromkeys(values))
+
+
 def validate_coverage(
     content: str,
     contract: AnswerContract,
@@ -823,9 +1017,7 @@ def validate_coverage(
                 evidence_ok = _has_field(fields, r"month|period|date")
                 answer_ok = bool(re.search(r"\b(?:month|monthly)\b|\b\d{4}-\d{2}\b", content, re.I))
         elif code is ObligationCode.MERCHANT_DRIVERS:
-            merchants = [
-                str(fact.value) for fact in text_facts if "merchant" in fact.field.casefold()
-            ]
+            merchants = _merchant_values(facts)
             evidence_ok = bool(merchants)
             answer_ok = any(value.casefold() in lowered for value in merchants)
         elif code is ObligationCode.HISTORICAL_AVERAGE:

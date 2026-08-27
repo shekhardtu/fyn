@@ -41,6 +41,7 @@ from .analysis_harness import (
 )
 from .semantic import AnalysisToolProposal
 from .semantic_fast_tools import build_semantic_fast_tools
+from .rollout import SEMANTIC_FAST_TOOLS, rollout_assignment
 from .template_binding import (
     _model_visible_parameters,
     _public_name,
@@ -104,6 +105,7 @@ class AnalysisToolContext:
     today: date
     timezone_name: str
     question: str
+    currency: str = "INR"
     citations: list[DataReference] = field(default_factory=list)
     # Result rows every governed lane records under a stable name, and the
     # only data the bounded Python lane is ever handed.
@@ -338,7 +340,16 @@ def build_analysis_tools(
         and getattr(settings, "primary_agent_enabled", True)
     )
     tools: list[Any] = []
-    semantic_fast_tools = build_semantic_fast_tools(context)
+    semantic_fast_tools = (
+        build_semantic_fast_tools(context)
+        if rollout_assignment(
+            SEMANTIC_FAST_TOOLS,
+            context.user_id,
+            enabled=getattr(settings, "semantic_fast_tools_enabled", True),
+            percent=getattr(settings, "semantic_fast_tools_rollout_percent", 100),
+        ).selected
+        else []
+    )
     tools.extend(semantic_fast_tools)
     if not sql_only:
         if exact_replay is not None:

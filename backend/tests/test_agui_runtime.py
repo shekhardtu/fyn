@@ -2222,6 +2222,27 @@ def test_pending_hitl_turn_does_not_enqueue_related_questions(db):
     assert db.scalar(select(AgentEnrichment).where(AgentEnrichment.run_id == run.id)) is None
 
 
+def test_related_question_rollout_zero_never_queues_optional_work(db, monkeypatch):
+    user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
+    conversation = get_or_create_conversation(db, user)
+
+    with monkeypatch.context() as scoped:
+        scoped.setenv("AGENT_ENRICHMENT_ROLLOUT_PERCENT", "0")
+        enrichment_service.get_settings.cache_clear()
+        run, _live = _execute(
+            db,
+            user,
+            conversation,
+            {"kind": "message", "text": "Spent ₹300 on tea today", "messageId": "rq-control"},
+            "rq-control",
+        )
+
+    enrichment_service.get_settings.cache_clear()
+    assert run.status == AgentRunStatus.SUCCEEDED.value
+    assert run.metrics["rollouts"]["agent_enrichment"] == "control"
+    assert db.scalar(select(AgentEnrichment).where(AgentEnrichment.run_id == run.id)) is None
+
+
 def test_failed_message_turn_attaches_recovery_questions(db, monkeypatch):
     user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
     conversation = get_or_create_conversation(db, user)

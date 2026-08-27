@@ -30,8 +30,9 @@ from ..event_time import now_utc
 from ..models import AnalysisToolTemplate
 from .manifest import native_manifest_fingerprint, scan_native_schema, user_value_catalog
 from .agent_tools import bind_schema_tool
-from .analysis_sandbox import record_dataset
+from .analysis_sandbox import json_safe_rows, record_dataset
 from .answer_validation import compile_answer_contract
+from .currency import format_money_minor
 from .semantic_registry import semantic_schema_registry
 from .sql_gate import (
     AUTHORING_DIALECT,
@@ -333,13 +334,34 @@ def build_sql_analysis_tools(context) -> list[Any]:
             # The answer still ships; the failed write-back stays visible in
             # the durable tool payload instead of disappearing.
             template_saved = f"failed: {type(error).__name__}"
-        rows = [dict(zip(result["columns"], row)) for row in result["rows"]]
+        # This tool is bound from a runtime JSON Schema, so it does not pass
+        # through ``bind_tool``'s JSON-normalization wrapper. Normalize the
+        # database cells here before Agno stringifies the result: PostgreSQL
+        # dates and Decimals otherwise produce Python reprs that cannot be
+        # parsed back into authenticated grounding evidence.
+        rows = json_safe_rows(
+            dict(zip(result["columns"], row)) for row in result["rows"]
+        )
+        money_display_rows = [
+            {
+                key: format_money_minor(int(value), context.currency)
+                for key, value in row.items()
+                if key.casefold().endswith("_minor")
+                and isinstance(value, (int, float))
+                and float(value).is_integer()
+            }
+            for row in rows
+        ]
         return {
             "kind": "governed_sql",
             "purpose": purpose,
             "columns": result["columns"],
             "result_schema": result["result_schema"],
             "rows": rows,
+            # Same order as ``rows``. The model copies these authenticated,
+            # server-formatted values instead of performing fallible decimal
+            # scaling in its prose pass.
+            "money_display_rows": money_display_rows,
             "answer_contract": [
                 item.code.value for item in answer_contract.obligations
             ],
@@ -367,7 +389,10 @@ def build_sql_analysis_tools(context) -> list[Any]:
         "available. Build the final derived answer in one statement rather than returning "
         "intermediate datasets for the reader to combine. Never filter by user_id — tenancy "
         "is injected and enforced by the database. Money columns are integer minor units: "
-        "alias money results with an _minor suffix (e.g. total_minor). A result carrying an "
+        "alias money results with an _minor suffix (e.g. total_minor). The result's "
+        "money_display_rows are in the same order as rows and already format every _minor "
+        "value in the user's currency; copy those display values exactly and never rescale "
+        "raw money yourself. A result carrying an "
         "`error` key explains an invalid schema reference or operational refusal: correct it "
         "and retry at most twice. The most common spending and account schema is below. For "
         "any other entity, an uncertain join, or a user-specific categorical value, first call "

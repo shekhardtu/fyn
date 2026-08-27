@@ -17,6 +17,7 @@ from uuid import UUID
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from ..config import get_settings
 from ..domain import AgentEnrichmentStatus, ExecutionStatus
 from ..event_time import local_date, now_utc
 from ..models import AIAction, AgentEnrichment, AgentRun, Conversation, Message, User
@@ -27,6 +28,7 @@ from .agent_run_metrics import (
     end_agent_metric_collection,
 )
 from .agents import suggest_related_questions
+from .rollout import AGENT_ENRICHMENT, rollout_assignment
 from .runtime_tools import capability_notes
 
 
@@ -59,6 +61,14 @@ def enqueue_related_questions(
 ) -> None:
     """Install optional work without adding a query or commit to the run path."""
     if not response.message.strip() or response.pending_action is not None:
+        return
+    settings = get_settings()
+    if not rollout_assignment(
+        AGENT_ENRICHMENT,
+        run.user_id,
+        enabled=getattr(settings, "agent_enrichment_enabled", True),
+        percent=getattr(settings, "agent_enrichment_rollout_percent", 100),
+    ).selected:
         return
     widget_id = f"related-questions-{response.message_id}"
     if any(
@@ -257,6 +267,26 @@ def process_agent_enrichment(
         with session_factory() as db:
             item = _owned_enrichment(db, enrichment_id, user_id)
             if item is None or item.status != AgentEnrichmentStatus.RUNNING.value:
+                return
+            settings = get_settings()
+            if not rollout_assignment(
+                AGENT_ENRICHMENT,
+                item.user_id,
+                enabled=getattr(settings, "agent_enrichment_enabled", True),
+                percent=getattr(settings, "agent_enrichment_rollout_percent", 100),
+            ).selected:
+                metrics = agent_metric_snapshot()
+                metrics["enrichmentDurationMs"] = round(
+                    (time.perf_counter() - started) * 1000,
+                    1,
+                )
+                _complete(
+                    db,
+                    item,
+                    status=AgentEnrichmentStatus.SKIPPED,
+                    metrics=metrics,
+                    error_code="rollout_control",
+                )
                 return
             run = db.scalar(select(AgentRun).where(AgentRun.id == item.run_id, AgentRun.user_id == user_id))
             user = db.get(User, item.user_id)

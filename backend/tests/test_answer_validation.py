@@ -50,6 +50,45 @@ def test_typed_evidence_converts_minor_units_and_declared_percentage_rounding():
     assert validation.passed
 
 
+def test_dimension_scope_does_not_leak_between_tools():
+    taxonomy = ToolGrounding(
+        name="read_user_expense_taxonomy",
+        arguments={},
+        result={
+            "tool": "read_user_expense_taxonomy",
+            "data": [{"name": "Food", "subcategories": []}],
+        },
+    )
+    sql = _sql_grounding([{"total_minor": 1_200_000}])
+
+    assert validate_evidence("Total Food spending was ₹12,000.", [taxonomy, sql]).passed
+
+
+def test_negative_currency_prefix_retains_its_sign():
+    grounding = [_sql_grounding([{
+        "day": "2026-08-20",
+        "change_from_previous_day_minor": -894_500,
+    }])]
+
+    assert validate_evidence("| Aug 20 | -₹8,945 |", grounding).passed
+    assert not validate_evidence("| Aug 20 | -₹8,944 |", grounding).passed
+
+
+def test_count_parser_does_not_treat_accounted_as_an_account_unit():
+    grounding = [_sql_grounding([{
+        "day": "2026-08-24",
+        "share_percent": 24.19,
+    }])]
+
+    validation = validate_evidence(
+        "August 24 accounted for 24.19% of spending.",
+        grounding,
+    )
+
+    assert validation.passed
+    assert [claim.kind.value for claim in validation.claims] == ["percent"]
+
+
 def test_complex_comparison_contract_requires_evidence_and_answer_coverage():
     question = (
         "Compare my Food and Travel spending from May through August 19, "
@@ -125,6 +164,117 @@ def test_complex_comparison_contract_reports_query_gaps_before_prose_gaps():
     assert ObligationCode.HISTORICAL_AVERAGE in {
         item.code for item in coverage.missing_evidence
     }
+
+
+def test_long_form_dimension_rows_prove_merchant_coverage():
+    question = "How was Food spending distributed across days, merchants, and subcategories?"
+    grounding = [_sql_grounding([
+        {
+            "dimension": "Day",
+            "group_name": "2026-08-24",
+            "spend_minor": 3_337_200,
+        },
+        {
+            "dimension": "Merchant",
+            "group_name": "Swiggy",
+            "spend_minor": 5_205_000,
+        },
+        {
+            "dimension": "Subcategory",
+            "group_name": "Dining",
+            "spend_minor": 7_369_200,
+        },
+    ])]
+    answer = (
+        "Food spending was ₹33,372 on August 24. "
+        "Swiggy was the largest merchant at ₹52,050. Dining was ₹73,692."
+    )
+    evidence = validate_evidence(answer, grounding, question)
+
+    assert evidence.passed
+    assert validate_coverage(
+        answer,
+        compile_answer_contract(question),
+        evidence.facts,
+    ).passed
+
+
+def test_long_form_sql_breakdown_proves_distinct_group_count():
+    grounding = [_sql_grounding([
+        {
+            "breakdown": "overall",
+            "label": "All Food",
+            "spend_date": None,
+            "merchant": None,
+            "total_minor": 2_000,
+        },
+        {
+            "breakdown": "day",
+            "label": "2026-08-24",
+            "spend_date": "2026-08-24",
+            "merchant": None,
+            "total_minor": 1_200,
+        },
+        {
+            "breakdown": "day",
+            "label": "2026-08-25",
+            "spend_date": "2026-08-25",
+            "merchant": None,
+            "total_minor": 800,
+        },
+        {
+            "breakdown": "merchant",
+            "label": "Swiggy",
+            "spend_date": None,
+            "merchant": "Swiggy",
+            "total_minor": 2_000,
+        },
+    ])]
+
+    assert validate_evidence("Spending occurred on 2 days.", grounding).passed
+    assert not validate_evidence("Spending occurred on 3 days.", grounding).passed
+
+
+def test_result_level_rows_prove_merchant_coverage():
+    question = "Which merchants contributed most to the net total?"
+    grounding = [_sql_grounding([
+        {
+            "result_level": "overall",
+            "label": "All categories",
+            "net_spending_minor": 10_000,
+        },
+        {
+            "result_level": "merchant",
+            "label": "Swiggy",
+            "net_spending_minor": 7_000,
+        },
+    ])]
+    evidence = validate_evidence("Swiggy contributed ₹70.", grounding, question)
+
+    assert evidence.passed
+    assert validate_coverage(
+        "Swiggy contributed ₹70.",
+        compile_answer_contract(question),
+        evidence.facts,
+    ).passed
+
+
+def test_matching_independent_breakdowns_prove_reconciled_total():
+    grounding = [_sql_grounding([
+        {"section": "category", "name": "Food", "net_spending_minor": 13_797_000},
+        {"section": "category", "name": "Other", "net_spending_minor": 2_040_000},
+        {"section": "merchant", "name": "Swiggy", "net_spending_minor": 5_407_800},
+        {"section": "merchant", "name": "Unknown", "net_spending_minor": 4_411_400},
+        {"section": "merchant", "name": "Toit", "net_spending_minor": 3_977_800},
+        {"section": "merchant", "name": "Swiggy Online", "net_spending_minor": 2_040_000},
+    ])]
+
+    assert validate_evidence("Net spending totaled ₹1,58,370.", grounding).passed
+    assert validate_evidence(
+        "These four merchant groups account for the full ₹1,58,370 net total.",
+        grounding,
+    ).passed
+    assert not validate_evidence("Net spending totaled ₹1,58,371.", grounding).passed
 
 
 def test_taxonomy_list_cardinality_is_typed_as_categories_not_months():

@@ -3310,6 +3310,73 @@ def _tool_grounded_response(
                     else "Verified typed evidence and coverage of the requested answer."
                 )
             if evidence_validation is not None and not evidence_validation.passed:
+                repaired = None
+                repair_error = None
+                repair_obligations = [
+                    "Remove or replace every unsupported financial claim. Every financial number in the answer must be copied exactly from the supplied typed evidence; do not calculate a new percentage, ratio, average, share, multiple, or combined value.",
+                    *[item.description for item in answer_contract.obligations],
+                ]
+                try:
+                    repaired = repair_grounded_answer(
+                        request_text,
+                        content,
+                        repair_obligations,
+                        [fact.as_dict() for fact in evidence_validation.facts],
+                        _local_today(user),
+                        user.timezone,
+                        answer_style=selected_answer_style,
+                        presentation=selected_presentation,
+                    )
+                except Exception as error:
+                    repair_error = type(error).__name__
+                if repaired:
+                    repaired_evidence = validate_evidence(
+                        repaired, grounded_sources, request_text
+                    )
+                    repaired_coverage = (
+                        validate_coverage(
+                            repaired,
+                            answer_contract,
+                            repaired_evidence.facts,
+                        )
+                        if validation_mode is AnswerValidationMode.FULL
+                        else None
+                    )
+                else:
+                    repaired_evidence = None
+                    repaired_coverage = None
+                repair_passed = bool(
+                    repaired
+                    and repaired_evidence
+                    and repaired_evidence.passed
+                    and (
+                        repaired_coverage is None
+                        or repaired_coverage.passed
+                    )
+                )
+                db.add(AIAction(
+                    user_id=user.id,
+                    conversation_id=conversation.id,
+                    action_type="answer_evidence_repair",
+                    payload_redacted={
+                        "attempted": True,
+                        "passed": repair_passed,
+                        "errorType": repair_error,
+                    },
+                    status=(
+                        ExecutionStatus.COMPLETED
+                        if repair_passed else ExecutionStatus.FAILED
+                    ),
+                ))
+                if repair_passed and repaired is not None:
+                    content = repaired
+                    evidence_validation = repaired_evidence
+                    coverage_validation = repaired_coverage
+                    validation_trace_status = ExecutionStatus.COMPLETED
+                    validation_trace_detail = (
+                        "Verified typed evidence after repairing unsupported financial claims."
+                    )
+            if evidence_validation is not None and not evidence_validation.passed:
                 task_status, failure_stage = "degraded", "grounding"
                 error_code = evidence_validation.error_code
                 content = _grounded_tool_rendering(item, user, request_text) or (
@@ -6647,6 +6714,7 @@ def _run_turn(
             today=today,
             timezone_name=user.timezone,
             question=text,
+            currency=user.currency,
         )
         analysis_tools = (
             build_analysis_tools(

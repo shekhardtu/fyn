@@ -60,6 +60,7 @@ from .capabilities import (
 )
 from .finance_time import FinanceRunContext
 from .preferences import AnswerStyle
+from .rollout import ANALYSIS_DELEGATION, rollout_assignment
 from .semantic import AnalysisToolProposal, semantic_catalog
 from .sql_analysis import RUN_SQL_TOOL_NAME
 from .semantic_registry import SortDirection, TIME_GRAIN_SPECS, TimeGrain, semantic_schema_registry
@@ -997,7 +998,7 @@ def build_operator(
             "For complete-period comparisons, optimizations, or rankings that must remain valid when activity is absent, build the requested periods explicitly and left join the ledger. Return the summary and any ranked subgroup in one final result (nullable entity/rank fields are valid) so zero-activity periods and an empty ranked subgroup are both authenticated without a confirmation query.",
             "For partial-period comparisons, align like-for-like elapsed days or label a projection explicitly. Treat a missing period as zero only when the data establishes that it is a real zero rather than missing coverage.",
             "The database injects and enforces the authenticated tenant. Never add or accept a user_id supplied by the model or user. Money is stored in integer minor units; alias money outputs with an _minor suffix.",
-            "Tool rows are authoritative. Compose the answer from them using the most graspable single table or chart-like Markdown shape; do not expose SQL or invent arithmetic outside the returned columns.",
+            "Tool rows are authoritative. Copy money from the matching money_display_rows value exactly; never rescale a raw _minor value yourself. Compose the answer using the most graspable single table or chart-like Markdown shape; do not expose SQL or invent arithmetic outside the returned columns.",
             "Answer in plain financial language: define terms such as baseline or average when they matter, explain what drove the result and why it matters, and include a short comparison-method note when useful. Never mention query plans, transforms, CTEs, executors, or other implementation vocabulary.",
             "Do not make the reader retain values across sections or perform mental subtraction. Put each compared value, its baseline, absolute difference, percentage difference, and meaningful driver together in the same row or adjacent callout.",
             "Before querying, privately check the requested grain, date alignment, canonical transaction types, currency, missing-period coverage, join fanout, denominators, money units, and whether the question permits causation or only association. After querying, sanity-check totals and identities before answering; correct the SQL if a result violates them. Do not reveal this internal checklist or chain of thought.",
@@ -1020,7 +1021,7 @@ def build_operator(
             )
         if delegate_available:
             analysis_rules.extend([
-                f"Use {ANALYSIS_DELEGATE_TOOL_NAME} only for the complexity stated in its description. It is an optional slower tool you choose from inside this same turn, never a required router or a second opinion for routine work.",
+                f"Prefer {ANALYSIS_DELEGATE_TOOL_NAME} when no exact semantic tool matches and the request needs a constrained future projection, unusual multi-source join, statistical inference, or optimization across protected constraints. It is an optional slower tool you choose from inside this same turn, never a required router or a second opinion for routine work.",
                 f"Never call both {ANALYSIS_DELEGATE_TOOL_NAME} and {RUN_SQL_TOOL_NAME} for the same analysis. If you delegate, answer from the delegate result and its promoted authenticated evidence; do not repeat its queries yourself.",
             ])
     else:
@@ -1090,7 +1091,7 @@ def build_operator(
                     "When one supplied deterministic calculator exactly matches the requested scenario, call it directly and answer from its complete result. Do not delegate that scenario or reconstruct it from multiple schedules.",
                     "Calculator money fields ending in _minor are integer minor units. Copy their matching values from the calculator's display object exactly; never rescale them yourself or replace Indian comma grouping with a different magnitude.",
                     "Answer directly from successful tool results. Start with the result, then explain the relevant scope, comparison, implication, or assumption. Preserve dates, currency, uncertainty, and record limits exactly.",
-                    "Never estimate, extrapolate, or infer a financial figure, and never present taxonomy prompt context as if it were a database result. You may state one exact difference or total between figures a tool returned when it makes the comparison clearer — that is arithmetic over evidence, not a new fact. Anything further, including shares, percentages, ratios, multiples, and averages, must come from the tool that computed it.",
+                    "Never estimate, extrapolate, or infer a financial figure, and never present taxonomy prompt context as if it were a database result. You may state one exact difference or total between figures a tool returned when it makes the comparison clearer — that is arithmetic over evidence, not a new fact. Anything further, including shares, percentages, ratios, multiples, and averages, must come from the tool that computed it. Do not add together returned percentages or shares; if SQL did not return the exact combined percentage, describe the rows separately or use their returned amounts.",
                     "When asked which subcategories a category has, call read_user_expense_taxonomy and list exactly the children it returned for exactly the category asked about — every one of them, nothing added, nothing renamed. Answering a subcategory question with the list of categories is answering a different question. If the category has no children, say so; if the name is not in the taxonomy, say that instead of offering the nearest match.",
                     *clarification_rules,
                     *effectful_operation_rules,
@@ -1247,6 +1248,12 @@ def build_analysis_delegate_tool(
     if (
         settings is None
         or not getattr(settings, "analysis_delegation_enabled", False)
+        or not rollout_assignment(
+            ANALYSIS_DELEGATION,
+            user_id,
+            enabled=True,
+            percent=getattr(settings, "analysis_delegation_rollout_percent", 0),
+        ).selected
         or not available_tools
     ):
         return None
@@ -1351,10 +1358,10 @@ def build_analysis_delegate_tool(
         delegate_complex_analysis,
         name=ANALYSIS_DELEGATE_TOOL_NAME,
         description=(
-            "Escalate this turn once to the stronger read-only financial analyst. Use only when "
-            "the question genuinely needs an unusual multi-source join, constrained projection, "
-            "multi-step scenario, statistical inference, or optimization that the current pass "
-            "cannot answer reliably. Never use for greetings, explanations, totals, record lists, "
+            "Escalate this turn once to the stronger read-only financial analyst. Prefer this when "
+            "no exact semantic tool matches and the question needs an unusual multi-source join, "
+            "constrained future projection, multi-step scenario, statistical inference, or "
+            "optimization across protected constraints. Never use for greetings, explanations, totals, record lists, "
             "taxonomy, calculators, ordinary breakdowns/comparisons, or merely to improve wording. "
             "This is slower than using the supplied tools directly. analysis_focus must state the "
             "specific complexity and the complete answer obligations; call at most once."
@@ -1666,7 +1673,7 @@ def repair_grounded_answer(
     answer_style: AnswerStyle = AnswerStyle.EXPLAINED,
     presentation: AnswerPresentation | None = None,
 ) -> str | None:
-    """Recompose valid evidence once when only answer coverage is missing.
+    """Recompose an answer once when evidence or requested coverage is invalid.
 
     This pass receives typed result facts, not database access. It cannot add a
     fact or calculate a new value; the same deterministic evidence validator

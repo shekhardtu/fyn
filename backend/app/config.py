@@ -97,6 +97,10 @@ class Settings(BaseSettings):
     # ordinary reads never pay a higher deliberation budget or a serial router.
     operator_analysis_reasoning_effort: Literal["low", "medium", "high", "xhigh"] = "low"
     analysis_delegation_enabled: bool = True
+    # Delegation remains installed but starts in the control cohort after its
+    # initial quality/latency evaluation. Raise 0 -> 5 -> 25 -> 100 only when
+    # the content-free release report and answer-quality gates pass.
+    analysis_delegation_rollout_percent: int = Field(default=0, ge=0, le=100)
     analysis_delegate_model: str = "gpt-5.6-terra"
     analysis_delegate_reasoning_effort: Literal["low", "medium", "high", "xhigh"] = "medium"
     analysis_delegate_timeout_seconds: int = Field(default=35, ge=5, le=120)
@@ -114,6 +118,8 @@ class Settings(BaseSettings):
     # gives the Operator the full tenant-governed schema and one arbitrary
     # read-only SELECT surface instead of a finite transform vocabulary.
     analysis_query_mode: Literal["sql", "hybrid"] = "sql"
+    semantic_fast_tools_enabled: bool = True
+    semantic_fast_tools_rollout_percent: int = Field(default=100, ge=0, le=100)
     # Kill switches for the foreign-source lanes: a leaking connector or a
     # bad join can be closed by configuration instead of a deploy.
     external_source_lane_enabled: bool = True
@@ -160,6 +166,8 @@ class Settings(BaseSettings):
     agent_enrichment_max_attempts: int = Field(default=2, ge=1, le=5)
     agent_enrichment_retry_seconds: int = Field(default=3, ge=1, le=60)
     agent_enrichment_idle_poll_ms: int = Field(default=250, ge=50, le=5000)
+    agent_enrichment_enabled: bool = True
+    agent_enrichment_rollout_percent: int = Field(default=100, ge=0, le=100)
     default_currency: str = DEFAULT_CURRENCY
     default_timezone: str = DEFAULT_TIMEZONE
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
+import json
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -84,6 +86,34 @@ def test_successful_sql_returns_named_rows_and_saves_a_template(db):
     assert "Blue Tokai" not in template.capability_name
     assert "Blue Tokai" not in template.capability_description
     assert "Blue Tokai" not in template.capability_signature
+
+
+def test_sql_day_and_money_rows_are_json_safe_grounding(db, monkeypatch):
+    user = default_user(db)
+
+    monkeypatch.setattr(sql_analysis, "execute_governed_sql", lambda *_args, **_kwargs: {
+        "sql": "SELECT transaction_at::date AS spend_day, SUM(amount_minor) AS total_minor FROM transactions GROUP BY 1",
+        "columns": ["spend_day", "total_minor"],
+        "result_schema": [
+            {"name": "spend_day", "type": "date"},
+            {"name": "total_minor", "type": "numeric"},
+        ],
+        "rows": [(date(2026, 8, 5), Decimal("40000"))],
+        "row_count": 1,
+        "limit": 500,
+        "tables": ["transactions"],
+        "semantic_compile_ms": 1.0,
+    })
+    monkeypatch.setattr(sql_analysis, "memorize_sql_template", lambda *_args: True)
+    tool = build_sql_analysis_tool(context_for(db, user))
+
+    payload = tool.entrypoint(purpose="daily food spending", sql="SELECT 1")
+
+    assert payload["rows"] == [{"spend_day": "2026-08-05", "total_minor": 40_000}]
+    assert payload["money_display_rows"] == [{"total_minor": "₹400"}]
+    # Agno converts this payload to text before the grounding collector sees
+    # it. A JSON round trip therefore guards the actual production boundary.
+    assert json.loads(json.dumps(payload))["rows"] == payload["rows"]
 
 
 def test_empty_sql_result_is_explicit_authoritative_evidence(db):

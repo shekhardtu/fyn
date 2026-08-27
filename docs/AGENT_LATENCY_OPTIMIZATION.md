@@ -39,14 +39,14 @@ conversation routes.
 | Priority | Workstream | Status | Definition of done |
 |---:|---|---|---|
 | P0 | Content-free telemetry and regression report | Implemented; release-size sample count pending | Detached browser report, fail-contained persistence, server/provider-request/token/cache breakdown, scenario percentiles, zero customer-data fields |
-| P0 | Redundant model/tool-loop removal | Implemented for common semantic reads; long-tail corpus remains | Exact semantic tools collapse schema/query repair loops; successful empty evidence is terminal; generic SQL remains agent-chosen fallback |
+| P0 | Redundant model/tool-loop removal | Implemented for common semantic reads; long-tail smoke corpus passes | Exact semantic tools collapse schema/query repair loops; successful empty evidence is terminal; generic SQL remains agent-chosen fallback |
 | P0 | Prompt/tool payload and cache optimization | Implemented; release-size sample count pending | Common read ≤8 tools, isolated prompts, stable cache keys, ≥40% cache-read share after the first request, ambiguous turns retain capability escape hatches |
-| P0 | Agent-chosen model delegation | Implemented; quality/latency evaluation pending | Fast Operator remains universal; it may delegate genuinely complex work to a stronger model; routine turns add no serial router pass |
+| P0 | Agent-chosen model delegation | Implemented; evaluated and held at 0% | Fast Operator remains universal; it may delegate genuinely complex work to a stronger model; routine turns add no serial router pass |
 | P1 | Related questions outside critical path | Implemented; canary pending | Answer and composer finish first; durable independent worker; exactly three differentiated lanes; live late chips; failure invisible to run |
 | P1 | Perceived-latency response UX | Implemented; localhost browser verified | Truthful morphing state mark, same-row expandable activity, smooth reveal, click-only user-message metadata, no layout jump |
 | P1 | Persistence and render batching | Implemented; localhost browser verified | First activity commits immediately; subsequent events batch without losing exact replay; React renders are bounded per animation frame |
 | P1 | Capability preflight removal | Implemented | Ordinary send is not serialized behind a preflight; resume/interrupt authority remains checked |
-| P2 | Production rollout and rollback | Pending full verification and sample threshold | Feature flags, 5%/25%/100% canary, SLO and safety gates, one-command rollback, post-deploy report |
+| P2 | Production rollout and rollback | Controls implemented; observation windows pending | Independent 0%/5%/25%/100% cohorts, content-free cohort telemetry, SLO and safety gates, one-command rollback, post-deploy report |
 
 ## Measured localhost checkpoints
 
@@ -87,6 +87,33 @@ non-overlapping: the outer Operator waits synchronously for a delegate, so its
 native duration already contains the delegate duration. Tokens and cost still
 sum across both passes; `modelDurationMs` now excludes that nested double count
 while retaining each pass's own duration in the trace.
+
+A counterbalanced explained-medium versus low-provider-verbosity A/B kept the
+same Operator, tools, evidence checks, and answer obligations. Low verbosity
+reduced output tokens modestly, but provider duration varied from 5.7 seconds
+to 53.8 seconds, one request failed at the connection boundary, and both arms
+had occasional claim rejections. That evidence does not justify changing the
+explained default. The reusable `scripts/ab_operator_latency.py` harness emits
+only scenario ids, tool names, timings, tokens, and quality booleans.
+
+The first delegation evaluation kept a simple read and an exact semantic
+optimization on the Operator, as intended. After strengthening the agent's
+escalation guidance, a constrained 90-day projection selected the delegate but
+took 149.6 seconds and still missed the answer-coverage contract. Delegation is
+therefore shipped in the 0% control cohort, not removed: it can advance through
+5%/25%/100% only after representative quality and latency gates pass.
+
+The long-tail browser corpus now includes multi-dimensional daily/merchant/
+subcategory distribution, windowed daily drivers, and gross/refund/net
+reconciliation. Its final one-run localhost smoke pass completed all three
+answers successfully. Observed wall times were 30.6 seconds, 56.9 seconds, and
+26.1 seconds respectively across the final passing samples, so this is a
+correctness checkpoint rather than a latency pass. It exposed and fixed typed
+date/decimal serialization, negative `-₹` parsing, cross-tool evidence-scope
+leakage, normalized long-form merchant coverage, distinct grouped counts, and
+reconciled totals. A bounded evidence-only repair pass runs only after an
+otherwise publish-blocking claim failure and must pass the same deterministic
+evidence and coverage validators before its text can be shown.
 
 Provider-request telemetry showed the current hard boundary clearly. A
 grounded read normally has two requests inside one Operator pass: select/call
@@ -157,6 +184,27 @@ Done means 5%, 25%, and 100% cohorts each meet the latency, task-success,
 authority, grounding, and optional-worker failure gates for a full observation
 window. Any authority regression, telemetry-caused failure, or p95 breach rolls
 back the affected feature independently.
+
+The three independent cohort controls are `semantic`, `delegation`, and
+`enrichment`. Assignments use a stable hash of feature plus authenticated user,
+so raising 5% to 25% is monotonic and does not add storage or a network lookup.
+The durable run metrics retain only `control`, `canary_5`, `canary_25`, `all`,
+or `disabled`; no user identifier is copied into rollout telemetry.
+
+```bash
+# Canary the optional stronger-model delegate.
+./infra/deploy/agent-rollout.sh delegation 5
+./infra/deploy/agent-rollout.sh delegation 25
+./infra/deploy/agent-rollout.sh delegation 100
+
+# One-command rollback of only the affected capability.
+./infra/deploy/agent-rollout.sh delegation 0
+```
+
+Use the same command with `semantic` or `enrichment`. A semantic rollback keeps
+governed SQL mounted as the agentic fallback. An enrichment rollback prevents
+new optional jobs and causes already leased control-cohort work to skip before
+any model request; neither path can change the completed answer.
 
 ## Baseline command
 

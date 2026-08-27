@@ -25,6 +25,9 @@ const CORPUS = [
   { id: "analysis_empty", prompt: "Show expenses at a merchant named No Such Benchmark Merchant during January 2020." },
   { id: "analysis_three_month", prompt: "Across the last three full months, compare monthly spending by category and identify the most volatile category." },
   { id: "analysis_optimization", prompt: "Using the last three full months, calculate a fixed monthly discretionary-spending cap that is 10% below my historical average and show which categories require the largest reductions." },
+  { id: "analysis_multi_dimension", prompt: "How was my August 1–27, 2026 Food spending distributed across days, merchants, and subcategories?" },
+  { id: "analysis_windowed_drivers", prompt: "For each day from August 18–27, 2026, show Food spending, its change from the previous recorded day, the three-day rolling average, and the leading merchant and subcategory." },
+  { id: "analysis_net_refund_mix", prompt: "Across August 1–27, 2026, reconcile gross expenses, refunds, and net spending by category, then identify which merchants contributed most to the net total without double-counting transactions." },
 ] as const;
 
 const enabled = process.env.RUN_AGENT_LATENCY_CORPUS === "1";

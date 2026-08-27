@@ -70,6 +70,7 @@ from .conversation import (
     resolve_widget_action,
 )
 from .run_telemetry import RunTelemetryObserver
+from .rollout import rollout_metric_labels
 from .continuations import (
     CancelContinuation,
     ClarificationContinuationEnvelope,
@@ -221,11 +222,22 @@ def _merge_metric_snapshots(base: dict[str, Any], extra: dict[str, Any]) -> dict
     }
     # Browser and lifecycle telemetry are independent of provider passes and
     # must survive worker recovery without being interpreted or recomputed.
-    for key in ("server", "client"):
+    for key in ("server", "client", "rollouts"):
         value = extra.get(key) or base.get(key)
         if value is not None:
             merged[key] = value
     return merged
+
+
+def _agent_metric_snapshot(user_id: UUID) -> dict[str, Any]:
+    """Attach content-free rollout labels without making telemetry fallible."""
+
+    snapshot = agent_metric_snapshot()
+    try:
+        snapshot["rollouts"] = rollout_metric_labels(user_id, get_settings())
+    except Exception:
+        pass
+    return snapshot
 
 
 def _record_activity_event(
@@ -1454,7 +1466,7 @@ def _checkpoint_postprocessing(
     run.task_status = response.task_status
     run.failure_stage = response.failure_stage
     run.error_code = response.error_code
-    run.metrics = agent_metric_snapshot()
+    run.metrics = _agent_metric_snapshot(run.user_id)
     run.recovery_phase = POSTPROCESS_RECOVERY_PHASE
     run.recovery_payload = {
         "schemaVersion": 1,
@@ -1747,7 +1759,7 @@ def _resume_postprocessing(
             response,
             activities,
             reasoning_trace,
-            _merge_metric_snapshots(run.metrics or {}, agent_metric_snapshot()),
+            _merge_metric_snapshots(run.metrics or {}, _agent_metric_snapshot(user_id)),
         )
 
         streamed_message_id, streamed_text = _checkpointed_text_stream(db, run.id)
@@ -1788,7 +1800,7 @@ def execute_run(
     recovery_metrics: dict[str, Any] | None = None
 
     def finish(status: AgentRunStatus, *, error_code: str | None = None) -> None:
-        metrics = agent_metric_snapshot()
+        metrics = _agent_metric_snapshot(user_id)
         if recovery_metrics:
             metrics = _merge_metric_snapshots(recovery_metrics, metrics)
         publisher.bind_metrics(metrics)
@@ -1993,7 +2005,7 @@ def execute_run(
                     response,
                     activities,
                     reasoning_trace,
-                    agent_metric_snapshot(),
+                    _agent_metric_snapshot(user_id),
                 )
             elif kind == "action":
                 response = _action_response(db, user, conversation, dict(command["action"]))
@@ -2026,7 +2038,7 @@ def execute_run(
                         response,
                         activities,
                         reasoning_trace,
-                        agent_metric_snapshot(),
+                        _agent_metric_snapshot(user_id),
                     )
             elif kind == "protocol_error":
                 raise ProtocolRunError(

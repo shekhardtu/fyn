@@ -83,6 +83,7 @@ def test_complex_analysis_delegate_is_one_call_read_only_and_promotes_evidence(m
         scoped.setenv("OPENAI_API_KEY", "test-only")
         scoped.setenv("PRIMARY_AGENT_ENABLED", "true")
         scoped.setenv("ANALYSIS_DELEGATION_ENABLED", "true")
+        scoped.setenv("ANALYSIS_DELEGATION_ROLLOUT_PERCENT", "100")
         scoped.setenv("ANALYSIS_DELEGATE_MODEL", "gpt-5.6-terra")
         scoped.setattr(agents, "Agent", StubDelegate)
         get_settings.cache_clear()
@@ -137,6 +138,7 @@ def test_complex_analysis_delegate_failure_is_a_tool_error_not_an_exception(monk
         scoped.setenv("OPENAI_API_KEY", "test-only")
         scoped.setenv("PRIMARY_AGENT_ENABLED", "true")
         scoped.setenv("ANALYSIS_DELEGATION_ENABLED", "true")
+        scoped.setenv("ANALYSIS_DELEGATION_ROLLOUT_PERCENT", "100")
         scoped.setattr(agents, "Agent", UnavailableDelegate)
         get_settings.cache_clear()
         delegate_tool = agents.build_analysis_delegate_tool(
@@ -169,6 +171,28 @@ def test_operator_fetches_taxonomy_only_when_the_model_needs_it(monkeypatch):
         assert "secret-custom" not in instructions
         assert "read_user_expense_taxonomy" in instructions
         assert operator.model.reasoning_summary == "concise"
+    get_settings.cache_clear()
+
+
+def test_operator_prefers_optional_delegate_only_for_named_complexity(monkeypatch):
+    with monkeypatch.context() as scoped:
+        scoped.setenv("OPENAI_API_KEY", "test-only")
+        scoped.setenv("PRIMARY_AGENT_ENABLED", "true")
+        get_settings.cache_clear()
+        operator = agents.build_operator(
+            [],
+            date(2026, 8, 19),
+            "Asia/Kolkata",
+            analysis_tools=[
+                SimpleNamespace(name="run_governed_sql"),
+                SimpleNamespace(name=agents.ANALYSIS_DELEGATE_TOOL_NAME),
+            ],
+        )
+
+        instructions = "\n".join(str(item) for item in operator.instructions)
+        assert "Prefer delegate_complex_analysis" in instructions
+        assert "no exact semantic tool matches" in instructions
+        assert "Never call both delegate_complex_analysis and run_governed_sql" in instructions
     get_settings.cache_clear()
 
 
