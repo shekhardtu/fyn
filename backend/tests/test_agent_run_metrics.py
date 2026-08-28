@@ -148,6 +148,21 @@ def test_content_free_prompt_capability_and_tool_timings_are_retained():
             prompt_characters=840,
             prompt_components={"currentMessage": 12, "recentContext": 400},
             mounted_tools=["transaction_summary", "transaction_list"],
+            provider_requests=[
+                {
+                    "model": "operator-model",
+                    "provider": "OpenAI",
+                    "durationMs": 740.25,
+                    "timeToFirstTokenMs": 210.75,
+                    "inputTokens": 8,
+                    "outputTokens": 2,
+                    "totalTokens": 10,
+                    "cacheReadTokens": 3,
+                    "reasoningTokens": 1,
+                    # Unknown event fields and provider content are discarded.
+                    "content": "must not be retained",
+                },
+            ],
         )
         snapshot = agent_metric_snapshot()
     finally:
@@ -164,6 +179,20 @@ def test_content_free_prompt_capability_and_tool_timings_are_retained():
         "durationMs": 125,
         "failed": False,
     }]
+    assert snapshot["providerRequestCount"] == 1
+    assert metric_pass["providerRequests"] == [{
+        "model": "operator-model",
+        "provider": "OpenAI",
+        "durationMs": 740.2,
+        "timeToFirstTokenMs": 210.8,
+        "inputTokens": 8,
+        "outputTokens": 2,
+        "totalTokens": 10,
+        "cacheReadTokens": 3,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 1,
+    }]
+    assert "content" not in str(metric_pass["providerRequests"])
 
 
 def test_broken_framework_metric_objects_are_dropped_without_escaping():
@@ -178,3 +207,47 @@ def test_broken_framework_metric_objects_are_dropped_without_escaping():
         assert agent_metric_snapshot()["modelPasses"] == 0
     finally:
         end_agent_metric_collection(token)
+
+
+def test_nested_delegate_metrics_follow_the_operator_that_started_first():
+    token = begin_agent_metric_collection()
+    try:
+        # Nested tools finish first, but the outer Operator was the first
+        # provider request the customer waited on.
+        record_agno_run_metrics(
+            _output(
+                model="delegate-model",
+                input_tokens=200,
+                output_tokens=30,
+                duration=2,
+                first_token=0.4,
+                cost=0.003,
+            ),
+            stage="analysis_delegate",
+            model="delegate-model",
+        )
+        record_agno_run_metrics(
+            _output(
+                model="operator-model",
+                input_tokens=100,
+                output_tokens=20,
+                duration=1,
+                first_token=0.2,
+                cost=0.002,
+            ),
+            stage="operator_response",
+            model="operator-model",
+        )
+        snapshot = agent_metric_snapshot()
+    finally:
+        end_agent_metric_collection(token)
+
+    assert [item["stage"] for item in snapshot["passes"]] == [
+        "operator_response",
+        "analysis_delegate",
+    ]
+    assert snapshot["firstModelTimeToFirstTokenMs"] == 200
+    # The outer Operator's native duration includes its synchronous delegate
+    # tool call, so the customer-visible critical path is one second here, not
+    # the misleading three-second sum of overlapping runs.
+    assert snapshot["modelDurationMs"] == 1000

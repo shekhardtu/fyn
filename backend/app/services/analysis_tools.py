@@ -32,7 +32,7 @@ from .federation import build_federation_tool
 from .intelligence import tool_facing_rows
 from .spreadsheet import build_spreadsheet_tools
 from .analysis_sandbox import build_python_analysis_tool, record_dataset
-from .sql_analysis import build_sql_analysis_tool
+from .sql_analysis import DESCRIBE_SQL_SCHEMA_TOOL_NAME, build_sql_analysis_tools
 from .analysis_harness import (
     AnalysisReplay,
     HarnessResult,
@@ -40,6 +40,8 @@ from .analysis_harness import (
     execute_analysis_template,
 )
 from .semantic import AnalysisToolProposal
+from .semantic_fast_tools import build_semantic_fast_tools
+from .rollout import SEMANTIC_FAST_TOOLS, rollout_assignment
 from .template_binding import (
     _model_visible_parameters,
     _public_name,
@@ -103,6 +105,7 @@ class AnalysisToolContext:
     today: date
     timezone_name: str
     question: str
+    currency: str = "INR"
     citations: list[DataReference] = field(default_factory=list)
     # Result rows every governed lane records under a stable name, and the
     # only data the bounded Python lane is ever handed.
@@ -337,6 +340,17 @@ def build_analysis_tools(
         and getattr(settings, "primary_agent_enabled", True)
     )
     tools: list[Any] = []
+    semantic_fast_tools = (
+        build_semantic_fast_tools(context)
+        if rollout_assignment(
+            SEMANTIC_FAST_TOOLS,
+            context.user_id,
+            enabled=getattr(settings, "semantic_fast_tools_enabled", True),
+            percent=getattr(settings, "semantic_fast_tools_rollout_percent", 100),
+        ).selected
+        else []
+    )
+    tools.extend(semantic_fast_tools)
     if not sql_only:
         if exact_replay is not None:
             tools.append(_repeat_run_tool(context, exact_replay))
@@ -350,7 +364,16 @@ def build_analysis_tools(
                 tools.append(_template_run_tool(context, item.template))
         tools.append(_run_analysis_tool(context))
     if settings.sql_lane_enabled:
-        tools.append(build_sql_analysis_tool(context))
+        sql_tools = build_sql_analysis_tools(context)
+        if semantic_fast_tools:
+            # Exact core-ledger capabilities need no separate schema lookup;
+            # direct SQL remains mounted as the long-tail fallback.
+            sql_tools = [
+                tool
+                for tool in sql_tools
+                if getattr(tool, "name", None) != DESCRIBE_SQL_SCHEMA_TOOL_NAME
+            ]
+        tools.extend(sql_tools)
     tools.extend(build_spreadsheet_tools(context))
     if settings.external_source_lane_enabled:
         tools.extend(build_external_tools(context))

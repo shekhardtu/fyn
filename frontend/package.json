@@ -15,7 +15,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:latency": "RUN_AGENT_LATENCY_CORPUS=1 playwright test e2e/latency-corpus.spec.ts --project=browser",
+    "test:e2e:latency:context": "RUN_AGENT_LATENCY_CONTEXT_CORPUS=1 playwright test e2e/latency-context-corpus.spec.ts --project=browser"
   },
   "dependencies": {
     "@ag-ui/client": "0.0.57",

@@ -2,7 +2,7 @@ from datetime import date
 
 import pytest
 
-from app.services.extraction import extract_transaction, parse_amount_minor, parse_spending_period
+from app.services.extraction import explicit_currency_codes, extract_transaction, parse_amount_minor, parse_spending_period
 from app.services.turn_signals import expects_value_answer, has_amount_comparison, has_explicit_transaction_mutation_cue, looks_like_financial_query
 
 
@@ -23,6 +23,9 @@ def test_amounts_use_minor_units(text, minor):
 def test_transaction_currency_inherits_user_setting_and_explicit_code_wins():
     assert extract_transaction("Spent 10 on coffee", default_currency="USD").currency == "USD"
     assert extract_transaction("Spent ₹10 on coffee", default_currency="USD").currency == "INR"
+    assert extract_transaction("Spent 10 dollars on coffee", default_currency="INR").currency == "USD"
+    assert extract_transaction("Spent 10 rupees on coffee", default_currency="USD").currency == "INR"
+    assert explicit_currency_codes("Use USD 10, not ₹10") == ["USD", "INR"]
 
 
 def test_digits_embedded_in_an_identifier_are_not_an_amount():

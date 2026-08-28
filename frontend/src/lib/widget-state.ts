@@ -53,6 +53,15 @@ export function mergeAgentResponse(messages: Message[], response: AgentResponse)
   }];
 }
 
+
+/** Attach a late optional widget without replaying or replacing its answer. */
+export function mergeMessageWidget(messages: Message[], messageId: string, widget: Widget): Message[] {
+  return messages.map((message) => {
+    if (message.id !== messageId || message.widgets.some((item) => item.id === widget.id)) return message;
+    return { ...message, widgets: [...message.widgets, widget] };
+  });
+}
+
 export function completedWidgetIds(messages: Message[]) {
   const widgetsByDraft = new Map<string, string[]>();
   const completed = new Set<string>();

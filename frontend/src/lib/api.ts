@@ -3,7 +3,7 @@ import { AgentCapabilitiesSchema, type AgentCapabilities, type Message as AgUiMe
 
 import { API_MOUNT_PATH } from "@/config/api-path";
 import { environment } from "@/config/environment";
-import { agentActivityEventSchema, agentResponseSchema, agentSettingsSchema, agentThreadStateSchema, authStatusSchema, bootstrapSchema, categoryDirectoryEntrySchema, categoryDirectorySchema, categorySubcategorySchema, contactSuggestionSchema, conversationCreatedSchema, conversationPageSchema, conversationSchema, conversationSummarySchema, dashboardDetailSchema, dashboardListSchema, documentAssetSchema, documentRevisionListSchema, importResultSchema, invitationPreviewSchema, loanCommandSchema, locationResolveSchema, otpSentSchema, overviewSchema, parseActionPayload, personalLoanDetailSchema, personalLoanListSchema, privacyStatusSchema, profileSchema, reminderSchema, transactionCategoryHintSchema, transactionListItemSchema, transactionListSchema, transactionRevisionListSchema, type AgentActivityEvent, type AgentInterruptOut, type AgentResponse, type AgentSettingsOut, type AgentThreadStateOut, type AuthStatusOut, type Bootstrap, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type ContactSuggestionOut, type ConversationCreatedOut, type ConversationOut, type ConversationPage, type ConversationSummary, type CreatePersonalLoanIn, type DashboardDetail, type DashboardSummary, type DocumentAssetOut, type DocumentRevisionOut, type FulfillDocumentRequestsIn, type ImportResult, type InvitationPreviewOut, type LoanCommandOut, type LoanTermProposalIn, type OtpSentOut, type OverviewOut, type PersonalLoanDetailOut, type PersonalLoanListOut, type PrivacyStatusOut, type ProfileOut, type RecordLoanFundingIn, type RecordLoanPaymentIn, type ReminderOut, type SendLoanReminderIn, type TransactionCategoryHintOut, type TransactionListItemOut, type TransactionRevisionOut, type TransactionUpdateIn, type WidgetActionId } from "@/lib/protocol";
+import { agentActivityEventSchema, agentEnrichmentSchema, agentResponseSchema, agentSettingsSchema, agentThreadStateSchema, authStatusSchema, bootstrapSchema, categoryDirectoryEntrySchema, categoryDirectorySchema, categorySubcategorySchema, contactSuggestionSchema, conversationCreatedSchema, conversationPageSchema, conversationSchema, conversationSummarySchema, dashboardDetailSchema, dashboardListSchema, documentAssetSchema, documentRevisionListSchema, importResultSchema, invitationPreviewSchema, loanCommandSchema, locationResolveSchema, otpSentSchema, overviewSchema, parseActionPayload, personalLoanDetailSchema, personalLoanListSchema, privacyStatusSchema, profileSchema, reminderSchema, transactionCategoryHintSchema, transactionListItemSchema, transactionListSchema, transactionRevisionListSchema, type AgentActivityEvent, type AgentEnrichmentOut, type AgentInterruptOut, type AgentResponse, type AgentSettingsOut, type AgentThreadStateOut, type AuthStatusOut, type Bootstrap, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type ContactSuggestionOut, type ConversationCreatedOut, type ConversationOut, type ConversationPage, type ConversationSummary, type CreatePersonalLoanIn, type DashboardDetail, type DashboardSummary, type DocumentAssetOut, type DocumentRevisionOut, type FulfillDocumentRequestsIn, type ImportResult, type InvitationPreviewOut, type LoanCommandOut, type LoanTermProposalIn, type OtpSentOut, type OverviewOut, type PersonalLoanDetailOut, type PersonalLoanListOut, type PrivacyStatusOut, type ProfileOut, type RecordLoanFundingIn, type RecordLoanPaymentIn, type ReminderOut, type SendLoanReminderIn, type TransactionCategoryHintOut, type TransactionListItemOut, type TransactionRevisionOut, type TransactionUpdateIn, type Widget, type WidgetActionId } from "@/lib/protocol";
 import type { AgentClientTelemetryIn } from "@/lib/generated/contracts";
 
 const API_URL = environment.apiUrl;
@@ -456,6 +456,44 @@ export interface AgentRunCallbacks {
   onText?: (text: string) => void;
 }
 
+
+const RELATED_QUESTION_POLL_DELAYS_MS = [0, 250, 500, 1_000, 2_000, 3_000] as const;
+
+function abortableDelay(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  if (!milliseconds) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("The enrichment request was detached.", "AbortError"));
+      return;
+    }
+    const timeout = window.setTimeout(resolve, milliseconds);
+    signal?.addEventListener("abort", () => {
+      window.clearTimeout(timeout);
+      reject(new DOMException("The enrichment request was detached.", "AbortError"));
+    }, { once: true });
+  });
+}
+
+/** Poll optional post-answer work. Callers deliberately never await this from
+ * the agent mutation; a missing widget must have no effect on the answer. */
+export async function waitForAgentRelatedQuestions(runId: string, signal?: AbortSignal): Promise<{ messageId: string; widget: Widget } | null> {
+  for (const delay of RELATED_QUESTION_POLL_DELAYS_MS) {
+    await abortableDelay(delay, signal);
+    const response = await fetch(apiUrl(`/agent/runs/${encodeURIComponent(runId)}/related-questions`), {
+      credentials: "include",
+      signal,
+    });
+    if (response.status === 404) return null;
+    if (!response.ok) throw new ApiError(describe(await response.json().catch(() => null), response.status), response.status);
+    const enrichment: AgentEnrichmentOut = conform(agentEnrichmentSchema, await response.json(), "answer enrichment");
+    if (enrichment.status === "completed" && enrichment.widget) {
+      return { messageId: enrichment.messageId, widget: enrichment.widget };
+    }
+    if (enrichment.status === "failed" || enrichment.status === "skipped") return null;
+  }
+  return null;
+}
+
 interface RunCommand {
   message?: string;
   forwardedProps?: Record<string, unknown>;
@@ -519,6 +557,9 @@ function fynAgent(threadId: string): FynHttpAgent {
     threadId,
     fetch: (url, init) => fetch(url, { ...init, credentials: "include" }),
   });
+  // Warm capability discovery as soon as the transcript creates its agent.
+  // This request is advisory for ordinary runs and is never joined to them.
+  void agent.getCapabilities().catch(() => undefined);
   fynAgents.set(threadId, agent);
   return agent;
 }
@@ -572,6 +613,46 @@ function storedInterrupt(interrupt: AgentInterruptOut): FynInterrupt {
   };
 }
 
+/** Deliver the first visible value immediately, then collapse burst updates
+ * to the newest value once per animation frame. ``flush`` preserves the final
+ * provider value when a short stream finishes before the queued frame paints. */
+function frameLatestDispatcher<T>(deliver: (value: T) => void) {
+  let frame: number | null = null;
+  let latest!: T;
+  let hasLatest = false;
+  let deliveredFirst = false;
+  const schedule = (callback: FrameRequestCallback) => window.requestAnimationFrame(callback);
+  const cancelFrame = (handle: number) => window.cancelAnimationFrame(handle);
+  const drain = () => {
+    frame = null;
+    if (!hasLatest) return;
+    const value = latest;
+    hasLatest = false;
+    deliver(value);
+  };
+  return {
+    push(value: T) {
+      if (!deliveredFirst) {
+        deliveredFirst = true;
+        deliver(value);
+        return;
+      }
+      latest = value;
+      hasLatest = true;
+      frame ??= schedule(drain);
+    },
+    flush() {
+      if (frame !== null) cancelFrame(frame);
+      drain();
+    },
+    cancel() {
+      if (frame !== null) cancelFrame(frame);
+      frame = null;
+      hasLatest = false;
+    },
+  };
+}
+
 async function runFynAgent(
   conversationId: string,
   command: RunCommand,
@@ -585,16 +666,21 @@ async function runFynAgent(
   let reasoningSummary = "";
   let assistantText = "";
   let assistantMessageId = "";
+  const textUpdates = frameLatestDispatcher((text: string) => callbacks.onText?.(text));
   const runFailure: { message: string | null; code: string | null } = { message: null, code: null };
   callbacks.onRunCreated?.(runId);
   callbacks.onPhase?.(command.replay ? "reconnecting" : "connecting");
 
   const agent = fynAgent(conversationId);
   const cursorState = agent.cursorFor(runId);
-  const advertised = await agent.getCapabilities();
-  if (!advertised.transport?.streaming) throw new Error("fyn AI does not currently advertise streaming AG-UI support.");
-  if (command.resume && !advertised.humanInTheLoop?.interrupts) {
-    throw new Error("fyn AI does not currently advertise interrupt resumption.");
+  if (command.resume) {
+    // Resume changes durable state through an existing server-authored
+    // interrupt, so capability confirmation remains a hard precondition.
+    const advertised = await agent.getCapabilities();
+    if (!advertised.transport?.streaming) throw new Error("fyn AI does not currently advertise streaming AG-UI support.");
+    if (!advertised.humanInTheLoop?.interrupts) {
+      throw new Error("fyn AI does not currently advertise interrupt resumption.");
+    }
   }
   let inputMessageId: string | null = null;
   if (command.message) {
@@ -625,7 +711,7 @@ async function runFynAgent(
     onTextMessageContentEvent: ({ event, textMessageBuffer }) => {
       assistantMessageId = event.messageId;
       assistantText = `${textMessageBuffer}${event.delta}`;
-      callbacks.onText?.(assistantText);
+      textUpdates.push(assistantText);
     },
     onCustomEvent: ({ event }) => {
       if (event.name !== "fyn.response.v1" || !event.value || typeof event.value !== "object") return;
@@ -659,9 +745,13 @@ async function runFynAgent(
       }, subscriber);
       break;
     } catch (cause) {
-      if (controller.signal.aborted) throw new DOMException("The agent run was detached.", "AbortError");
+      if (controller.signal.aborted) {
+        textUpdates.cancel();
+        throw new DOMException("The agent run was detached.", "AbortError");
+      }
       const status = typeof cause === "object" && cause && "status" in cause ? Number((cause as { status: unknown }).status) : 0;
       if (status || replay || attempt > 0) {
+        textUpdates.cancel();
         discardRejectedInput();
         if (status) throw new ApiError(describe(typeof cause === "object" && cause && "payload" in cause ? (cause as { payload: unknown }).payload : null, status), status);
         throw cause;
@@ -670,16 +760,21 @@ async function runFynAgent(
       callbacks.onPhase?.("reconnecting");
     }
   }
-  if (controller.signal.aborted) throw new DOMException("The agent run was detached.", "AbortError");
+  if (controller.signal.aborted) {
+    textUpdates.cancel();
+    throw new DOMException("The agent run was detached.", "AbortError");
+  }
   // Provider text can cross the wire before the server validates and commits
   // the canonical response. A RUN_ERROR always wins over that provisional
   // text; otherwise a failed resume looks successful while its interrupt
   // remains open and the next message is rejected.
   if (runFailure.message || runFailure.code) {
+    textUpdates.cancel();
     discardRejectedInput();
     if (runFailure.code === "cancelled") throw new DOMException("The agent run was stopped.", "AbortError");
     throw new Error(runFailure.message ?? "The agent run failed before its response was verified.");
   }
+  textUpdates.flush();
   if (!response && assistantText) {
     response = {
       message: assistantText,
@@ -696,6 +791,7 @@ async function runFynAgent(
     };
   }
   if (!response) {
+    textUpdates.cancel();
     discardRejectedInput();
     throw new Error("The agent stream ended before returning a verified response.");
   }

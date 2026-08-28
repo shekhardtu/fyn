@@ -24,6 +24,10 @@ from .services.agui import (
     execute_run as execute_agui_run,
     renew_agent_recovery_claim,
 )
+from .services.agent_enrichment import (
+    claim_agent_enrichment_work,
+    process_agent_enrichment,
+)
 from .services.analysis_harness import delete_obsolete_analysis_templates
 from .services.analysis_seeds import seed_analysis_templates
 from .services.manifest import ensure_native_manifest
@@ -32,6 +36,7 @@ from watchfiles import awatch
 
 
 _agent_recovery_task: asyncio.Task | None = None
+_agent_enrichment_task: asyncio.Task | None = None
 _operation_watch_task: asyncio.Task | None = None
 _lending_notification_task: asyncio.Task | None = None
 
@@ -56,8 +61,7 @@ async def _watch_operations() -> None:
 async def _drain_agent_recovery_backlog(created_before: datetime) -> None:
     """Drain old runs with fixed concurrency and leased database claims.
 
-    There are never more worker tasks or simultaneous suggestion model calls
-    than the configured concurrency, regardless of backlog size.
+    Backlog size never creates an equivalent number of tasks or executions.
     """
     async def worker() -> None:
         while True:
@@ -127,6 +131,48 @@ async def _drain_agent_recovery_backlog(created_before: datetime) -> None:
     ))
 
 
+async def _drain_agent_enrichment_queue() -> None:
+    """Continuously drain optional work without joining application requests."""
+
+    async def worker() -> None:
+        while True:
+            try:
+                work = await asyncio.to_thread(
+                    claim_agent_enrichment_work,
+                    SessionLocal,
+                    claim_ttl_seconds=settings.agent_enrichment_claim_ttl_seconds,
+                    max_attempts=settings.agent_enrichment_max_attempts,
+                )
+            except Exception:
+                # The queue is optional infrastructure. A temporary database
+                # problem may hide suggestions but must not terminate FastAPI.
+                await asyncio.sleep(settings.agent_enrichment_idle_poll_ms / 1000)
+                continue
+            if work is None:
+                await asyncio.sleep(settings.agent_enrichment_idle_poll_ms / 1000)
+                continue
+            if work.executable and work.enrichment_id is not None and work.user_id is not None:
+                try:
+                    await asyncio.to_thread(
+                        process_agent_enrichment,
+                        SessionLocal,
+                        work.enrichment_id,
+                        work.user_id,
+                        max_attempts=settings.agent_enrichment_max_attempts,
+                        retry_seconds=settings.agent_enrichment_retry_seconds,
+                    )
+                except Exception:
+                    # The processor contains its own durable failure boundary;
+                    # this outer guard keeps even an unexpected adapter defect
+                    # from taking down the pool or the application lifespan.
+                    pass
+
+    await asyncio.gather(*(
+        worker()
+        for _ in range(settings.agent_enrichment_max_concurrency)
+    ))
+
+
 async def _deliver_lending_notifications() -> None:
     from .services.lending_notifications import deliver_one
 
@@ -137,7 +183,7 @@ async def _deliver_lending_notifications() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global _agent_recovery_task, _operation_watch_task, _lending_notification_task
+    global _agent_recovery_task, _agent_enrichment_task, _operation_watch_task, _lending_notification_task
     # Development-only authentication settings must never reach a real database,
     # so this is checked before the first request rather than at the first
     # sign-in attempt.
@@ -168,6 +214,7 @@ async def lifespan(_: FastAPI):
     # The cutoff excludes runs accepted by this process: their request handlers
     # already own execution, so recovery can never race them for the same row.
     _agent_recovery_task = asyncio.create_task(_drain_agent_recovery_backlog(now_utc()))
+    _agent_enrichment_task = asyncio.create_task(_drain_agent_enrichment_queue())
     if settings.personal_lending_available and settings.lending_notification_worker_enabled:
         _lending_notification_task = asyncio.create_task(_deliver_lending_notifications())
     try:
@@ -178,6 +225,11 @@ async def lifespan(_: FastAPI):
             with suppress(asyncio.CancelledError):
                 await _agent_recovery_task
             _agent_recovery_task = None
+        if _agent_enrichment_task:
+            _agent_enrichment_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await _agent_enrichment_task
+            _agent_enrichment_task = None
         if _operation_watch_task:
             _operation_watch_task.cancel()
             with suppress(asyncio.CancelledError):

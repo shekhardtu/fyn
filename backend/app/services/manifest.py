@@ -223,7 +223,11 @@ def _catalog_entry(rows: Sequence[Row[Any]], distinct: int, cap: int) -> dict[st
     }
 
 
-def user_value_catalog(db: Session, user_id: UUID) -> dict[str, Any]:
+def user_value_catalog(
+    db: Session,
+    user_id: UUID,
+    entity_names: Sequence[str] = CATALOG_ENTITIES,
+) -> dict[str, Any]:
     """Cell-level context: the values actually present in one user's data.
 
     Only governed, non-sensitive categorical fields qualify, ordered by
@@ -233,7 +237,10 @@ def user_value_catalog(db: Session, user_id: UUID) -> dict[str, Any]:
     """
     registry = semantic_schema_registry()
     catalog: dict[str, Any] = {}
+    requested_entities = set(entity_names)
     for entity_name in CATALOG_ENTITIES:
+        if entity_name not in requested_entities:
+            continue
         entity = registry.entities_by_name[entity_name]
         model = MODEL_BINDINGS[entity_name]
         fields: dict[str, Any] = {}

@@ -99,6 +99,32 @@ EXPENSE_TEXT_RULES = [
     (("gym", "fitness"), taxonomy_path(DefaultCategorySlug.HEALTH, "fitness")),
 ]
 
+_CURRENCY_PATTERN = re.compile(
+    r"(?<![A-Za-z])(?:INR|USD|EUR|GBP)(?![A-Za-z])|[₹$€£]|"
+    r"\brs\.?(?![A-Za-z])|\b(?:rupees?|dollars?|euros?|pounds?)\b",
+    re.I,
+)
+
+
+def explicit_currency_codes(text: str) -> list[str]:
+    """Return distinct supported currencies explicitly named in this prompt."""
+
+    codes: list[str] = []
+    for match in _CURRENCY_PATTERN.finditer(text):
+        token = match.group(0).casefold()
+        code = (
+            "INR"
+            if token in {"₹", "inr", "rs", "rs.", "rupee", "rupees"}
+            else "USD"
+            if token in {"$", "usd", "dollar", "dollars"}
+            else "EUR"
+            if token in {"€", "eur", "euro", "euros"}
+            else "GBP"
+        )
+        if code not in codes:
+            codes.append(code)
+    return codes
+
 def infer_expense_category(text: str) -> tuple[str | None, str | None]:
     lowered = text.lower()
     for tokens, mapping in EXPENSE_TEXT_RULES:
@@ -197,11 +223,8 @@ def extract_transaction(text: str, today: date | None = None, default_currency: 
     lowered = text.lower().strip()
     transaction_type, type_inferred = classify_type(text)
     amount_minor = parse_amount_minor(text)
-    currency_match = re.search(r"(?<![A-Za-z])(?:INR|USD|EUR|GBP)(?![A-Za-z])|[₹$€£]|\brs\.?(?![A-Za-z])", text, re.I)
-    currency = default_currency.upper()
-    if currency_match:
-        token = currency_match.group(0).casefold()
-        currency = "INR" if token in {"₹", "inr", "rs", "rs."} else "USD" if token in {"$", "usd"} else "EUR" if token in {"€", "eur"} else "GBP"
+    explicit_currencies = explicit_currency_codes(text)
+    currency = explicit_currencies[0] if explicit_currencies else default_currency.upper()
     tags = list(dict.fromkeys(match.group(1).strip().casefold() for match in re.finditer(r"#([A-Za-z][A-Za-z0-9_-]{1,39})", text)))[:8]
 
     transaction_date = today
@@ -288,7 +311,7 @@ def extract_transaction(text: str, today: date | None = None, default_currency: 
     explicit_fields = []
     if amount_minor is not None:
         explicit_fields.append("amount")
-    if currency_match:
+    if explicit_currencies:
         explicit_fields.append("currency")
     if not type_inferred and transaction_type != TransactionType.UNKNOWN:
         explicit_fields.append("transaction_type")

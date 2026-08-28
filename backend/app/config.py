@@ -92,9 +92,18 @@ class Settings(BaseSettings):
     r2_presign_seconds: int = Field(default=300, ge=30, le=3600)
     google_client_id: str | None = None
     operator_model: str = "gpt-5.6-luna"
-    # Complex SQL analysis gets a quality-first reasoning budget while routine
-    # conversational turns keep the lower-latency operator baseline.
-    operator_analysis_reasoning_effort: Literal["low", "medium", "high", "xhigh"] = "high"
+    # Luna remains a genuine reasoning/tool loop at low effort. Complex work
+    # can escalate from inside that loop through the bounded delegate below;
+    # ordinary reads never pay a higher deliberation budget or a serial router.
+    operator_analysis_reasoning_effort: Literal["low", "medium", "high", "xhigh"] = "low"
+    analysis_delegation_enabled: bool = True
+    # Delegation remains installed but starts in the control cohort after its
+    # initial quality/latency evaluation. Raise 0 -> 5 -> 25 -> 100 only when
+    # the content-free release report and answer-quality gates pass.
+    analysis_delegation_rollout_percent: int = Field(default=0, ge=0, le=100)
+    analysis_delegate_model: str = "gpt-5.6-terra"
+    analysis_delegate_reasoning_effort: Literal["low", "medium", "high", "xhigh"] = "medium"
+    analysis_delegate_timeout_seconds: int = Field(default=35, ge=5, le=120)
     planner_model: str = "gpt-5.6-terra"
     validator_model: str = "gpt-5.6-luna"
     reconciler_model: str = "gpt-5.6-luna"
@@ -109,6 +118,8 @@ class Settings(BaseSettings):
     # gives the Operator the full tenant-governed schema and one arbitrary
     # read-only SELECT surface instead of a finite transform vocabulary.
     analysis_query_mode: Literal["sql", "hybrid"] = "sql"
+    semantic_fast_tools_enabled: bool = True
+    semantic_fast_tools_rollout_percent: int = Field(default=100, ge=0, le=100)
     # Kill switches for the foreign-source lanes: a leaking connector or a
     # bad join can be closed by configuration instead of a deploy.
     external_source_lane_enabled: bool = True
@@ -148,6 +159,15 @@ class Settings(BaseSettings):
     agent_recovery_max_postprocess_attempts: int = Field(default=2, ge=0, le=10)
     agent_recovery_min_interval_ms: int = Field(default=50, ge=0, le=5000)
     agent_recovery_idle_poll_seconds: int = Field(default=5, ge=1, le=60)
+    # Optional answer enrichment owns a distinct, continuously drained queue.
+    # Its model traffic and failures are isolated from the AG-UI run worker.
+    agent_enrichment_max_concurrency: int = Field(default=2, ge=1, le=16)
+    agent_enrichment_claim_ttl_seconds: int = Field(default=60, ge=15, le=600)
+    agent_enrichment_max_attempts: int = Field(default=2, ge=1, le=5)
+    agent_enrichment_retry_seconds: int = Field(default=3, ge=1, le=60)
+    agent_enrichment_idle_poll_ms: int = Field(default=250, ge=50, le=5000)
+    agent_enrichment_enabled: bool = True
+    agent_enrichment_rollout_percent: int = Field(default=100, ge=0, le=100)
     default_currency: str = DEFAULT_CURRENCY
     default_timezone: str = DEFAULT_TIMEZONE
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

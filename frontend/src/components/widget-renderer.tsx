@@ -1085,16 +1085,26 @@ function AgentActivity({ widget }: WidgetProps) {
   const modelPassCount = typeof storedPassCount === "number" && Number.isFinite(storedPassCount)
     ? Math.max(0, Math.trunc(storedPassCount))
     : 0;
-  const routeLabel = modelPassCount === 0
+  const metrics = widget.data.metrics as AgentRunMetrics | null | undefined;
+  const providerRequestCount = metrics && Number.isFinite(metrics.providerRequestCount)
+    ? Math.max(0, Math.trunc(metrics.providerRequestCount))
+    : 0;
+  const routeLabel = providerRequestCount > 0
+    ? providerRequestCount === 1
+      ? "Single model request"
+      : `${providerRequestCount} model requests`
+    : modelPassCount === 0
     ? "Deterministic"
     : modelPassCount === 1
       ? "Single model pass"
       : `${modelPassCount} model passes`;
-  const metrics = widget.data.metrics as AgentRunMetrics | null | undefined;
   const metricSummary = metrics && metrics.modelPasses > 0
     ? [
+        providerRequestCount > 0
+          ? `${providerRequestCount} provider request${providerRequestCount === 1 ? "" : "s"}`
+          : null,
         `${metrics.totalTokens.toLocaleString()} tokens (${metrics.inputTokens.toLocaleString()} in / ${metrics.outputTokens.toLocaleString()} out)`,
-        metrics.modelDurationMs !== null ? `${formatDuration(metrics.modelDurationMs)} model time` : null,
+        metrics.modelDurationMs !== null ? `${formatDuration(metrics.modelDurationMs)} model-path time` : null,
         metrics.firstModelTimeToFirstTokenMs !== null ? `${formatDuration(metrics.firstModelTimeToFirstTokenMs)} first model token` : null,
         metrics.costUsd !== null
           ? `$${metrics.costUsd.toFixed(6)} provider cost`
@@ -1122,7 +1132,7 @@ function AgentActivity({ widget }: WidgetProps) {
       ? `Agent run in progress: ${routeLabel}`
       : `Agent run complete: ${routeLabel}${total > 0 ? `, ${formatDuration(total)}` : ""}`;
 
-  return <div aria-live={live ? "polite" : undefined} className="-ml-1.5 min-w-0">
+  return <div aria-live={live ? "polite" : undefined} className="agent-activity -ml-1.5 min-w-0">
     <button
       type="button"
       onClick={() => setOpen((current) => !current)}
@@ -1199,13 +1209,14 @@ function RelatedQuestions({ widget, onPostPrompt }: WidgetProps) {
       // so the row opts out of the widget-readonly button retirement the
       // same way persistent table controls do.
       data-readonly-keep="true"
+      aria-label={question}
       onClick={() => onPostPrompt(question)}
       // Staggered rather than one shared reveal: the rows are separate offers,
       // and landing all at once alongside the finished answer is what made
       // them feel like a jolt at the end of the turn.
       style={{ animationDelay: `${index * 50}ms` }}
       className="next-entry"
-    ><span aria-hidden className="ledger-mark" />{question}</button>)}
+    ><span aria-hidden className="ledger-mark" /><span className="next-entry-label">{question}</span></button>)}
   </div>;
 }
 
@@ -1343,7 +1354,11 @@ export const WidgetRenderer = memo(function WidgetRenderer(props: WidgetProps) {
   const resolved = lifecycle === "completed" || lifecycle === "cancelled";
   if (resolved && compactResolvedWidgets.has(props.widget.type)) return <HitlReceipt widget={props.widget} lifecycle={lifecycle} />;
   const rendererProps = resolved ? { ...props, disabled: true } : props;
-  const readonly = Boolean(rendererProps.disabled && props.widget.type !== widgetTypeIds.agent_activity);
+  const readonly = Boolean(
+    rendererProps.disabled
+    && props.widget.type !== widgetTypeIds.agent_activity
+    && props.widget.type !== widgetTypeIds.related_questions,
+  );
   // Keep read-only tables scrollable and selectable. Individual controls still
   // receive `disabled`, and the transcript-level action guard rejects stale
   // actions even if a renderer accidentally omits a disabled attribute.

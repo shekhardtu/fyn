@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-import pytest
 from agno.models.response import ToolExecution
-from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.models import Category, TaxonomyScope, User
@@ -14,8 +12,12 @@ from app.services import agents
 from app.services.agent_tools import bind_existing_tool
 from agno.run.agent import RunOutput
 from app.services.calculators import loan_amortization_schedule, loan_payment
-from app.services.conversation import _agent_taxonomy, _user_runtime_tools
-from app.services.runtime_tools import RUNTIME_TOOL_REGISTRY
+from app.services.conversation import _user_runtime_tools
+from app.services.taxonomy import agent_taxonomy
+from app.services.runtime_tools import (
+    FINANCIAL_CALCULATOR_TOOL_NAME,
+    RUNTIME_TOOL_REGISTRY,
+)
 
 
 def test_generic_binder_hides_dependencies_and_keeps_source_callable():
@@ -48,21 +50,57 @@ def test_runtime_tool_catalog_is_complete_and_model_safe(db):
     user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
     tools = _user_runtime_tools(db, user, date(2026, 8, 12))
 
-    assert {tool.name for tool in tools} == {spec.name for spec in RUNTIME_TOOL_REGISTRY}
+    direct_names = {
+        spec.name
+        for spec in RUNTIME_TOOL_REGISTRY
+        if not spec.function.__module__.endswith(".calculators")
+    }
+    assert {tool.name for tool in tools} == {
+        *direct_names,
+        FINANCIAL_CALCULATOR_TOOL_NAME,
+    }
     for tool in tools:
         assert "db" not in tool.parameters["properties"]
         assert "user_id" not in tool.parameters["properties"]
         assert "current_day" not in tool.parameters["properties"]
 
-    calculator = next(tool for tool in tools if tool.name == "loan_payment")
-    assert calculator.parameters["properties"]["principal_minor"]["exclusiveMinimum"] == 0
-    assert calculator.parameters["properties"]["annual_rate_percent"]["maximum"] == 100
-    assert calculator.parameters["properties"]["tenure_months"]["maximum"] == 600
-    assert calculator.entrypoint(1_200_000, 0, 12) == loan_payment(1_200_000, 0, 12)
-    with pytest.raises(ValidationError):
-        calculator.entrypoint(1_200_000, 0, 601)
-    schedule = next(tool for tool in tools if tool.name == "loan_amortization_schedule")
-    assert schedule.entrypoint(1_200_000, 0, 12) == loan_amortization_schedule(1_200_000, 0, 12)
+    calculator = next(
+        tool for tool in tools if tool.name == FINANCIAL_CALCULATOR_TOOL_NAME
+    )
+    assert calculator.strict is True
+    assert "loan_payment" in calculator.parameters["properties"]["calculator"]["enum"]
+    payment = calculator.entrypoint(
+        calculator="loan_payment",
+        arguments_json=(
+            '{"principal_minor":1200000,"annual_rate_percent":0,'
+            '"tenure_months":12}'
+        ),
+    )
+    assert payment["result"] == loan_payment(1_200_000, 0, 12)
+    assert payment["inputs"] == {
+        "principal_minor": 1_200_000,
+        "annual_rate_percent": 0,
+        "tenure_months": 12,
+    }
+    assert payment["display"]["emi_minor"] == "₹1,000"
+    assert payment["display"]["total_payment_minor"] == "₹12,000"
+    assert "loan_with_timed_prepayment" in calculator.parameters["properties"]["calculator"]["enum"]
+    schedule = calculator.entrypoint(
+        calculator="loan_amortization_schedule",
+        arguments_json=(
+            '{"principal_minor":1200000,"annual_rate_percent":0,'
+            '"tenure_months":12}'
+        ),
+    )
+    assert schedule["result"] == loan_amortization_schedule(1_200_000, 0, 12)
+    invalid = calculator.entrypoint(
+        calculator="loan_payment",
+        arguments_json=(
+            '{"principal_minor":1200000,"annual_rate_percent":0,'
+            '"tenure_months":601}'
+        ),
+    )
+    assert invalid["error"]["code"] == "invalid_calculator_arguments"
 
 
 def test_taxonomy_tool_reads_only_the_authenticated_users_visible_categories(db):
@@ -94,7 +132,7 @@ def test_taxonomy_tool_reads_only_the_authenticated_users_visible_categories(db)
     assert len(result) == len(DEFAULT_TAXONOMY) - len(NON_EXPENSE_CATEGORY_SLUGS) + 1
     assert "Own category" in {item["name"] for item in result}
     assert "Other category" not in {item["name"] for item in result}
-    assert result == _agent_taxonomy(db, user)
+    assert result == agent_taxonomy(db, user)
 
 
 def test_operator_preserves_only_successful_installed_tool_execution_as_grounding(
@@ -146,5 +184,3 @@ def test_operator_preserves_only_successful_installed_tool_execution_as_groundin
     assert result.tool_grounding[0].arguments == {}
     assert result.tool_grounding[0].result.schema_name == "TaxonomyResult"
     assert len(result.tool_grounding[0].result.data) == 2
-
-

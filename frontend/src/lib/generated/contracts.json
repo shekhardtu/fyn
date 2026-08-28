@@ -6911,8 +6911,184 @@
       "title": "AgentToolCallMetrics",
       "type": "object"
     },
+    "AgentProviderRequestMetrics": {
+      "description": "Content-free timing and token counts for one provider round trip.",
+      "properties": {
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "durationMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Durationms"
+        },
+        "timeToFirstTokenMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timetofirsttokenms"
+        },
+        "inputTokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Inputtokens",
+          "type": "integer"
+        },
+        "outputTokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Outputtokens",
+          "type": "integer"
+        },
+        "totalTokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Totaltokens",
+          "type": "integer"
+        },
+        "cacheReadTokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Cachereadtokens",
+          "type": "integer"
+        },
+        "cacheWriteTokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Cachewritetokens",
+          "type": "integer"
+        },
+        "reasoningTokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Reasoningtokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "AgentProviderRequestMetrics",
+      "type": "object"
+    },
     "AgentModelPassMetrics": {
       "$defs": {
+        "AgentProviderRequestMetrics": {
+          "description": "Content-free timing and token counts for one provider round trip.",
+          "properties": {
+            "model": {
+              "title": "Model",
+              "type": "string"
+            },
+            "provider": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Provider"
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Durationms"
+            },
+            "timeToFirstTokenMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Timetofirsttokenms"
+            },
+            "inputTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Inputtokens",
+              "type": "integer"
+            },
+            "outputTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Outputtokens",
+              "type": "integer"
+            },
+            "totalTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Totaltokens",
+              "type": "integer"
+            },
+            "cacheReadTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Cachereadtokens",
+              "type": "integer"
+            },
+            "cacheWriteTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Cachewritetokens",
+              "type": "integer"
+            },
+            "reasoningTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Reasoningtokens",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "model"
+          ],
+          "title": "AgentProviderRequestMetrics",
+          "type": "object"
+        },
         "AgentToolCallMetrics": {
           "description": "Content-free timing for one model-selected tool execution.",
           "properties": {
@@ -7022,6 +7198,14 @@
           },
           "maxItems": 64,
           "title": "Toolcalls",
+          "type": "array"
+        },
+        "providerRequests": {
+          "items": {
+            "$ref": "#/$defs/AgentProviderRequestMetrics"
+          },
+          "maxItems": 32,
+          "title": "Providerrequests",
           "type": "array"
         },
         "inputTokens": {
@@ -7654,6 +7838,14 @@
               "title": "Toolcalls",
               "type": "array"
             },
+            "providerRequests": {
+              "items": {
+                "$ref": "#/$defs/AgentProviderRequestMetrics"
+              },
+              "maxItems": 32,
+              "title": "Providerrequests",
+              "type": "array"
+            },
             "inputTokens": {
               "minimum": 0,
               "title": "Inputtokens",
@@ -7735,6 +7927,94 @@
             "reasoningTokens"
           ],
           "title": "AgentModelPassMetrics",
+          "type": "object"
+        },
+        "AgentProviderRequestMetrics": {
+          "description": "Content-free timing and token counts for one provider round trip.",
+          "properties": {
+            "model": {
+              "title": "Model",
+              "type": "string"
+            },
+            "provider": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Provider"
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Durationms"
+            },
+            "timeToFirstTokenMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Timetofirsttokenms"
+            },
+            "inputTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Inputtokens",
+              "type": "integer"
+            },
+            "outputTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Outputtokens",
+              "type": "integer"
+            },
+            "totalTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Totaltokens",
+              "type": "integer"
+            },
+            "cacheReadTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Cachereadtokens",
+              "type": "integer"
+            },
+            "cacheWriteTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Cachewritetokens",
+              "type": "integer"
+            },
+            "reasoningTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Reasoningtokens",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "model"
+          ],
+          "title": "AgentProviderRequestMetrics",
           "type": "object"
         },
         "AgentServerTimingMetrics": {
@@ -7901,6 +8181,12 @@
           "default": 0,
           "minimum": 0,
           "title": "Modelpasses",
+          "type": "integer"
+        },
+        "providerRequestCount": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Providerrequestcount",
           "type": "integer"
         },
         "inputTokens": {
@@ -8212,6 +8498,14 @@
               "title": "Toolcalls",
               "type": "array"
             },
+            "providerRequests": {
+              "items": {
+                "$ref": "#/$defs/AgentProviderRequestMetrics"
+              },
+              "maxItems": 32,
+              "title": "Providerrequests",
+              "type": "array"
+            },
             "inputTokens": {
               "minimum": 0,
               "title": "Inputtokens",
@@ -8295,6 +8589,94 @@
           "title": "AgentModelPassMetrics",
           "type": "object"
         },
+        "AgentProviderRequestMetrics": {
+          "description": "Content-free timing and token counts for one provider round trip.",
+          "properties": {
+            "model": {
+              "title": "Model",
+              "type": "string"
+            },
+            "provider": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Provider"
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Durationms"
+            },
+            "timeToFirstTokenMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Timetofirsttokenms"
+            },
+            "inputTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Inputtokens",
+              "type": "integer"
+            },
+            "outputTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Outputtokens",
+              "type": "integer"
+            },
+            "totalTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Totaltokens",
+              "type": "integer"
+            },
+            "cacheReadTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Cachereadtokens",
+              "type": "integer"
+            },
+            "cacheWriteTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Cachewritetokens",
+              "type": "integer"
+            },
+            "reasoningTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Reasoningtokens",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "model"
+          ],
+          "title": "AgentProviderRequestMetrics",
+          "type": "object"
+        },
         "AgentRunMetrics": {
           "properties": {
             "source": {
@@ -8307,6 +8689,12 @@
               "default": 0,
               "minimum": 0,
               "title": "Modelpasses",
+              "type": "integer"
+            },
+            "providerRequestCount": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Providerrequestcount",
               "type": "integer"
             },
             "inputTokens": {
@@ -12160,6 +12548,212 @@
       "title": "AgentResponse",
       "type": "object"
     },
+    "AgentEnrichmentOut": {
+      "$defs": {
+        "Widget": {
+          "properties": {
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "type": {
+              "$ref": "#/$defs/WidgetType"
+            },
+            "version": {
+              "const": 1,
+              "default": 1,
+              "title": "Version",
+              "type": "integer"
+            },
+            "data": {
+              "additionalProperties": true,
+              "title": "Data",
+              "type": "object"
+            },
+            "actions": {
+              "items": {
+                "$ref": "#/$defs/WidgetAction"
+              },
+              "title": "Actions",
+              "type": "array"
+            }
+          },
+          "required": [
+            "id",
+            "type",
+            "data"
+          ],
+          "title": "Widget",
+          "type": "object"
+        },
+        "WidgetAction": {
+          "properties": {
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "label": {
+              "title": "Label",
+              "type": "string"
+            },
+            "action": {
+              "$ref": "#/$defs/WidgetActionId"
+            },
+            "style": {
+              "$ref": "#/$defs/WidgetActionStyle",
+              "default": "secondary"
+            },
+            "payload": {
+              "additionalProperties": true,
+              "title": "Payload",
+              "type": "object"
+            }
+          },
+          "required": [
+            "id",
+            "label",
+            "action"
+          ],
+          "title": "WidgetAction",
+          "type": "object"
+        },
+        "WidgetActionId": {
+          "description": "Stable command identifiers shared by domain workflows and UI widgets.",
+          "enum": [
+            "set_spend_nature",
+            "start_add_category",
+            "start_add_subcategory",
+            "cancel_add_category",
+            "cancel_taxonomy_change",
+            "create_category",
+            "create_subcategory",
+            "create_taxonomy_path",
+            "select_category",
+            "select_transaction_type",
+            "select_subcategory",
+            "change_category",
+            "select_account",
+            "revisit_transaction_step",
+            "cancel_transaction_draft",
+            "cancel_pending_action",
+            "edit_budget",
+            "request_delete_budget",
+            "delete_budget",
+            "save_budget",
+            "save_goal",
+            "contribute_goal",
+            "commit_import",
+            "calculate_loan_scenario",
+            "calculate_investment_scenario",
+            "commit_transaction",
+            "edit_transaction",
+            "cancel_transaction_edit",
+            "update_transaction_draft",
+            "edit_saved_transaction",
+            "cancel_saved_transaction_edit",
+            "update_saved_transaction",
+            "request_remove_transaction",
+            "confirm_remove_transaction",
+            "cancel_remove_transaction",
+            "merge_reconciliation",
+            "separate_reconciliation",
+            "resolve_clarification",
+            "rename_conversation",
+            "submit_operation",
+            "approve_operation",
+            "cancel_operation"
+          ],
+          "title": "WidgetActionId",
+          "type": "string"
+        },
+        "WidgetActionStyle": {
+          "enum": [
+            "primary",
+            "secondary",
+            "danger",
+            "ghost"
+          ],
+          "title": "WidgetActionStyle",
+          "type": "string"
+        },
+        "WidgetType": {
+          "enum": [
+            "agent_activity",
+            "clarification",
+            "category_selector",
+            "transaction_type_selector",
+            "subcategory_selector",
+            "taxonomy_editor",
+            "account_selector",
+            "confirmation_card",
+            "transaction_preview",
+            "transaction_edit",
+            "data_chart",
+            "avoidable_expenses",
+            "insight_card",
+            "budget_progress",
+            "goal_progress",
+            "loan_calculator",
+            "investment_projection",
+            "reconciliation_review",
+            "import_review",
+            "related_questions",
+            "operation_form",
+            "operation_approval"
+          ],
+          "title": "WidgetType",
+          "type": "string"
+        }
+      },
+      "description": "Public status for optional work that follows a completed answer.",
+      "properties": {
+        "runId": {
+          "format": "uuid",
+          "title": "Runid",
+          "type": "string"
+        },
+        "messageId": {
+          "format": "uuid",
+          "title": "Messageid",
+          "type": "string"
+        },
+        "kind": {
+          "const": "related_questions",
+          "title": "Kind",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "running",
+            "completed",
+            "skipped",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "widget": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Widget"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "runId",
+        "messageId",
+        "kind",
+        "status"
+      ],
+      "title": "AgentEnrichmentOut",
+      "type": "object"
+    },
     "AgentSettingsOut": {
       "properties": {
         "answerValidationMode": {
@@ -12458,6 +13052,14 @@
               "title": "Toolcalls",
               "type": "array"
             },
+            "providerRequests": {
+              "items": {
+                "$ref": "#/$defs/AgentProviderRequestMetrics"
+              },
+              "maxItems": 32,
+              "title": "Providerrequests",
+              "type": "array"
+            },
             "inputTokens": {
               "minimum": 0,
               "title": "Inputtokens",
@@ -12541,6 +13143,94 @@
           "title": "AgentModelPassMetrics",
           "type": "object"
         },
+        "AgentProviderRequestMetrics": {
+          "description": "Content-free timing and token counts for one provider round trip.",
+          "properties": {
+            "model": {
+              "title": "Model",
+              "type": "string"
+            },
+            "provider": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Provider"
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Durationms"
+            },
+            "timeToFirstTokenMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Timetofirsttokenms"
+            },
+            "inputTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Inputtokens",
+              "type": "integer"
+            },
+            "outputTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Outputtokens",
+              "type": "integer"
+            },
+            "totalTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Totaltokens",
+              "type": "integer"
+            },
+            "cacheReadTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Cachereadtokens",
+              "type": "integer"
+            },
+            "cacheWriteTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Cachewritetokens",
+              "type": "integer"
+            },
+            "reasoningTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Reasoningtokens",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "model"
+          ],
+          "title": "AgentProviderRequestMetrics",
+          "type": "object"
+        },
         "AgentRunMetrics": {
           "properties": {
             "source": {
@@ -12553,6 +13243,12 @@
               "default": 0,
               "minimum": 0,
               "title": "Modelpasses",
+              "type": "integer"
+            },
+            "providerRequestCount": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Providerrequestcount",
               "type": "integer"
             },
             "inputTokens": {
@@ -13241,6 +13937,14 @@
               "title": "Toolcalls",
               "type": "array"
             },
+            "providerRequests": {
+              "items": {
+                "$ref": "#/$defs/AgentProviderRequestMetrics"
+              },
+              "maxItems": 32,
+              "title": "Providerrequests",
+              "type": "array"
+            },
             "inputTokens": {
               "minimum": 0,
               "title": "Inputtokens",
@@ -13324,6 +14028,94 @@
           "title": "AgentModelPassMetrics",
           "type": "object"
         },
+        "AgentProviderRequestMetrics": {
+          "description": "Content-free timing and token counts for one provider round trip.",
+          "properties": {
+            "model": {
+              "title": "Model",
+              "type": "string"
+            },
+            "provider": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Provider"
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Durationms"
+            },
+            "timeToFirstTokenMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Timetofirsttokenms"
+            },
+            "inputTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Inputtokens",
+              "type": "integer"
+            },
+            "outputTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Outputtokens",
+              "type": "integer"
+            },
+            "totalTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Totaltokens",
+              "type": "integer"
+            },
+            "cacheReadTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Cachereadtokens",
+              "type": "integer"
+            },
+            "cacheWriteTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Cachewritetokens",
+              "type": "integer"
+            },
+            "reasoningTokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Reasoningtokens",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "model"
+          ],
+          "title": "AgentProviderRequestMetrics",
+          "type": "object"
+        },
         "AgentRunMetrics": {
           "properties": {
             "source": {
@@ -13336,6 +14128,12 @@
               "default": 0,
               "minimum": 0,
               "title": "Modelpasses",
+              "type": "integer"
+            },
+            "providerRequestCount": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Providerrequestcount",
               "type": "integer"
             },
             "inputTokens": {
@@ -18320,5 +19118,5 @@
     "approve_operation": "OperationActionPayload",
     "cancel_operation": "OperationActionPayload"
   },
-  "schemaHash": "7c203d8da79e8efea99e6bf3269e1b12901d97c688c4bf77bbcdac0a0c889ef7"
+  "schemaHash": "ebe26d8ff6de9a4d613d0bf3daa04a33d863f828be28403f616a684b48a68e16"
 }

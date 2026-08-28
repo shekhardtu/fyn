@@ -200,7 +200,79 @@ def dataset_catalog(datasets: dict[str, list[dict[str, Any]]]) -> str:
 
 # --- AST pre-check ------------------------------------------------------------
 
+_STATIC_ALLOCATION_CAP = MEMORY_BYTES + 1
+
+
+def _bounded_constant_int(node: ast.AST) -> int | None:
+    """Evaluate a small non-negative integer expression without executing it."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
+        return min(node.value, _STATIC_ALLOCATION_CAP) if node.value >= 0 else None
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.UAdd):
+        return _bounded_constant_int(node.operand)
+    if not isinstance(node, ast.BinOp):
+        return None
+    left = _bounded_constant_int(node.left)
+    right = _bounded_constant_int(node.right)
+    if left is None or right is None:
+        return None
+    if isinstance(node.op, ast.Add):
+        return min(left + right, _STATIC_ALLOCATION_CAP)
+    if isinstance(node.op, ast.Mult):
+        if left == 0 or right == 0:
+            return 0
+        if left > _STATIC_ALLOCATION_CAP // right:
+            return _STATIC_ALLOCATION_CAP
+        return min(left * right, _STATIC_ALLOCATION_CAP)
+    if isinstance(node.op, ast.Pow):
+        if right == 0:
+            return 1
+        if left in {0, 1}:
+            return left
+        if right > 16:
+            return _STATIC_ALLOCATION_CAP
+        return min(left ** right, _STATIC_ALLOCATION_CAP)
+    if isinstance(node.op, ast.LShift):
+        if right > 30 or left > (_STATIC_ALLOCATION_CAP >> right):
+            return _STATIC_ALLOCATION_CAP
+        return min(left << right, _STATIC_ALLOCATION_CAP)
+    return None
+
+
+def _static_allocation_lower_bound(node: ast.AST) -> int | None:
+    """Return bytes definitely requested by a literal allocation expression."""
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+        if node.func.id in {"bytearray", "bytes"} and node.args:
+            return _bounded_constant_int(node.args[0])
+        return None
+    if not isinstance(node, ast.BinOp) or not isinstance(node.op, ast.Mult):
+        return None
+
+    def unit_bytes(value: ast.AST) -> int | None:
+        if isinstance(value, ast.Constant) and isinstance(value.value, (str, bytes)):
+            return len(value.value)
+        if isinstance(value, (ast.List, ast.Tuple)):
+            # Every element reference consumes at least one pointer.
+            return len(value.elts) * 8
+        return None
+
+    left_unit = unit_bytes(node.left)
+    right_unit = unit_bytes(node.right)
+    if left_unit is not None:
+        repeats = _bounded_constant_int(node.right)
+        return left_unit * repeats if repeats is not None else None
+    if right_unit is not None:
+        repeats = _bounded_constant_int(node.left)
+        return right_unit * repeats if repeats is not None else None
+    return None
+
+
 def _check_node(node: ast.AST) -> None:
+    static_allocation = _static_allocation_lower_bound(node)
+    if static_allocation is not None and static_allocation >= MEMORY_BYTES:
+        raise SandboxRejected(
+            "resource_limit",
+            "a literal allocation exceeds the analysis memory ceiling",
+        )
     if isinstance(node, ast.Import):
         for alias in node.names:
             if alias.name.split(".")[0] not in ALLOWED_IMPORTS:

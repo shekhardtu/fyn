@@ -94,6 +94,17 @@ class LoanWithPrepaymentInput(LoanPaymentInput):
     prepayment_minor: int = Field(default=0, ge=0)
 
 
+class TimedLoanPrepaymentInput(LoanWithPrepaymentInput):
+    prepayment_minor: int = Field(gt=0)
+    prepayment_after_months: int = Field(ge=0, le=599)
+
+    @model_validator(mode="after")
+    def prepayment_precedes_maturity(self):
+        if self.prepayment_after_months >= self.tenure_months:
+            raise ValueError("Prepayment must occur before the original loan matures")
+        return self
+
+
 class FixedPaymentInput(ToolInput):
     principal_minor: int = Field(gt=0)
     annual_rate_percent: float = Field(ge=0, le=100)
@@ -232,6 +243,22 @@ class LoanPrepaymentResult(BaseModel):
     after_prepayment: LoanPaymentResult
     interest_saved_minor: int
     emi_reduction_minor: int
+
+
+class TimedLoanPrepaymentResult(BaseModel):
+    principal_minor: int = Field(gt=0)
+    annual_rate_percent: float = Field(ge=0, le=100)
+    emi_minor: int = Field(gt=0)
+    prepayment_minor: int = Field(gt=0)
+    applied_prepayment_minor: int = Field(gt=0)
+    prepayment_after_months: int = Field(ge=0)
+    baseline_total_interest_minor: int = Field(ge=0)
+    with_prepayment_total_interest_minor: int = Field(ge=0)
+    interest_saved_minor: int = Field(ge=0)
+    baseline_tenure_months: int = Field(gt=0)
+    with_prepayment_tenure_months: int = Field(ge=0)
+    months_saved: int = Field(ge=0)
+    final_payment_minor: int = Field(ge=0)
 
 
 class FixedPaymentResult(BaseModel):

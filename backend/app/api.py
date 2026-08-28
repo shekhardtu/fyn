@@ -54,6 +54,7 @@ from .schemas import (
     AgentThreadStateOut,
     AffordabilityIn,
     AgentDiagnosticsOut,
+    AgentEnrichmentOut,
     AgentSettingsIn,
     AgentSettingsOut,
     BootstrapResponse,
@@ -162,6 +163,7 @@ from .services.agui import (
     supersede_open_interrupts,
 )
 from .services.run_telemetry import merge_client_telemetry
+from .services.agent_enrichment import related_questions_status
 
 
 router = APIRouter()
@@ -517,6 +519,23 @@ def _agui_replay_response(
 )
 def agent_capabilities() -> AgentCapabilities:
     return agui_capabilities()
+
+
+@router.get(
+    "/agent/runs/{run_id}/related-questions",
+    response_model=AgentEnrichmentOut,
+    response_model_exclude_none=True,
+)
+def agent_related_questions(
+    run_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> AgentEnrichmentOut:
+    """Read optional post-answer work without coupling it to run completion."""
+    result = related_questions_status(db, run_id=run_id, user_id=user.id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Related-question enrichment is not scheduled for this run")
+    return result
 
 
 @router.get("/agent/threads/{thread_id}", response_model=AgentThreadStateOut)

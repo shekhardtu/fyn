@@ -30,8 +30,9 @@ from ..event_time import now_utc
 from ..models import AnalysisToolTemplate
 from .manifest import native_manifest_fingerprint, scan_native_schema, user_value_catalog
 from .agent_tools import bind_schema_tool
-from .analysis_sandbox import record_dataset
+from .analysis_sandbox import json_safe_rows, record_dataset
 from .answer_validation import compile_answer_contract
+from .currency import format_money_minor
 from .semantic_registry import semantic_schema_registry
 from .sql_gate import (
     AUTHORING_DIALECT,
@@ -41,8 +42,10 @@ from .sql_gate import (
 )
 
 RUN_SQL_TOOL_NAME = "run_governed_sql"
+DESCRIBE_SQL_SCHEMA_TOOL_NAME = "describe_financial_schema"
 SQL_TEMPLATE_VERSION = "governed-sql-template.v1"
 MAX_SQL_EXAMPLES = 2
+CORE_SQL_ENTITIES = ("transactions", "accounts", "categories", "subcategories")
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
 # Predicate operators whose literal operands are user values, not structure.
@@ -51,16 +54,14 @@ _VALUE_PREDICATES = (
 )
 
 
-def sql_schema_context() -> str:
-    """Full physical schema plus curated financial semantics for SQL authoring.
-
-    Tenant-governed tables are the boundary. Inside it, the author sees every
-    physical column and can use the complete PostgreSQL SELECT language.
-    """
+def _render_entity_schema(entity_names: set[str]) -> str:
+    """Render selected physical entities and relationships without user data."""
     registry = semantic_schema_registry()
     physical = scan_native_schema()
     lines: list[str] = []
     for entity in registry.entities:
+        if entity.name not in entity_names:
+            continue
         columns = physical[entity.name]["columns"]
         rendered_columns = ", ".join(
             f"{column['name']} {column['type']}"
@@ -74,14 +75,36 @@ def sql_schema_context() -> str:
         f"- {item.source_entity}.{item.source_field} -> "
         f"{item.target_entity}.{item.target_field} ({item.cardinality})"
         for item in registry.relationships
+        if item.source_entity in entity_names and item.target_entity in entity_names
     ]
+    rendered = "Tenant-governed physical schema:\n" + "\n".join(lines)
+    if relationships:
+        rendered += "\n\nDeclared relationships within this selection:\n" + "\n".join(relationships)
+    return rendered
+
+
+def sql_schema_context(entity_names: set[str] | None = None) -> str:
+    """Selected physical schema plus curated financial semantics for SQL authoring.
+
+    Tenant-governed tables are the boundary. Inside it, the author sees every
+    physical column for the selected entities and can use the complete
+    PostgreSQL SELECT language. With no selection this retains the historical
+    full-schema representation used by manifest and gate tests.
+    """
+    registry = semantic_schema_registry()
+    selected = entity_names or {entity.name for entity in registry.entities}
     return (
-        "Tenant-governed physical schema (all listed columns are available):\n"
-        + "\n".join(lines)
-        + "\n\nDeclared relationships:\n"
-        + "\n".join(relationships)
+        _render_entity_schema(selected)
         + "\n\nCanonical financial semantics:\n- "
         + "\n- ".join(registry.financial_rules)
+    )
+
+
+def _entity_directory() -> str:
+    registry = semantic_schema_registry()
+    return "\n".join(
+        f"- {entity.name}: {entity.description}"
+        for entity in registry.entities
     )
 
 
@@ -222,16 +245,61 @@ def memorize_sql_template(db, user_id, gated_sql: str) -> bool:
     return True
 
 
-def build_sql_analysis_tool(context) -> Any:
-    """Mount the governed SQL lane for one turn.
+def build_sql_analysis_tools(context) -> list[Any]:
+    """Mount a compact direct SQL tool plus optional schema discovery.
 
-    The tool's description carries the full authoring contract — schema,
-    this user's value catalog, and recent worked examples — so the agent
-    needs no separate prompt plumbing.
+    Common ledger queries can run directly against a small stable core schema.
+    The model can request uncommon entities, tenant-scoped categorical values,
+    and reusable examples only when its own reasoning needs them. No per-user
+    data or question-specific contract enters the initial tool definition,
+    keeping the provider prefix small and cacheable.
     """
-    catalog = user_value_catalog(context.db, context.user_id)
-    examples = sql_examples(context.db, context.question)
     answer_contract = compile_answer_contract(context.question)
+
+    registry = semantic_schema_registry()
+    entity_names = [entity.name for entity in registry.entities]
+
+    def describe_financial_schema(entities: list[str]) -> dict[str, Any]:
+        selected = set(entities)
+        unknown = sorted(selected.difference(entity_names))
+        if unknown:
+            return {"error": {
+                "code": "unknown_schema_entity",
+                "detail": f"Unknown governed entities: {', '.join(unknown)}.",
+                "available_entities": entity_names,
+            }}
+        if not selected:
+            return {"error": {
+                "code": "empty_schema_selection",
+                "detail": "Select at least one governed entity.",
+            }}
+        examples = sql_examples(context.db, context.question)
+        relevant_examples = []
+        for example in examples:
+            try:
+                tables = {
+                    table.name
+                    for table in sqlglot.parse_one(
+                        example["sql"], read=AUTHORING_DIALECT
+                    ).find_all(exp.Table)
+                }
+            except sqlglot.errors.SqlglotError:
+                continue
+            if tables.intersection(selected):
+                relevant_examples.append(example)
+        return {
+            "kind": "governed_financial_schema",
+            "entities": sorted(selected),
+            "schema": sql_schema_context(selected),
+            "user_values": user_value_catalog(
+                context.db, context.user_id, sorted(selected)
+            ),
+            "worked_examples": relevant_examples,
+            "instruction": (
+                "Use only physical table and column names returned here. Never add a "
+                "user_id predicate; tenancy is injected and enforced separately."
+            ),
+        }
 
     def run_governed_sql(purpose: str, sql: str) -> dict[str, Any]:
         template_saved: bool | str
@@ -266,52 +334,75 @@ def build_sql_analysis_tool(context) -> Any:
             # The answer still ships; the failed write-back stays visible in
             # the durable tool payload instead of disappearing.
             template_saved = f"failed: {type(error).__name__}"
-        rows = [dict(zip(result["columns"], row)) for row in result["rows"]]
+        # This tool is bound from a runtime JSON Schema, so it does not pass
+        # through ``bind_tool``'s JSON-normalization wrapper. Normalize the
+        # database cells here before Agno stringifies the result: PostgreSQL
+        # dates and Decimals otherwise produce Python reprs that cannot be
+        # parsed back into authenticated grounding evidence.
+        rows = json_safe_rows(
+            dict(zip(result["columns"], row)) for row in result["rows"]
+        )
+        money_display_rows = [
+            {
+                key: format_money_minor(int(value), context.currency)
+                for key, value in row.items()
+                if key.casefold().endswith("_minor")
+                and isinstance(value, (int, float))
+                and float(value).is_integer()
+            }
+            for row in rows
+        ]
         return {
             "kind": "governed_sql",
             "purpose": purpose,
             "columns": result["columns"],
             "result_schema": result["result_schema"],
             "rows": rows,
+            # Same order as ``rows``. The model copies these authenticated,
+            # server-formatted values instead of performing fallible decimal
+            # scaling in its prose pass.
+            "money_display_rows": money_display_rows,
             "answer_contract": [
                 item.code.value for item in answer_contract.obligations
             ],
             # The name the Python lane reads these same rows back under.
             "dataset_name": record_dataset(context, "sql_result", rows),
             "row_count": result["row_count"],
+            "empty_result": result["row_count"] == 0,
+            "empty_result_guidance": (
+                "The statement executed successfully and its final result set is empty. "
+                "Treat that as authoritative for this exact query; do not rerun only to "
+                "confirm the same absence."
+                if result["row_count"] == 0
+                else None
+            ),
             "limit": result["limit"],
             "tables": result["tables"],
             "semantic_compile_ms": result["semantic_compile_ms"],
             "template_saved": template_saved,
         }
 
-    description = (
+    run_description = (
         "Author and run one arbitrary analytical PostgreSQL query graph over the authenticated "
-        "tenant's complete governed schema. CTEs, joins, subqueries, unions, conditional "
+        "tenant's governed financial schema. CTEs, joins, subqueries, unions, conditional "
         "aggregation, window functions, statistical functions, and custom expressions are "
         "available. Build the final derived answer in one statement rather than returning "
         "intermediate datasets for the reader to combine. Never filter by user_id — tenancy "
         "is injected and enforced by the database. Money columns are integer minor units: "
-        "alias money results with an _minor suffix (e.g. total_minor). A result carrying an "
+        "alias money results with an _minor suffix (e.g. total_minor). The result's "
+        "money_display_rows are in the same order as rows and already format every _minor "
+        "value in the user's currency; copy those display values exactly and never rescale "
+        "raw money yourself. A result carrying an "
         "`error` key explains an invalid schema reference or operational refusal: correct it "
-        "and retry at most twice.\n\n"
-        + sql_schema_context()
-        + "\n\n"
-        + answer_contract.prompt()
-        + "\n\nValues present in this user's data (bind filters to these exact strings): "
-        + json.dumps(catalog, default=str)
-        + (
-            "\n\nWorked examples from the validated pool (parameter placeholders like %(p1)s "
-            "must be replaced with real literal values):\n"
-            + "\n".join(f"-- {item['purpose']}\n{item['sql']}" for item in examples)
-            if examples
-            else ""
-        )
+        "and retry at most twice. The most common spending and account schema is below. For "
+        "any other entity, an uncertain join, or a user-specific categorical value, first call "
+        f"{DESCRIBE_SQL_SCHEMA_TOOL_NAME} with only the entities you need.\n\n"
+        + sql_schema_context(set(CORE_SQL_ENTITIES))
     )
-    return bind_schema_tool(
+    run_tool = bind_schema_tool(
         run_governed_sql,
         name=RUN_SQL_TOOL_NAME,
-        description=description,
+        description=run_description,
         parameters={
             "type": "object",
             "properties": {
@@ -329,3 +420,33 @@ def build_sql_analysis_tool(context) -> Any:
         },
         strict=True,
     )
+    describe_tool = bind_schema_tool(
+        describe_financial_schema,
+        name=DESCRIBE_SQL_SCHEMA_TOOL_NAME,
+        description=(
+            "Return exact physical columns, relationships, authenticated categorical values, "
+            "and validated value-free SQL examples for selected governed financial entities. "
+            "Use it only when the compact core schema on run_governed_sql is insufficient. "
+            "Request the smallest relevant set. Available entities:\n"
+            + _entity_directory()
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "entities": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": entity_names},
+                    "description": "The smallest set of governed entities needed for the query.",
+                },
+            },
+            "required": ["entities"],
+            "additionalProperties": False,
+        },
+        strict=True,
+    )
+    return [run_tool, describe_tool]
+
+
+def build_sql_analysis_tool(context) -> Any:
+    """Compatibility accessor for callers executing the SQL tool directly."""
+    return build_sql_analysis_tools(context)[0]

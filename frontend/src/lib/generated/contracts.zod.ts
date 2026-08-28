@@ -36,6 +36,18 @@ export const AgentClientTimingMetrics = z.looseObject({
   "pageVisibleAtSubmit": z.union([z.boolean(), z.null()]).default(null),
   "replayed": z.boolean().default(false),
 });
+export const AgentProviderRequestMetrics = z.looseObject({
+  "model": z.string(),
+  "provider": z.union([z.string(), z.null()]).default(null),
+  "durationMs": z.union([z.number().min(0), z.null()]).default(null),
+  "timeToFirstTokenMs": z.union([z.number().min(0), z.null()]).default(null),
+  "inputTokens": z.int().min(0).default(0),
+  "outputTokens": z.int().min(0).default(0),
+  "totalTokens": z.int().min(0).default(0),
+  "cacheReadTokens": z.int().min(0).default(0),
+  "cacheWriteTokens": z.int().min(0).default(0),
+  "reasoningTokens": z.int().min(0).default(0),
+});
 export const AgentToolCallMetrics = z.looseObject({
   "name": z.string().min(1).max(160),
   "durationMs": z.union([z.number().min(0), z.null()]).default(null),
@@ -51,6 +63,7 @@ export const AgentModelPassMetrics = z.looseObject({
   "mountedToolCount": z.int().min(0).default(0),
   "mountedTools": z.array(z.string()).max(64).optional(),
   "toolCalls": z.array(AgentToolCallMetrics).max(64).optional(),
+  "providerRequests": z.array(AgentProviderRequestMetrics).max(32).optional(),
   "inputTokens": z.int().min(0),
   "outputTokens": z.int().min(0),
   "totalTokens": z.int().min(0),
@@ -75,6 +88,7 @@ export const AgentServerTimingMetrics = z.looseObject({
 export const AgentRunMetrics = z.looseObject({
   "source": z.literal("agno_run_output").default("agno_run_output"),
   "modelPasses": z.int().min(0).default(0),
+  "providerRequestCount": z.int().min(0).default(0),
   "inputTokens": z.int().min(0).default(0),
   "outputTokens": z.int().min(0).default(0),
   "totalTokens": z.int().min(0).default(0),
@@ -150,6 +164,30 @@ export const AgentDiagnosticsOut = z.looseObject({
   "models": z.union([AgentModelSet, z.null()]).default(null),
   "recent_decisions": z.array(AgentDecisionDiagnostic),
 });
+export const WidgetActionId = z.enum(["set_spend_nature", "start_add_category", "start_add_subcategory", "cancel_add_category", "cancel_taxonomy_change", "create_category", "create_subcategory", "create_taxonomy_path", "select_category", "select_transaction_type", "select_subcategory", "change_category", "select_account", "revisit_transaction_step", "cancel_transaction_draft", "cancel_pending_action", "edit_budget", "request_delete_budget", "delete_budget", "save_budget", "save_goal", "contribute_goal", "commit_import", "calculate_loan_scenario", "calculate_investment_scenario", "commit_transaction", "edit_transaction", "cancel_transaction_edit", "update_transaction_draft", "edit_saved_transaction", "cancel_saved_transaction_edit", "update_saved_transaction", "request_remove_transaction", "confirm_remove_transaction", "cancel_remove_transaction", "merge_reconciliation", "separate_reconciliation", "resolve_clarification", "rename_conversation", "submit_operation", "approve_operation", "cancel_operation"]);
+export const WidgetActionStyle = z.enum(["primary", "secondary", "danger", "ghost"]);
+export const WidgetAction = z.looseObject({
+  "id": z.string(),
+  "label": z.string(),
+  "action": WidgetActionId,
+  "style": WidgetActionStyle.default("secondary"),
+  "payload": z.record(z.string(), z.unknown()).optional(),
+});
+export const WidgetType = z.enum(["agent_activity", "clarification", "category_selector", "transaction_type_selector", "subcategory_selector", "taxonomy_editor", "account_selector", "confirmation_card", "transaction_preview", "transaction_edit", "data_chart", "avoidable_expenses", "insight_card", "budget_progress", "goal_progress", "loan_calculator", "investment_projection", "reconciliation_review", "import_review", "related_questions", "operation_form", "operation_approval"]);
+export const Widget = z.looseObject({
+  "id": z.string(),
+  "type": WidgetType,
+  "version": z.literal(1).default(1),
+  "data": z.record(z.string(), z.unknown()),
+  "actions": z.array(WidgetAction).optional(),
+});
+export const AgentEnrichmentOut = z.looseObject({
+  "runId": z.uuid(),
+  "messageId": z.uuid(),
+  "kind": z.literal("related_questions"),
+  "status": z.enum(["pending", "running", "completed", "skipped", "failed"]),
+  "widget": z.union([Widget, z.null()]).default(null),
+});
 export const AgentInterruptOut = z.looseObject({
   "id": z.uuid(),
   "runId": z.uuid(),
@@ -168,27 +206,10 @@ export const DataReference = z.looseObject({
   "entity_ids": z.array(z.string()).optional(),
   "query": z.record(z.string(), z.unknown()).optional(),
 });
-export const WidgetActionId = z.enum(["set_spend_nature", "start_add_category", "start_add_subcategory", "cancel_add_category", "cancel_taxonomy_change", "create_category", "create_subcategory", "create_taxonomy_path", "select_category", "select_transaction_type", "select_subcategory", "change_category", "select_account", "revisit_transaction_step", "cancel_transaction_draft", "cancel_pending_action", "edit_budget", "request_delete_budget", "delete_budget", "save_budget", "save_goal", "contribute_goal", "commit_import", "calculate_loan_scenario", "calculate_investment_scenario", "commit_transaction", "edit_transaction", "cancel_transaction_edit", "update_transaction_draft", "edit_saved_transaction", "cancel_saved_transaction_edit", "update_saved_transaction", "request_remove_transaction", "confirm_remove_transaction", "cancel_remove_transaction", "merge_reconciliation", "separate_reconciliation", "resolve_clarification", "rename_conversation", "submit_operation", "approve_operation", "cancel_operation"]);
 export const PendingAction = z.looseObject({
   "action": WidgetActionId,
   "resource_id": z.string(),
   "requires_confirmation": z.boolean().default(true),
-});
-export const WidgetActionStyle = z.enum(["primary", "secondary", "danger", "ghost"]);
-export const WidgetAction = z.looseObject({
-  "id": z.string(),
-  "label": z.string(),
-  "action": WidgetActionId,
-  "style": WidgetActionStyle.default("secondary"),
-  "payload": z.record(z.string(), z.unknown()).optional(),
-});
-export const WidgetType = z.enum(["agent_activity", "clarification", "category_selector", "transaction_type_selector", "subcategory_selector", "taxonomy_editor", "account_selector", "confirmation_card", "transaction_preview", "transaction_edit", "data_chart", "avoidable_expenses", "insight_card", "budget_progress", "goal_progress", "loan_calculator", "investment_projection", "reconciliation_review", "import_review", "related_questions", "operation_form", "operation_approval"]);
-export const Widget = z.looseObject({
-  "id": z.string(),
-  "type": WidgetType,
-  "version": z.literal(1).default(1),
-  "data": z.record(z.string(), z.unknown()),
-  "actions": z.array(WidgetAction).optional(),
 });
 export const WidgetUpdate = z.looseObject({
   "widgetId": z.string(),
@@ -1293,9 +1314,11 @@ export const schemas = {
   AgentClientTimingMetrics,
   AgentDecisionDiagnostic,
   AgentDiagnosticsOut,
+  AgentEnrichmentOut,
   AgentInterruptOut,
   AgentModelPassMetrics,
   AgentModelSet,
+  AgentProviderRequestMetrics,
   AgentResponse,
   AgentRunMetrics,
   AgentRunOut,

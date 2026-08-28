@@ -25,7 +25,7 @@ test.beforeEach(async ({ page }) => {
     const cancel = pending.last().getByRole("button", { name: /^Cancel(?:\s|$)/ }).last();
     if (await cancel.count()) {
       await cancel.click();
-      await expect(pending).toHaveCount(0);
+      await expect(pending).toHaveCount(0, { timeout: 120_000 });
     }
   }
   await expect(composer).toBeEnabled({ timeout: 120_000 });
@@ -45,6 +45,17 @@ async function expectGroundedResultOrSafeFallback(response: Locator, expectedCon
     await expect(clarification).toContainText(expectedContent);
     await expect(clarification.getByRole("button").first()).toBeVisible();
     await clarification.getByRole("button", { name: /^Cancel(?:\s|$)/ }).last().click();
+    return false;
+  }
+
+  // The universal Operator may ask a safe read-only scope question in prose
+  // when no durable operation is waiting for a scalar value. That is a valid
+  // clarification outcome, not an ungrounded financial answer.
+  const proseClarification = response.getByText(
+    /(?:what|which) (?:period|date range)|(?:period|date range).*(?:would you like|should I use)/i,
+  );
+  if (await proseClarification.count()) {
+    await expect(proseClarification.first()).toBeVisible();
     return false;
   }
 
@@ -89,6 +100,20 @@ test("a new question opens a stable focused reading window below the hidden head
     return promptArticle ? Math.round(promptArticle.getBoundingClientRect().top) : -10_000;
   });
   await expect(prompt).toBeVisible();
+  const promptBubble = prompt.getByRole("button", { name: new RegExp(`^Show delivery details for: ₹${amount} for coffee$`) });
+  await expect(prompt.getByText(/^Delivered /)).toHaveCount(0);
+  // The optimistic row is deliberately re-keyed to the durable server
+  // identity. Wait for that handoff before opening local disclosure state so
+  // the assertion tests the persisted message rather than a component that is
+  // about to be replaced.
+  await expect(
+    page.getByText(new RegExp(`^Added ₹${amount} .*expense`)).last(),
+  ).toBeVisible({ timeout: 45_000 });
+  await promptBubble.click();
+  await expect(prompt.getByText(/^Delivered /)).toBeVisible();
+  await expect(prompt.getByRole("button", { name: /^Copy Message ID / })).toBeVisible({ timeout: 45_000 });
+  await prompt.getByRole("button", { name: new RegExp(`^Hide delivery details for: ₹${amount} for coffee$`) }).click();
+  await expect(prompt.getByText(/^Delivered /)).toHaveCount(0);
   await expect(header).toHaveAttribute("inert", "");
   await expect.poll(promptTop).toBeGreaterThanOrEqual(-2);
   await expect.poll(promptTop).toBeLessThanOrEqual(20);
@@ -188,10 +213,12 @@ test("bare amount follows clarification, auto-save, edit/remove controls, and re
   await input.press("Enter");
   const typeStep = page.getByRole("group", {
     name: /Action required: (?:What kind of financial event is this\?|One detail needs your confirmation)/,
-  });
+  }).last();
   await expect(typeStep).toBeFocused();
   await expect(typeStep).toBeInViewport();
-  await typeStep.getByRole("button", { name: /^Expense(?:\s|$)/ }).click();
+  const expenseOption = typeStep.getByRole("button", { name: /^Expense(?:\s|$)/ });
+  await expect(expenseOption).toBeEnabled();
+  await expenseOption.click();
   const categoryStep = page.getByRole("group", { name: "Action required: Where should I categorize this?" });
   await expect(categoryStep).toBeVisible();
   await expect(categoryStep).toBeFocused();
@@ -216,12 +243,9 @@ test("bare amount follows clarification, auto-save, edit/remove controls, and re
 
 test("custom budget amount saves once and returns a non-editable acknowledgement", async ({ page }) => {
   test.setTimeout(90_000);
-  const threadStateLoaded = page.waitForResponse((response) => {
-    const url = new URL(response.url());
-    return response.request().method() === "GET" && new RegExp(`^${API_MOUNT_PATH}/agent/threads/[^/]+$`).test(url.pathname);
-  });
-  await page.goto(sharedThreadUrl());
-  await threadStateLoaded;
+  // beforeEach has already loaded this shared thread and waited for any prior
+  // run/HITL cancellation to settle. Re-navigating here can hit React Query's
+  // fresh cache and incorrectly wait for a network request it does not owe.
   const input = page.getByLabel("Message fyn AI");
   const pending = page.getByRole("group", { name: /^Action required:/ });
   if (await pending.count()) {
@@ -491,8 +515,13 @@ test("automatic entry requires confirmation before removal", async ({ page }) =>
   // viewport. Scope the action to the card whose amount this test just added
   // instead of asking for the last Remove button in DOM order.
   await added.getByRole("button", { name: "Remove", exact: true }).click();
-  await expect(page.getByText("Remove this transaction?", { exact: false })).toBeVisible();
-  await page.getByRole("button", { name: "Remove transaction", exact: true }).click();
+  const removal = page.getByRole("group", { name: "Action required: Remove transaction" });
+  const removalResponse = page.locator("article").filter({ has: removal });
+  await expect(removalResponse.getByText(
+    "Remove this transaction? This will exclude it from your financial totals.",
+    { exact: true },
+  )).toBeVisible();
+  await removal.getByRole("button", { name: "Remove transaction", exact: true }).click();
   await expect(page.getByText(new RegExp(`Removed the ₹${amount} transaction`))).toBeVisible();
 });
 

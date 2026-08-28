@@ -82,7 +82,8 @@ from .intelligence import expense_summary
 from .markdown_views import join_blocks, markdown_section, markdown_table, money
 from .accounts import AccountRepository
 from .adapters import import_summary
-from .agents import GROUPED_QUERY_OPERATIONS, RECENT_CONTEXT_TURN_LIMIT, ClarificationOption, ClarificationRequest, CompilationAssumption, CopilotDecision, QueryInterpretation, ResolvedIntentContract, TaxonomyInterpretation, contains_internal_analysis_diagnostic, filesystem_operation_decision, releases_prior_scope, repair_grounded_answer, run_operator, suggest_related_questions
+from .agents import GROUPED_QUERY_OPERATIONS, RECENT_CONTEXT_TURN_LIMIT, STANDALONE_RECENT_CONTEXT_TURN_LIMIT, ClarificationOption, ClarificationRequest, CompilationAssumption, CopilotDecision, QueryInterpretation, ResolvedIntentContract, TaxonomyInterpretation, build_analysis_delegate_tool, contains_internal_analysis_diagnostic, filesystem_operation_decision, releases_prior_scope, repair_grounded_answer, run_operator, suggest_related_questions
+from .analysis_sandbox import PYTHON_TOOL_NAME
 from .analysis_harness import AnalysisTraceStage, HarnessValidationError, ReplayDisposition, bind_repeat_analysis, execute_analysis_template
 from .answer_validation import compile_answer_contract, contains_financial_claim, validate_coverage, validate_evidence
 from .answer_presentation import answer_presentation as build_answer_presentation
@@ -122,7 +123,7 @@ from .recommendation import (
     recommend_subcategories,
 )
 from .currency import format_money_minor
-from .extraction import ExtractedTransaction, extract_transaction, infer_expense_category, normalize_merchant, parse_amount_minor, parse_spending_period
+from .extraction import ExtractedTransaction, explicit_currency_codes, extract_transaction, infer_expense_category, normalize_merchant, parse_amount_minor, parse_spending_period
 from .merchants import MerchantRepository
 from .planning_contracts import (
     BudgetSetupContract,
@@ -134,10 +135,10 @@ from .reconciliation import attach_observation, ingest_observation, resolve_reco
 from .repositories import UserScopedRepository
 from .turn_policy import EffectAuthorization, TurnIntentContract, authorize_capability, resolve_turn_intent
 from .turn_signals import expects_value_answer, has_amount_comparison, has_explicit_transaction_mutation_cue, looks_like_financial_query
-from .runtime_tools import build_runtime_tools, capability_notes
+from .runtime_tools import FINANCIAL_CALCULATOR_TOOL_NAME, build_runtime_tools, capability_notes
 from .semantic import AnalysisPlan, AnalysisToolProposal, AnalysisTransform, FinanceFilter, FinanceQueryPlan
 from .tags import TagRepository
-from .taxonomy import TaxonomyRepository, agent_taxonomy as _agent_taxonomy
+from .taxonomy import TaxonomyRepository
 from .transactions import UNSET, TransactionVersionConflict, active_transaction, canonical_transactions, create_transaction, owned_transaction_source, update_saved_transaction
 from .user_memory import remember_taxonomy_mapping
 
@@ -1093,6 +1094,7 @@ _TRANSACTION_CLARIFICATION_FIELDS = {
     "amount": "amount",
     "category": "category",
     "category_slug": "category",
+    "currency": "currency",
     "destination": "destination_account",
     "destination_account": "destination_account",
     "financial_direction": "transaction_type",
@@ -1129,6 +1131,14 @@ def _transaction_clarification_seed(
 
     extracted = extract_transaction(text, today=today, default_currency=currency)
     if (
+        "currency" in conflict_fields
+        and len(explicit_currency_codes(text)) > 1
+    ):
+        # Two explicitly supplied currencies carry a real conflict. An omitted
+        # currency uses the profile default, while one explicit currency is an
+        # authoritative override; neither case needs another question.
+        return None
+    if (
         re.search(r"\b(?:budget|goal|savings?\s+plan)\b", text, re.I)
         or re.search(r"\b(?:save|saving)\s+.+\s+for\b", text, re.I)
         or re.search(r"\b(?:remove|delete|undo)\b", text, re.I)
@@ -1157,10 +1167,7 @@ def _transaction_clarification_seed(
     # exact HITL boundary the user still needs to resolve.
     if "amount" in conflict_fields:
         extracted.amount_minor = None
-    if (
-        "transaction_type" in conflict_fields
-        or "transaction_type" in extracted.inferred_fields
-    ):
+    if "transaction_type" in conflict_fields:
         extracted.transaction_type = TransactionType.UNKNOWN
         extracted.category_slug = None
         extracted.subcategory_slug = None
@@ -2940,7 +2947,11 @@ def _extracted_from_decision(text: str, decision: CopilotDecision, today: date, 
     return ExtractedTransaction(
         transaction_type=transaction_type,
         amount_minor=amount_minor,
-        currency=interpreted.currency.upper() if interpreted.currency else baseline.currency,
+        # Currency is account-level state unless the current prompt explicitly
+        # overrides it. The deterministic parser recognizes those explicit
+        # symbols/codes/names; a model-authored field can never silently change
+        # the user's default currency.
+        currency=baseline.currency,
         merchant=merchant,
         source_account=interpreted.source_account or baseline.source_account,
         destination_account=interpreted.destination_account or baseline.destination_account,
@@ -3308,6 +3319,73 @@ def _tool_grounded_response(
                     if validation_mode is AnswerValidationMode.EVIDENCE_ONLY
                     else "Verified typed evidence and coverage of the requested answer."
                 )
+            if evidence_validation is not None and not evidence_validation.passed:
+                repaired = None
+                repair_error = None
+                repair_obligations = [
+                    "Remove or replace every unsupported financial claim. Every financial number in the answer must be copied exactly from the supplied typed evidence; do not calculate a new percentage, ratio, average, share, multiple, or combined value.",
+                    *[item.description for item in answer_contract.obligations],
+                ]
+                try:
+                    repaired = repair_grounded_answer(
+                        request_text,
+                        content,
+                        repair_obligations,
+                        [fact.as_dict() for fact in evidence_validation.facts],
+                        _local_today(user),
+                        user.timezone,
+                        answer_style=selected_answer_style,
+                        presentation=selected_presentation,
+                    )
+                except Exception as error:
+                    repair_error = type(error).__name__
+                if repaired:
+                    repaired_evidence = validate_evidence(
+                        repaired, grounded_sources, request_text
+                    )
+                    repaired_coverage = (
+                        validate_coverage(
+                            repaired,
+                            answer_contract,
+                            repaired_evidence.facts,
+                        )
+                        if validation_mode is AnswerValidationMode.FULL
+                        else None
+                    )
+                else:
+                    repaired_evidence = None
+                    repaired_coverage = None
+                repair_passed = bool(
+                    repaired
+                    and repaired_evidence
+                    and repaired_evidence.passed
+                    and (
+                        repaired_coverage is None
+                        or repaired_coverage.passed
+                    )
+                )
+                db.add(AIAction(
+                    user_id=user.id,
+                    conversation_id=conversation.id,
+                    action_type="answer_evidence_repair",
+                    payload_redacted={
+                        "attempted": True,
+                        "passed": repair_passed,
+                        "errorType": repair_error,
+                    },
+                    status=(
+                        ExecutionStatus.COMPLETED
+                        if repair_passed else ExecutionStatus.FAILED
+                    ),
+                ))
+                if repair_passed and repaired is not None:
+                    content = repaired
+                    evidence_validation = repaired_evidence
+                    coverage_validation = repaired_coverage
+                    validation_trace_status = ExecutionStatus.COMPLETED
+                    validation_trace_detail = (
+                        "Verified typed evidence after repairing unsupported financial claims."
+                    )
             if evidence_validation is not None and not evidence_validation.passed:
                 task_status, failure_stage = "degraded", "grounding"
                 error_code = evidence_validation.error_code
@@ -3795,6 +3873,69 @@ def _needs_deep_reasoning(text: str) -> bool:
     ))
 
 
+def _is_self_contained_calculator_request(
+    text: str,
+    context_relationship: ContextRelationship,
+) -> bool:
+    """Scope a complete hypothetical to calculators without answering it.
+
+    The universal Operator still reasons, chooses the calculator, and writes
+    the answer. This only withholds ledger/SQL capabilities when the current
+    standalone text supplies a numeric scenario and does not ask about the
+    user's stored financial records.
+    """
+
+    if context_relationship is not ContextRelationship.STANDALONE:
+        return False
+    calculator_subject = re.search(
+        r"\b(?:emi|loan|mortgage|prepay(?:ment)?|amorti[sz]ation|sip|"
+        r"compound(?:ed|ing)?|investment\s+projection)\b",
+        text,
+        re.I,
+    )
+    stored_data_subject = re.search(
+        r"\b(?:transactions?|records?|spend|spent|spending|expenses?|income|salary|"
+        r"cash\s*flow|budgets?|categories|subcategories|merchants?|accounts?|"
+        r"recurring|subscriptions?)\b",
+        text,
+        re.I,
+    )
+    numeric_inputs = re.findall(r"\d+(?:[.,]\d+)?", text)
+    return bool(calculator_subject and not stored_data_subject and len(numeric_inputs) >= 2)
+
+
+def _is_social_conversation_only(text: str) -> bool:
+    """Recognize only self-contained greetings; the model still writes them."""
+
+    return bool(re.fullmatch(
+        r"\s*(?:(?:hi|hello|hey|hiya)(?:\s+there)?(?:\s*[,—-]\s*"
+        r"(?:how\s+are\s+you(?:\s+doing)?|how(?:'s|\s+is)\s+it\s+going))?"
+        r"|how\s+are\s+you(?:\s+doing)?|how(?:'s|\s+is)\s+it\s+going)\s*[!?.]*\s*",
+        text,
+        re.I,
+    ))
+
+
+def _requests_no_record_explanation(
+    text: str,
+    context_relationship: ContextRelationship,
+    turn_intent: TurnIntentContract,
+) -> bool:
+    """Honor an explicit request for general knowledge without data access."""
+
+    return bool(
+        context_relationship is ContextRelationship.STANDALONE
+        and not turn_intent.write_evidence
+        and not turn_intent.ambiguous
+        and re.search(
+            r"\bwithout\s+(?:using|looking\s+at|accessing|reading|checking)\s+"
+            r"(?:my|our)\s+(?:records?|data|transactions?)\b",
+            text,
+            re.I,
+        )
+    )
+
+
 def _is_correction_followup(text: str) -> bool:
     """Mark turns that must reconcile prior answers instead of merely continue.
 
@@ -3820,11 +3961,29 @@ def _references_active_data_scope(text: str) -> bool:
     decides the query. The domain layer only prevents an unrelated new request
     from accidentally inheriting a prior result-set boundary.
     """
+    reference_text = text
+    if (
+        re.search(r"\bcompare\b", text, re.I)
+        and re.search(r"\b(?:this|current)\s+month\b", text, re.I)
+        and re.search(
+            r"\b(?:same\s+(?:elapsed\s+)?days?|last\s+month|previous\s+month)\b",
+            text,
+            re.I,
+        )
+    ):
+        # "same elapsed days last month" defines a complete temporal scope;
+        # "same" is not an anaphor to a prior chat turn in this construction.
+        reference_text = re.sub(
+            r"\bsame\s+(?:elapsed\s+)?days?\b",
+            "elapsed days",
+            text,
+            flags=re.I,
+        )
     references_scope = bool(re.search(
         r"\b(?:those|these|them|shown|previous|same|only|just)\b"
         r"|\bthe\s+(?:transactions|records|expenses|results|list)\b"
         r"|\bwhich\s+(?:of|one)\b",
-        text,
+        reference_text,
         re.I,
     ))
     references_prior_answer = bool(re.search(r"\babove\b", text, re.I)) and not has_amount_comparison(text)
@@ -3839,11 +3998,27 @@ def _references_prior_analysis(text: str) -> bool:
     actual anaphora or continuation language so a fresh chart cannot silently
     acquire stale dates, filters, metrics or direction semantics.
     """
+    reference_text = text
+    if (
+        re.search(r"\bcompare\b", text, re.I)
+        and re.search(r"\b(?:this|current)\s+month\b", text, re.I)
+        and re.search(
+            r"\b(?:same\s+(?:elapsed\s+)?days?|last\s+month|previous\s+month)\b",
+            text,
+            re.I,
+        )
+    ):
+        reference_text = re.sub(
+            r"\bsame\s+(?:elapsed\s+)?days?\b",
+            "elapsed days",
+            text,
+            flags=re.I,
+        )
     references_analysis = bool(re.search(
         r"\b(?:those|these|them|that|same|shown|previous|earlier|former|latter)\b"
         r"|^\s*(?:and|also|now|then|instead)\b"
         r"|\b(?:what|how)\s+about\b",
-        text,
+        reference_text,
         re.I,
     ))
     references_prior_answer = bool(re.search(r"\babove\b", text, re.I)) and not has_amount_comparison(text)
@@ -6153,7 +6328,16 @@ def _run_turn(
     recent_context = (
         recent_context_override
         if recent_context_override is not None
-        else _recent_complete_turn_context(db, conversation, user_message)
+        else _recent_complete_turn_context(
+            db,
+            conversation,
+            user_message,
+            limit=(
+                STANDALONE_RECENT_CONTEXT_TURN_LIMIT
+                if context_relationship is ContextRelationship.STANDALONE
+                else RECENT_CONTEXT_TURN_LIMIT
+            ),
+        )
     )
     replay_decision: CopilotDecision | None = None
     analysis_settings = get_settings()
@@ -6312,6 +6496,13 @@ def _run_turn(
         and _recent_assistant_expects_value(recent_context)
     ):
         context_relationship = ContextRelationship.FOLLOW_UP
+        if recent_context_override is None:
+            recent_context = _recent_complete_turn_context(
+                db,
+                conversation,
+                user_message,
+                limit=RECENT_CONTEXT_TURN_LIMIT,
+            )
         turn_intent = resolve_turn_intent(
             text,
             context_relationship,
@@ -6508,8 +6699,24 @@ def _run_turn(
             or context_relationship is not ContextRelationship.STANDALONE
         )
     ):
-        taxonomy = _agent_taxonomy(db, user)
-        runtime_tools = _user_runtime_tools(db, user, today)
+        conversation_only = _is_social_conversation_only(text)
+        no_record_explanation = _requests_no_record_explanation(
+            text,
+            context_relationship,
+            turn_intent,
+        )
+        tool_free_model_turn = conversation_only or no_record_explanation
+        calculator_only = _is_self_contained_calculator_request(
+            text,
+            context_relationship,
+        )
+        runtime_tools = [] if tool_free_model_turn else _user_runtime_tools(db, user, today)
+        if calculator_only:
+            runtime_tools = [
+                tool
+                for tool in runtime_tools
+                if getattr(tool, "name", None) == FINANCIAL_CALCULATOR_TOOL_NAME
+            ]
         analysis_context = AnalysisToolContext(
             db=db,
             user_id=user.id,
@@ -6517,6 +6724,7 @@ def _run_turn(
             today=today,
             timezone_name=user.timezone,
             question=text,
+            currency=user.currency,
         )
         analysis_tools = (
             build_analysis_tools(
@@ -6526,7 +6734,9 @@ def _run_turn(
                 and analysis_replay.disposition is ReplayDisposition.COMPOSE
                 else None,
             )
-            if looks_like_financial_query(text) or deep_reasoning
+            if not tool_free_model_turn
+            and not calculator_only
+            and (looks_like_financial_query(text) or deep_reasoning)
             else []
         )
         prompt_analysis_state = (
@@ -6540,12 +6750,21 @@ def _run_turn(
             else None
         )
         workflow_context: dict = {
-            "kind": "none",
+            "kind": (
+                "conversation_only"
+                if conversation_only
+                else "knowledge_only"
+                if no_record_explanation
+                else "calculator_scenario"
+                if calculator_only
+                else "none"
+            ),
             "activeDataScope": prompt_data_scope,
             "activeAnalysisState": prompt_analysis_state,
             "contextRelationship": context_relationship.value,
             "intentContract": turn_intent.model_dump(mode="json"),
             "correctionRequested": _is_correction_followup(text),
+            "defaultCurrency": user.currency,
         }
         latest_contextual_assistant = next((
             item for item in reversed(recent_context)
@@ -6580,16 +6799,41 @@ def _run_turn(
         # baselines" rather than "not computed" — and every value carries its
         # own computed_at, so the Operator can never quote a stale number as
         # current.
-        user_traits = get_traits(db, user, today=today)
-        if user_traits:
-            workflow_context["userTraits"] = traits_context_line(user_traits)
+        if not tool_free_model_turn and not calculator_only:
+            user_traits = get_traits(db, user, today=today)
+            if user_traits:
+                workflow_context["userTraits"] = traits_context_line(user_traits)
         # Insights beside the traits, under the same law: every claim here was
         # replayed from its own recompute key during this turn, and each one
         # prints the moment it was computed and the moment it last verified. A
         # claim that no longer reproduces is stale and never reaches the key.
-        verified_insights = current_insights(db, user, today)
-        if verified_insights:
-            workflow_context["verifiedInsights"] = insights_context_line(verified_insights)
+        if not tool_free_model_turn and not calculator_only:
+            verified_insights = current_insights(db, user, today)
+            if verified_insights:
+                workflow_context["verifiedInsights"] = insights_context_line(verified_insights)
+
+        # Complex escalation is one optional tool inside the universal
+        # Operator turn, never a model/router pass in front of it. The delegate
+        # receives the complete read-only tool set (including bounded Python),
+        # while the ordinary Operator swaps Python for the smaller delegation
+        # capability so common reads stay at the eight-tool ceiling.
+        if analysis_tools:
+            delegate_tool = build_analysis_delegate_tool(
+                text,
+                today,
+                user.timezone,
+                recent_context,
+                user_id=user.id,
+                read_tools=[*runtime_tools, *analysis_tools],
+                presentation=selected_presentation,
+            )
+            if delegate_tool is not None:
+                analysis_tools = [
+                    tool
+                    for tool in analysis_tools
+                    if getattr(tool, "name", None) != PYTHON_TOOL_NAME
+                ]
+                analysis_tools.append(delegate_tool)
 
         emitted_direct_deltas: list[str] = []
 
@@ -6613,7 +6857,7 @@ def _run_turn(
                 "currentUserMessage": text,
                 "recentContext": recent_context,
                 "workflowContext": workflow_context,
-                "taxonomy": taxonomy,
+                "taxonomyAvailableViaTool": True,
                 "runtimeTools": [getattr(tool, "name", type(tool).__name__) for tool in runtime_tools],
                 "model": settings.operator_model,
                 "answerStyle": selected_answer_style.value,
@@ -6625,7 +6869,7 @@ def _run_turn(
         try:
             direct_result = run_operator(
                 text,
-                taxonomy,
+                [],
                 today,
                 user.timezone,
                 recent_context,

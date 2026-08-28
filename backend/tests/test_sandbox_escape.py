@@ -153,6 +153,19 @@ def test_a_refusal_is_decided_before_any_interpreter_is_spawned(monkeypatch):
     assert attack("return open('/etc/passwd')")["error"]["code"] == "forbidden_call"
 
 
+def test_a_literal_allocation_over_the_memory_ceiling_never_spawns(monkeypatch):
+    def never(*args, **kwargs):
+        raise AssertionError("a statically impossible allocation spawned a child")
+
+    monkeypatch.setattr(analysis_sandbox.subprocess, "Popen", never)
+
+    multiplied = attack("blob = 'x' * (2 * 1024 ** 3)\nreturn len(blob)")
+    constructed = attack("blob = bytearray(2 * 1024 ** 3)\nreturn len(blob)")
+
+    assert multiplied["error"]["code"] == "resource_limit"
+    assert constructed["error"]["code"] == "resource_limit"
+
+
 # --- exhausting the host ------------------------------------------------------
 
 def test_a_fork_bomb_never_gets_its_first_fork():

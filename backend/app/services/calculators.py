@@ -18,6 +18,8 @@ from .tool_models import (
     LoanStrategyInput,
     LoanStrategyResult,
     LoanWithPrepaymentInput,
+    TimedLoanPrepaymentInput,
+    TimedLoanPrepaymentResult,
 )
 
 getcontext().prec = 28
@@ -258,6 +260,66 @@ def loan_with_prepayment(principal_minor: int, annual_rate_percent: float, tenur
         "after_prepayment": reduced,
         "interest_saved_minor": baseline["total_interest_minor"] - reduced["total_interest_minor"],
         "emi_reduction_minor": baseline["emi_minor"] - reduced["emi_minor"],
+    }
+
+
+@tool_contract(description=(
+    "Compare total interest and tenure with and without a one-time principal prepayment made after "
+    "a specified number of monthly EMIs while keeping the original EMI fixed. Use this single "
+    "calculator for a timed-prepayment comparison instead of reconstructing two schedules. Money "
+    "inputs and outputs are integer minor units."
+), input_model=TimedLoanPrepaymentInput, output_model=TimedLoanPrepaymentResult)
+def loan_with_timed_prepayment(
+    principal_minor: int,
+    annual_rate_percent: float,
+    tenure_months: int,
+    prepayment_minor: int,
+    prepayment_after_months: int,
+) -> dict:
+    """Apply one prepayment between installments and keep the original EMI."""
+
+    baseline = loan_payment(principal_minor, annual_rate_percent, tenure_months)
+    baseline_steps, baseline_interest = _amortization_steps(
+        principal_minor,
+        annual_rate_percent,
+        baseline["emi_minor"],
+        tenure_months,
+        fixed_installment_count=True,
+    )
+    prefix = baseline_steps[:prepayment_after_months]
+    balance_at_prepayment = (
+        prefix[-1][4] if prefix else Decimal(principal_minor)
+    )
+    applied_prepayment = min(Decimal(prepayment_minor), balance_at_prepayment)
+    remaining_principal = balance_at_prepayment - applied_prepayment
+    remaining_steps: list[tuple[int, Decimal, Decimal, Decimal, Decimal]] = []
+    remaining_interest = Decimal(0)
+    if remaining_principal > 0:
+        remaining_steps, remaining_interest = _amortization_steps(
+            _minor(remaining_principal),
+            annual_rate_percent,
+            baseline["emi_minor"],
+            tenure_months - prepayment_after_months,
+        )
+    prefix_interest = sum((step[3] for step in prefix), Decimal(0))
+    prepayment_interest = _minor(prefix_interest + remaining_interest)
+    baseline_interest_minor = _minor(baseline_interest)
+    resulting_tenure = prepayment_after_months + len(remaining_steps)
+    final_payment = _minor(remaining_steps[-1][1]) if remaining_steps else 0
+    return {
+        "principal_minor": principal_minor,
+        "annual_rate_percent": annual_rate_percent,
+        "emi_minor": baseline["emi_minor"],
+        "prepayment_minor": prepayment_minor,
+        "applied_prepayment_minor": _minor(applied_prepayment),
+        "prepayment_after_months": prepayment_after_months,
+        "baseline_total_interest_minor": baseline_interest_minor,
+        "with_prepayment_total_interest_minor": prepayment_interest,
+        "interest_saved_minor": max(0, baseline_interest_minor - prepayment_interest),
+        "baseline_tenure_months": tenure_months,
+        "with_prepayment_tenure_months": resulting_tenure,
+        "months_saved": max(0, tenure_months - resulting_tenure),
+        "final_payment_minor": final_payment,
     }
 
 
