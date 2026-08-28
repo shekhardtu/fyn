@@ -29,6 +29,27 @@ Every setting lives in `config.sh` and is env-overridable:
 FYN_HOST=1.2.3.4 FYN_DOMAIN=staging.example.com ./infra/deploy/deploy.sh
 ```
 
+## Private lending documents
+
+Personal lending is intentionally absent from the production UI and API until
+durable Cloudflare R2 storage is complete. Put these values in the ignored
+`/opt/fyn/backend/.env`; never commit their real values:
+
+```dotenv
+DOCUMENT_STORAGE_PROVIDER=r2
+R2_ACCOUNT_ID=
+R2_BUCKET=
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
+R2_OBJECT_PREFIX=document-evidence
+R2_PRESIGN_SECONDS=300
+```
+
+The access key should be restricted to the private document bucket. Run
+`./infra/deploy/status.sh` before deployment to see whether the lending gate is
+ready. A deploy or backend restart is required after changing the server
+environment.
+
 Things worth knowing before touching any of this:
 
 - **`docker-compose.prod.yml` is standalone, not an override.** Compose
