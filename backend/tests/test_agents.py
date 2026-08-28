@@ -461,7 +461,7 @@ def test_explicit_no_record_explanation_mounts_no_operations(monkeypatch):
     assert captured["operation_ids"] == set()
 
 
-def test_related_question_suggester_disables_blocking_vendor_telemetry(monkeypatch):
+def test_related_question_suggester_disables_telemetry_and_fills_empty_lanes(monkeypatch):
     captured = {}
 
     class StubSuggester:
@@ -485,7 +485,11 @@ def test_related_question_suggester_disables_blocking_vendor_telemetry(monkeypat
             [],
             date(2026, 8, 19),
             "Asia/Kolkata",
-        ) == []
+        ) == [
+            "Which August 2026 spending categories contributed most to my net total, and which merchants drove them?",
+            "What recurring or unusual spending patterns stand out across my last three complete months?",
+            "Which discretionary categories could I optimize next month, and what savings would realistic reductions produce?",
+        ]
         assert captured["telemetry"] is False
         instructions = "\n".join(captured["instructions"])
         assert "contextual_drill_down" in instructions

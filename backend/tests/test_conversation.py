@@ -16,7 +16,7 @@ from app.seed import default_user
 from app.services.agents import ClarificationOption, ClarificationRequest, CopilotDecision, QueryInterpretation, TaxonomyInterpretation, ToolGrounding, OperatorResult
 from app.services import conversation as conversation_service
 from app.services.agui import execute_widget_action
-from app.schemas import ActionRequest, PendingAction, Widget, WidgetAction, WidgetType
+from app.schemas import ActionRequest, DataReference, PendingAction, Widget, WidgetAction, WidgetType
 from app.services.conversation import get_or_create_conversation, handle_action, handle_chat
 from app.services.preferences import AnswerStyle, AnswerValidationMode, set_answer_style, set_answer_validation_mode, set_user_preference
 
@@ -2186,6 +2186,117 @@ def test_compound_follow_up_read_reaches_contextual_operator_without_creating_a_
     assert captured_workflow["activeAnalysisState"]["query"] == prior_query
     assert db.scalar(select(func.count()).select_from(Transaction)) == before_transactions
     assert db.scalar(select(func.count()).select_from(TransactionDraft)) == before_drafts
+
+
+def test_financial_follow_up_buffers_model_text_until_validation_finishes(
+    db,
+    monkeypatch,
+    agent_enabled,
+):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    conversation.active_analysis_state = {
+        "sourceMessageId": str(uuid4()),
+        "answerSummary": "Housing and Travel were the largest drivers.",
+        "entityType": "transaction",
+        "query": {"operation": "compare_totals"},
+        "queries": [{"operation": "compare_totals"}],
+        "resultShapes": ["summary"],
+    }
+    db.commit()
+    captured = {}
+
+    def operator_runner(*_args, **kwargs):
+        captured.update(kwargs)
+        return OperatorResult(reply="Housing and Travel deserve attention first.")
+
+    monkeypatch.setattr(conversation_service, "run_operator", operator_runner)
+    deltas = []
+
+    response = handle_chat(
+        db,
+        user,
+        conversation,
+        "Based on that comparison, which two drivers deserve attention first?",
+        text_delta_callback=lambda _message_id, delta: deltas.append(delta),
+    )
+
+    assert captured["allow_live_deltas"] is False
+    assert deltas == [response.message]
+
+
+def test_financial_follow_up_inherits_verified_source_provenance(
+    db,
+    monkeypatch,
+    agent_enabled,
+):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    source = conversation_service.persist_agent_response(
+        db,
+        conversation,
+        "August spending was ₹157,353 versus ₹144,614.08 in July. Housing and Travel were the two largest drivers.",
+        citations=[DataReference(
+            label="Elapsed-month category comparison",
+            entity_type="runtime_tool",
+            query={"tool": "analyze_elapsed_month_category_comparison"},
+        )],
+    )
+    reply = (
+        "Housing and Travel were the largest drivers: the comparison was ₹157,353 "
+        "versus ₹144,614.08."
+    )
+    monkeypatch.setattr(
+        conversation_service,
+        "run_operator",
+        lambda *_args, **_kwargs: OperatorResult(reply=reply),
+    )
+    assert conversation_service._prior_grounding_citations(
+        db,
+        conversation,
+        conversation.active_analysis_state,
+        reply,
+    ) == source.citations
+
+    response = handle_chat(
+        db,
+        user,
+        conversation,
+        "Based on that comparison, repeat the two largest drivers and keep the same figures.",
+    )
+
+    assert response.message == reply
+    assert response.citations == source.citations
+    assert conversation.active_analysis_state["sourceMessageId"] == str(source.message_id)
+    assert db.scalar(select(func.count()).select_from(AIAction).where(
+        AIAction.conversation_id == conversation.id,
+        AIAction.action_type == "answer_lineage_validation",
+    )) == 1
+
+
+def test_prior_grounding_is_not_inherited_when_reply_introduces_a_number(db):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    source = conversation_service.persist_agent_response(
+        db,
+        conversation,
+        "August spending was ₹157,353.",
+        citations=[DataReference(
+            label="Month spending",
+            entity_type="runtime_tool",
+            query={"tool": "analyze_month_to_date_spending"},
+        )],
+    )
+
+    inherited = conversation_service._prior_grounding_citations(
+        db,
+        conversation,
+        conversation.active_analysis_state,
+        "August spending was ₹200,000.",
+    )
+
+    assert source.citations
+    assert inherited == []
 
 
 def test_effect_gate_blocks_a_model_read_to_transaction_escalation(

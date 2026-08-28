@@ -15,6 +15,7 @@ from app.services.semantic_fast_tools import (
     DISCRETIONARY_CAP_TOOL_NAME,
     ELAPSED_MONTH_COMPARISON_TOOL_NAME,
     MONTH_TO_DATE_SPENDING_TOOL_NAME,
+    THREE_MONTH_RECONCILIATION_TOOL_NAME,
     build_semantic_fast_tools,
 )
 from app.services.sql_analysis import DESCRIBE_SQL_SCHEMA_TOOL_NAME, RUN_SQL_TOOL_NAME
@@ -193,3 +194,58 @@ def test_month_to_date_capability_returns_net_total_and_period(db):
     assert payload["total_minor"] == 250_000
     assert payload["transaction_count"] == 1
     assert payload["empty_result"] is False
+    assert payload["categories"] == [{
+        "category": food.name,
+        "amount_minor": 250_000,
+        "transaction_count": 1,
+        "category_rank": 1,
+    }]
+
+
+def test_three_month_reconciliation_excludes_the_fourth_month_and_balances(db):
+    user = default_user(db)
+    food = db.scalar(select(Category).where(Category.slug == "food"))
+    travel = db.scalar(select(Category).where(Category.slug == "travel"))
+    may = _expense(user, food, 5, 900_000)
+    june_expense = _expense(user, food, 6, 100_000)
+    june_refund = _expense(user, food, 6, 10_000)
+    july_expense = _expense(user, travel, 7, 200_000)
+    july_refund = _expense(user, travel, 7, 20_000)
+    august_expense = _expense(user, food, 8, 300_000)
+    august_refund = _expense(user, food, 8, 30_000)
+    for refund in (june_refund, july_refund, august_refund):
+        refund.transaction_type = "refund"
+    db.add_all([
+        may,
+        june_expense,
+        june_refund,
+        july_expense,
+        july_refund,
+        august_expense,
+        august_refund,
+    ])
+    db.commit()
+    context = _context(
+        db,
+        user,
+        "Across this month and the previous two months, reconcile gross expenses, refunds, and net spending.",
+    )
+
+    tools = build_semantic_fast_tools(context)
+    payload = tools[0].entrypoint()
+
+    assert [tool.name for tool in tools] == [THREE_MONTH_RECONCILIATION_TOOL_NAME]
+    assert payload["scope"] == {
+        "start": "2026-06-01",
+        "end": "2026-08-17",
+        "month_count": 3,
+    }
+    assert [period["period"] for period in payload["periods"]] == [
+        "June 2026", "July 2026", "August 2026",
+    ]
+    assert payload["gross_expenses_minor"] == 600_000
+    assert payload["refunds_minor"] == 60_000
+    assert payload["net_spending_minor"] == 540_000
+    assert payload["transaction_count"] == 6
+    assert payload["categories"][0]["category"] == food.name
+    assert payload["categories"][0]["category_rank"] == 1

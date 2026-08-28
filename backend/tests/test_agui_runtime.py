@@ -189,6 +189,40 @@ def test_safe_conversation_model_deltas_are_durable_and_match_the_reply(db, monk
     assert db.get(Message, run.final_message_id).content == "".join(content)
 
 
+def test_stream_mismatch_marks_both_transport_and_task_failed(db, monkeypatch):
+    user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
+    conversation = get_or_create_conversation(db, user)
+
+    def mismatched_chat(
+        db,
+        user,
+        conversation,
+        text,
+        activity_callback=None,
+        text_delta_callback=None,
+        reasoning_delta_callback=None,
+    ):
+        response = persist_agent_response(db, conversation, "Canonical answer.")
+        assert text_delta_callback is not None
+        text_delta_callback(response.message_id, "Provisional answer.")
+        return response
+
+    monkeypatch.setattr(agui_service, "handle_chat", mismatched_chat)
+
+    run, _live = _execute(
+        db,
+        user,
+        conversation,
+        {"kind": "message", "text": "What changed?", "messageId": "mismatch"},
+        "mismatch",
+    )
+
+    assert run.status == AgentRunStatus.FAILED.value
+    assert run.task_status == "failed"
+    assert run.failure_stage == "execution"
+    assert run.error_code == "ValueError"
+
+
 def test_provider_reasoning_stream_is_durable_and_persisted_as_one_line_summary(db, monkeypatch):
     user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
     conversation = get_or_create_conversation(db, user)
