@@ -123,7 +123,7 @@ from .recommendation import (
     recommend_subcategories,
 )
 from .currency import format_money_minor
-from .extraction import ExtractedTransaction, extract_transaction, infer_expense_category, normalize_merchant, parse_amount_minor, parse_spending_period
+from .extraction import ExtractedTransaction, explicit_currency_codes, extract_transaction, infer_expense_category, normalize_merchant, parse_amount_minor, parse_spending_period
 from .merchants import MerchantRepository
 from .planning_contracts import (
     BudgetSetupContract,
@@ -1094,6 +1094,7 @@ _TRANSACTION_CLARIFICATION_FIELDS = {
     "amount": "amount",
     "category": "category",
     "category_slug": "category",
+    "currency": "currency",
     "destination": "destination_account",
     "destination_account": "destination_account",
     "financial_direction": "transaction_type",
@@ -1130,6 +1131,14 @@ def _transaction_clarification_seed(
 
     extracted = extract_transaction(text, today=today, default_currency=currency)
     if (
+        "currency" in conflict_fields
+        and len(explicit_currency_codes(text)) > 1
+    ):
+        # Two explicitly supplied currencies carry a real conflict. An omitted
+        # currency uses the profile default, while one explicit currency is an
+        # authoritative override; neither case needs another question.
+        return None
+    if (
         re.search(r"\b(?:budget|goal|savings?\s+plan)\b", text, re.I)
         or re.search(r"\b(?:save|saving)\s+.+\s+for\b", text, re.I)
         or re.search(r"\b(?:remove|delete|undo)\b", text, re.I)
@@ -1158,10 +1167,7 @@ def _transaction_clarification_seed(
     # exact HITL boundary the user still needs to resolve.
     if "amount" in conflict_fields:
         extracted.amount_minor = None
-    if (
-        "transaction_type" in conflict_fields
-        or "transaction_type" in extracted.inferred_fields
-    ):
+    if "transaction_type" in conflict_fields:
         extracted.transaction_type = TransactionType.UNKNOWN
         extracted.category_slug = None
         extracted.subcategory_slug = None
@@ -2941,7 +2947,11 @@ def _extracted_from_decision(text: str, decision: CopilotDecision, today: date, 
     return ExtractedTransaction(
         transaction_type=transaction_type,
         amount_minor=amount_minor,
-        currency=interpreted.currency.upper() if interpreted.currency else baseline.currency,
+        # Currency is account-level state unless the current prompt explicitly
+        # overrides it. The deterministic parser recognizes those explicit
+        # symbols/codes/names; a model-authored field can never silently change
+        # the user's default currency.
+        currency=baseline.currency,
         merchant=merchant,
         source_account=interpreted.source_account or baseline.source_account,
         destination_account=interpreted.destination_account or baseline.destination_account,
@@ -6754,6 +6764,7 @@ def _run_turn(
             "contextRelationship": context_relationship.value,
             "intentContract": turn_intent.model_dump(mode="json"),
             "correctionRequested": _is_correction_followup(text),
+            "defaultCurrency": user.currency,
         }
         latest_contextual_assistant = next((
             item for item in reversed(recent_context)

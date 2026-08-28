@@ -45,7 +45,13 @@ input:
             ],
         }
       amount_minor: { type: integer, minimum: 1 }
-      currency: { type: string, minLength: 3, maxLength: 3 }
+      currency:
+        {
+          type: string,
+          minLength: 3,
+          maxLength: 3,
+          description: Explicit prompt override only; null uses the authenticated user's default currency.,
+        }
       merchant: { type: string, maxLength: 160 }
       source_account: { type: string, maxLength: 120 }
       destination_account: { type: string, maxLength: 120 }

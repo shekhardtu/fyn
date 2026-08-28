@@ -1133,6 +1133,126 @@ def test_transaction_shaped_generic_clarification_is_normalized_to_draft(db, mon
     assert action.payload_redacted["conflictFields"] == ["transaction_type"]
 
 
+def test_omitted_currency_uses_profile_default_without_clarification(
+    db, monkeypatch, agent_enabled
+):
+    user = default_user(db)
+    assert user.currency == "INR"
+    conversation = get_or_create_conversation(db, user)
+    monkeypatch.setattr(conversation_service, "_fast_path_decision", lambda *args, **kwargs: None)
+    clarification = ClarificationRequest(
+        question="What currency should I use?",
+        reason="No currency was written in the message.",
+        conflict_fields=["currency"],
+        options=[],
+        allow_custom=True,
+    )
+    monkeypatch.setattr(
+        conversation_service,
+        "run_operator",
+        lambda *args, **kwargs: _operator_proposal("request_clarification", {
+            "clarification": clarification.model_dump(mode="json", exclude_none=True),
+        }),
+    )
+
+    response = handle_chat(db, user, conversation, "Add 500 for Food => Dinner")
+
+    assert response.widgets[0].type == "subcategory_selector"
+    assert all(widget.type != "clarification" for widget in response.widgets)
+    draft = db.scalar(
+        select(TransactionDraft).where(
+            TransactionDraft.conversation_id == conversation.id
+        )
+    )
+    category = db.get(Category, draft.category_id)
+    assert draft.currency == "INR"
+    assert draft.transaction_type == "expense"
+    assert category is not None and category.slug == "food"
+    assert draft.missing_fields == ["subcategory"]
+
+
+@pytest.mark.parametrize(("prompt", "proposed_currency", "expected_currency"), [
+    ("Add 500 for Food => Dining", "USD", "INR"),
+    ("Add USD 500 for Food => Dining", "INR", "USD"),
+])
+def test_prompt_currency_is_authoritative_over_model_operation_input(
+    db,
+    monkeypatch,
+    agent_enabled,
+    prompt,
+    proposed_currency,
+    expected_currency,
+):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    monkeypatch.setattr(conversation_service, "_fast_path_decision", lambda *args, **kwargs: None)
+    captured_workflow = {}
+
+    def operator_runner(*args, **kwargs):
+        captured_workflow.update(kwargs.get("workflow_context") or {})
+        return _operator_proposal("create_transaction_draft", {
+            "transaction_type": "expense",
+            "amount_minor": 50_000,
+            "currency": proposed_currency,
+            "category_slug": "food",
+            "subcategory_slug": "dining",
+            "explicit_fields": [
+                "amount",
+                "transaction_type",
+                "category",
+                "subcategory",
+                "currency",
+            ],
+        })
+
+    monkeypatch.setattr(conversation_service, "run_operator", operator_runner)
+
+    response = handle_chat(db, user, conversation, prompt)
+
+    transaction = db.scalar(
+        select(Transaction).where(Transaction.user_id == user.id)
+    )
+    assert response.task_status == "succeeded"
+    assert transaction is not None and transaction.currency == expected_currency
+    assert captured_workflow["defaultCurrency"] == "INR"
+
+
+def test_multiple_explicit_currency_conflict_still_reaches_clarification(
+    db, monkeypatch, agent_enabled
+):
+    user = default_user(db)
+    conversation = get_or_create_conversation(db, user)
+    monkeypatch.setattr(conversation_service, "_fast_path_decision", lambda *args, **kwargs: None)
+    clarification = ClarificationRequest(
+        question="Which explicitly supplied currency should I use?",
+        reason="The supplied currencies conflict.",
+        conflict_fields=["currency"],
+        options=[],
+        allow_custom=True,
+    )
+    monkeypatch.setattr(
+        conversation_service,
+        "run_operator",
+        lambda *args, **kwargs: _operator_proposal("request_clarification", {
+            "clarification": clarification.model_dump(mode="json", exclude_none=True),
+        }),
+    )
+
+    response = handle_chat(
+        db,
+        user,
+        conversation,
+        "Add USD 500 or ₹500 for Food => Dinner",
+    )
+
+    assert response.widgets[0].type == "clarification"
+    assert db.scalar(
+        select(TransactionDraft).where(
+            TransactionDraft.conversation_id == conversation.id
+        )
+    ) is None
+
+
 def test_non_transaction_clarification_cannot_be_normalized_by_shared_amount_field(db, monkeypatch, agent_enabled):
     user = default_user(db)
     conversation = get_or_create_conversation(db, user)
