@@ -28,11 +28,13 @@ CATEGORY_VOLATILITY_TOOL_NAME = "analyze_category_volatility"
 DISCRETIONARY_CAP_TOOL_NAME = "analyze_discretionary_spending_cap"
 ELAPSED_MONTH_COMPARISON_TOOL_NAME = "analyze_elapsed_month_category_comparison"
 MONTH_TO_DATE_SPENDING_TOOL_NAME = "analyze_month_to_date_spending"
+THREE_MONTH_RECONCILIATION_TOOL_NAME = "analyze_three_month_spending_reconciliation"
 SEMANTIC_FAST_TOOL_NAMES = frozenset({
     CATEGORY_VOLATILITY_TOOL_NAME,
     DISCRETIONARY_CAP_TOOL_NAME,
     ELAPSED_MONTH_COMPARISON_TOOL_NAME,
     MONTH_TO_DATE_SPENDING_TOOL_NAME,
+    THREE_MONTH_RECONCILIATION_TOOL_NAME,
 })
 
 
@@ -99,6 +101,55 @@ def _category_totals(
             "transaction_count": int(transaction_count),
         }
         for category_name, amount_minor, transaction_count
+        in context.db.execute(statement).all()
+    ]
+
+
+def _gross_refund_category_rows(
+    context: Any,
+    start: date,
+    end: date,
+) -> list[dict[str, Any]]:
+    currency = user_currency(context.db, context.user_id)
+    start_at, end_at = utc_range_for_local_dates(start, end, context.timezone_name)
+    statement = (
+        select(
+            Category.name,
+            func.coalesce(func.sum(case(
+                (Transaction.transaction_type == TransactionType.EXPENSE.value, Transaction.amount_minor),
+                else_=0,
+            )), 0),
+            func.coalesce(func.sum(case(
+                (Transaction.transaction_type == TransactionType.REFUND.value, Transaction.amount_minor),
+                else_=0,
+            )), 0),
+            func.count(Transaction.id),
+        )
+        .select_from(Transaction)
+        .outerjoin(Category, Category.id == Transaction.category_id)
+    )
+    statement = apply_canonical_transaction_scope(
+        statement,
+        context.user_id,
+        currency=currency,
+    ).where(
+        Transaction.transaction_at >= start_at,
+        Transaction.transaction_at < end_at,
+        Transaction.transaction_type.in_([
+            TransactionType.EXPENSE.value,
+            TransactionType.REFUND.value,
+        ]),
+    )
+    statement = statement.group_by(Category.name).order_by(Category.name)
+    return [
+        {
+            "category": category_name or "Uncategorized",
+            "gross_expenses_minor": int(gross_minor),
+            "refunds_minor": int(refunds_minor),
+            "net_spending_minor": int(gross_minor) - int(refunds_minor),
+            "transaction_count": int(transaction_count),
+        }
+        for category_name, gross_minor, refunds_minor, transaction_count
         in context.db.execute(statement).all()
     ]
 
@@ -398,6 +449,12 @@ def _build_month_to_date_spending_tool(context: Any):
             context.today,
             discretionary_only=False,
         )
+        category_rows.sort(
+            key=lambda row: row["amount_minor"],
+            reverse=True,
+        )
+        for rank, row in enumerate(category_rows, 1):
+            row["category_rank"] = rank
         total_minor = sum(row["amount_minor"] for row in category_rows)
         transaction_count = sum(
             row["transaction_count"] for row in category_rows
@@ -441,6 +498,109 @@ def _build_month_to_date_spending_tool(context: Any):
     )
 
 
+def _build_three_month_reconciliation_tool(context: Any):
+    def analyze_three_month_spending_reconciliation() -> dict[str, Any]:
+        current_start = context.today.replace(day=1)
+        previous_start = shift_month(current_start, -1)
+        two_months_ago_start = shift_month(current_start, -2)
+        _, previous_end = month_bounds(previous_start)
+        _, two_months_ago_end = month_bounds(two_months_ago_start)
+        period_bounds = [
+            (two_months_ago_start, two_months_ago_end),
+            (previous_start, previous_end),
+            (current_start, context.today),
+        ]
+        periods: list[dict[str, Any]] = []
+        category_totals: dict[str, dict[str, Any]] = {}
+        transaction_count = 0
+        for start, end in period_bounds:
+            rows = _gross_refund_category_rows(context, start, end)
+            gross_minor = sum(row["gross_expenses_minor"] for row in rows)
+            refunds_minor = sum(row["refunds_minor"] for row in rows)
+            period_count = sum(row["transaction_count"] for row in rows)
+            transaction_count += period_count
+            periods.append({
+                "period": start.strftime("%B %Y"),
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "gross_expenses_minor": gross_minor,
+                "refunds_minor": refunds_minor,
+                "net_spending_minor": gross_minor - refunds_minor,
+                "transaction_count": period_count,
+            })
+            for row in rows:
+                aggregate = category_totals.setdefault(row["category"], {
+                    "category": row["category"],
+                    "gross_expenses_minor": 0,
+                    "refunds_minor": 0,
+                    "net_spending_minor": 0,
+                    "transaction_count": 0,
+                })
+                for field in (
+                    "gross_expenses_minor",
+                    "refunds_minor",
+                    "net_spending_minor",
+                    "transaction_count",
+                ):
+                    aggregate[field] += row[field]
+        categories = sorted(
+            category_totals.values(),
+            key=lambda row: (row["net_spending_minor"], row["gross_expenses_minor"]),
+            reverse=True,
+        )
+        for rank, row in enumerate(categories, 1):
+            row["category_rank"] = rank
+        gross_minor = sum(period["gross_expenses_minor"] for period in periods)
+        refunds_minor = sum(period["refunds_minor"] for period in periods)
+        currency = user_currency(context.db, context.user_id)
+        return {
+            "kind": "semantic_financial_analysis",
+            "analysis": "current_month_to_date_plus_two_preceding_months_reconciliation",
+            "currency": currency,
+            "scope": {
+                "start": two_months_ago_start.isoformat(),
+                "end": context.today.isoformat(),
+                "month_count": 3,
+            },
+            "gross_expenses_minor": gross_minor,
+            "refunds_minor": refunds_minor,
+            "net_spending_minor": gross_minor - refunds_minor,
+            "periods": periods,
+            "categories": categories,
+            "transaction_count": transaction_count,
+            "empty_result": transaction_count == 0,
+            "empty_result_guidance": (
+                None
+                if transaction_count
+                else "The authenticated three-month scope contains no expenses or refunds."
+            ),
+            "display": {
+                "gross_expenses_minor": format_money_minor(gross_minor, currency),
+                "refunds_minor": format_money_minor(refunds_minor, currency),
+                "net_spending_minor": format_money_minor(gross_minor - refunds_minor, currency),
+            },
+        }
+
+    return bind_schema_tool(
+        analyze_three_month_spending_reconciliation,
+        name=THREE_MONTH_RECONCILIATION_TOOL_NAME,
+        description=(
+            "Reconcile authenticated gross expenses, refunds, and net spending for exactly "
+            "the current month-to-date plus the two preceding calendar months. Return explicit "
+            "aggregate totals, all three period rows, and categories ranked by net spending. "
+            "Transfers are excluded and each canonical transaction is counted once. Prefer this "
+            "over authoring SQL when the request matches."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        },
+        strict=True,
+    )
+
+
 def build_semantic_fast_tools(context: Any) -> list[Any]:
     """Retrieve exact semantic capabilities; generic SQL always remains fallback."""
 
@@ -462,6 +622,14 @@ def build_semantic_fast_tools(context: Any) -> list[Any]:
         and re.search(r"\bsame\b.{0,20}\b(?:day|elapsed)|\blike[- ]for[- ]like\b", question)
     ):
         tools.append(_build_elapsed_month_comparison_tool(context))
+    if (
+        re.search(r"\b(?:reconcile|reconciliation)\b", question)
+        and re.search(r"\bgross\b", question)
+        and re.search(r"\brefunds?\b", question)
+        and re.search(r"\bnet\b", question)
+        and re.search(r"\b(?:previous|preceding)\s+two\s+months?\b", question)
+    ):
+        tools.append(_build_three_month_reconciliation_tool(context))
     if (
         not re.search(r"\bcompare\b|\bversus\b|\bvs\.?\b", question)
         and re.search(r"\b(?:spend|spent|spending|expenses?)\b", question)

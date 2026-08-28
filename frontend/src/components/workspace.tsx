@@ -16,6 +16,7 @@ import { MarkdownMessage } from "@/components/widget-library/markdown-message";
 import { DayDivider, localDayKey } from "@/components/day-divider";
 import { MessageDeliveryTime } from "@/components/message-delivery-time";
 import { MessageIdentifier } from "@/components/message-identifier";
+import { UserMessage } from "@/components/user-message";
 import { environment } from "@/config/environment";
 import { bootstrap, cancelAgentRun, createCategory, createConversation, createSubcategory, deleteConversation, flushConversationDeletion, getPrivacyStatus, isUnauthorized, listConversations, loadAgentThreadState, loadConversation, renameConversation, openInterrupts, reconnectAgentRun, resumeAgentInterrupt, sendAgentAction, sendAgentMessage, uploadCsv, waitForAgentRelatedQuestions, type AgentActivity, type AgentRunPhase, type FynInterrupt } from "@/lib/api";
 import { AgentRunTelemetry } from "@/lib/agent-telemetry";
@@ -787,8 +788,6 @@ const MessageArticle = memo(function MessageArticle({ message, focusedPrompt = f
   const widgets = message.widgets.filter((widget) => widget.id !== trace?.id);
   const traceSteps = Array.isArray(trace?.data.steps) ? trace.data.steps as unknown as AgentActivity[] : [];
   const responseState = responseStateFor(traceSteps, false, false, traceSteps.some((step) => step.status === "failed"));
-  const [metadataOpen, setMetadataOpen] = useState(false);
-  const metadataId = `${message.id}-metadata`;
   return <article data-message-id={message.id} data-message-role={message.role} data-focused-prompt={focusedPrompt || undefined} data-focused-response={focusedResponse || undefined} className={cn("group", message.role === "user" ? "flex justify-end" : "max-w-[680px]")}>
     <div className={cn("min-w-0", message.role === "user" && "max-w-[82%]")}>
       {message.role === "assistant" && showAssistantByline ? <AssistantByline
@@ -796,18 +795,11 @@ const MessageArticle = memo(function MessageArticle({ message, focusedPrompt = f
         activity={trace ? <WidgetRenderer widget={trace} disabled onAction={noAction} /> : undefined}
       /> : null}
       {message.content ? message.role === "user"
-        ? <button
-          type="button"
-          aria-expanded={metadataOpen}
-          aria-controls={metadataId}
-          aria-label={`${metadataOpen ? "Hide" : "Show"} delivery details for: ${message.content}`}
-          onClick={() => setMetadataOpen((current) => !current)}
-          className="ml-auto block w-fit max-w-full break-words whitespace-pre-wrap rounded-xl rounded-br-sm bg-secondary px-4 py-3 text-left text-body leading-6 text-on-secondary"
-        >{message.content}</button>
+        ? <UserMessage content={message.content} messageId={message.id} deliveredAt={message.delivered_at} />
         : <div className="transcript-answer break-words"><MarkdownMessage id={message.id}>{message.content}</MarkdownMessage></div>
       : null}
-      {message.content && (message.role !== "user" || metadataOpen) ? <div id={message.role === "user" ? metadataId : undefined} className={cn("mt-1.5", message.role === "user" ? "text-right" : "pl-8")}>
-        <div className={cn("flex items-center gap-2 whitespace-nowrap", message.role === "user" && "justify-end")}>
+      {message.content && message.role !== "user" ? <div className="mt-1.5 pl-8">
+        <div className="flex items-center gap-2 whitespace-nowrap">
           {message.delivered_at ? <>
             <MessageDeliveryTime deliveredAt={message.delivered_at} />
             <span aria-hidden className="text-meta text-ink-muted/70">·</span>

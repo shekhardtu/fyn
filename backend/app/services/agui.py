@@ -2076,12 +2076,27 @@ def execute_run(
 
         finish(AgentRunStatus.INTERRUPTED if interrupted else AgentRunStatus.SUCCEEDED)
     except RunCancelled:
+        publisher.bind_task_outcome(
+            "cancelled",
+            failure_stage="transport",
+            error_code="cancelled",
+        )
         publisher.emit(RunErrorEvent(message="This run was stopped.", code="cancelled", timestamp=timestamp_ms()))
         finish(AgentRunStatus.CANCELLED, error_code="cancelled")
     except ProtocolRunError as error:
+        publisher.bind_task_outcome(
+            "failed",
+            failure_stage="protocol",
+            error_code=error.code,
+        )
         publisher.emit(RunErrorEvent(message=str(error), code=error.code, timestamp=timestamp_ms()))
         finish(AgentRunStatus.FAILED, error_code=error.code)
     except Exception as error:
+        publisher.bind_task_outcome(
+            "failed",
+            failure_stage="execution",
+            error_code=type(error).__name__,
+        )
         publisher.emit(
             DetailedRunErrorEvent(
                 message="fyn AI could not complete this request.",

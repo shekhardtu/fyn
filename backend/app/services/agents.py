@@ -1748,6 +1748,15 @@ class RelatedQuestionSuggestions(BaseModel):
         ]
 
 
+def _fallback_related_questions(current_date: date) -> list[str]:
+    current_month = current_date.strftime("%B %Y")
+    return [
+        f"Which {current_month} spending categories contributed most to my net total, and which merchants drove them?",
+        "What recurring or unusual spending patterns stand out across my last three complete months?",
+        "Which discretionary categories could I optimize next month, and what savings would realistic reductions produce?",
+    ]
+
+
 def suggest_related_questions(
     question: str,
     answer: str,
@@ -1817,7 +1826,10 @@ def suggest_related_questions(
         if turn.get("role") == "user"
     }
     suggestions: list[str] = []
-    for item in content.ordered_questions():
+    for item in [
+        *content.ordered_questions(),
+        *_fallback_related_questions(current_date),
+    ]:
         text = " ".join(str(item).split())
         if not text or len(text) > 160:
             continue

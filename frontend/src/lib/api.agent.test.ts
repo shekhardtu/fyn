@@ -197,4 +197,48 @@ describe("durable agent response handling", () => {
 
     await expect(waitForAgentRelatedQuestions("missing-run")).resolves.toBeNull();
   });
+
+  it("keeps polling detached enrichment beyond the initial fast window", async () => {
+    vi.useFakeTimers();
+    const runId = "3d6c6d32-c4f8-4bca-a2ff-9d25eaf0165b";
+    const messageId = "6a1e130a-ec37-42ba-a97a-e4d77bcbb382";
+    const pending = {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        runId,
+        messageId,
+        kind: "related_questions",
+        status: "running",
+        widget: null,
+      }),
+    };
+    for (let index = 0; index < 6; index += 1) {
+      fetchMock.mockResolvedValueOnce(pending);
+    }
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        runId,
+        messageId,
+        kind: "related_questions",
+        status: "completed",
+        widget: {
+          id: `related-${messageId}`,
+          type: "related_questions",
+          version: 1,
+          data: { questions: ["What changed?"] },
+          actions: [],
+        },
+      }),
+    });
+
+    const result = expect(waitForAgentRelatedQuestions(runId)).resolves.toMatchObject({ messageId });
+    await vi.runAllTimersAsync();
+
+    await result;
+    expect(fetchMock).toHaveBeenCalledTimes(7);
+    vi.useRealTimers();
+  });
 });

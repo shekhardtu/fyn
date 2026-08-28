@@ -551,6 +551,39 @@ html[data-focus-modality="keyboard"] :where(a, button, input, select, textarea, 
   --bleed-end: 1rem;
 }
 
+/* A sent message is text, never a disguised disclosure button. The adjacent
+   trigger opens a portalled contextual surface, so neither the trigger nor its
+   contents enter transcript layout. Touch devices keep the trigger visible
+   because they have no hover state. */
+.user-message-options-trigger {
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity var(--m-state) var(--ease),
+    color var(--m-state) var(--ease),
+    background-color var(--m-state) var(--ease);
+}
+
+.user-message:hover .user-message-options-trigger,
+.user-message:focus-within .user-message-options-trigger,
+.user-message-options-trigger[data-popup-open] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .user-message-options-trigger {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .user-message-options-trigger {
+    transition: none;
+  }
+}
+
 @media (min-width: 640px) {
   /* From here the column has room of its own: a table stays inside the
      answer, where the byline can still be read as belonging to it. */

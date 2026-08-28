@@ -1,6 +1,6 @@
 VENV := ../.venv/bin
 
-.PHONY: dev backend frontend db migrate check prod deploy deploy-status deploy-logs deploy-setup
+.PHONY: dev backend frontend db migrate check eval-agent-quality prod deploy deploy-status deploy-logs deploy-setup
 
 ## Start Postgres, run migrations, then run backend + frontend dev servers.
 dev: db migrate
@@ -30,6 +30,11 @@ check:
 	cd backend && $(VENV)/ruff check app
 	cd backend && $(VENV)/mypy app
 	cd backend && $(VENV)/python -m pytest -q
+
+## Reset a synthetic account, run the live browser corpus, judge answer quality,
+## enforce latency/safety gates, write artifacts, and clean the account again.
+eval-agent-quality:
+	./scripts/run-agent-quality-gate.sh
 
 ## Full production-style stack in containers.
 prod:

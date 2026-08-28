@@ -16,6 +16,7 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "test:e2e:quality": "RUN_AGENT_QUALITY_CORPUS=1 playwright test e2e/agent-quality-corpus.spec.ts --project=browser",
     "test:e2e:latency": "RUN_AGENT_LATENCY_CORPUS=1 playwright test e2e/latency-corpus.spec.ts --project=browser",
     "test:e2e:latency:context": "RUN_AGENT_LATENCY_CONTEXT_CORPUS=1 playwright test e2e/latency-context-corpus.spec.ts --project=browser"
   },

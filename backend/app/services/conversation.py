@@ -393,6 +393,56 @@ def _grounded_states(message: Message) -> tuple[dict | None, dict | None]:
     return analysis_state, data_scope
 
 
+_LINEAGE_NUMBER = re.compile(r"(?<![\w.,])[+-]?\d[\d,]*(?:\.\d+)?(?![\w,])")
+
+
+def _lineage_numbers(content: str) -> set[Decimal]:
+    """Normalize factual numbers before reusing a prior answer's citations."""
+    values: set[Decimal] = set()
+    for match in _LINEAGE_NUMBER.finditer(content):
+        try:
+            values.add(Decimal(match.group().replace(",", "")))
+        except ArithmeticError:
+            continue
+    return values
+
+
+def _prior_grounding_citations(
+    db: Session,
+    conversation: Conversation,
+    active_analysis_state: dict | None,
+    reply: str,
+) -> list[DataReference]:
+    """Reuse provenance for a bounded follow-up over the prior grounded answer.
+
+    The model may explain or prioritize facts already visible in the preceding
+    answer without paying for the same read tool again.  Provenance is inherited
+    only from an assistant message in this conversation, and only when every
+    numeric value in the new reply already appeared in that source message.
+    Novel numbers therefore still require fresh tool evidence.
+    """
+    raw_source_id = (active_analysis_state or {}).get("sourceMessageId")
+    if not raw_source_id:
+        return []
+    try:
+        source_id = UUID(str(raw_source_id))
+    except ValueError:
+        return []
+    source = db.scalar(select(Message).where(
+        Message.id == source_id,
+        Message.conversation_id == conversation.id,
+        Message.role == "assistant",
+    ))
+    if source is None or not source.citations:
+        return []
+    if not _lineage_numbers(reply).issubset(_lineage_numbers(source.content)):
+        return []
+    try:
+        return [DataReference.model_validate(item) for item in source.citations]
+    except (TypeError, ValueError):
+        return []
+
+
 def _message_context_entry(message: Message) -> dict[str, Any]:
     """Expose prior wording plus bounded structured lineage to later turns.
 
@@ -2977,15 +3027,29 @@ def _conversation_response(
     task_status: str = "succeeded",
     failure_stage: str | None = None,
     error_code: str | None = None,
+    citations: list[DataReference] | None = None,
+    preserve_active_grounding: bool = False,
 ) -> AgentResponse:
-    return persist_agent_response(
+    previous_analysis_state = conversation.active_analysis_state
+    previous_data_scope = conversation.active_data_scope
+    response = persist_agent_response(
         db,
         conversation,
         content,
         task_status=task_status,
         failure_stage=failure_stage,
         error_code=error_code,
+        citations=citations,
+        commit=not preserve_active_grounding,
     )
+    if preserve_active_grounding:
+        # A cited interpretation of the preceding result is not a new query.
+        # Keep future follow-ups anchored to the original tool-backed message,
+        # while the new message still exposes the inherited citation to users.
+        conversation.active_analysis_state = previous_analysis_state
+        conversation.active_data_scope = previous_data_scope
+        db.commit()
+    return response
 
 
 def _tool_result_data(item):
@@ -5269,6 +5333,7 @@ class _ConversationPrimitiveRuntime:
         extracted: ExtractedTransaction | None = None,
         budget_setup: BudgetSetupContract | None = None,
         goal_amount: GoalAmountContract | None = None,
+        inherited_citations: list[DataReference] | None = None,
     ):
         self.db = db
         self.user = user
@@ -5283,6 +5348,7 @@ class _ConversationPrimitiveRuntime:
         self.extracted = extracted
         self.budget_setup = budget_setup
         self.goal_amount = goal_amount
+        self.inherited_citations = inherited_citations or []
 
     def invoke(self, target, arguments: dict[str, Any]) -> AgentResponse:
         if target.effect is DataEffect.MUTATION and not self.authorization.allowed:
@@ -5328,6 +5394,8 @@ class _ConversationPrimitiveRuntime:
             self.conversation,
             self.decision.reply
             or "Hi! Tell me what happened financially, or ask me anything about your money.",
+            citations=self.inherited_citations,
+            preserve_active_grounding=bool(self.inherited_citations),
         )
 
     def clarify(self, _arguments: dict[str, Any]) -> AgentResponse:
@@ -5478,6 +5546,7 @@ def _dispatch_decision(
     intent_contract: TurnIntentContract | None = None,
     budget_setup: BudgetSetupContract | None = None,
     goal_amount: GoalAmountContract | None = None,
+    inherited_citations: list[DataReference] | None = None,
 ) -> AgentResponse:
     """Execute every routed capability through its one registry-owned executor."""
     spec = capability_spec(decision.tool)
@@ -5671,6 +5740,7 @@ def _dispatch_decision(
         extracted=extracted,
         budget_setup=budget_setup,
         goal_amount=goal_amount,
+        inherited_citations=inherited_citations,
     )
 
     def run_declared_workflow() -> AgentResponse:
@@ -6891,6 +6961,7 @@ def _run_turn(
                 allow_live_deltas=bool(
                     text_delta_callback
                     and not looks_like_financial_query(text)
+                    and context_relationship is ContextRelationship.STANDALONE
                     and not _SUBCATEGORY_ENUMERATION_REQUEST.search(text)
                 ),
             )
@@ -7097,10 +7168,26 @@ def _run_turn(
                     intent_contract=turn_intent,
                 )
             direct_validation_mode = answer_validation_mode(db, user.id)
+            contextual_financial_read = bool(
+                prompt_analysis_state
+                and context_relationship
+                in {ContextRelationship.FOLLOW_UP, ContextRelationship.CORRECTION}
+            )
+            inherited_citations = (
+                _prior_grounding_citations(
+                    db,
+                    conversation,
+                    prompt_analysis_state,
+                    direct_reply,
+                )
+                if contextual_financial_read and not direct_result.tool_grounding
+                else []
+            )
             ungrounded_financial_claim = bool(
                 direct_validation_mode is not AnswerValidationMode.OFF
                 and not direct_result.tool_grounding
-                and looks_like_financial_query(text)
+                and not inherited_citations
+                and (looks_like_financial_query(text) or contextual_financial_read)
                 and contains_financial_claim(direct_reply)
             )
             # A model claiming an app-settings mutation it has no tool for
@@ -7186,6 +7273,25 @@ def _run_turn(
                         },
                         status=ExecutionStatus.COMPLETED,
                     ))
+                if inherited_citations:
+                    emit(
+                        "answer_validation",
+                        "Validated facts against the prior grounded answer",
+                        ExecutionStatus.COMPLETED,
+                        "answer_lineage_validation",
+                        "Reused source provenance after verifying that the follow-up introduced no new numeric values.",
+                    )
+                    db.add(AIAction(
+                        user_id=user.id,
+                        conversation_id=conversation.id,
+                        action_type="answer_lineage_validation",
+                        payload_redacted={
+                            "sourceMessageId": (prompt_analysis_state or {}).get("sourceMessageId"),
+                            "citationCount": len(inherited_citations),
+                            "numericSubsetVerified": True,
+                        },
+                        status=ExecutionStatus.COMPLETED,
+                    ))
                 db.add(AIAction(
                     user_id=user.id,
                     conversation_id=conversation.id,
@@ -7210,7 +7316,11 @@ def _run_turn(
                         else (
                             "answer_validation_off"
                             if validation_skipped
-                            else "operator_conversation_policy"
+                            else (
+                                "prior_grounding_lineage"
+                                if inherited_citations
+                                else "operator_conversation_policy"
+                            )
                         )
                     ),
                     validation_confidence=1.0,
@@ -7224,6 +7334,7 @@ def _run_turn(
                     execute,
                     emit,
                     intent_contract=turn_intent,
+                    inherited_citations=inherited_citations,
                 )
                 if text_delta_callback and not direct_result.streamed_live:
                     text_delta_callback(response.message_id, response.message)

@@ -388,6 +388,34 @@ def test_null_rank_without_a_ranked_entity_is_not_empty_ranking_proof():
     ).passed
 
 
+def test_semantic_month_to_date_category_rank_satisfies_top_category_coverage():
+    grounding = [ToolGrounding(
+        name="analyze_month_to_date_spending",
+        arguments={},
+        result={
+            "tool": "analyze_month_to_date_spending",
+            "data": {
+                "kind": "semantic_financial_analysis",
+                "currency": "INR",
+                "total_minor": 100_000,
+                "categories": [{
+                    "category": "Food",
+                    "amount_minor": 100_000,
+                    "category_rank": 1,
+                }],
+            },
+        },
+    )]
+    answer = "Net month-to-date spending was ₹1,000. The top category was Food at ₹1,000."
+    evidence = validate_evidence(answer, grounding)
+    contract = compile_answer_contract(
+        "How much did I spend this month? Give the exact net total and the top category."
+    )
+
+    assert evidence.passed
+    assert validate_coverage(answer, contract, evidence.facts).passed
+
+
 def test_summary_rows_prove_ranked_subgroup_empty_when_reduction_shape_is_explicit():
     grounding = [_sql_grounding([{
         "row_type": "MONTH",

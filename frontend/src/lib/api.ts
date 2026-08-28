@@ -457,7 +457,12 @@ export interface AgentRunCallbacks {
 }
 
 
-const RELATED_QUESTION_POLL_DELAYS_MS = [0, 250, 500, 1_000, 2_000, 3_000] as const;
+// This budget is detached from the agent mutation: it never keeps the answer,
+// composer, or run open. It only lets the mounted thread adopt optional
+// suggestions when an independent provider call has a cold start.
+const RELATED_QUESTION_POLL_DELAYS_MS = [
+  0, 250, 500, 1_000, 2_000, 3_000, 5_000, 5_000, 5_000, 5_000, 5_000,
+] as const;
 
 function abortableDelay(milliseconds: number, signal?: AbortSignal): Promise<void> {
   if (!milliseconds) return Promise.resolve();
