@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 /**
  * The browser suite deliberately shares one durable PostgreSQL conversation.
  * Never create or delete conversations from browser tests; routing every
@@ -29,13 +31,12 @@ export function sharedThreadUrl(): string {
  * the thread is: the account behind it owns that thread, and a per-run number
  * would create a fresh empty account every time.
  */
-export const TEST_PHONE = "+919000000099";
-import { readFileSync } from "node:fs";
+export const TEST_PHONE = process.env.FYN_E2E_TEST_PHONE?.trim() || "+919000000099";
 
 // Empty means "same-origin behind the proxy", which a request context can't
 // use as a base URL — fall back to the backend's own address for API calls.
 export const API_URL = process.env.VITE_API_URL?.trim() || "http://localhost:8000";
 /** Where the signed-in session is kept between the setup project and the tests. */
-export const STORAGE_STATE = "e2e/.auth/session.json";
+export const STORAGE_STATE = process.env.FYN_E2E_STORAGE_STATE?.trim() || "e2e/.auth/session.json";
 /** Where the resolved shared conversation is recorded, for the same reason. */
-export const SHARED_THREAD_STATE = "e2e/.auth/thread.json";
+export const SHARED_THREAD_STATE = process.env.FYN_E2E_THREAD_STATE?.trim() || "e2e/.auth/thread.json";
