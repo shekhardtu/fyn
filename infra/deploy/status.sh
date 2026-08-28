@@ -33,6 +33,19 @@ fyn_internal_curl /health 2>/dev/null | head -c 300 || echo "unreachable"
 echo ""
 
 echo ""
+echo "── feature gates ──────────────────────────"
+if fyn_ssh "cd ${FYN_REMOTE_DIR} && \
+  grep -qx 'DOCUMENT_STORAGE_PROVIDER=r2' ${FYN_ENV_FILE} && \
+  grep -Eq '^R2_ACCOUNT_ID=.+' ${FYN_ENV_FILE} && \
+  grep -Eq '^R2_BUCKET=.+' ${FYN_ENV_FILE} && \
+  grep -Eq '^R2_ACCESS_KEY_ID=.+' ${FYN_ENV_FILE} && \
+  grep -Eq '^R2_SECRET_ACCESS_KEY=.+' ${FYN_ENV_FILE}"; then
+  echo "  lending  ready — durable R2 document storage is configured"
+else
+  echo "  lending  hidden — complete R2 document storage is not configured"
+fi
+
+echo ""
 echo "── shared box ─────────────────────────────"
 fyn_ssh "free -m | awk 'NR==2 {printf \"  memory   %s MiB used of %s, %s available\\n\", \$3, \$2, \$7}'"
 fyn_ssh "docker stats --no-stream --format '  {{.Name}}  {{.MemUsage}}  cpu {{.CPUPerc}}'"
