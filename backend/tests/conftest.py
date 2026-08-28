@@ -3,6 +3,12 @@ from __future__ import annotations
 import os
 
 os.environ["PRIMARY_AGENT_ENABLED"] = "false"
+# The suite drives the real sign-in path, so a provider credential in a
+# developer's .env would send one-time codes to fixture addresses — and a
+# fixture address that bounces is suppressed for every later send. Blanking
+# the credentials resolves both channels to the console sender for every run.
+os.environ["POSTMARK_SERVER_TOKEN"] = ""
+os.environ["MSG91_AUTH_KEY"] = ""
 
 import pytest
 from sqlalchemy import create_engine

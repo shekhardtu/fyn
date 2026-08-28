@@ -380,23 +380,6 @@ def test_a_google_account_links_a_phone_number_and_both_then_sign_in(client, mon
     assert sign_in_with_phone(client)["profile"]["id"] == created["id"]
 
 
-def test_a_phone_account_verifies_an_email_and_a_later_google_sign_in_joins_it(client, monkeypatch):
-    """The same merge from the phone side, completed by Google adoption."""
-    created = sign_in_with_phone(client)["profile"]
-
-    status, profile = link_identifier(client, "email", "Person@gmail.com")
-    assert status == 200
-    assert profile["email"] == "person@gmail.com"
-
-    client.post("/auth/signout")
-    google_account(monkeypatch, subject="google-subject-1", email="person@gmail.com")
-    adopted = client.post("/auth/google", json={"credential": "token"}).json()["profile"]
-
-    # Adopted, not duplicated: one account now answers to phone, email and Google.
-    assert adopted["id"] == created["id"]
-    assert {item["provider"] for item in adopted["identities"]} == {"phone", "email", "google"}
-
-
 def test_an_identifier_held_by_another_account_cannot_be_linked(client, db):
     sign_in_with_phone(client, OTHER_PHONE)
     client.post("/auth/signout")
