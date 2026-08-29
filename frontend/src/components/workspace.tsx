@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
-import { ArrowDown, BrainCircuit, Check, CheckCircle2, ChartColumn, Copy, FileText, HandCoins, LayoutDashboard, Loader2, MessageSquareText, Paperclip, ReceiptText, RotateCcw, Route, SendHorizontal, ShieldCheck, Sparkles, Square, SquarePen, Tags, Trash2, TriangleAlert, Wrench, X } from "lucide-react";
+import { ArrowDown, BrainCircuit, Check, CheckCircle2, Copy, FileText, LayoutDashboard, Loader2, MessageSquareText, Paperclip, ReceiptText, RotateCcw, Route, SendHorizontal, ShieldCheck, Sparkles, Square, SquarePen, Trash2, TriangleAlert, Wrench, X } from "lucide-react";
 import { createContext, FormEvent, memo, RefObject, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useLocation, useMatch, useNavigate } from "react-router";
@@ -175,14 +175,15 @@ const RailHeader = memo(function RailHeader({ creating, onNew, onClose }: { crea
 
 /** One account anchor at the foot of the rail. Its menu keeps account actions
  *  close without permanently spending rail space on each destination. */
-const RailFooter = memo(function RailFooter({ user, signingOut, onNavigate, onSignOut }: {
+const RailFooter = memo(function RailFooter({ user, personalLendingAvailable, signingOut, onNavigate, onSignOut }: {
   user: Bootstrap["user"] | null;
+  personalLendingAvailable: boolean;
   signingOut: boolean;
   onNavigate: (path: string) => void;
   onSignOut: () => void;
 }) {
   return <footer className="rail-footer">
-    <div className="px-2"><AccountMenu user={user} signingOut={signingOut} onNavigate={onNavigate} onSignOut={onSignOut} /></div>
+    <div className="px-2"><AccountMenu user={user} personalLendingAvailable={personalLendingAvailable} signingOut={signingOut} onNavigate={onNavigate} onSignOut={onSignOut} /></div>
   </footer>;
 });
 
@@ -245,10 +246,7 @@ const RailEntry = memo(function RailEntry({ conversation, active, entryRef, onSe
 
 const MONEY_PAGES = [
   { label: "Overview", icon: LayoutDashboard, path: "/overview" },
-  { label: "Dashboards", icon: ChartColumn, path: "/dashboards" },
   { label: "Transactions", icon: ReceiptText, path: "/transactions" },
-  { label: "Personal lending", icon: HandCoins, path: "/loans" },
-  { label: "Categories", icon: Tags, path: "/categories" },
 ] as const;
 
 const ConversationRail = memo(function ConversationRail({ conversations, activeId, activePage, user, personalLendingAvailable, open, docked, switching, signingOut, loading, loadingMore, hasMore, settingsOpen, onClose, onOpenPage, onSelect, onPrefetch, onDelete, onRename, onLoadMore, onNew, onLeaveSettings, onOpenSection, onSignOut }: {
@@ -297,7 +295,7 @@ const ConversationRail = memo(function ConversationRail({ conversations, activeI
     {settingsOpen ? <SettingsRailIndex onLeave={onLeaveSettings} onNavigate={onOpenSection} /> : <>
       <nav aria-label="Money pages" className="py-2">
         <p className="ledger-meta px-3 pt-1 pb-2">Money</p>
-        {MONEY_PAGES.filter((item) => item.path !== appPaths.loans || personalLendingAvailable).map((item) => {
+        {MONEY_PAGES.map((item) => {
           const Icon = item.icon;
           return <div key={item.label} className="ledger-row">
             <button
@@ -340,7 +338,7 @@ const ConversationRail = memo(function ConversationRail({ conversations, activeI
       </div>
     </>}
 
-    <RailFooter user={user} signingOut={signingOut} onNavigate={onOpenPage} onSignOut={onSignOut} />
+    <RailFooter user={user} personalLendingAvailable={personalLendingAvailable} signingOut={signingOut} onNavigate={onOpenPage} onSignOut={onSignOut} />
   </aside>;
 });
 
