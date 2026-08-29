@@ -1056,9 +1056,9 @@ export async function getProfile(): Promise<Profile> {
   return conform(profileSchema, await request("/profile"), "profile");
 }
 
-export async function updateProfile(displayName: string): Promise<Profile> {
+export async function updateProfile(changes: { displayName: string; currency?: string; timezone?: string }): Promise<Profile> {
   return conform(profileSchema, await request("/profile", {
-    method: "PATCH", body: JSON.stringify({ displayName }),
+    method: "PATCH", body: JSON.stringify(changes),
   }), "profile");
 }
 

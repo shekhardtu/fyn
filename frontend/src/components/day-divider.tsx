@@ -1,22 +1,32 @@
 import { cn } from "@/lib/utils";
+import { useUserDefaults } from "@/components/user-defaults";
+import { calendarDayKey } from "@/lib/format";
 
-/** The reader's own calendar day for an instant, as `YYYY-MM-DD`.
- *
- *  Local rather than UTC, because the grouping has to agree with the delivery
- *  time printed under every message, and that is printed in the browser's
- *  timezone. An entry written at 2am in Delhi belongs to the day the person
- *  writing it was living in, whatever UTC calls that moment. */
-export function localDayKey(value: string): string | null {
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.valueOf())) return null;
-  const month = `${parsed.getMonth() + 1}`.padStart(2, "0");
-  const day = `${parsed.getDate()}`.padStart(2, "0");
-  return `${parsed.getFullYear()}-${month}-${day}`;
+const dayLabelFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function dayLabelFormatter(timeZone?: string) {
+  const key = timeZone ?? "local";
+  const existing = dayLabelFormatters.get(key);
+  if (existing) return existing;
+  const created = new Intl.DateTimeFormat("en-IN", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone,
+  });
+  dayLabelFormatters.set(key, created);
+  return created;
 }
 
-/** Built once: a long thread formats one date per day rather than one per
- *  message, but the transcript re-renders on every streamed token. */
-const dayParts = new Intl.DateTimeFormat("en-IN", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+/** The profile's calendar day for an instant, as `YYYY-MM-DD`.
+ *
+ *  The saved timezone rather than UTC (or whichever zone this device happens
+ *  to use) keeps grouping aligned with every delivery time and month boundary
+ *  elsewhere in the account. */
+export function localDayKey(value: string, timeZone?: string): string | null {
+  return calendarDayKey(value, timeZone);
+}
 
 /** "Tue, 19 Aug", and the year only outside the current one — on a thread from
  *  this morning it is noise, on one from 2025 it is the whole point.
@@ -25,25 +35,32 @@ const dayParts = new Intl.DateTimeFormat("en-IN", { weekday: "short", day: "nume
  *  locale punctuates the two shapes differently ("Tue, 30 Dec" but "Tue, 30
  *  Dec, 2025") and a marker that changes shape with the year is a marker the
  *  eye has to stop and read. */
-function exactDate(instant: Date, withYear: boolean) {
-  const parts = new Map(dayParts.formatToParts(instant).map((part) => [part.type, part.value]));
+function exactDate(instant: Date, withYear: boolean, timeZone?: string) {
+  const parts = new Map(dayLabelFormatter(timeZone).formatToParts(instant).map((part) => [part.type, part.value]));
   const day = `${parts.get("weekday")}, ${parts.get("day")} ${parts.get("month")}`;
   return withYear ? `${day} ${parts.get("year")}` : day;
+}
+
+function previousDayKey(key: string | null) {
+  if (!key) return null;
+  const [year, month, day] = key.split("-").map(Number);
+  const previous = new Date(Date.UTC(year, month - 1, day - 1));
+  return previous.toISOString().slice(0, 10);
 }
 
 /** Where a day sits relative to the reader, in the words they'd use for it.
  *  "Today" and "Yesterday" are the only two days anyone names by feel; every
  *  other day is named by its date. */
-function dayNames(instant: Date, now: Date) {
-  const exact = exactDate(instant, instant.getFullYear() !== now.getFullYear());
-  const key = localDayKey(instant.toISOString());
+function dayNames(instant: Date, now: Date, timeZone?: string) {
+  const key = localDayKey(instant.toISOString(), timeZone);
+  const today = localDayKey(now.toISOString(), timeZone);
+  const exact = exactDate(instant, key?.slice(0, 4) !== today?.slice(0, 4), timeZone);
   // Built from local calendar parts rather than by subtracting 24 hours, so a
   // month end, a year end, and a daylight-saving shift all land on the right
   // day.
-  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
-  const relative = key === localDayKey(now.toISOString())
+  const relative = key === today
     ? "Today"
-    : key === localDayKey(yesterday.toISOString())
+    : key === previousDayKey(today)
       ? "Yesterday"
       : null;
   return { label: relative ?? exact, spoken: relative ? `${relative}, ${exact}` : exact, key };
@@ -56,9 +73,10 @@ function dayNames(instant: Date, now: Date) {
  *  was said. Orientation is not a turn in the conversation, so it carries no
  *  emphasis of its own — muted ink at the meta size on the sunken ground. */
 export function DayDivider({ isoTime, className }: { isoTime: string; className?: string }) {
+  const { timeZone } = useUserDefaults();
   const instant = new Date(isoTime);
   if (Number.isNaN(instant.valueOf())) return null;
-  const { label, spoken, key } = dayNames(instant, new Date());
+  const { label, spoken, key } = dayNames(instant, new Date(), timeZone);
 
   return <div className={cn("day-pill", className)} role="separator" aria-label={spoken}>
     <time dateTime={key ?? undefined} aria-hidden>{label}</time>

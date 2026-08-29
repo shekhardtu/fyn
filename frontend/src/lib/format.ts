@@ -45,6 +45,63 @@ export function formatInstant(value: unknown, timeZone?: string) {
   return Number.isNaN(parsed.valueOf()) ? "" : formatTimestamp(parsed, timeZone);
 }
 
+/** The wall-clock part of an instant in the profile timezone. */
+export function formatTime(value: unknown, timeZone?: string) {
+  if (typeof value !== "string" || !value) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.valueOf())) return "";
+  return reuse(`time:${timeZone ?? "local"}`, () => new Intl.DateTimeFormat("en-IN", {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone,
+  })).format(parsed);
+}
+
+/** A stable calendar key in the profile timezone, used to group records and turns. */
+export function calendarDayKey(value: unknown, timeZone?: string): string | null {
+  if (typeof value !== "string" || !value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.valueOf())) return null;
+  if (!timeZone) {
+    const month = `${parsed.getMonth() + 1}`.padStart(2, "0");
+    const day = `${parsed.getDate()}`.padStart(2, "0");
+    return `${parsed.getFullYear()}-${month}-${day}`;
+  }
+  const parts = new Map(reuse(`day-key:${timeZone}`, () => new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone,
+  })).formatToParts(parsed).map((part) => [part.type, part.value]));
+  return `${parts.get("year")}-${parts.get("month")}-${parts.get("day")}`;
+}
+
+/** A ledger group heading such as "Sat, 29 August 2026". */
+export function formatLongDate(value: unknown, timeZone?: string) {
+  if (typeof value !== "string" || !value) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.valueOf())) return "";
+  return reuse(`long-date:${timeZone ?? "local"}`, () => new Intl.DateTimeFormat("en-IN", {
+    weekday: "short",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    timeZone,
+  })).format(parsed);
+}
+
+/** A compact record date for summaries that already provide surrounding context. */
+export function formatShortDate(value: unknown, timeZone?: string) {
+  if (typeof value !== "string" || !value) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.valueOf())) return "";
+  return reuse(`short-date:${timeZone ?? "local"}`, () => new Intl.DateTimeFormat("en-IN", {
+    day: "numeric",
+    month: "short",
+    timeZone,
+  })).format(parsed);
+}
+
 /** Present financial direction and taxonomy as one coherent classification.
  *  Income/Investments are taxonomy roots as well as transaction types, so the
  *  repeated root is collapsed while the direction always remains visible. */
@@ -64,18 +121,51 @@ export function formatTransactionClassification(
   return [typeLabel, hierarchy].filter(Boolean).join(" · ");
 }
 
-/** Convert a UTC ISO instant to the browser's wall clock for datetime-local. */
-export function timestampInputValue(value: unknown) {
+/** Convert a UTC ISO instant to a wall clock suitable for datetime-local. */
+export function timestampInputValue(value: unknown, timeZone?: string) {
   if (typeof value !== "string" || !value) return "";
   const instant = new Date(value);
   if (Number.isNaN(instant.valueOf())) return "";
+  if (timeZone) {
+    const parts = new Map(reuse(`input:${timeZone}`, () => new Intl.DateTimeFormat("en-CA", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+      timeZone,
+    })).formatToParts(instant).map((part) => [part.type, part.value]));
+    return `${parts.get("year")}-${parts.get("month")}-${parts.get("day")}T${parts.get("hour")}:${parts.get("minute")}`;
+  }
   const local = new Date(instant.getTime() - instant.getTimezoneOffset() * 60_000);
   return local.toISOString().slice(0, 16);
 }
 
-/** Convert a browser-local wall clock value to the canonical UTC ISO instant. */
-export function timestampInputToUtc(value: string) {
+/** Convert a profile-timezone wall clock value to the canonical UTC instant. */
+export function timestampInputToUtc(value: string, timeZone?: string) {
   if (!value) return null;
+  if (timeZone) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+    if (!match) return null;
+    const [, year, month, day, hour, minute] = match.map(Number);
+    const wallClock = Date.UTC(year, month - 1, day, hour, minute);
+    if (!Number.isFinite(wallClock)) return null;
+    let instant = wallClock;
+    // Resolve the IANA offset at the candidate instant. Repeating once covers
+    // offset changes near daylight-saving boundaries without hard-coded zone data.
+    for (let pass = 0; pass < 2; pass += 1) {
+      const represented = timestampInputValue(new Date(instant).toISOString(), timeZone);
+      const representedMatch = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(represented);
+      if (!representedMatch) return null;
+      const [, representedYear, representedMonth, representedDay, representedHour, representedMinute] = representedMatch.map(Number);
+      const representedClock = Date.UTC(representedYear, representedMonth - 1, representedDay, representedHour, representedMinute);
+      instant += wallClock - representedClock;
+    }
+    const result = new Date(instant).toISOString();
+    // A spring-forward gap is not a real wall time in that zone.
+    return timestampInputValue(result, timeZone) === value ? result : null;
+  }
   const instant = new Date(value);
   return Number.isNaN(instant.valueOf()) ? null : instant.toISOString();
 }

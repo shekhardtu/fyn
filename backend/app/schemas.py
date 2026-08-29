@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date as DateValue, datetime
 from typing import Any, Literal
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -1426,6 +1427,8 @@ class ProfileOut(BaseModel):
 class ProfileUpdateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     display_name: str = Field(min_length=2, max_length=120, validation_alias="displayName")
+    currency: str | None = Field(default=None, min_length=3, max_length=3)
+    timezone: str | None = Field(default=None, min_length=1, max_length=80)
 
     @field_validator("display_name", mode="before")
     @classmethod
@@ -1433,6 +1436,28 @@ class ProfileUpdateIn(BaseModel):
         normalized = " ".join(str(value).split())
         if normalized.casefold() == "you":
             raise ValueError("Enter the name the other person will recognize")
+        return normalized
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_profile_currency(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip().upper()
+        if len(normalized) != 3 or not normalized.isalpha():
+            raise ValueError("Currency must be a three-letter code")
+        return normalized
+
+    @field_validator("timezone", mode="before")
+    @classmethod
+    def normalize_profile_timezone(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        try:
+            ZoneInfo(normalized)
+        except (ZoneInfoNotFoundError, ValueError) as error:
+            raise ValueError("Choose a valid IANA timezone") from error
         return normalized
 
 

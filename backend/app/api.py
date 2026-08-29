@@ -821,7 +821,13 @@ def create_observation(request: ObservationIn, db: Session = Depends(get_db), us
 @router.post("/ingest/message", response_model=FinancialMessageOut)
 def ingest_message(request: FinancialMessageIn, db: Session = Depends(get_db), user: User = Depends(current_user)) -> FinancialMessageOut:
     _ensure_source_active(db, user.id, request.source_type)
-    adapted = MessageAdapter(request.source_type).adapt_message(request.text, request.message_id, request.observed_at, user.timezone)
+    adapted = MessageAdapter(request.source_type).adapt_message(
+        request.text,
+        request.message_id,
+        request.observed_at,
+        timezone_name=user.timezone,
+        default_currency=user.currency,
+    )
     if not adapted.relevant or not adapted.observation:
         return FinancialMessageOut(classification=adapted.classification, relevant=False, reason=adapted.reason)
     result = ingest_observation(db, user.id, adapted.observation)
@@ -849,7 +855,7 @@ async def import_csv(conversation_id: UUID = Form(...), file: UploadFile = File(
         result = import_summary(existing, idempotent_replay=True)
         return _record_import_preview(db, conversation, file.filename, result, widget_updates=widget_updates)
     try:
-        rows = CSVAdapter().adapt(content, user.timezone)
+        rows = CSVAdapter().adapt(content, timezone_name=user.timezone, default_currency=user.currency)
     except (UnicodeDecodeError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     widget_updates = supersede_open_interrupts(

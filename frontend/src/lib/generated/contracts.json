@@ -18522,6 +18522,34 @@
           "minLength": 2,
           "title": "Display Name",
           "type": "string"
+        },
+        "currency": {
+          "anyOf": [
+            {
+              "maxLength": 3,
+              "minLength": 3,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Currency"
+        },
+        "timezone": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timezone"
         }
       },
       "required": [
@@ -19118,5 +19146,5 @@
     "approve_operation": "OperationActionPayload",
     "cancel_operation": "OperationActionPayload"
   },
-  "schemaHash": "ebe26d8ff6de9a4d613d0bf3daa04a33d863f828be28403f616a684b48a68e16"
+  "schemaHash": "af5ccc6095a2b95f1ae1c6b7b6b98ccc347270483eb56e0800dd6631ee33d1a7"
 }

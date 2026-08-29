@@ -95,6 +95,16 @@ describe("transaction day groups", () => {
     expect(groups.map((group) => group.transactions.length)).toEqual([2, 1]);
     expect(groups.flatMap((group) => group.transactions).map((item) => item.id)).toEqual(items.map((item) => item.id));
   });
+
+  it("groups midnight-adjacent entries using the profile timezone", () => {
+    const items = [
+      { ...transaction, id: "97975fca-938d-493b-a163-7dcf393849fa", transactionAt: "2026-08-19T20:00:00Z" },
+      { ...transaction, id: "d7e7b57f-48a7-4ed0-a839-dba471aff18e", transactionAt: "2026-08-19T17:00:00Z" },
+    ];
+
+    expect(groupTransactionsByDay(items, "Asia/Kolkata").map((group) => group.id)).toEqual(["2026-08-20", "2026-08-19"]);
+    expect(groupTransactionsByDay(items, "America/New_York").map((group) => group.id)).toEqual(["2026-08-19"]);
+  });
 });
 
 describe("TransactionEditor", () => {

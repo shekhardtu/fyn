@@ -1,11 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Download, FileText, Loader2, LogOut, Mail, Plus, ShieldCheck, Smartphone, Trash2, TriangleAlert, UploadCloud } from "lucide-react";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { Check, Coins, Download, FileText, Globe2, Loader2, LogOut, Mail, Pencil, Plus, ShieldCheck, Smartphone, Trash2, TriangleAlert, UploadCloud } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { appPaths } from "@/routing/paths";
 import { CHANNEL_COPY, CodeExchange } from "@/components/sign-in";
 import { SettingsGroup, settingsProblem, settingsSaved } from "@/components/settings-parts";
 import { Button } from "@/components/ui/button";
+import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
 import { deleteDocumentAsset, documentAssetDownloadUrl, getProfile, isUnauthorized, loadDocumentAssets, removeIdentity, signOut, startLinkCode, updateProfile, uploadDocumentAsset, verifyLinkCode, type OtpChannel, type Profile } from "@/lib/api";
 import type { DocumentAssetOut, IdentityOut } from "@/lib/protocol";
 
@@ -14,6 +15,49 @@ const PROVIDER_COPY: Record<IdentityOut["provider"], { label: string; icon: Reac
   email: { label: "Email address", icon: <Mail /> },
   google: { label: "Google", icon: <GoogleMark /> },
 };
+
+const CURRENCY_OPTIONS: ComboboxOption[] = [
+  { value: "INR", label: "Indian rupee (INR)" },
+  { value: "USD", label: "US dollar (USD)" },
+  { value: "EUR", label: "Euro (EUR)" },
+  { value: "GBP", label: "Pound sterling (GBP)" },
+  { value: "AED", label: "UAE dirham (AED)" },
+  { value: "SGD", label: "Singapore dollar (SGD)" },
+  { value: "AUD", label: "Australian dollar (AUD)" },
+  { value: "CAD", label: "Canadian dollar (CAD)" },
+  { value: "JPY", label: "Japanese yen (JPY)" },
+  { value: "CNY", label: "Chinese yuan (CNY)" },
+  { value: "CHF", label: "Swiss franc (CHF)" },
+  { value: "NZD", label: "New Zealand dollar (NZD)" },
+];
+
+const FALLBACK_TIMEZONES = [
+  "Asia/Kolkata",
+  "Asia/Dubai",
+  "Asia/Singapore",
+  "Asia/Tokyo",
+  "Europe/London",
+  "Europe/Berlin",
+  "America/New_York",
+  "America/Chicago",
+  "America/Denver",
+  "America/Los_Angeles",
+  "Australia/Sydney",
+  "Pacific/Auckland",
+  "UTC",
+];
+
+const SUPPORTED_TIMEZONES = [...new Set([
+  ...FALLBACK_TIMEZONES,
+  ...(typeof Intl.supportedValuesOf === "function" ? Intl.supportedValuesOf("timeZone") : []),
+])];
+
+function timezoneLabel(timezone: string) {
+  const offset = new Intl.DateTimeFormat("en", { timeZone: timezone, timeZoneName: "shortOffset" })
+    .formatToParts(new Date())
+    .find((part) => part.type === "timeZoneName")?.value;
+  return `${timezone.replaceAll("_", " ")}${offset ? ` (${offset})` : ""}`;
+}
 
 function GoogleMark() {
   return <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden focusable="false">
@@ -24,10 +68,10 @@ function GoogleMark() {
   </svg>;
 }
 
-function formatDate(value: string) {
+function formatDate(value: string, timeZone?: string) {
   // en-IN like every other date in the product; the browser locale would
   // print this one page differently from the ledger it sits beside.
-  return new Date(value).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+  return new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone }).format(new Date(value));
 }
 
 /** Why a linked method cannot be removed, or null when it can be.
@@ -47,9 +91,24 @@ export function ProfilePanel() {
   const [confirmingRemoval, setConfirmingRemoval] = useState<string | null>(null);
   const [confirmingDocumentRemoval, setConfirmingDocumentRemoval] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState<string | null>(null);
+  const [currency, setCurrency] = useState<string | null>(null);
+  const [timezone, setTimezone] = useState<string | null>(null);
 
   const profile = useQuery({ queryKey: ["profile"], queryFn: getProfile, retry: false });
   const documents = useQuery({ queryKey: ["document-assets"], queryFn: loadDocumentAssets, retry: false });
+  const currencyOptions = useMemo(() => {
+    const current = profile.data?.currency;
+    return !current || CURRENCY_OPTIONS.some((option) => option.value === current)
+      ? CURRENCY_OPTIONS
+      : [{ value: current, label: current }, ...CURRENCY_OPTIONS];
+  }, [profile.data?.currency]);
+  const timezoneOptions = useMemo(() => {
+    const current = profile.data?.timezone;
+    const values = !current || SUPPORTED_TIMEZONES.includes(current)
+      ? SUPPORTED_TIMEZONES
+      : [current, ...SUPPORTED_TIMEZONES];
+    return values.map((value) => ({ value, label: timezoneLabel(value) }));
+  }, [profile.data?.timezone]);
 
   const leave = useCallback(() => { queryClient.clear(); navigate(appPaths.login, { replace: true }); }, [navigate, queryClient]);
   const signedOut = isUnauthorized(profile.error);
@@ -71,12 +130,32 @@ export function ProfilePanel() {
     onError: (cause: Error) => settingsProblem(cause.message),
   });
   const saveProfile = useMutation({
-    mutationFn: () => updateProfile(displayName ?? profile.data?.displayName ?? ""),
+    mutationFn: () => updateProfile({ displayName: displayName ?? profile.data?.displayName ?? "" }),
     onSuccess: (updated) => {
       queryClient.setQueryData(["profile"], updated);
       setDisplayName(null);
       void queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
       settingsSaved("Your display name was updated.");
+    },
+    onError: (cause: Error) => settingsProblem(cause.message),
+  });
+  const saveDefaults = useMutation({
+    mutationFn: () => updateProfile({
+      displayName: profile.data?.displayName ?? "",
+      currency: currency ?? profile.data?.currency ?? "",
+      timezone: timezone ?? profile.data?.timezone ?? "",
+    }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["profile"], updated);
+      setCurrency(null);
+      setTimezone(null);
+      // Currency changes which records and totals belong in money views;
+      // timezone changes their day/month boundaries. Mark every dependent
+      // query stale, while leaving the document repository alone.
+      void queryClient.invalidateQueries({
+        predicate: (query) => !["profile", "document-assets"].includes(String(query.queryKey[0])),
+      });
+      settingsSaved("Your currency and timezone defaults were updated.");
     },
     onError: (cause: Error) => settingsProblem(cause.message),
   });
@@ -116,7 +195,26 @@ export function ProfilePanel() {
   const editedDisplayName = displayName ?? account.displayName;
   const blocked = removalBlock(account);
   const has = (provider: IdentityOut["provider"]) => account.identities.some((item) => item.provider === provider);
-  const googleOwnsEmail = account.identities.some((item) => item.provider === "email" && item.source === "google");
+  const missingChannels = (["phone", "email"] as const).filter((channel) => !has(channel));
+  const editedCurrency = currency ?? account.currency;
+  const editedTimezone = timezone ?? account.timezone;
+  const defaultsChanged = editedCurrency !== account.currency || editedTimezone !== account.timezone;
+
+  const linkExchange = (channel: OtpChannel, replacing: boolean) => <CodeExchange
+    channel={channel}
+    autoFocus
+    submitLabel={replacing ? "Verify and save" : "Verify and add"}
+    onCancel={() => setLinking(null)}
+    onStart={(value) => startLinkCode(channel, value)}
+    onVerify={async (challengeId, code) => {
+      const updated = await verifyLinkCode(challengeId, code);
+      queryClient.setQueryData(["profile"], updated);
+      // The rail shows the account, so it has to hear about this too.
+      void queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+      setLinking(null);
+      settingsSaved(replacing ? `Your ${CHANNEL_COPY[channel].noun} was updated.` : `Your ${CHANNEL_COPY[channel].noun} is linked. You can sign in with it now.`);
+    }}
+  />;
 
   return <div>
     <header className="mb-7 flex items-center gap-3">
@@ -138,6 +236,48 @@ export function ProfilePanel() {
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <Button type="submit" disabled={saveProfile.isPending || editedDisplayName.trim() === account.displayName || editedDisplayName.trim().toLowerCase() === "you"}>{saveProfile.isPending ? <Loader2 className="animate-spin" /> : <Check />}Save name</Button>
           <span className="text-note text-ink-muted">{account.currency} · {account.timezone}</span>
+        </div>
+      </form>
+    </SettingsGroup>
+
+    <SettingsGroup
+      title="Regional defaults"
+      description="These defaults shape new records, calculations, calendar boundaries, and how dates and money are shown across Fyn."
+    >
+      <form onSubmit={(event) => { event.preventDefault(); saveDefaults.mutate(); }}>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <p className="flex items-center gap-2 text-control font-medium text-ink-body"><Coins size={16} className="text-secondary" />Default currency</p>
+            <Combobox
+              aria-label="Default currency"
+              value={editedCurrency}
+              onValueChange={setCurrency}
+              options={currencyOptions}
+              searchPlaceholder="Search currencies"
+              triggerClassName="mt-2"
+            />
+            <p className="mt-2 text-note leading-5 text-ink-muted">Used when you record or calculate an amount without naming a currency.</p>
+          </div>
+          <div>
+            <p className="flex items-center gap-2 text-control font-medium text-ink-body"><Globe2 size={16} className="text-secondary" />Timezone</p>
+            <Combobox
+              aria-label="Timezone"
+              value={editedTimezone}
+              onValueChange={setTimezone}
+              options={timezoneOptions}
+              searchable
+              searchPlaceholder="Search timezones"
+              triggerClassName="mt-2"
+            />
+            <p className="mt-2 text-note leading-5 text-ink-muted">Used for transaction dates, month boundaries, reminders, and activity times.</p>
+          </div>
+        </div>
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <Button type="submit" disabled={saveDefaults.isPending || !defaultsChanged}>
+            {saveDefaults.isPending ? <Loader2 className="animate-spin" /> : <Check />}
+            {saveDefaults.isPending ? "Updating…" : "Update defaults"}
+          </Button>
+          <span className="text-note text-ink-muted">Existing money records keep their original currency; values are never converted automatically.</span>
         </div>
       </form>
     </SettingsGroup>
@@ -180,76 +320,85 @@ export function ProfilePanel() {
 
     <SettingsGroup
       title="How you sign in"
-      description="Link a phone number and an email address to the same account and either one will get you in. Each belongs to one account only."
+      description="Use any verified method below to sign in. You can keep one phone number and one email address on this account."
     >
       <ul className="divide-y divide-line overflow-hidden rounded-lg border border-line bg-surface">
-          {account.identities.map((identity) => <li key={identity.id} className="flex items-center gap-3 px-4 py-4">
-            <span aria-hidden className="grid size-9 shrink-0 place-items-center rounded-xl bg-secondary-tint text-secondary">{PROVIDER_COPY[identity.provider].icon}</span>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-control font-medium text-ink-body">{identity.value}</p>
-              <p className="mt-0.5 flex items-center gap-1 text-note text-ink-muted">
-                <Check size={14} className="shrink-0 text-secondary" />
-                {PROVIDER_COPY[identity.provider].label} · verified {formatDate(identity.verifiedAt)}
-              </p>
-            </div>
-            {confirmingRemoval === identity.id
-              // Removing a way in can't be undone from here, so it gets a real
-              // question in place — not a modal, and never a bare trash click.
-              ? <div className="flex shrink-0 items-center gap-1">
-                <Button type="button" variant="destructive" size="sm" disabled={unlink.isPending} onClick={() => { setConfirmingRemoval(null); unlink.mutate(identity.id); }}>
-                  {unlink.isPending && unlink.variables === identity.id ? <Loader2 className="animate-spin" /> : <Trash2 />} Remove
-                </Button>
-                <Button type="button" variant="ghost" size="sm" disabled={unlink.isPending} onClick={() => setConfirmingRemoval(null)}>Keep</Button>
+        {account.identities.map((identity) => {
+          const channel = identity.provider === "phone" || identity.provider === "email" ? identity.provider : null;
+          const managedByGoogle = channel === "email" && identity.source === "google";
+          const editable = channel !== null && !managedByGoogle;
+          const editing = editable && linking === channel;
+          const editorId = `edit-identity-${identity.id}`;
+
+          return <li key={identity.id}>
+            <div className="flex items-center gap-3 px-4 py-4">
+              <span aria-hidden className="grid size-9 shrink-0 place-items-center rounded-xl bg-secondary-tint text-secondary">{PROVIDER_COPY[identity.provider].icon}</span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-control font-medium text-ink-body">{identity.value}</p>
+                <p className="mt-0.5 flex items-center gap-1 text-note text-ink-muted">
+                  <Check size={14} className="shrink-0 text-secondary" />
+                  {managedByGoogle
+                    ? `${PROVIDER_COPY[identity.provider].label} · managed by Google`
+                    : `${PROVIDER_COPY[identity.provider].label} · verified ${formatDate(identity.verifiedAt, profile.data.timezone)}`}
+                </p>
               </div>
-              : <Button
-                type="button"
-                variant="ghost"
-                size="icon-lg"
-                aria-label={`Remove ${PROVIDER_COPY[identity.provider].label.toLowerCase()} ${identity.value}`}
-                title={blocked ?? "Remove this sign-in method"}
-                disabled={Boolean(blocked) || unlink.isPending}
-                onClick={() => setConfirmingRemoval(identity.id)}
-                className="shrink-0 rounded-xl text-ink-muted hover:text-danger"
-              >
-                {unlink.isPending && unlink.variables === identity.id ? <Loader2 className="animate-spin" /> : <Trash2 />}
-              </Button>}
-          </li>)}
+              {confirmingRemoval === identity.id
+                // Removing a way in can't be undone from here, so it gets a real
+                // question in place — not a modal, and never a bare trash click.
+                ? <div className="flex shrink-0 items-center gap-1">
+                  <Button type="button" variant="destructive" size="sm" disabled={unlink.isPending} onClick={() => { setConfirmingRemoval(null); unlink.mutate(identity.id); }}>
+                    {unlink.isPending && unlink.variables === identity.id ? <Loader2 className="animate-spin" /> : <Trash2 />} Remove
+                  </Button>
+                  <Button type="button" variant="ghost" size="sm" disabled={unlink.isPending} onClick={() => setConfirmingRemoval(null)}>Keep</Button>
+                </div>
+                : <div className="flex shrink-0 items-center gap-1">
+                  {editable ? <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    aria-label={`Edit ${PROVIDER_COPY[identity.provider].label.toLowerCase()} ${identity.value}`}
+                    aria-expanded={editing}
+                    aria-controls={editorId}
+                    onClick={() => { setConfirmingRemoval(null); setLinking(editing ? null : channel); }}
+                    className="text-ink-body"
+                  >
+                    <Pencil /> Edit
+                  </Button> : null}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-lg"
+                    aria-label={`Remove ${PROVIDER_COPY[identity.provider].label.toLowerCase()} ${identity.value}`}
+                    title={blocked ?? "Remove this sign-in method"}
+                    disabled={Boolean(blocked) || unlink.isPending}
+                    onClick={() => { setLinking(null); setConfirmingRemoval(identity.id); }}
+                    className="shrink-0 rounded-xl text-ink-muted hover:text-danger"
+                  >
+                    {unlink.isPending && unlink.variables === identity.id ? <Loader2 className="animate-spin" /> : <Trash2 />}
+                  </Button>
+                </div>}
+            </div>
+
+            {editing ? <div id={editorId} className="border-t border-line bg-surface-sunken px-4 py-4 sm:pl-16">
+              <p className="text-control font-semibold text-ink-body">Edit your {CHANNEL_COPY[channel].noun}</p>
+              <p className="mt-1 mb-4 text-note leading-5 text-ink-muted">Your current {CHANNEL_COPY[channel].noun} will keep working until the new one is verified.</p>
+              {linkExchange(channel, true)}
+            </div> : null}
+          </li>;
+        })}
         </ul>
 
       {blocked ? <p className="mt-2 text-note leading-5 text-ink-muted">{blocked}</p> : null}
 
-      <div className="mt-4 space-y-3">
-        {(["phone", "email"] as const).map((channel) => {
-            const linked = has(channel);
-            // A Google-issued address is managed at Google, so the only honest
-            // thing to offer here is an explanation, not a disabled button.
-            const managed = channel === "email" && googleOwnsEmail;
+      {missingChannels.length > 0 ? <div className="mt-4 space-y-3">
+        {missingChannels.map((channel) => {
             const article = channel === "email" ? "an" : "a";
             if (linking === channel) {
               return <div key={channel} className="rounded-lg border border-secondary-line bg-secondary-tint/30 p-4">
-                <p className="mb-3 text-control font-semibold text-ink-body">{linked ? `Change your ${CHANNEL_COPY[channel].noun}` : `Add ${article} ${CHANNEL_COPY[channel].noun}`}</p>
-                <CodeExchange
-                  channel={channel}
-                  autoFocus
-                  submitLabel={linked ? "Verify and replace" : "Verify and link"}
-                  onCancel={() => setLinking(null)}
-                  onStart={(value) => startLinkCode(channel, value)}
-                  onVerify={async (challengeId, code) => {
-                    const updated = await verifyLinkCode(challengeId, code);
-                    queryClient.setQueryData(["profile"], updated);
-                    // The rail shows the account, so it has to hear about this too.
-                    void queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
-                    setLinking(null);
-                    settingsSaved(linked ? `Your ${CHANNEL_COPY[channel].noun} was updated.` : `Your ${CHANNEL_COPY[channel].noun} is linked. You can sign in with it now.`);
-                  }}
-                />
+                <p className="text-control font-semibold text-ink-body">Add {article} {CHANNEL_COPY[channel].noun}</p>
+                <p className="mt-1 mb-4 text-note leading-5 text-ink-muted">Once verified, you can use it to sign in to this account.</p>
+                {linkExchange(channel, false)}
               </div>;
-            }
-            if (managed) {
-              return <p key={channel} className="rounded-lg border border-line bg-surface-sunken px-4 py-3 text-note leading-5 text-ink-muted">
-                Your email address comes from your Google sign-in, so it’s managed in your
-                Google account rather than here.
-              </p>;
             }
             return <Button
               key={channel}
@@ -258,15 +407,14 @@ export function ProfilePanel() {
               onClick={() => setLinking(channel)}
               className="h-11 w-full justify-start rounded-xl px-4"
             >
-              <Plus />{linked ? `Change your ${CHANNEL_COPY[channel].noun}` : `Add ${article} ${CHANNEL_COPY[channel].noun}`}
+              <Plus />Add {article} {CHANNEL_COPY[channel].noun}
             </Button>;
         })}
-      </div>
+      </div> : null}
 
       <p className="mt-4 text-note leading-5 text-ink-muted">
-        If a phone number or email address is already linked to another account, it can’t be
-        added here. Sign in to that account and delete it first — deleting an account releases
-        its phone number and email address.
+        A phone number or email address can belong to only one account. If one is already in
+        use, sign in to that account and remove it there first.
       </p>
     </SettingsGroup>
 

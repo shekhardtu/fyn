@@ -11,15 +11,13 @@ import { Combobox } from "@/components/ui/combobox";
 import { SITE_HEADER_HEIGHT, SiteHeader, useAutoHideSiteHeader } from "@/components/ui/site-header";
 import { toast, UNDO_WINDOW_MS } from "@/components/ui/toast";
 import { useWorkspaceOverlay, useWorkspaceShell } from "@/components/workspace";
+import { useUserDefaults } from "@/components/user-defaults";
 import { createCategory, createSubcategory, createTransactionHint, createTransactionRecord, deleteCategory, deleteSubcategory, deleteTransactionHint, getPrivacyStatus, loadCategories, loadOverview, loadTransactionRevisions, loadTransactions, removeTransaction, renameCategory, renameSubcategory, restoreTransaction, updateTransaction, updateTransactionHint } from "@/lib/api";
-import { formatInstant, formatMoney, formatTransactionClassification } from "@/lib/format";
+import { formatInstant, formatLongDate, formatMoney, formatTime, formatTransactionClassification } from "@/lib/format";
 import { usePlainKey } from "@/lib/shortcuts";
 import { groupTransactionsByDay } from "@/lib/transaction-groups";
 import { editableTransactionTypes, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type TransactionListItemOut, type TransactionRevisionOut, type TransactionUpdateIn } from "@/lib/protocol";
 import { cn } from "@/lib/utils";
-
-const dayFormatter = new Intl.DateTimeFormat("en-IN", { weekday: "short", day: "numeric", month: "long", year: "numeric" });
-const timeFormatter = new Intl.DateTimeFormat("en-IN", { hour: "numeric", minute: "2-digit" });
 
 function titleCase(value: string) {
   return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -69,16 +67,17 @@ function revisionFieldLabel(field: string) {
   } as Record<string, string>)[field] ?? titleCase(field);
 }
 
-function revisionValue(field: string, value: unknown, currency: string) {
+function revisionValue(field: string, value: unknown, currency: string, timeZone?: string) {
   if (value == null || value === "") return "Not set";
   if (field === "amount_minor" && typeof value === "number") return formatMoney(value, currency);
-  if (field === "transaction_at" && typeof value === "string") return formatInstant(value);
-  if (field === "deleted_at") return typeof value === "string" ? `Removed ${formatInstant(value)}` : "Active";
+  if (field === "transaction_at" && typeof value === "string") return formatInstant(value, timeZone);
+  if (field === "deleted_at") return typeof value === "string" ? `Removed ${formatInstant(value, timeZone)}` : "Active";
   if (Array.isArray(value)) return value.length ? value.join(", ") : "None";
   return titleCase(String(value));
 }
 
 function TransactionHistory({ revisions, loading, currency }: { revisions: TransactionRevisionOut[]; loading: boolean; currency: string }) {
+  const { timeZone } = useUserDefaults();
   const visibleFields = new Set(["amount_minor", "merchant_name", "transaction_at", "transaction_type", "category", "subcategory", "location_label", "spend_nature", "tags", "deleted_at"]);
   return <details className="mt-6 rounded-lg border border-line bg-ground/60">
     <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-note font-semibold text-ink-body"><History size={16} />Amendment history<span className="ml-auto font-normal text-ink-muted">{loading ? "Loading…" : `${revisions.length} version${revisions.length === 1 ? "" : "s"}`}</span></summary>
@@ -86,8 +85,8 @@ function TransactionHistory({ revisions, loading, currency }: { revisions: Trans
       {loading ? <p className="text-note text-ink-muted">Loading transaction versions…</p> : revisions.length ? <ol className="space-y-4">{revisions.map((revision) => {
         const changes = Object.entries(revision.changes).filter(([field]) => visibleFields.has(field));
         return <li key={revision.revisionNumber} className="text-note">
-          <p className="font-medium text-ink">Version {revision.revisionNumber}<span className="ml-2 font-normal text-ink-muted">{formatInstant(revision.createdAt)} · {revision.source === "conversation_edit" ? "Conversation edit" : revision.source === "ledger_edit" ? "Ledger edit" : revision.source === "remove" ? "Removed" : revision.source === "restore" ? "Restored" : "Created"}</span></p>
-          {changes.length ? <ul className="mt-1.5 space-y-1 text-ink-muted">{changes.map(([field, change]) => <li key={field}><span className="font-medium text-ink-body">{revisionFieldLabel(field)}:</span> {revisionValue(field, change.before, currency)} → {revisionValue(field, change.after, currency)}</li>)}</ul> : <p className="mt-1 text-ink-muted">Initial saved version.</p>}
+          <p className="font-medium text-ink">Version {revision.revisionNumber}<span className="ml-2 font-normal text-ink-muted">{formatInstant(revision.createdAt, timeZone)} · {revision.source === "conversation_edit" ? "Conversation edit" : revision.source === "ledger_edit" ? "Ledger edit" : revision.source === "remove" ? "Removed" : revision.source === "restore" ? "Restored" : "Created"}</span></p>
+          {changes.length ? <ul className="mt-1.5 space-y-1 text-ink-muted">{changes.map(([field, change]) => <li key={field}><span className="font-medium text-ink-body">{revisionFieldLabel(field)}:</span> {revisionValue(field, change.before, currency, timeZone)} → {revisionValue(field, change.after, currency, timeZone)}</li>)}</ul> : <p className="mt-1 text-ink-muted">Initial saved version.</p>}
         </li>;
       })}</ol> : <p className="text-note text-ink-muted">No amendment history is available for this older transaction yet.</p>}
     </div>
@@ -200,13 +199,14 @@ export function TransactionRow({ transaction, style, onEdit, onRestore, onRemove
   onRestore?: (transaction: TransactionListItemOut) => void;
   onRemove?: (transaction: TransactionListItemOut) => void;
 }) {
+  const { timeZone } = useUserDefaults();
   const removed = Boolean(transaction.deletedAt);
   const tone = transactionTone(transaction);
   const Icon = removed ? Trash2 : tone.icon;
   const classification = formatTransactionClassification(transaction.transactionType, transaction.category, transaction.subcategory);
   return <article className="grid min-h-[68px] grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-b border-line px-4 sm:gap-4 sm:px-5" style={style}>
     <span className={cn("grid size-9 place-items-center rounded-lg bg-ground", removed ? "text-ink-muted" : tone.className)}><Icon size={17} /></span>
-    <div className="min-w-0"><p className={cn("truncate text-control font-semibold", removed ? "text-ink-muted line-through" : "text-ink")} title={transaction.merchant ?? undefined}>{transaction.merchant ?? titleCase(transaction.transactionType)}</p><p className="mt-0.5 truncate text-note text-ink-muted">{[classification, timeFormatter.format(new Date(transaction.transactionAt)), removed ? `Removed ${formatInstant(transaction.deletedAt)}` : null].filter(Boolean).join(" · ")}</p></div>
+    <div className="min-w-0"><p className={cn("truncate text-control font-semibold", removed ? "text-ink-muted line-through" : "text-ink")} title={transaction.merchant ?? undefined}>{transaction.merchant ?? titleCase(transaction.transactionType)}</p><p className="mt-0.5 truncate text-note text-ink-muted">{[classification, formatTime(transaction.transactionAt, timeZone), removed ? `Removed ${formatInstant(transaction.deletedAt, timeZone)}` : null].filter(Boolean).join(" · ")}</p></div>
     <div className="flex items-center gap-2 sm:gap-4">
       {removed ? <span className="rounded-full bg-danger-tint px-2.5 py-1 text-meta font-semibold text-danger-ink">Removed</span> : null}
       <p className={cn("font-heading text-control font-semibold tabular-nums", removed ? "text-ink-muted line-through" : tone.className)}>{tone.prefix}{formatMoney(transaction.amountMinor, transaction.currency)}</p>
@@ -254,7 +254,8 @@ function VirtualTransactionList({ items, scrollElement, headerVisible, hasNextPa
   onRestore: (transaction: TransactionListItemOut) => void;
   onRemove: (transaction: TransactionListItemOut) => void;
 }) {
-  const groups = useMemo(() => groupTransactionsByDay(items), [items]);
+  const { timeZone } = useUserDefaults();
+  const groups = useMemo(() => groupTransactionsByDay(items, timeZone), [items, timeZone]);
   const groupCounts = useMemo(() => groups.map((group) => group.transactions.length), [groups]);
   const itemKeys = useMemo(() => groups.flatMap((group) => [`transaction-day-${group.id}`, ...group.transactions.map((transaction) => transaction.id)]), [groups]);
   const context = useMemo<TransactionListContext>(() => ({
@@ -279,7 +280,7 @@ function VirtualTransactionList({ items, scrollElement, headerVisible, hasNextPa
       endReached={() => {
         if (hasNextPage && !fetchingNextPage) onLoadMore();
       }}
-      groupContent={(groupIndex) => <h3 className="ledger-meta flex h-[35px] items-center border-b border-line bg-ground px-4 shadow-[0_1px_0_var(--line)] sm:px-5">{groups[groupIndex] ? dayFormatter.format(new Date(groups[groupIndex].transactions[0].transactionAt)) : null}</h3>}
+      groupContent={(groupIndex) => <h3 className="ledger-meta flex h-[35px] items-center border-b border-line bg-ground px-4 shadow-[0_1px_0_var(--line)] sm:px-5">{groups[groupIndex] ? formatLongDate(groups[groupIndex].transactions[0].transactionAt, timeZone) : null}</h3>}
       itemContent={(index) => {
         const transaction = items[index];
         return transaction ? <TransactionRow transaction={transaction} onEdit={onEdit} onRestore={onRestore} onRemove={onRemove} /> : null;
@@ -545,6 +546,7 @@ export function TransactionsPage() {
 }
 
 export function CategoriesPage() {
+  const { currency } = useUserDefaults();
   const queryClient = useQueryClient();
   const categories = useQuery({ queryKey: ["category-directory"], queryFn: loadCategories });
   const overview = useQuery({ queryKey: ["overview", "current"], queryFn: () => loadOverview() });
@@ -607,7 +609,7 @@ export function CategoriesPage() {
         {categories.isPending || overview.isPending ? <PageSkeleton rows={7} /> : categories.isError || overview.isError ? <QueryFailure title="We couldn’t load your categories" onRetry={() => { void categories.refetch(); void overview.refetch(); }} /> : visibleCategories.length ? <CategoryManager
           categories={visibleCategories}
           usage={categoryUsage}
-          currency={overview.data?.summary.currency ?? "INR"}
+          currency={overview.data?.summary.currency ?? currency}
           onCreateCategory={async (name) => { const created = await refreshDirectory(createCategory(name)); setSearch(""); return created; }}
           onRenameCategory={(id, name) => refreshDirectory(renameCategory(id, name))}
           onDeleteCategory={(id) => refreshDirectory(deleteCategory(id))}

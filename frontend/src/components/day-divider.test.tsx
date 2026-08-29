@@ -71,4 +71,9 @@ describe("day divider", () => {
     expect(localDayKey(nextMorning.toISOString())).toBe("2026-08-20");
     expect(localDayKey("not-a-timestamp")).toBeNull();
   });
+
+  it("uses the profile timezone at calendar-day boundaries", () => {
+    expect(localDayKey("2026-08-19T20:00:00.000Z", "Asia/Kolkata")).toBe("2026-08-20");
+    expect(localDayKey("2026-08-19T20:00:00.000Z", "America/New_York")).toBe("2026-08-19");
+  });
 });
