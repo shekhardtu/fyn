@@ -19,19 +19,19 @@ import { useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { Area, AreaChart, CartesianGrid, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { CategoryExplorer } from "@/components/category-explorer";
+import { useUserDefaults } from "@/components/user-defaults";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { SiteHeader, useAutoHideSiteHeader } from "@/components/ui/site-header";
 import { useWorkspaceShell } from "@/components/workspace";
 import { loadOverview } from "@/lib/api";
-import { formatCount, formatMoney } from "@/lib/format";
+import { formatCount, formatMoney, formatShortDate } from "@/lib/format";
 import type { OverviewAccountOut, OverviewBudgetOut, OverviewCategoryOut, OverviewOut, OverviewTransactionOut, OverviewTrendPointOut } from "@/lib/generated/contracts";
 import { cn } from "@/lib/utils";
 import { appPaths } from "@/routing/paths";
 
 export type TrendRange = "7" | "30" | "max";
 
-const transactionDate = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short" });
 const trendDate = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short" });
 const budgetDate = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short" });
 const compactFormatters = new Map<string, Intl.NumberFormat>();
@@ -475,6 +475,7 @@ function transactionDirection(transaction: OverviewTransactionOut) {
 }
 
 function TransactionHistory({ transactions, onViewAll }: { transactions: OverviewTransactionOut[]; onViewAll: () => void }) {
+  const { timeZone } = useUserDefaults();
   return <section aria-labelledby="transaction-history-title" className="overflow-hidden rounded-xl border border-line bg-surface lg:col-span-2">
     <div className="px-5 pt-5 pb-3 sm:px-6 sm:pt-6">
       <SectionHeading id="transaction-history-title" eyebrow="Recent activity" title="Transaction history" action={<Button type="button" variant="ghost" size="sm" onClick={onViewAll}>View all <ArrowRight /></Button>} />
@@ -486,7 +487,7 @@ function TransactionHistory({ transactions, onViewAll }: { transactions: Overvie
           <span className={cn("grid size-9 place-items-center rounded-lg bg-ground", incoming ? "text-money-in" : "text-money-out")}><Icon size={16} /></span>
           <span className="min-w-0">
             <span className="block truncate text-note font-semibold text-ink">{transaction.merchant ?? titleCase(transaction.transactionType)}</span>
-            <span className="mt-0.5 block truncate text-meta text-ink-muted">{[transaction.category ?? titleCase(transaction.transactionType), transaction.account, transactionDate.format(new Date(transaction.transactionAt))].filter(Boolean).join(" · ")}</span>
+            <span className="mt-0.5 block truncate text-meta text-ink-muted">{[transaction.category ?? titleCase(transaction.transactionType), transaction.account, formatShortDate(transaction.transactionAt, timeZone)].filter(Boolean).join(" · ")}</span>
           </span>
           <span className={cn("font-heading text-note font-semibold tabular-nums", incoming ? "text-money-in" : "text-money-out")}>{incoming ? "+" : "−"}{formatMoney(transaction.amountMinor, transaction.currency)}</span>
         </button>;

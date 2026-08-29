@@ -201,6 +201,48 @@ def test_compound_monthly_interest_is_explicit_and_deterministic(db):
     assert term["totalRepayableMinor"] == 121_000
 
 
+def test_lending_totals_use_the_profile_currency_without_hiding_other_agreements(db):
+    hari = default_user(db)
+    assert hari is not None
+    _user(db, name="Rupee Rahul", email="rupee-rahul@example.test")
+    _user(db, name="Dollar Divya", email="dollar-divya@example.test")
+    client = _client(db, hari)
+
+    for currency, amount, name, email in (
+        ("INR", 100_000, "Rupee Rahul", "rupee-rahul@example.test"),
+        ("USD", 25_000, "Dollar Divya", "dollar-divya@example.test"),
+    ):
+        created = client.post(
+            "/loan-agreements",
+            headers={"Idempotency-Key": _key(f"{currency.lower()}-summary")},
+            json={
+                "direction": "lent",
+                "intent": "record_given",
+                "counterpartyName": name,
+                "inviteChannel": "email",
+                "inviteValue": email,
+                "principalMinor": amount,
+                "currency": currency,
+                "moneyDate": "2026-08-01",
+                "dueDate": "2026-10-01",
+                "interestRateBps": 0,
+                "interestPeriod": "yearly",
+                "interestMode": "simple",
+            },
+        )
+        assert created.status_code == 201, created.text
+
+    inr_summary = client.get("/loan-agreements").json()
+    assert inr_summary["moneyIGaveMinor"] == 100_000
+    assert {item["currency"] for item in inr_summary["items"]} == {"INR", "USD"}
+
+    hari.currency = "USD"
+    db.commit()
+    usd_summary = client.get("/loan-agreements").json()
+    assert usd_summary["moneyIGaveMinor"] == 25_000
+    assert {item["currency"] for item in usd_summary["items"]} == {"INR", "USD"}
+
+
 def test_lender_requests_documents_and_borrower_fulfills_from_private_library(db, tmp_path):
     hari = default_user(db)
     assert hari is not None

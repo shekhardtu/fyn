@@ -1,9 +1,11 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
-import { ArrowDown, BrainCircuit, Check, CheckCircle2, ChartColumn, Copy, FileText, HandCoins, LayoutDashboard, Loader2, MessageSquareText, Paperclip, ReceiptText, RotateCcw, Route, SendHorizontal, Settings, ShieldCheck, Sparkles, Square, SquarePen, Tags, Trash2, TriangleAlert, Wrench, X } from "lucide-react";
+import { ArrowDown, BrainCircuit, Check, CheckCircle2, ChartColumn, Copy, FileText, HandCoins, LayoutDashboard, Loader2, MessageSquareText, Paperclip, ReceiptText, RotateCcw, Route, SendHorizontal, ShieldCheck, Sparkles, Square, SquarePen, Tags, Trash2, TriangleAlert, Wrench, X } from "lucide-react";
 import { createContext, FormEvent, memo, RefObject, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useLocation, useMatch, useNavigate } from "react-router";
 import { SETTINGS_TOAST_PROBLEM, SETTINGS_TOAST_SAVED, SettingsRailIndex } from "@/components/settings-parts";
+import { AccountMenu } from "@/components/account-menu";
+import { UserDefaultsProvider, useUserDefaults } from "@/components/user-defaults";
 import { Button } from "@/components/ui/button";
 import { DocumentTitle } from "@/components/document-title";
 import { SiteHeader, useAutoHideSiteHeader } from "@/components/ui/site-header";
@@ -18,7 +20,7 @@ import { MessageDeliveryTime } from "@/components/message-delivery-time";
 import { MessageIdentifier } from "@/components/message-identifier";
 import { UserMessage } from "@/components/user-message";
 import { environment } from "@/config/environment";
-import { bootstrap, cancelAgentRun, createCategory, createConversation, createSubcategory, deleteConversation, flushConversationDeletion, getPrivacyStatus, isUnauthorized, listConversations, loadAgentThreadState, loadConversation, renameConversation, openInterrupts, reconnectAgentRun, resumeAgentInterrupt, sendAgentAction, sendAgentMessage, uploadCsv, waitForAgentRelatedQuestions, type AgentActivity, type AgentRunPhase, type FynInterrupt } from "@/lib/api";
+import { bootstrap, cancelAgentRun, createCategory, createConversation, createSubcategory, deleteConversation, flushConversationDeletion, getPrivacyStatus, isUnauthorized, listConversations, loadAgentThreadState, loadConversation, renameConversation, openInterrupts, reconnectAgentRun, resumeAgentInterrupt, sendAgentAction, sendAgentMessage, signOut, uploadCsv, waitForAgentRelatedQuestions, type AgentActivity, type AgentRunPhase, type FynInterrupt } from "@/lib/api";
 import { AgentRunTelemetry } from "@/lib/agent-telemetry";
 import { formatBytes, formatMoney, readComposerEntry } from "@/lib/format";
 import { takeSharedText } from "@/lib/share-target";
@@ -171,50 +173,16 @@ const RailHeader = memo(function RailHeader({ creating, onNew, onClose }: { crea
   </header>;
 });
 
-/** One band: who you are, and the two things that belong to you rather than to
- *  a thread.
- *
- *  These were three rows of equal weight, which made the account — the anchor
- *  of the whole rail — read as just another menu item. Collapsing the utilities
- *  to icons beside it puts the weight where it belongs and returns a row of
- *  height to the list above.
- *
- *  The account is a sibling of the icons rather than their parent: nesting a
- *  button inside a button is invalid, and the whole block is the target for
- *  opening your profile. */
-const RailFooter = memo(function RailFooter({ user, onOpenSettings, onOpenProfile }: {
+/** One account anchor at the foot of the rail. Its menu keeps account actions
+ *  close without permanently spending rail space on each destination. */
+const RailFooter = memo(function RailFooter({ user, signingOut, onNavigate, onSignOut }: {
   user: Bootstrap["user"] | null;
-  onOpenSettings: () => void;
-  onOpenProfile: () => void;
+  signingOut: boolean;
+  onNavigate: (path: string) => void;
+  onSignOut: () => void;
 }) {
   return <footer className="rail-footer">
-    <div className="flex items-center gap-1 px-1">
-      {/* One line, because that is all the row is for: whose workspace this is
-          and a way into it. Currency and timezone are ambient facts you check
-          rarely and never act on from here, so they move to the tooltip and
-          stop making a two-line block out of a one-line answer. */}
-      <Tooltip>
-        <TooltipTrigger render={
-          <button
-            type="button"
-            disabled={!user}
-            onClick={onOpenProfile}
-            aria-label={user ? `${user.name} — profile and sign-in methods` : "Profile and sign-in methods"}
-            className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 text-left transition-colors duration-[110ms] ease-linear hover:bg-surface-sunken active:scale-[.995] disabled:pointer-events-none"
-          />
-        }>
-          <span className="ledger-stamp shrink-0">{user ? user.name.slice(0, 1) : ""}</span>
-          {user
-            ? <span className="truncate text-control font-medium text-ink-body">{user.name}</span>
-            : <span className="h-2.5 w-24 animate-pulse rounded-full bg-line" />}
-        </TooltipTrigger>
-        {user ? <TooltipContent>{user.currency} · {user.timezone}</TooltipContent> : null}
-      </Tooltip>
-      <Tooltip>
-        <TooltipTrigger render={<Button type="button" variant="ghost" size="icon" onClick={onOpenSettings} aria-label="Settings" className="shrink-0" />}><Settings size={15} /></TooltipTrigger>
-        <TooltipContent>Settings</TooltipContent>
-      </Tooltip>
-    </div>
+    <div className="px-2"><AccountMenu user={user} signingOut={signingOut} onNavigate={onNavigate} onSignOut={onSignOut} /></div>
   </footer>;
 });
 
@@ -283,7 +251,7 @@ const MONEY_PAGES = [
   { label: "Categories", icon: Tags, path: "/categories" },
 ] as const;
 
-const ConversationRail = memo(function ConversationRail({ conversations, activeId, activePage, user, personalLendingAvailable, open, docked, switching, loading, loadingMore, hasMore, settingsOpen, onClose, onOpenPage, onSelect, onPrefetch, onDelete, onRename, onLoadMore, onNew, onLeaveSettings, onOpenSection, onOpenSettings, onOpenProfile }: {
+const ConversationRail = memo(function ConversationRail({ conversations, activeId, activePage, user, personalLendingAvailable, open, docked, switching, signingOut, loading, loadingMore, hasMore, settingsOpen, onClose, onOpenPage, onSelect, onPrefetch, onDelete, onRename, onLoadMore, onNew, onLeaveSettings, onOpenSection, onSignOut }: {
   conversations: ConversationSummary[];
   activeId: string;
   activePage: string | null;
@@ -293,6 +261,7 @@ const ConversationRail = memo(function ConversationRail({ conversations, activeI
   open: boolean;
   docked: boolean;
   switching: boolean;
+  signingOut: boolean;
   loading: boolean;
   loadingMore: boolean;
   hasMore: boolean;
@@ -310,8 +279,7 @@ const ConversationRail = memo(function ConversationRail({ conversations, activeI
   onNew: () => void;
   onLeaveSettings: () => void;
   onOpenSection: () => void;
-  onOpenSettings: () => void;
-  onOpenProfile: () => void;
+  onSignOut: () => void;
 }) {
   const listRef = useScrollEdges<HTMLDivElement>(conversations.length);
   const endRef = useEndOfList(listRef, hasMore && !loadingMore, onLoadMore);
@@ -372,7 +340,7 @@ const ConversationRail = memo(function ConversationRail({ conversations, activeI
       </div>
     </>}
 
-    <RailFooter user={user} onOpenSettings={onOpenSettings} onOpenProfile={onOpenProfile} />
+    <RailFooter user={user} signingOut={signingOut} onNavigate={onOpenPage} onSignOut={onSignOut} />
   </aside>;
 });
 
@@ -603,6 +571,7 @@ function Composer({ variant, value, onValueChange, onSubmit, onStop, textRef, fi
   upload: { name: string; percent: number } | null;
 }) {
   const focused = variant === "focused";
+  const { currency } = useUserDefaults();
   // Recomputed per keystroke, which costs one regex over a short string.
   const reading = useMemo(() => readComposerEntry(value), [value]);
   return <form onSubmit={onSubmit} className={cn("pointer-events-auto mx-auto w-full", !focused && "max-w-[var(--column-w)]")}>
@@ -626,7 +595,7 @@ function Composer({ variant, value, onValueChange, onSubmit, onStop, textRef, fi
           {reading
             ? <span key={`${reading.amountMinor}:${reading.kind}`} className="composer-reading">
               <span className={cn("money font-semibold", reading.kind === "income" ? "text-money-in" : reading.kind === "expense" ? "text-money-out" : "text-ink-body")}>
-                {reading.kind === "income" ? "+" : reading.kind === "expense" ? "−" : ""}{formatMoney(reading.amountMinor)}
+                {reading.kind === "income" ? "+" : reading.kind === "expense" ? "−" : ""}{formatMoney(reading.amountMinor, currency)}
               </span>
               <span className="truncate text-ink-muted">{reading.kind}</span>
             </span>
@@ -828,10 +797,10 @@ const MessageArticle = memo(function MessageArticle({ message, focusedPrompt = f
   </article>;
 });
 
-function buildTranscriptDayMarkers(messages: Message[]) {
+function buildTranscriptDayMarkers(messages: Message[], timeZone?: string) {
   let previous: string | null = null;
   return messages.map((message) => {
-    const key = localDayKey(message.created_at);
+    const key = localDayKey(message.created_at, timeZone);
     const opensDay = key !== null && key !== previous;
     if (key !== null) previous = key;
     return opensDay ? message.created_at : null;
@@ -872,6 +841,7 @@ const Transcript = memo(function Transcript({ messages, agentRun, reasoningSumma
   scrollElement: HTMLDivElement | null;
   scrollRef: RefObject<HTMLDivElement | null>;
 }) {
+  const { timeZone } = useUserDefaults();
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const turnContentRef = useRef<HTMLDivElement>(null);
   const focusSpacerRef = useRef<HTMLDivElement>(null);
@@ -1104,7 +1074,7 @@ const Transcript = memo(function Transcript({ messages, agentRun, reasoningSumma
   // carries its day, and the marker returns only where the calendar day
   // actually changes. Computed once per transcript rather than per row, because
   // this component re-renders on every streamed token.
-  const dayMarkers = useMemo(() => buildTranscriptDayMarkers(messages), [messages]);
+  const dayMarkers = useMemo(() => buildTranscriptDayMarkers(messages, timeZone), [messages, timeZone]);
 
   const streamingMessage = useMemo<Message | null>(() => streamingText ? {
     id: "streaming-assistant",
@@ -2308,6 +2278,19 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
   const thread = useRef<ThreadHandle | null>(null);
   const switching = switchingFrom === conversationId;
   const openNav = useCallback(() => setSidebarOpen(true), []);
+  const userDefaults = useMemo(() => ({
+    currency: initial.data?.user.currency ?? "INR",
+    timeZone: initial.data?.user.timezone,
+  }), [initial.data?.user.currency, initial.data?.user.timezone]);
+
+  const leaveSession = useMutation({
+    mutationFn: signOut,
+    onSuccess: () => {
+      queryClient.clear();
+      navigate(appPaths.login, { replace: true });
+    },
+    onError: (cause: Error) => setNavError(cause.message),
+  });
 
   const history = useInfiniteQuery({
     queryKey: ["conversations"],
@@ -2388,8 +2371,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
     setNavError(null);
     navigate(path, { preventScrollReset: true });
   }, [navigate]);
-  const openSettings = useCallback(() => { setSidebarOpen(false); navigate(appPaths.settingsAgent); }, [navigate]);
-  const openProfile = useCallback(() => { setSidebarOpen(false); navigate(appPaths.settings); }, [navigate]);
+  const leaveAccount = useCallback(() => { leaveSession.mutate(); }, [leaveSession]);
   // Settings borrows the rail; leaving hands it back to the workspace it was
   // borrowed from rather than to whatever the history stack happens to hold.
   const leaveSettings = useCallback(() => { setSidebarOpen(false); navigate(appPaths.home); }, [navigate]);
@@ -2491,7 +2473,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
   if (signedOut) return <AppSkeleton label="Taking you to sign in…" />;
   if (initial.isError) return <WorkspaceUnreachable onRetry={() => initial.refetch()} retrying={initial.isFetching} />;
 
-  return <ToastProvider toastManager={toast} limit={5}>
+  return <UserDefaultsProvider value={userDefaults}><ToastProvider toastManager={toast} limit={5}>
     <ShellContext.Provider value={{ navOpen: sidebarOpen, openNav, switching, dragging, handleRef: thread, conversations, renameThread }}>
     <div className="app-shell bg-ground text-ink" onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDragging(true); } }} onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }} onDrop={(event) => { if (!event.dataTransfer.files.length) return; event.preventDefault(); setDragging(false); thread.current?.attach(event.dataTransfer.files[0]); }}>
       <div className="relative mx-auto grid h-full max-w-[1600px] md:grid-cols-[var(--rail-w)_1fr]">
@@ -2505,6 +2487,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
           open={sidebarOpen}
           docked={isDesktop}
           switching={creating}
+          signingOut={leaveSession.isPending}
           loading={history.isPending}
           loadingMore={history.isFetchingNextPage}
           hasMore={Boolean(history.hasNextPage)}
@@ -2519,8 +2502,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
           onNew={newConversation}
           onLeaveSettings={leaveSettings}
           onOpenSection={closeNav}
-          onOpenSettings={openSettings}
-          onOpenProfile={openProfile}
+          onSignOut={leaveAccount}
         />
         {/* Rendered here rather than as `children` so it sits above the
             segment boundary and is re-seeded rather than rebuilt. `children`
@@ -2550,7 +2532,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
         <UndoToastList />
       </ToastViewport>
     </ToastPortal>
-  </ToastProvider>;
+  </ToastProvider></UserDefaultsProvider>;
 }
 
 function ConversationUnavailable({ onOpenLatest }: { onOpenLatest: () => void }) {

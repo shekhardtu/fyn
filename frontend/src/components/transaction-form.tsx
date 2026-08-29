@@ -1,6 +1,7 @@
 import { Loader2, TriangleAlert } from "lucide-react";
 import { type FormEvent, type ReactNode, type Ref, useEffect, useId, useRef, useState } from "react";
 import { Combobox } from "@/components/ui/combobox";
+import { useUserDefaults } from "@/components/user-defaults";
 import { resolveLocationLabel } from "@/lib/api";
 import { fixForEntry, useDeviceLocation, type LocationFields } from "@/lib/device-location";
 import { parseAmountToMinor, timestampInputToUtc, timestampInputValue } from "@/lib/format";
@@ -116,10 +117,11 @@ export function TransactionForm({
   onSubmit: (values: TransactionFormValues) => void;
   renderActions: (state: ActionState) => ReactNode;
 }) {
+  const { currency, timeZone } = useUserDefaults();
   const shown = new Set(fields);
   const [amount, setAmount] = useState(initialValues.amountMinor == null ? "" : String(initialValues.amountMinor / 100));
   const [merchant, setMerchant] = useState(initialValues.merchant ?? "");
-  const [transactionAt, setTransactionAt] = useState(timestampInputValue(initialValues.transactionAt ?? new Date().toISOString()));
+  const [transactionAt, setTransactionAt] = useState(timestampInputValue(initialValues.transactionAt ?? new Date().toISOString(), timeZone));
   const [transactionType, setTransactionType] = useState<TransactionListItemOut["transactionType"]>(initialValues.transactionType ?? "expense");
   const [categoryId, setCategoryId] = useState(initialValues.categoryId ?? "");
   const [subcategoryId, setSubcategoryId] = useState(initialValues.subcategoryId ?? "");
@@ -201,7 +203,7 @@ export function TransactionForm({
   function submit(event: FormEvent) {
     event.preventDefault();
     const amountMinor = parseAmountToMinor(amount);
-    const instant = shown.has("transaction_at") ? timestampInputToUtc(transactionAt) : null;
+    const instant = shown.has("transaction_at") ? timestampInputToUtc(transactionAt, timeZone) : null;
     if (amountMinor === null) {
       setAmountError("Enter an amount greater than zero, like 1,500 or 1500.50.");
       return;
@@ -242,9 +244,9 @@ export function TransactionForm({
     {(problem || taxonomyError) ? <p role="alert" className={cn("rounded-lg border border-danger-line bg-danger-tint px-4 py-3 text-note text-danger-ink", compact ? "mb-3" : "mb-4")}>{problem || taxonomyError}</p> : null}
     {taxonomyPending ? <p role="status" className="mb-3 flex items-center gap-2 text-note text-ink-muted"><Loader2 size={14} className="animate-spin" />Adding {taxonomyPending}…</p> : null}
     <div className={cn("grid sm:grid-cols-2", compact ? "gap-3" : "gap-4")}>
-      <label className={fieldClass}>{label("Amount")}<input ref={amountInputRef} disabled={disabled} aria-label="Transaction amount" aria-invalid={Boolean(amountError)} aria-describedby={amountError ? amountErrorId : undefined} inputMode="decimal" value={amount} onChange={(event) => { setAmount(event.target.value); if (amountError) setAmountError(null); }} placeholder={compact ? "1,500" : undefined} className={cn(inputClass, amountError && "manual-field-danger border-danger-line")} />{amountError ? fieldError(amountError, amountErrorId) : null}</label>
+      <label className={fieldClass}>{label("Amount", currency)}<input ref={amountInputRef} disabled={disabled} aria-label="Transaction amount" aria-invalid={Boolean(amountError)} aria-describedby={amountError ? amountErrorId : undefined} inputMode="decimal" value={amount} onChange={(event) => { setAmount(event.target.value); if (amountError) setAmountError(null); }} placeholder={compact ? "1,500" : undefined} className={cn(inputClass, amountError && "manual-field-danger border-danger-line")} />{amountError ? fieldError(amountError, amountErrorId) : null}</label>
       {shown.has("merchant") ? <label className={cn(fieldClass, spanWide)}>{label("Merchant", compact ? "optional" : undefined)}<input disabled={disabled} aria-label="Merchant" value={merchant} maxLength={160} onChange={(event) => setMerchant(event.target.value)} placeholder={compact ? "Where you paid" : undefined} className={inputClass} /></label> : null}
-      {shown.has("transaction_at") ? <label className={cn(fieldClass, spanWide)}>{label("Date and time")}<input disabled={disabled} aria-label="Transaction date and time" aria-invalid={Boolean(transactionAtError)} aria-describedby={transactionAtError ? transactionAtErrorId : undefined} type="datetime-local" value={transactionAt} onChange={(event) => { setTransactionAt(event.target.value); if (transactionAtError) setTransactionAtError(null); }} className={cn(inputClass, transactionAtError && "manual-field-danger border-danger-line")} />{transactionAtError ? fieldError(transactionAtError, transactionAtErrorId) : null}</label> : null}
+      {shown.has("transaction_at") ? <label className={cn(fieldClass, spanWide)}>{label("Date and time", timeZone)}<input disabled={disabled} aria-label={`Transaction date and time${timeZone ? ` in ${timeZone}` : ""}`} aria-invalid={Boolean(transactionAtError)} aria-describedby={transactionAtError ? transactionAtErrorId : undefined} type="datetime-local" value={transactionAt} onChange={(event) => { setTransactionAt(event.target.value); if (transactionAtError) setTransactionAtError(null); }} className={cn(inputClass, transactionAtError && "manual-field-danger border-danger-line")} />{transactionAtError ? fieldError(transactionAtError, transactionAtErrorId) : null}</label> : null}
       {shown.has("transaction_type") ? <div className={fieldClass}>{label("Type")}<Combobox aria-label="Transaction type" disabled={disabled} value={transactionType} onValueChange={(next) => {
         setTransactionType(next as TransactionListItemOut["transactionType"]);
         if (next !== "expense" || !categories.some((item) => item.id === categoryId)) {

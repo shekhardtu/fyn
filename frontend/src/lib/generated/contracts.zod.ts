@@ -1054,6 +1054,8 @@ export const PrivacyStatusOut = z.looseObject({
 });
 export const ProfileUpdateIn = z.looseObject({
   "display_name": z.string().min(2).max(120),
+  "currency": z.union([z.string().min(3).max(3), z.null()]).default(null),
+  "timezone": z.union([z.string().min(1).max(80), z.null()]).default(null),
 });
 export const ReconciliationActionPayload = z.looseObject({
   "candidateId": z.uuid(),

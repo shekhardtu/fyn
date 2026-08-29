@@ -7,6 +7,7 @@ import { Combobox } from "@/components/ui/combobox";
 import { SiteHeader, useAutoHideSiteHeader } from "@/components/ui/site-header";
 import { ChartView } from "@/components/widget-library/chart";
 import { useWorkspaceShell } from "@/components/workspace";
+import { useUserDefaults } from "@/components/user-defaults";
 import { deleteDashboardTile, listDashboards, loadDashboard } from "@/lib/api";
 import { formatCount, formatInstant } from "@/lib/format";
 import type { DashboardTile } from "@/lib/protocol";
@@ -37,7 +38,8 @@ export function TileCard({ tile, confirming, removing, onRequestRemove, onKeep, 
   onKeep: () => void;
   onRemove: () => void;
 }) {
-  const stamp = formatInstant(tile.executedAt) || tile.executedAt;
+  const { timeZone } = useUserDefaults();
+  const stamp = formatInstant(tile.executedAt, timeZone) || tile.executedAt;
   return <section aria-label={`${tile.title} tile`} className="min-w-0 overflow-hidden rounded-xl border border-line bg-surface">
     <div className="flex items-start gap-3 border-b border-line px-5 py-4">
       <div className="min-w-0 flex-1">

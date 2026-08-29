@@ -2,6 +2,7 @@ import { CalendarDays, Check, ChevronDown, CircleEllipsis, History, Info, Landma
 import { FormEvent, memo, useEffect, useId, useMemo, useRef, useState, type ComponentType } from "react";
 import { TransactionForm, type TransactionFormCategory, type TransactionFormField, type TransactionFormValues } from "@/components/transaction-form";
 import { isPersistedTransactionId, TransactionIdentifier } from "@/components/transaction-identifier";
+import { useUserDefaults } from "@/components/user-defaults";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { ChartView } from "@/components/widget-library/chart";
@@ -482,6 +483,7 @@ function TaxonomyEditor({ widget, onAction, disabled, pending }: WidgetProps) {
 }
 
 function Confirmation({ widget, onAction, disabled, pending }: WidgetProps) {
+  const { timeZone } = useUserDefaults();
   const data = widget.data;
   const inferred = Array.isArray(data.inferredFields) ? data.inferredFields as string[] : [];
   // A confirmation that destroys a record must not wear the same green as one
@@ -510,7 +512,7 @@ function Confirmation({ widget, onAction, disabled, pending }: WidgetProps) {
       </div>
     </div>
     <div className="space-y-2 px-3.5 py-3">
-      <div className="flex items-center gap-2 text-note"><CalendarDays size={14} className="text-ink-muted" /><span className="text-ink-muted">Time</span><span className="ml-auto font-medium text-ink">{formatInstant(data.transactionAt) || "—"}</span></div>
+      <div className="flex items-center gap-2 text-note"><CalendarDays size={14} className="text-ink-muted" /><span className="text-ink-muted">Time</span><span className="ml-auto font-medium text-ink">{formatInstant(data.transactionAt, timeZone) || "—"}</span></div>
       {rows.map(([label, value]) => <div key={label} className="flex flex-wrap items-baseline gap-3 border-t border-line-soft pt-2 text-note"><span className="text-ink-muted">{label}</span><span className="ml-auto text-right font-medium text-ink">{value}</span></div>)}
       {Array.isArray(data.tags) && data.tags.length ? <p className="text-note text-ink-muted">{data.tags.map(String).map((tag) => `#${tag}`).join(" · ")}</p> : null}
       {inferred.length ? <p className="flex items-start gap-2 border-t border-line-soft pt-2 text-meta leading-4 text-ink-muted"><Info size={13} className="mt-px shrink-0" />Inferred: {inferred.map((field) => field.replaceAll("_", " ")).join(", ")}. Edit if needed.</p> : null}
@@ -520,6 +522,7 @@ function Confirmation({ widget, onAction, disabled, pending }: WidgetProps) {
 }
 
 function TransactionPreview({ widget, onAction, disabled, pending }: WidgetProps) {
+  const { timeZone } = useUserDefaults();
   const removed = widget.data.status === "Removed";
   const classification = formatTransactionClassification(widget.data.transactionType, widget.data.category, widget.data.subcategory);
   const tags = Array.isArray(widget.data.tags) ? widget.data.tags.map(String) : [];
@@ -534,7 +537,7 @@ function TransactionPreview({ widget, onAction, disabled, pending }: WidgetProps
       <span className={cn("grid size-10 shrink-0 place-items-center rounded-full bg-secondary-tint text-secondary", removed && "bg-danger-tint text-danger-ink")}>{removed ? <Trash2 /> : <Check size={20} strokeWidth={2.5} />}</span>
       <div className="min-w-0 flex-1">
         <p className="truncate text-control font-semibold text-ink">{str(widget.data.title, "Transaction saved")}</p>
-        <p className="mt-0.5 text-note text-ink-muted">{[classification, formatInstant(widget.data.transactionAt), str(widget.data.status) && !removed ? str(widget.data.status) : null, `${sourceCount} source${sourceCount === 1 ? "" : "s"}`].filter(Boolean).join(" · ")}</p>
+        <p className="mt-0.5 text-note text-ink-muted">{[classification, formatInstant(widget.data.transactionAt, timeZone), str(widget.data.status) && !removed ? str(widget.data.status) : null, `${sourceCount} source${sourceCount === 1 ? "" : "s"}`].filter(Boolean).join(" · ")}</p>
         {metadata.length || tags.length ? <p className="mt-1 truncate text-meta text-ink-muted">{[...metadata, ...tags.map((tag) => `#${tag}`)].join(" · ")}</p> : null}
       </div>
       <Money value={widget.data.amountMinor} currency={str(widget.data.currency, "INR")} className="shrink-0 font-semibold text-ink" />
@@ -908,6 +911,7 @@ function InvestmentProjection({ widget, onAction, disabled, pending }: WidgetPro
 }
 
 function ReconciliationReview({ widget, onAction, disabled, pending }: WidgetProps) {
+  const { timeZone } = useUserDefaults();
   const incoming = (widget.data.incoming ?? {}) as Data;
   const existing = (widget.data.existing ?? {}) as Data;
   const signals = Array.isArray(widget.data.signals) ? widget.data.signals.map(String) : [];
@@ -924,8 +928,8 @@ function ReconciliationReview({ widget, onAction, disabled, pending }: WidgetPro
       </div>
     </div>
     <div className="grid gap-1.5 p-2.5 sm:grid-cols-2">
-      <div className="rounded-lg bg-surface-sunken p-2.5"><p className="text-meta font-semibold tracking-[0.06em] text-ink-muted uppercase">New · {str(incoming.source, "unknown source")}</p><div className="mt-1.5 flex items-baseline gap-2"><Money value={incoming.amountMinor} currency={str(incoming.currency, "INR")} className="text-control font-semibold text-ink" /><p className="min-w-0 truncate text-note text-ink-body">{str(incoming.merchant, "Unknown merchant")}</p></div><p className="mt-1 text-meta text-ink-muted">{formatInstant(incoming.transactionAt)}</p></div>
-      <div className="rounded-lg bg-secondary-tint p-2.5"><p className="text-meta font-semibold tracking-[0.06em] text-secondary uppercase">Saved · {existingSources} source{existingSources === 1 ? "" : "s"}</p><div className="mt-1.5 flex items-baseline gap-2"><Money value={existing.amountMinor} currency={str(existing.currency, "INR")} className="text-control font-semibold text-ink" /><p className="min-w-0 truncate text-note text-ink-body">{str(existing.merchant, "Unknown merchant")}</p></div><p className="mt-1 text-meta text-ink-muted">{formatInstant(existing.transactionAt)}</p></div>
+      <div className="rounded-lg bg-surface-sunken p-2.5"><p className="text-meta font-semibold tracking-[0.06em] text-ink-muted uppercase">New · {str(incoming.source, "unknown source")}</p><div className="mt-1.5 flex items-baseline gap-2"><Money value={incoming.amountMinor} currency={str(incoming.currency, "INR")} className="text-control font-semibold text-ink" /><p className="min-w-0 truncate text-note text-ink-body">{str(incoming.merchant, "Unknown merchant")}</p></div><p className="mt-1 text-meta text-ink-muted">{formatInstant(incoming.transactionAt, timeZone)}</p></div>
+      <div className="rounded-lg bg-secondary-tint p-2.5"><p className="text-meta font-semibold tracking-[0.06em] text-secondary uppercase">Saved · {existingSources} source{existingSources === 1 ? "" : "s"}</p><div className="mt-1.5 flex items-baseline gap-2"><Money value={existing.amountMinor} currency={str(existing.currency, "INR")} className="text-control font-semibold text-ink" /><p className="min-w-0 truncate text-note text-ink-body">{str(existing.merchant, "Unknown merchant")}</p></div><p className="mt-1 text-meta text-ink-muted">{formatInstant(existing.transactionAt, timeZone)}</p></div>
     </div>
     {confirmingMerge && merge ? <div className="hitl-reveal border-t border-line px-3 py-2.5">
       <p className="text-note leading-4 text-ink-body">Merge into one transaction and keep both sources? This can’t be split here later.</p>
@@ -987,6 +991,7 @@ function Insight({ widget, onAction, disabled, pending }: WidgetProps) {
 }
 
 function AvoidableExpenses({ widget, onAction, disabled, pending }: WidgetProps) {
+  const { timeZone } = useUserDefaults();
   const currency = str(widget.data.currency, "INR");
   const transactions = Array.isArray(widget.data.transactions) ? widget.data.transactions as Data[] : [];
   // Each row is its own decision, so a decided row settles on its own instead of
@@ -1015,7 +1020,7 @@ function AvoidableExpenses({ widget, onAction, disabled, pending }: WidgetProps)
           <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-surface-sunken text-danger-ink"><ReceiptText size={14} /></span>
           <div className="min-w-0 flex-1">
             <div className="flex gap-3"><p className="min-w-0 truncate text-control font-semibold text-ink">{str(transaction.merchant, "Recorded expense")}</p><Money value={transaction.amountMinor} currency={str(transaction.currency, currency)} className="ml-auto shrink-0 text-control font-semibold text-ink" /></div>
-            <p className="mt-0.5 text-meta text-ink-muted">{[transaction.category, transaction.subcategory, formatInstant(transaction.transactionAt)].filter(Boolean).map(String).join(" · ")}</p>
+            <p className="mt-0.5 text-meta text-ink-muted">{[transaction.category, transaction.subcategory, formatInstant(transaction.transactionAt, timeZone)].filter(Boolean).map(String).join(" · ")}</p>
             <p className="mt-1.5 text-meta leading-4 text-ink-muted">{Array.isArray(transaction.reasons) && transaction.reasons.length ? transaction.reasons.join(" · ") : "Worth a second look"}</p>
             {choice ? <p className="hitl-reveal mt-2 flex items-center gap-2 text-meta font-medium text-secondary"><Check size={14} />{choice === "essential" ? "Kept as essential" : "Marked avoidable"}</p> : <div className="mt-2 flex flex-wrap gap-2">
               <Button type="button" disabled={disabled} variant="outline" size="sm" onClick={() => decide(id, "potentially_avoidable")}>Mark avoidable</Button>

@@ -25,6 +25,12 @@ def test_bank_debit_message_becomes_observation():
     assert result.observation.merchant == "TOIT"
 
 
+def test_message_adapter_uses_the_users_default_when_no_currency_is_named():
+    result = MessageAdapter("sms").adapt_message("2,000 debited at TOIT today", "sms-usd", default_currency="USD")
+    assert result.relevant is True
+    assert result.observation.currency == "USD"
+
+
 def test_csv_adapter_normalizes_common_bank_columns():
     content = b"Transaction Date,Narration,Debit Amount,Credit Amount,Reference\n10/08/2026,TOIT POS,2000,,abc-1\n10/08/2026,SALARY,,300000,abc-2\n"
     rows = CSVAdapter().adapt(content)
@@ -34,3 +40,9 @@ def test_csv_adapter_normalizes_common_bank_columns():
     assert rows[1][1].amount_minor == 30_000_000
     assert rows[1][1].transaction_type == "income"
     assert rows[0][1].transaction_at == datetime(2026, 8, 9, 18, 30, tzinfo=timezone.utc)
+
+
+def test_csv_without_a_currency_column_uses_the_users_default():
+    content = b"Date,Description,Amount\n2026-08-10,Coffee,25\n"
+    rows = CSVAdapter().adapt(content, default_currency="EUR")
+    assert rows[0][1].currency == "EUR"

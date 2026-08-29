@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
   ArrowRight,
+  Banknote,
   Check,
   CheckCircle2,
   ChevronRight,
@@ -11,7 +12,6 @@ import {
   FileDown,
   FileText,
   HandCoins,
-  IndianRupee,
   Loader2,
   Mail,
   MessageCircleMore,
@@ -19,7 +19,6 @@ import {
   PencilLine,
   Phone,
   Plus,
-  ReceiptIndianRupee,
   RotateCcw,
   Search,
   ShieldCheck,
@@ -34,6 +33,7 @@ import { Link, useNavigate, useParams } from "react-router";
 
 import { Button } from "@/components/ui/button";
 import { SiteHeader } from "@/components/ui/site-header";
+import { useUserDefaults } from "@/components/user-defaults";
 import { useWorkspaceOverlay } from "@/components/ui/overlay";
 import { useWorkspaceShell } from "@/components/workspace";
 import {
@@ -60,7 +60,7 @@ import {
   sendPersonalLoanReminder,
   uploadDocumentAsset,
 } from "@/lib/api";
-import { formatInstant, formatMoney, parseAmountToMinor } from "@/lib/format";
+import { formatInstant, formatMoney as formatCurrency, parseAmountToMinor } from "@/lib/format";
 import type {
   CreatePersonalLoanIn,
   ContactSuggestionOut,
@@ -74,6 +74,7 @@ import { appPaths } from "@/routing/paths";
 
 
 const dateLabel = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", year: "numeric" });
+const formatMoney = formatCurrency;
 
 function localDate(offsetDays = 0) {
   const value = new Date();
@@ -148,6 +149,7 @@ function LoanRow({ loan }: { loan: PersonalLoanSummaryOut }) {
 }
 
 export function PersonalLoansPage() {
+  const { currency } = useUserDefaults();
   const [creating, setCreating] = useState(false);
   const [filter, setFilter] = useState<"all" | "lent" | "borrowed">("all");
   const query = useQuery({ queryKey: ["personal-loans"], queryFn: loadPersonalLoans });
@@ -159,8 +161,8 @@ export function PersonalLoansPage() {
       <TrustNote />
 
       <section aria-label="Personal lending totals" className="mt-5 grid gap-3 sm:grid-cols-3">
-        <div className="rounded-xl border border-line bg-surface p-4 sm:p-5"><p className="ledger-meta">Money I gave</p><p className="mt-2 font-heading text-[1.55rem] font-semibold tracking-[-0.03em] text-ink">{query.data ? formatMoney(query.data.moneyIGaveMinor) : "—"}</p><p className="mt-1 text-note text-ink-muted">Still expected back</p></div>
-        <div className="rounded-xl border border-line bg-surface p-4 sm:p-5"><p className="ledger-meta">Money I received</p><p className="mt-2 font-heading text-[1.55rem] font-semibold tracking-[-0.03em] text-ink">{query.data ? formatMoney(query.data.moneyIReceivedMinor) : "—"}</p><p className="mt-1 text-note text-ink-muted">Still expected to return</p></div>
+        <div className="rounded-xl border border-line bg-surface p-4 sm:p-5"><p className="ledger-meta">Money I gave</p><p className="mt-2 font-heading text-[1.55rem] font-semibold tracking-[-0.03em] text-ink">{query.data ? formatMoney(query.data.moneyIGaveMinor, currency) : "—"}</p><p className="mt-1 text-note text-ink-muted">Still expected back</p></div>
+        <div className="rounded-xl border border-line bg-surface p-4 sm:p-5"><p className="ledger-meta">Money I received</p><p className="mt-2 font-heading text-[1.55rem] font-semibold tracking-[-0.03em] text-ink">{query.data ? formatMoney(query.data.moneyIReceivedMinor, currency) : "—"}</p><p className="mt-1 text-note text-ink-muted">Still expected to return</p></div>
         <div className="rounded-xl border border-line bg-surface p-4 sm:p-5"><p className="ledger-meta">Needs my response</p><p className="mt-2 font-heading text-[1.55rem] font-semibold tracking-[-0.03em] text-ink">{query.data?.needsResponseCount ?? "—"}</p><p className="mt-1 text-note text-ink-muted">Agreements or confirmations</p></div>
       </section>
 
@@ -239,6 +241,8 @@ function interestBasis(period: "monthly" | "yearly", mode: "simple" | "compound"
 }
 
 function CreateLoanDrawer({ onClose }: { onClose: () => void }) {
+  const { currency } = useUserDefaults();
+  const formatMoney = (value: unknown, selectedCurrency = currency) => formatCurrency(value, selectedCurrency);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const panelRef = useWorkspaceOverlay(true, onClose);
@@ -353,7 +357,7 @@ function CreateLoanDrawer({ onClose }: { onClose: () => void }) {
           inviteChannel: draft.inviteChannel,
           inviteValue: draft.inviteChannel === "phone" && !draft.inviteValue.trim().startsWith("+") ? `+91${draft.inviteValue.replace(/\D/g, "")}` : draft.inviteValue.trim(),
           principalMinor: principalMinor!,
-          currency: "INR",
+          currency,
           moneyDate: draft.moneyDate,
           dueDate: draft.dueDate,
           interestRateBps: Math.round(rate * 100),
@@ -452,7 +456,7 @@ function CreateLoanDrawer({ onClose }: { onClose: () => void }) {
         </div></fieldset> : null}
 
         {step === 2 ? <fieldset><legend className="font-heading text-[1.45rem] font-semibold tracking-[-0.02em] text-ink">Set clear repayment terms</legend><p className="mt-2 text-note leading-5 text-ink-muted">The total effect of interest is calculated now so neither person has to interpret a bare percentage.</p><div className="mt-6 grid gap-5 sm:grid-cols-2">
-          <div className="sm:col-span-2"><Field label={amountLabel} hint="Enter rupees; Fyn stores the exact paise value."><div className="relative"><IndianRupee className="absolute top-[1.3rem] left-3 text-ink-muted" size={16} /><input value={draft.amount} onChange={(event) => setDraft((current) => ({ ...current, amount: event.target.value }))} required inputMode="decimal" placeholder="25,000" className={cn(fieldClass, "pl-9")} /></div></Field></div>
+          <div className="sm:col-span-2"><Field label={amountLabel} hint={`Enter an amount in ${currency}; Fyn stores the exact minor-unit value.`}><div className="relative"><Banknote className="absolute top-[1.3rem] left-3 text-ink-muted" size={16} /><input value={draft.amount} onChange={(event) => setDraft((current) => ({ ...current, amount: event.target.value }))} required inputMode="decimal" placeholder="25,000" className={cn(fieldClass, "pl-9")} /></div></Field></div>
           <Field label={moneyMoved ? (direction === "lent" ? "Date I gave the money" : "Date I received the money") : "Expected funding date"}><input type="date" value={draft.moneyDate} onChange={(event) => setDraft((current) => ({ ...current, moneyDate: event.target.value }))} required className={fieldClass} /></Field>
           <Field label={returnDateLabel}><input type="date" min={draft.moneyDate} value={draft.dueDate} onChange={(event) => setDraft((current) => ({ ...current, dueDate: event.target.value }))} required className={fieldClass} /></Field>
           <fieldset>
@@ -461,7 +465,7 @@ function CreateLoanDrawer({ onClose }: { onClose: () => void }) {
               {(["monthly", "yearly"] as const).map((period) => <button key={period} type="button" role="radio" aria-checked={draft.interestPeriod === period} onClick={() => setDraft((current) => ({ ...current, interestPeriod: period }))} className={cn("hit-target rounded-md px-3 py-2 text-note font-semibold transition-colors", draft.interestPeriod === period ? "bg-surface text-ink shadow-sm" : "text-ink-muted hover:text-ink-body")}>{period === "monthly" ? "Monthly" : "Yearly"}</button>)}
             </div>
             <div className="relative"><input aria-label={`${draft.interestPeriod === "monthly" ? "Monthly" : "Yearly"} interest rate`} type="number" min="0" max="100" step="0.01" value={draft.interestPercent} onChange={(event) => setDraft((current) => ({ ...current, interestPercent: event.target.value }))} required className={cn(fieldClass, "pr-9")} /><span className="absolute top-[1.2rem] right-3 text-note text-ink-muted">%</span></div>
-            <p className="mt-1.5 text-meta leading-5 text-ink-muted">{rate ? `${interestBasis(draft.interestPeriod, draft.interestMode)} · ${formatMoney(interestMinor)} total interest` : "Use 0 for an interest-free plan."}</p>
+            <p className="mt-1.5 text-meta leading-5 text-ink-muted">{rate ? `${interestBasis(draft.interestPeriod, draft.interestMode)} · ${formatMoney(interestMinor, currency)} total interest` : "Use 0 for an interest-free plan."}</p>
             <details className="mt-3 rounded-lg border border-line bg-ground px-3 py-2">
               <summary className="cursor-pointer text-meta font-semibold text-ink-body">Advanced · calculation method</summary>
               <div role="radiogroup" aria-label="Interest calculation method" className="mt-3 grid gap-2">
@@ -506,6 +510,7 @@ function CreateLoanDrawer({ onClose }: { onClose: () => void }) {
 }
 
 function AgreementDocument({ loan }: { loan: PersonalLoanDetailOut }) {
+  const { timeZone } = useUserDefaults();
   const revision = loan.documentRevision;
   const content = revision.content as { plainLanguage?: string; terms?: Record<string, unknown>; parties?: Record<string, string> };
   const agreementRateBps = Number(content.terms?.interestRateBps ?? content.terms?.annualRateBps ?? loan.interestRateBps);
@@ -541,7 +546,7 @@ function AgreementDocument({ loan }: { loan: PersonalLoanDetailOut }) {
               <div className="flex flex-wrap items-center gap-2">
                 {acceptance ? <CheckCircle2 size={17} className="text-secondary" /> : <Clock3 size={17} className="text-ink-muted" />}
                 <strong className="text-control text-ink">{acceptance ? `Electronically acknowledged by ${participant.displayName}` : participant.displayName}</strong>
-                <span className="ml-auto text-meta font-semibold text-ink-muted">{acceptance ? formatInstant(acceptance.acceptedAt) : "Awaiting acknowledgement"}</span>
+                <span className="ml-auto text-meta font-semibold text-ink-muted">{acceptance ? formatInstant(acceptance.acceptedAt, timeZone) : "Awaiting acknowledgement"}</span>
               </div>
               {acceptance ? <>
                 <p className="mt-2 ledger-meta text-secondary">Authenticated electronic acknowledgement</p>
@@ -560,6 +565,7 @@ function AgreementDocument({ loan }: { loan: PersonalLoanDetailOut }) {
 }
 
 function RevisionSnapshot({ revision }: { revision: DocumentRevisionOut }) {
+  const { timeZone } = useUserDefaults();
   const content = revision.content as { terms?: Record<string, unknown>; parties?: Record<string, string>; plainLanguage?: string };
   const terms = content.terms ?? {};
   const rateBps = Number(terms.interestRateBps ?? terms.annualRateBps ?? 0);
@@ -567,24 +573,25 @@ function RevisionSnapshot({ revision }: { revision: DocumentRevisionOut }) {
   const mode = terms.interestMode === "compound" ? "compound" : "simple";
   const currency = String(terms.currency ?? "INR");
   return <article aria-label={`Revision ${revision.revisionNumber} details`} className="mt-4 rounded-xl border border-secondary-line bg-ground p-4 sm:p-5">
-    <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="ledger-meta text-secondary">Revision {revision.revisionNumber}</p><h3 className="mt-1 font-heading text-body font-semibold text-ink">{content.parties?.lender} and {content.parties?.borrower}</h3><p className="mt-1 text-note text-ink-muted">Proposed by {revision.authoredBy} · {formatInstant(revision.proposedAt)}</p></div><StatusBadge status={revision.state} /></div>
+    <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="ledger-meta text-secondary">Revision {revision.revisionNumber}</p><h3 className="mt-1 font-heading text-body font-semibold text-ink">{content.parties?.lender} and {content.parties?.borrower}</h3><p className="mt-1 text-note text-ink-muted">Proposed by {revision.authoredBy} · {formatInstant(revision.proposedAt, timeZone)}</p></div><StatusBadge status={revision.state} /></div>
     <p className="mt-4 text-note leading-5 text-ink-body">{content.plainLanguage}</p>
     <dl className="mt-4 grid gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-2"><div className="bg-surface p-3"><dt className="ledger-meta">Principal</dt><dd className="mt-1 text-control font-semibold text-ink">{formatMoney(Number(terms.principalMinor ?? 0), currency)}</dd></div><div className="bg-surface p-3"><dt className="ledger-meta">Total repayable</dt><dd className="mt-1 text-control font-semibold text-ink">{formatMoney(Number(terms.totalRepayableMinor ?? 0), currency)}</dd></div><div className="bg-surface p-3"><dt className="ledger-meta">Interest</dt><dd className="mt-1 text-control font-semibold text-ink">{rateBps ? `${rateBps / 100}% ${period} ${mode}` : "Interest-free"}</dd></div><div className="bg-surface p-3"><dt className="ledger-meta">Return date</dt><dd className="mt-1 text-control font-semibold text-ink">{formatDate(String(terms.dueDate ?? ""))}</dd></div></dl>
     {revision.changes.length ? <section className="mt-4"><h4 className="text-control font-semibold text-ink">Changes from revision {revision.revisionNumber - 1}</h4><ul className="mt-2 space-y-2">{revision.changes.map((change) => <li key={change.id} className="flex items-start gap-2 text-note text-ink-body"><PencilLine size={14} className="mt-0.5 shrink-0 text-secondary" /><span>{change.summary}<span className="block text-meta text-ink-muted">{change.authoredBy}</span></span></li>)}</ul></section> : <p className="mt-4 text-note text-ink-muted">This is the first terms revision, or only its supporting-document manifest changed.</p>}
     {revision.assets.length ? <section className="mt-4"><h4 className="text-control font-semibold text-ink">Files in this revision</h4><ul className="mt-2 space-y-2">{revision.assets.map((asset) => <li key={asset.id}><a href={documentAssetDownloadUrl(asset.id)} target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-lg border border-line bg-surface px-3 py-2 text-note font-semibold text-ink hover:border-secondary"><FileText size={14} className="text-secondary" />{asset.originalFilename}<span className="ml-auto font-mono text-[10px] text-ink-muted">{asset.sha256.slice(0, 10)}…</span></a></li>)}</ul></section> : null}
-    <section className="mt-4"><h4 className="text-control font-semibold text-ink">Acknowledgement evidence</h4>{revision.acceptances.length ? <ul className="mt-2 space-y-2">{revision.acceptances.map((acceptance) => <li key={acceptance.participantId} className="rounded-lg border border-line bg-surface p-3"><p className="text-note font-semibold text-ink">Electronically acknowledged by {acceptance.participantName}</p><p className="mt-1 text-meta text-ink-muted">{formatInstant(acceptance.acceptedAt)} · {acceptance.actorIdentifierMasked ?? "Authenticated Fyn account"}</p>{acceptance.requestIpHash ? <p className="mt-1 font-mono text-[10px] text-ink-muted">Network fingerprint {acceptance.requestIpHash.slice(0, 12)}…</p> : null}</li>)}</ul> : <p className="mt-2 text-note text-ink-muted">No acknowledgement was recorded for this revision.</p>}</section>
+    <section className="mt-4"><h4 className="text-control font-semibold text-ink">Acknowledgement evidence</h4>{revision.acceptances.length ? <ul className="mt-2 space-y-2">{revision.acceptances.map((acceptance) => <li key={acceptance.participantId} className="rounded-lg border border-line bg-surface p-3"><p className="text-note font-semibold text-ink">Electronically acknowledged by {acceptance.participantName}</p><p className="mt-1 text-meta text-ink-muted">{formatInstant(acceptance.acceptedAt, timeZone)} · {acceptance.actorIdentifierMasked ?? "Authenticated Fyn account"}</p>{acceptance.requestIpHash ? <p className="mt-1 font-mono text-[10px] text-ink-muted">Network fingerprint {acceptance.requestIpHash.slice(0, 12)}…</p> : null}</li>)}</ul> : <p className="mt-2 text-note text-ink-muted">No acknowledgement was recorded for this revision.</p>}</section>
     <details className="mt-4"><summary className="cursor-pointer text-meta font-semibold text-ink-body">Evidence fingerprints</summary><dl className="mt-2 space-y-1 font-mono text-[10px] leading-4 text-ink-muted"><div className="break-all">Content {revision.contentHash}</div><div className="break-all">Manifest {revision.manifestHash}</div><div className="break-all">Combined {revision.evidenceHash}</div></dl></details>
   </article>;
 }
 
 function RevisionHistory({ documentId, currentRevisionId }: { documentId: string; currentRevisionId: string }) {
+  const { timeZone } = useUserDefaults();
   const [open, setOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const query = useQuery({ queryKey: ["shared-document-revisions", documentId], queryFn: () => loadSharedDocumentRevisions(documentId), enabled: open });
   const selected = query.data?.find((revision) => revision.id === selectedId) ?? null;
   return <section className="rounded-xl border border-line bg-surface">
     <button type="button" aria-expanded={open} onClick={() => setOpen((value) => !value)} className="flex w-full items-center gap-3 px-4 py-4 text-left sm:px-5"><FileClock className="text-secondary" size={18} /><span className="min-w-0 flex-1"><strong className="block text-control font-semibold text-ink">Revision history</strong><span className="text-note text-ink-muted">Open any version to inspect its terms, changes, files, acknowledgements, and fingerprints.</span></span><ChevronRight className={cn("text-ink-muted transition-transform", open && "rotate-90")} size={18} /></button>
-    {open ? <div className="border-t border-line p-4 sm:p-5">{query.isPending ? <p role="status" className="flex items-center gap-2 text-note text-ink-muted"><Loader2 className="animate-spin" />Loading revisions…</p> : query.isError ? <p role="alert" className="text-note text-danger-ink">Revision history couldn’t be loaded.</p> : <><ol className="space-y-3">{query.data?.map((revision: DocumentRevisionOut) => <li key={revision.id} className={cn("rounded-lg border p-3", selectedId === revision.id ? "border-secondary bg-secondary-tint" : "border-line bg-ground")}><div className="flex flex-wrap items-center gap-2"><strong className="text-control text-ink">Revision {revision.revisionNumber}</strong>{revision.id === currentRevisionId ? <span className="rounded-full bg-secondary-tint px-2 py-1 text-meta font-semibold text-secondary">Current view</span> : null}<StatusBadge status={revision.state} /><Button type="button" variant="ghost" size="sm" className="ml-auto" aria-expanded={selectedId === revision.id} onClick={() => setSelectedId((current) => current === revision.id ? null : revision.id)}>{selectedId === revision.id ? "Hide" : "View revision"}</Button></div><p className="mt-1 text-note text-ink-muted">{revision.authoredBy} · {formatInstant(revision.proposedAt)} · {revision.changes.length} changed fields · {revision.assets.length} files</p><p className="mt-2 truncate font-mono text-[11px] text-ink-muted">{revision.evidenceHash}</p></li>)}</ol>{selected ? <RevisionSnapshot revision={selected} /> : null}</>}</div> : null}
+    {open ? <div className="border-t border-line p-4 sm:p-5">{query.isPending ? <p role="status" className="flex items-center gap-2 text-note text-ink-muted"><Loader2 className="animate-spin" />Loading revisions…</p> : query.isError ? <p role="alert" className="text-note text-danger-ink">Revision history couldn’t be loaded.</p> : <><ol className="space-y-3">{query.data?.map((revision: DocumentRevisionOut) => <li key={revision.id} className={cn("rounded-lg border p-3", selectedId === revision.id ? "border-secondary bg-secondary-tint" : "border-line bg-ground")}><div className="flex flex-wrap items-center gap-2"><strong className="text-control text-ink">Revision {revision.revisionNumber}</strong>{revision.id === currentRevisionId ? <span className="rounded-full bg-secondary-tint px-2 py-1 text-meta font-semibold text-secondary">Current view</span> : null}<StatusBadge status={revision.state} /><Button type="button" variant="ghost" size="sm" className="ml-auto" aria-expanded={selectedId === revision.id} onClick={() => setSelectedId((current) => current === revision.id ? null : revision.id)}>{selectedId === revision.id ? "Hide" : "View revision"}</Button></div><p className="mt-1 text-note text-ink-muted">{revision.authoredBy} · {formatInstant(revision.proposedAt, timeZone)} · {revision.changes.length} changed fields · {revision.assets.length} files</p><p className="mt-2 truncate font-mono text-[11px] text-ink-muted">{revision.evidenceHash}</p></li>)}</ol>{selected ? <RevisionSnapshot revision={selected} /> : null}</>}</div> : null}
   </section>;
 }
 
@@ -703,7 +710,7 @@ function LoanActions({ loan }: { loan: PersonalLoanDetailOut }) {
     <div className="mt-4 flex flex-wrap gap-2">
       {loan.status === "funding_pending" && me?.role === "lender" && !loan.fundingCashflow ? <Button type="button" onClick={() => setView(view === "funding" ? "none" : "funding")}><HandCoins /> Record money sent</Button> : null}
       {loan.status === "funding_pending" && me?.role === "borrower" && loan.fundingCashflow?.state === "proposed" ? <Button type="button" disabled={busy} onClick={() => confirmFunding.mutate()}>{confirmFunding.isPending ? <Loader2 className="animate-spin" /> : <Check />}Confirm money received</Button> : null}
-      {loan.status === "active" ? <><Button type="button" variant="outline" onClick={() => setView(view === "payment" ? "none" : "payment")}><ReceiptIndianRupee /> Record payment</Button><Button type="button" variant="outline" onClick={() => setView(view === "amend" ? "none" : "amend")}><PencilLine /> Propose change</Button><Button type="button" variant="ghost" onClick={() => setView(view === "reminder" ? "none" : "reminder")}><MessageCircleMore /> Send reminder</Button></> : null}
+      {loan.status === "active" ? <><Button type="button" variant="outline" onClick={() => setView(view === "payment" ? "none" : "payment")}><Banknote /> Record payment</Button><Button type="button" variant="outline" onClick={() => setView(view === "amend" ? "none" : "amend")}><PencilLine /> Propose change</Button><Button type="button" variant="ghost" onClick={() => setView(view === "reminder" ? "none" : "reminder")}><MessageCircleMore /> Send reminder</Button></> : null}
       {canActOnClosure ? <Button type="button" disabled={busy} onClick={() => close.mutate()}>{close.isPending ? <Loader2 className="animate-spin" /> : <CheckCircle2 />}{closureProposal ? (loan.securityItems.length ? "Confirm item returned and close" : "Confirm closure") : (loan.securityItems.length ? "Mark item returned and propose closure" : "Propose closure")}</Button> : null}
     </div>
     {loan.status === "settlement_pending" && loan.securityItems.length > 0 && me?.role === "borrower" && !closureProposal ? <p className="mt-3 text-note leading-5 text-ink-muted">Waiting for {loan.securityItems[0].heldBy} to record return of the assurance item before you confirm closure.</p> : null}
@@ -729,12 +736,13 @@ function Payments({ loan }: { loan: PersonalLoanDetailOut }) {
   return <section className="rounded-xl border border-line bg-surface">
     <div className="border-b border-line px-4 py-4 sm:px-5"><h2 className="font-heading text-body font-semibold text-ink">Payment record</h2><p className="mt-1 text-note text-ink-muted">A recorded payment changes the shared balance only after the other person confirms it.</p></div>
     {problem ? <div className="p-4 pb-0"><ActionProblem>{problem}</ActionProblem></div> : null}
-    {loan.cashflows.length ? <div>{loan.cashflows.map((cashflow) => { const canConfirm = cashflow.state === "proposed" && cashflow.initiatedBy !== me; return <article key={cashflow.id} className="flex flex-wrap items-center gap-3 border-b border-line px-4 py-4 last:border-0 sm:px-5"><span className={cn("grid size-9 place-items-center rounded-lg", cashflow.state === "confirmed" ? "bg-secondary-tint text-money-in" : "bg-attention-tint text-attention-ink")}><ReceiptIndianRupee size={17} /></span><div className="min-w-0 flex-1"><p className="text-control font-semibold text-ink">{formatMoney(cashflow.amountMinor, cashflow.currency)} · {formatDate(cashflow.occurredOn)}</p><p className="mt-1 text-note text-ink-muted">Recorded by {cashflow.initiatedBy}{cashflow.confirmedBy ? ` · Confirmed by ${cashflow.confirmedBy}` : " · Waiting for confirmation"}</p></div>{canConfirm ? <Button type="button" disabled={confirm.isPending} onClick={() => confirm.mutate(cashflow.id)}>{confirm.isPending ? <Loader2 className="animate-spin" /> : <Check />}Confirm payment</Button> : <StatusBadge status={cashflow.state} />}</article>; })}</div> : <div className="px-4 py-8 text-center text-note text-ink-muted">No repayments have been recorded yet.</div>}
+    {loan.cashflows.length ? <div>{loan.cashflows.map((cashflow) => { const canConfirm = cashflow.state === "proposed" && cashflow.initiatedBy !== me; return <article key={cashflow.id} className="flex flex-wrap items-center gap-3 border-b border-line px-4 py-4 last:border-0 sm:px-5"><span className={cn("grid size-9 place-items-center rounded-lg", cashflow.state === "confirmed" ? "bg-secondary-tint text-money-in" : "bg-attention-tint text-attention-ink")}><Banknote size={17} /></span><div className="min-w-0 flex-1"><p className="text-control font-semibold text-ink">{formatMoney(cashflow.amountMinor, cashflow.currency)} · {formatDate(cashflow.occurredOn)}</p><p className="mt-1 text-note text-ink-muted">Recorded by {cashflow.initiatedBy}{cashflow.confirmedBy ? ` · Confirmed by ${cashflow.confirmedBy}` : " · Waiting for confirmation"}</p></div>{canConfirm ? <Button type="button" disabled={confirm.isPending} onClick={() => confirm.mutate(cashflow.id)}>{confirm.isPending ? <Loader2 className="animate-spin" /> : <Check />}Confirm payment</Button> : <StatusBadge status={cashflow.state} />}</article>; })}</div> : <div className="px-4 py-8 text-center text-note text-ink-muted">No repayments have been recorded yet.</div>}
   </section>;
 }
 
 function ActivityTimeline({ loan }: { loan: PersonalLoanDetailOut }) {
-  return <section className="rounded-xl border border-line bg-surface p-4 sm:p-5"><h2 className="font-heading text-body font-semibold text-ink">Shared activity</h2><ol className="mt-4 space-y-0">{loan.activity.map((event, index) => <li key={event.id} className="grid grid-cols-[auto_1fr] gap-3"><div className="flex flex-col items-center"><span className="mt-1 size-2 rounded-full bg-secondary" />{index < loan.activity.length - 1 ? <span className="h-full w-px bg-line" /> : null}</div><div className="pb-5"><p className="text-control font-medium text-ink">{titleCase(event.eventType.replace("loan.", "").replace("document.", "Document ").replace("payment.", "Payment ").replace("participant.", "Participant ").replaceAll(".", " "))}</p><p className="mt-1 text-note text-ink-muted">{event.actorName ? `${event.actorName} · ` : ""}{formatInstant(event.createdAt)}</p></div></li>)}</ol></section>;
+  const { timeZone } = useUserDefaults();
+  return <section className="rounded-xl border border-line bg-surface p-4 sm:p-5"><h2 className="font-heading text-body font-semibold text-ink">Shared activity</h2><ol className="mt-4 space-y-0">{loan.activity.map((event, index) => <li key={event.id} className="grid grid-cols-[auto_1fr] gap-3"><div className="flex flex-col items-center"><span className="mt-1 size-2 rounded-full bg-secondary" />{index < loan.activity.length - 1 ? <span className="h-full w-px bg-line" /> : null}</div><div className="pb-5"><p className="text-control font-medium text-ink">{titleCase(event.eventType.replace("loan.", "").replace("document.", "Document ").replace("payment.", "Payment ").replace("participant.", "Participant ").replaceAll(".", " "))}</p><p className="mt-1 text-note text-ink-muted">{event.actorName ? `${event.actorName} · ` : ""}{formatInstant(event.createdAt, timeZone)}</p></div></li>)}</ol></section>;
 }
 
 export function PersonalLoanDetailPage() {

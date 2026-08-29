@@ -554,6 +554,38 @@ def test_profile_name_can_be_updated_but_placeholder_identity_is_refused(client,
     assert db.get(User, UUID(user_id)).display_name == "Hari Prasad"
 
 
+def test_profile_currency_and_timezone_become_the_users_application_defaults(client, db):
+    signed_in = sign_in_with_phone(client)
+    user_id = signed_in["profile"]["id"]
+
+    updated = client.patch("/profile", json={
+        "displayName": signed_in["profile"]["displayName"],
+        "currency": "usd",
+        "timezone": "America/New_York",
+    })
+
+    assert updated.status_code == 200
+    assert updated.json()["currency"] == "USD"
+    assert updated.json()["timezone"] == "America/New_York"
+    persisted = db.get(User, UUID(user_id))
+    assert persisted.currency == "USD"
+    assert persisted.timezone == "America/New_York"
+    assert client.get("/bootstrap").json()["user"] == {
+        "id": user_id,
+        "name": signed_in["profile"]["displayName"],
+        "currency": "USD",
+        "timezone": "America/New_York",
+    }
+
+    refused = client.patch("/profile", json={
+        "displayName": signed_in["profile"]["displayName"],
+        "currency": "USD",
+        "timezone": "Mars/Olympus_Mons",
+    })
+    assert refused.status_code == 422
+    assert db.get(User, UUID(user_id)).timezone == "America/New_York"
+
+
 def test_a_token_for_another_client_is_refused(monkeypatch):
     from app.services import google_identity
 

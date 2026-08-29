@@ -137,9 +137,12 @@ def loans(
     user: User = Depends(current_user),
 ) -> PersonalLoanListOut:
     items = [summary_payload(db, agreement, user) for agreement in list_personal_loans(db, user)]
+    default_currency_items = [item for item in items if item["currency"] == user.currency]
     return PersonalLoanListOut.model_validate({
-        "moneyIGaveMinor": sum(item["outstandingPrincipalMinor"] for item in items if item["direction"] == "lent"),
-        "moneyIReceivedMinor": sum(item["outstandingPrincipalMinor"] for item in items if item["direction"] == "borrowed"),
+        # Totals cannot safely add different units. Keep every agreement in
+        # the list, but summarize only the profile's current default currency.
+        "moneyIGaveMinor": sum(item["outstandingPrincipalMinor"] for item in default_currency_items if item["direction"] == "lent"),
+        "moneyIReceivedMinor": sum(item["outstandingPrincipalMinor"] for item in default_currency_items if item["direction"] == "borrowed"),
         "needsResponseCount": sum(1 for item in items if item["responseNeeded"]),
         "items": items,
     })

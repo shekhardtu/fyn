@@ -86,6 +86,16 @@ describe("formatTimestamp", () => {
     const instant = "2026-08-11T09:30:00.000Z";
     expect(timestampInputToUtc(timestampInputValue(instant))).toBe(instant);
   });
+
+  it("round-trips editor values through the profile timezone", () => {
+    const instant = "2026-08-11T18:00:00.000Z";
+    expect(timestampInputValue(instant, "Asia/Kolkata")).toBe("2026-08-11T23:30");
+    expect(timestampInputToUtc("2026-08-11T23:30", "Asia/Kolkata")).toBe(instant);
+  });
+
+  it("rejects wall-clock times that do not exist during a DST jump", () => {
+    expect(timestampInputToUtc("2026-03-08T02:30", "America/New_York")).toBeNull();
+  });
 });
 
 describe("formatTransactionClassification", () => {

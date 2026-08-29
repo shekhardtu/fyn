@@ -204,6 +204,10 @@ def update_profile(
     user: User = Depends(current_user),
 ) -> ProfileOut:
     user.display_name = request.display_name
+    if request.currency is not None:
+        user.currency = request.currency
+    if request.timezone is not None:
+        user.timezone = request.timezone
     db.commit()
     return _profile(db, user)
 

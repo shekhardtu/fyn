@@ -72,13 +72,20 @@ class MessageAdapter:
             raise ValueError("Message adapter supports SMS or email")
         self.source_type = source_type
 
-    def adapt_message(self, text: str, message_id: str, observed_at: datetime | None = None, timezone_name: str | None = None) -> AdaptedMessage:
+    def adapt_message(
+        self,
+        text: str,
+        message_id: str,
+        observed_at: datetime | None = None,
+        timezone_name: str | None = None,
+        default_currency: str = DEFAULT_CURRENCY,
+    ) -> AdaptedMessage:
         classification, relevant, reason = classify_financial_message(text)
         if not relevant:
             return AdaptedMessage(classification=classification, relevant=False, reason=reason)
         current = observed_at or now_utc()
         local_current = local_now(timezone_name, current=current)
-        extracted = extract_transaction(text, today=local_current.date())
+        extracted = extract_transaction(text, today=local_current.date(), default_currency=default_currency)
         transaction_type = TransactionType.REFUND if classification == "refund" else TransactionType.EXPENSE if classification == "debit" else TransactionType.INCOME
         if extracted.amount_minor is None:
             return AdaptedMessage(classification=classification, relevant=False, reason="No unambiguous amount found")
@@ -136,7 +143,12 @@ class CSVAdapter:
         normalized = {header.strip().lower(): header for header in headers}
         return next((normalized[name] for name in self.aliases[logical] if name in normalized), None)
 
-    def adapt(self, content: bytes, timezone_name: str | None = None) -> list[tuple[int, ObservationIn | None, list[str]]]:
+    def adapt(
+        self,
+        content: bytes,
+        timezone_name: str | None = None,
+        default_currency: str = DEFAULT_CURRENCY,
+    ) -> list[tuple[int, ObservationIn | None, list[str]]]:
         decoded = content.decode("utf-8-sig")
         reader = csv.DictReader(io.StringIO(decoded))
         headers = reader.fieldnames or []
@@ -168,7 +180,7 @@ class CSVAdapter:
                     external_transaction_id=external_id,
                     transaction_type=transaction_type,
                     amount_minor=amount,
-                    currency=(row.get(currency_col) or DEFAULT_CURRENCY).strip().upper() if currency_col else DEFAULT_CURRENCY,
+                    currency=(row.get(currency_col) or default_currency).strip().upper() if currency_col else default_currency,
                     merchant=merchant,
                     transaction_at=from_local_parts(self._date(row[date_col]), None, timezone_name),
                     description=description,
