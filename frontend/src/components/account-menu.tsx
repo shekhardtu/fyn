@@ -1,11 +1,12 @@
 import { Menu } from "@base-ui/react/menu";
-import { Bot, ChevronsUpDown, LayoutDashboard, Loader2, LogOut, ReceiptText, SlidersHorizontal, Tags, UserRound } from "lucide-react";
+import { Bot, ChartColumn, ChevronsUpDown, HandCoins, LayoutDashboard, Loader2, LogOut, ReceiptText, SlidersHorizontal, Tags, UserRound } from "lucide-react";
 import type { ComponentType } from "react";
 import type { Bootstrap } from "@/lib/protocol";
 import { appPaths } from "@/routing/paths";
 
 type AccountMenuProps = {
   user: Bootstrap["user"] | null;
+  personalLendingAvailable: boolean;
   signingOut: boolean;
   onNavigate: (path: string) => void;
   onSignOut: () => void;
@@ -19,7 +20,9 @@ type MenuDestination = {
 
 const QUICK_LINKS: MenuDestination[] = [
   { label: "Overview", path: appPaths.overview, icon: LayoutDashboard },
+  { label: "Dashboards", path: appPaths.dashboards, icon: ChartColumn },
   { label: "Transactions", path: appPaths.transactions, icon: ReceiptText },
+  { label: "Personal lending", path: appPaths.loans, icon: HandCoins },
   { label: "Categories", path: appPaths.categories, icon: Tags },
 ];
 
@@ -51,7 +54,10 @@ function DestinationGroup({ label, items, onNavigate }: {
  *  places from account controls, so signing out cannot be mistaken for another
  *  navigation row. Base UI owns focus return, arrow-key movement, Escape, and
  *  outside-click dismissal. */
-export function AccountMenu({ user, signingOut, onNavigate, onSignOut }: AccountMenuProps) {
+export function AccountMenu({ user, personalLendingAvailable, signingOut, onNavigate, onSignOut }: AccountMenuProps) {
+  const quickLinks = personalLendingAvailable
+    ? QUICK_LINKS
+    : QUICK_LINKS.filter((item) => item.path !== appPaths.loans);
   return <Menu.Root>
     <Menu.Trigger
       disabled={!user}
@@ -76,7 +82,7 @@ export function AccountMenu({ user, signingOut, onNavigate, onSignOut }: Account
             </span>
           </div>
 
-          <DestinationGroup label="Quick access" items={QUICK_LINKS} onNavigate={onNavigate} />
+          <DestinationGroup label="Quick access" items={quickLinks} onNavigate={onNavigate} />
           <div role="separator" className="my-1 border-t border-line" />
           <DestinationGroup label="Your account" items={ACCOUNT_LINKS} onNavigate={onNavigate} />
           <div role="separator" className="my-1 border-t border-line" />

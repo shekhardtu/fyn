@@ -13,7 +13,7 @@ const USER = {
 describe("AccountMenu", () => {
   it("opens from the user row and groups quick page and account links", () => {
     const onNavigate = vi.fn();
-    render(<AccountMenu user={USER} signingOut={false} onNavigate={onNavigate} onSignOut={vi.fn()} />);
+    render(<AccountMenu user={USER} personalLendingAvailable signingOut={false} onNavigate={onNavigate} onSignOut={vi.fn()} />);
 
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Hari Shekhar account menu" }));
@@ -24,7 +24,9 @@ describe("AccountMenu", () => {
     expect(within(menu).getByText("Your account")).toBeInTheDocument();
     expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
       "Overview",
+      "Dashboards",
       "Transactions",
+      "Personal lending",
       "Categories",
       "Profile & sign-in",
       "Agent settings",
@@ -39,12 +41,22 @@ describe("AccountMenu", () => {
   it("keeps sign out distinct from navigation", () => {
     const onNavigate = vi.fn();
     const onSignOut = vi.fn();
-    render(<AccountMenu user={USER} signingOut={false} onNavigate={onNavigate} onSignOut={onSignOut} />);
+    render(<AccountMenu user={USER} personalLendingAvailable signingOut={false} onNavigate={onNavigate} onSignOut={onSignOut} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Hari Shekhar account menu" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
 
     expect(onSignOut).toHaveBeenCalledOnce();
     expect(onNavigate).not.toHaveBeenCalled();
+  });
+
+  it("hides personal lending when the account does not have the feature", () => {
+    render(<AccountMenu user={USER} personalLendingAvailable={false} signingOut={false} onNavigate={vi.fn()} onSignOut={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Hari Shekhar account menu" }));
+
+    expect(screen.getByRole("menuitem", { name: "Dashboards" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Categories" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Personal lending" })).not.toBeInTheDocument();
   });
 });
