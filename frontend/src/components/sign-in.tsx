@@ -99,6 +99,7 @@ export function CodeExchange({ channel, onStart, onVerify, submitLabel, onCancel
   const [sent, setSent] = useState<OtpSent | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const codeRef = useRef<HTMLInputElement>(null);
+  const verificationInFlight = useRef(false);
   const [cooldown, startCooldown] = useCooldown();
 
   // Moving focus to the code box is the whole point of the step change; without
@@ -121,18 +122,33 @@ export function CodeExchange({ channel, onStart, onVerify, submitLabel, onCancel
   const verify = useMutation({
     mutationFn: ({ challengeId, submitted }: { challengeId: string; submitted: string }) => onVerify(challengeId, submitted),
     onMutate: () => setProblem(null),
-    onError: fail,
+    onError: (cause) => {
+      fail(cause);
+      // Leave a rejected code ready to replace, without making keyboard users
+      // find the field again after an automatic submission.
+      window.setTimeout(() => {
+        codeRef.current?.focus();
+        codeRef.current?.select();
+      });
+    },
+    onSettled: () => { verificationInFlight.current = false; },
   });
 
   const busy = start.isPending || verify.isPending;
   const identifier = channel === "phone" ? `+91${value}` : value.trim();
   const identifierReady = channel === "phone" ? value.length === 10 : Boolean(value.trim());
 
+  function verifyCode(submitted: string) {
+    if (!sent || submitted.length !== 6 || busy || verificationInFlight.current) return;
+    verificationInFlight.current = true;
+    verify.mutate({ challengeId: sent.challengeId, submitted });
+  }
+
   function submit(event: FormEvent) {
     event.preventDefault();
     if (busy) return;
     if (!sent) { start.mutate(identifier); return; }
-    verify.mutate({ challengeId: sent.challengeId, submitted: code.trim() });
+    verifyCode(code);
   }
 
   return <form onSubmit={submit} className="space-y-4">
@@ -179,15 +195,28 @@ export function CodeExchange({ channel, onStart, onVerify, submitLabel, onCancel
         <input
           ref={codeRef}
           value={code}
-          onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+          onChange={(event) => {
+            const nextCode = event.target.value.replace(/\D/g, "").slice(0, 6);
+            setCode(nextCode);
+            if (problem) setProblem(null);
+            if (nextCode.length === 6) verifyCode(nextCode);
+          }}
           inputMode="numeric"
           autoComplete="one-time-code"
+          maxLength={6}
+          pattern="[0-9]{6}"
           placeholder="••••••"
+          disabled={verify.isPending}
+          aria-busy={verify.isPending}
+          aria-invalid={Boolean(problem)}
           required
-          className="manual-field mt-2 h-12 w-full rounded-lg border border-line-strong bg-surface px-3 text-center font-mono text-title text-ink tracking-[0.4em] outline-none transition-colors duration-[110ms] ease-linear"
+          className="manual-field mt-2 h-12 w-full rounded-lg border border-line-strong bg-surface px-3 text-center font-mono text-title text-ink tracking-[0.4em] outline-none transition-[color,background-color,border-color,opacity] duration-200 ease-out disabled:cursor-wait disabled:bg-surface-sunken disabled:text-ink-muted"
         />
+        <span className="mt-2 block text-note leading-5 text-ink-muted" aria-live="polite">
+          {verify.isPending ? "Verifying your code…" : "We’ll verify automatically once all six digits are entered."}
+        </span>
       </label>
-      <Button type="submit" disabled={busy || code.length < 4} size="lg" className="w-full">
+      <Button type="submit" disabled={busy || code.length !== 6} size="lg" className="w-full" aria-live="polite">
         {verify.isPending ? <Loader2 className="animate-spin" /> : null}
         {verify.isPending ? "Checking…" : submitLabel}
       </Button>

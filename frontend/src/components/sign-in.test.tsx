@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { CodeExchange } from "@/components/sign-in";
 
@@ -40,5 +40,45 @@ describe("CodeExchange phone field", () => {
     fireEvent.click(send);
 
     await waitFor(() => expect(onStart).toHaveBeenCalledWith("+919876543210"));
+  });
+});
+
+describe.each([
+  { channel: "phone" as const, identifier: "9876543210", inputName: /^10-digit mobile number with country code \+91/ },
+  { channel: "email" as const, identifier: "person@example.com", inputName: /^Email address/ },
+])("CodeExchange $channel OTP", ({ channel, identifier, inputName }) => {
+  it("automatically verifies on the sixth digit and shows the pending transition", async () => {
+    let finishVerification!: () => void;
+    const onVerify = vi.fn().mockImplementation(() => new Promise<void>((resolve) => { finishVerification = resolve; }));
+    const onStart = vi.fn().mockResolvedValue({
+      challengeId: `${channel}-challenge`,
+      channel,
+      destinationMasked: channel === "phone" ? "+91•••••210" : "p••••n@example.com",
+      expiresInSeconds: 300,
+      resendAfterSeconds: 45,
+      debugCode: null,
+    });
+    const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+
+    render(<QueryClientProvider client={queryClient}>
+      <CodeExchange channel={channel} onStart={onStart} onVerify={onVerify} submitLabel="Sign in" />
+    </QueryClientProvider>);
+
+    fireEvent.change(screen.getByRole("textbox", { name: inputName }), { target: { value: identifier } });
+    fireEvent.click(screen.getByRole("button", { name: "Send code" }));
+
+    const codeInput = await screen.findByRole("textbox", { name: /^Six-digit code/ });
+    fireEvent.change(codeInput, { target: { value: "12345" } });
+    expect(onVerify).not.toHaveBeenCalled();
+
+    fireEvent.change(codeInput, { target: { value: "123456" } });
+
+    await waitFor(() => expect(onVerify).toHaveBeenCalledWith(`${channel}-challenge`, "123456"));
+    expect(onVerify).toHaveBeenCalledTimes(1);
+    expect(codeInput).toBeDisabled();
+    expect(screen.getByText("Verifying your code…")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Checking…" })).toBeDisabled();
+
+    await act(async () => { finishVerification(); });
   });
 });
