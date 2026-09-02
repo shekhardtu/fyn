@@ -304,7 +304,9 @@ def transaction_rows(
 
     rows = [{
         "id": str(item.id),
-        "merchant": item.merchant_name or item.transaction_type.replace("_", " ").title(),
+        # A missing merchant stays a missing merchant.  Transaction type is a
+        # separate dimension and must never be presented as a merchant name.
+        "merchant": item.merchant_name or "Unknown merchant",
         "transaction_type": item.transaction_type,
         "category": categories.get(item.category_id) if item.category_id else None,
         "subcategory": subcategories.get(item.subcategory_id) if item.subcategory_id else None,
