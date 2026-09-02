@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 from agno.models.response import ToolExecution
 from sqlalchemy import select
 
-from app.models import Category, TaxonomyScope, User
+from app.models import Category, TaxonomyScope, Transaction, User
 from app.taxonomy_catalog import DEFAULT_TAXONOMY, NON_EXPENSE_CATEGORY_SLUGS
 from app.seed import DEFAULT_USER_EMAIL
 from app.services import agents
@@ -13,6 +13,7 @@ from app.services.agent_tools import bind_existing_tool
 from agno.run.agent import RunOutput
 from app.services.calculators import loan_amortization_schedule, loan_payment
 from app.services.conversation import _user_runtime_tools
+from app.services.grounding_tools import transaction_list
 from app.services.taxonomy import agent_taxonomy
 from app.services.runtime_tools import (
     FINANCIAL_CALCULATOR_TOOL_NAME,
@@ -133,6 +134,51 @@ def test_taxonomy_tool_reads_only_the_authenticated_users_visible_categories(db)
     assert "Own category" in {item["name"] for item in result}
     assert "Other category" not in {item["name"] for item in result}
     assert result == agent_taxonomy(db, user)
+
+
+def test_transaction_list_keeps_missing_merchant_distinct_from_transaction_type(db):
+    user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
+    db.add_all([
+        Transaction(
+            user_id=user.id,
+            transaction_type="expense",
+            amount_minor=8_000,
+            currency="INR",
+            merchant_name=None,
+            transaction_at=datetime(2026, 8, 23, tzinfo=timezone.utc),
+        ),
+        Transaction(
+            user_id=user.id,
+            transaction_type="income",
+            amount_minor=64_000,
+            currency="INR",
+            merchant_name=None,
+            transaction_at=datetime(2026, 8, 27, tzinfo=timezone.utc),
+        ),
+        Transaction(
+            user_id=user.id,
+            transaction_type="expense",
+            amount_minor=70_000,
+            currency="INR",
+            merchant_name="Fresh Mart",
+            transaction_at=datetime(2026, 8, 28, tzinfo=timezone.utc),
+        ),
+    ])
+    db.commit()
+
+    result = transaction_list(
+        db,
+        user.id,
+        date(2026, 8, 31),
+        start=date(2026, 8, 1),
+        end=date(2026, 8, 31),
+        sort_direction="asc",
+    )
+
+    rows_by_amount = {row["amount_minor"]: row for row in result["rows"]}
+    assert rows_by_amount[8_000]["merchant"] == "Unknown merchant"
+    assert rows_by_amount[64_000]["merchant"] == "Unknown merchant"
+    assert rows_by_amount[70_000]["merchant"] == "Fresh Mart"
 
 
 def test_operator_preserves_only_successful_installed_tool_execution_as_grounding(
