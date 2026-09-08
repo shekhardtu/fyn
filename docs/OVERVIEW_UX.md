@@ -1,6 +1,6 @@
 # Overview information hierarchy
 
-Reviewed 8 September 2026. This is a review of the interface against UX guidance, informed by the user's explicit requirement that **Your month in motion must be above the fold on mobile**. It is not a study of end users or an analysis of product usage.
+Reviewed 9 September 2026. This is a review of the interface against UX guidance, informed by the user's explicit requirement that **Your month in motion must be above the fold on mobile**. It is not a study of end users or an analysis of product usage.
 
 ## User tasks and order
 
@@ -12,17 +12,19 @@ The working assumption is that people open this expense overview to check spendi
 | First screen | How much have I spent, and am I within my budget? | Compact spending summary, actual budget remaining or exceeded, and a separately labelled pace projection when relevant. Income and income minus expenses are supporting figures. |
 | First screen | How is my month progressing? | Your month in motion immediately follows the summary on phones and sits alongside it on wide screens. The complete chart must clear the fixed action bar. |
 | Persistent action | Record an entry or ask a question. | Add transaction is the primary action; Ask fyn is secondary. Both remain reachable on mobile. |
+| Next | Am I on pace to stay within my spending limit? | The full Monthly spending limit card directly below the summary/chart, with overall/category controls, daily pace, and projection visible without expanding a disclosure. |
 | Next | Which transactions explain this, and where did the money go? | Recent activity followed by spending categories. |
-| Details | What are the limits and daily spending calculations? | Expandable Budget details. Actual overruns and important pace warnings remain visible in the summary. |
 | Less frequent setup | Add an account, set a budget, or set a savings goal. | Accounts and planning below the financial information, with direct full-screen forms. |
 
 ## Findings and changes
 
 **Emphasis must reflect task importance.** The large welcome sentence and three setup shortcuts occupied the first screen without answering a financial question. Spending now receives the strongest numeric emphasis and the chart stays immediately visible. Size, position, and grouping are tools for communicating importance. [NN/G: visual-design principles](https://www.nngroup.com/articles/principles-visual-design/)
 
-**Defer details without hiding frequently needed information.** The full budget editor, category limits, and daily calculations sit behind a labelled disclosure. The trend chart, remaining budget, actual overruns, and relevant pace warnings stay outside it. NN/G stresses that frequently needed features must remain on the initial display and that the path to additional detail must be obvious. [NN/G: progressive disclosure](https://www.nngroup.com/articles/progressive-disclosure/)
+**Defer details without hiding frequently needed information.** The user identified the full spending-limit and pace card as important for daily checking, so it remains visible directly below the summary/chart, ahead of transaction history. Budget editing opens its own form; overall/category tabs select the scope without hiding the card itself. The trend chart, remaining budget, actual overruns, and relevant pace warnings stay on the first screen. NN/G stresses that frequently needed features must remain on the initial display and that the path to additional detail must be obvious. [NN/G: progressive disclosure](https://www.nngroup.com/articles/progressive-disclosure/)
 
 **Make state and financial meaning explicit.** The month selector remains visible while scrolling. An empty month retains its zero totals and chart, with a notice and paths to the previous month and all records. Income minus expenses is not labelled as an available bank balance. Recorded account balances remain separate. The previous financial-health score was removed because an income-to-expense ratio alone does not establish financial health. These choices apply clear system status and familiar, accurate language. [NN/G: usability heuristics](https://www.nngroup.com/articles/ten-usability-heuristics/)
+
+**Keep comparison context beside totals.** Spending, income, and income minus expenses each show a directional percentage change. A shared, visible date range identifies the previous comparison period supplied by the API; these are calendar-date comparisons, not exact time-of-day comparisons. Lower spending is favorable, while higher income or net cash flow is favorable. Negative net cash flow uses the magnitude of the previous value as the percentage baseline so improvements and declines keep the correct direction. A zero baseline shows “No prior baseline” instead of an undefined percentage, and unchanged amounts remain neutral. The indicators stay compact to preserve the chart's first-screen placement on phones.
 
 **Reduce competing actions.** The same Add transaction flow serves desktop and mobile. Ask fyn is secondary, and setup actions no longer compete with daily information near the top. Contextual chat actions prepare an editable prompt; the user decides when to send it. This follows the same principle of keeping the primary display focused on important options. [NN/G: progressive disclosure](https://www.nngroup.com/articles/progressive-disclosure/)
 
@@ -39,6 +41,8 @@ The full-screen entry applies the same hierarchy to a focused task: select a typ
 The entry header and save bar remain outside the scrolling fields. Field validation brings focus to the invalid input, and failed-save or discard feedback scrolls into view. Collapsing optional details preserves their values; changing to a non-expense type clears expense-only classification. The full-screen variant shares the existing form state and submission contract with the ledger editor and conversation form.
 
 The browser regression checks cover the complete chart fitting between the persistent header and action bar at 360 × 740, 375 × 667, and 390 × 844, plus the desktop layout. The plot height adapts to shorter phone screens. Checks also cover an empty month, month switching and refresh, full-screen entry, and contextual chat prompts. Component checks distinguish actual budget overruns, projected overruns, completed months, and category-only budgets.
+
+On wide screens, each pair of adjacent cards stretches to the height of the taller card, keeping the summary/chart, recent activity/spending breakdown, and accounts/planning rows aligned. Stacked cards on phones retain their natural content height.
 
 Entry checks include light and dark layouts, touch input sizes, optional fields, transaction-type changes, and a 390 × 420 viewport with the save action and error feedback still visible. A reduced viewport tests layout constraints; native keyboard and safe-area behaviour still require an actual-device smoke test.
 
