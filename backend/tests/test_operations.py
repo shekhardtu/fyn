@@ -214,7 +214,7 @@ def test_operator_operation_call_becomes_an_internal_revision_bound_decision(
 
     class StubOperator:
         def run(self, *_args, **_kwargs):
-            return iter([RunOutput(content=None, tools=[execution])])
+            return iter([RunOutput(status="COMPLETED", content=None, tools=[execution])])
 
     monkeypatch.setattr(agent_service, "operation_catalog", lambda: manager)
     monkeypatch.setattr(agent_service, "build_operator", lambda *args, **kwargs: StubOperator())

@@ -15,6 +15,26 @@ describe("widget registry", () => {
   });
 });
 
+describe("AI service notice", () => {
+  it("renders a persisted caution as an accessible status without a retry action", () => {
+    const widget: Widget = {
+      id: "ai-service-notice-1", type: "insight_card", version: 1,
+      data: {
+        title: "AI service unavailable",
+        body: "Requests that need AI are unavailable. You can still use the app’s transaction forms.",
+        tone: "caution",
+      },
+      actions: [],
+    };
+    const { unmount } = render(<WidgetRenderer widget={widget} onAction={vi.fn()} />);
+    expect(screen.getByRole("status", { name: "AI service unavailable" })).toHaveTextContent("transaction forms");
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    unmount();
+    render(<WidgetRenderer widget={widget} onAction={vi.fn()} />);
+    expect(screen.getByRole("status", { name: "AI service unavailable" })).toBeInTheDocument();
+  });
+});
+
 describe("budget HITL", () => {
   it("focuses the amount field without letting the browser scroll a virtual row", () => {
     const focus = vi.spyOn(HTMLElement.prototype, "focus");

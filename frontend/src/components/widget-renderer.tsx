@@ -982,8 +982,8 @@ function Insight({ widget, onAction, disabled, pending }: WidgetProps) {
     {widget.actions.length ? <ActionRow widget={widget} disabled={disabled} pending={pending} onAction={onAction} /> : null}
   </div>;
 
-  return <div className="widget-enter flex max-w-[62ch] gap-2 border-l-2 border-danger-line pl-3">
-    <Info size={15} className="mt-0.5 shrink-0 text-danger" />
+  return <div role="status" aria-label={title || undefined} className="widget-enter flex max-w-[62ch] gap-2 border-l-2 border-danger-line pl-3">
+    <Info aria-hidden="true" size={15} className="mt-0.5 shrink-0 text-danger" />
     <div className="min-w-0">
       {title ? <p className="text-control font-semibold text-danger-ink">{title}</p> : null}
       {body ? <p className={cn("text-control leading-6 text-ink-body", title && "mt-0.5")}>{body}</p> : null}

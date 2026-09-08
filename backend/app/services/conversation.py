@@ -131,6 +131,7 @@ from .planning_contracts import (
     GoalAmountContract,
     GoalAmountSeed,
 )
+from .provider_errors import AgentExecutionError, ProviderUnavailableError
 from .reconciliation import attach_observation, ingest_observation, resolve_reconciliation
 from .repositories import UserScopedRepository
 from .turn_policy import EffectAuthorization, TurnIntentContract, authorize_capability, resolve_turn_intent
@@ -590,6 +591,9 @@ Held in a ContextVar rather than a module global because every request runs
 those an isolated copy of the context.
 """
 _reserved_reply: ContextVar[Message | None] = ContextVar("reserved_reply", default=None)
+_provider_failure: ContextVar[ProviderUnavailableError | None] = ContextVar(
+    "provider_failure", default=None,
+)
 _clarification_resume_guard: ContextVar[dict[str, Any] | None] = ContextVar(
     "clarification_resume_guard",
     default=None,
@@ -891,7 +895,23 @@ def persist_agent_response(
     commit: bool = True,
 ) -> AgentResponse:
     """Persist and return one response through the canonical reply boundary."""
-    response_widgets = widgets or []
+    response_widgets = list(widgets or [])
+    provider_failure = _provider_failure.get()
+    if provider_failure is not None:
+        response_widgets.append(Widget(
+            id=f"ai-service-notice-{uuid4()}",
+            type=WidgetType.INSIGHT_CARD,
+            data={
+                "title": provider_failure.title,
+                "body": provider_failure.notice,
+                "tone": "caution",
+            },
+            actions=[],
+        ))
+        if task_status == "failed" and error_code in {"sql_operator_unavailable", "unresolved_financial_query"}:
+            content = "I couldn’t complete this request while the AI service is unavailable."
+            failure_stage = "provider"
+            error_code = provider_failure.code
     response_citations = citations or []
     _validate_blocking_widget_contract(response_widgets, pending_action)
     _validate_actionable_widget_event_ids(db, conversation, response_widgets)
@@ -5794,11 +5814,13 @@ def _reply_reservation(db: Session) -> Iterator[None]:
     committed on the way and the row would otherwise stay in the transcript
     as an empty message from the copilot."""
     token = _reserved_reply.set(None)
+    provider_token = _provider_failure.set(None)
     try:
         yield
     finally:
         stranded = _reserved_reply.get()
         _reserved_reply.reset(token)
+        _provider_failure.reset(provider_token)
         if stranded is not None:
             try:
                 db.delete(stranded)
@@ -6966,7 +6988,23 @@ def _run_turn(
                 ),
             )
         except Exception as error:
-            if emitted_direct_deltas:
+            if isinstance(error, AgentExecutionError):
+                # A rejected input/output must not enter a finance fallback.
+                raise
+            elif isinstance(error, ProviderUnavailableError):
+                _provider_failure.set(error)
+                db.add(AIAction(
+                    user_id=user.id,
+                    conversation_id=conversation.id,
+                    action_type="operator",
+                    payload_redacted={"errorType": type(error).__name__, "code": error.code},
+                    status=ExecutionStatus.FAILED,
+                ))
+                emit("operator", error.title, "failed", "operator", error.notice)
+                if emitted_direct_deltas:
+                    raise
+                direct_result = None
+            elif emitted_direct_deltas:
                 emit(
                     "operator",
                     "The Operator response stream failed",
@@ -6976,21 +7014,22 @@ def _run_turn(
                     output_payload={"errorType": type(error).__name__, "message": str(error)},
                 )
                 raise
-            db.add(AIAction(
-                user_id=user.id,
-                conversation_id=conversation.id,
-                action_type="operator",
-                payload_redacted={"errorType": type(error).__name__},
-                status=ExecutionStatus.FAILED,
-            ))
-            emit(
-                "operator",
-                "The Operator was unavailable, continuing with the governed pipeline",
-                "completed",
-                "operator",
-                type(error).__name__,
-            )
-            direct_result = None
+            else:
+                db.add(AIAction(
+                    user_id=user.id,
+                    conversation_id=conversation.id,
+                    action_type="operator",
+                    payload_redacted={"errorType": type(error).__name__},
+                    status=ExecutionStatus.FAILED,
+                ))
+                emit(
+                    "operator",
+                    "The Operator was unavailable, continuing with the governed pipeline",
+                    "completed",
+                    "operator",
+                    type(error).__name__,
+                )
+                direct_result = None
 
         if direct_result and direct_result.operation:
             if emitted_direct_deltas:

@@ -75,6 +75,7 @@ def test_complex_analysis_delegate_is_one_call_read_only_and_promotes_evidence(m
 
         def run(self, *_args, **_kwargs):
             return RunOutput(
+                status="COMPLETED",
                 content="The constrained result is ₹1,250.",
                 tools=[nested_execution],
             )
@@ -247,7 +248,7 @@ def test_operator_places_the_selected_style_contract_after_the_current_message(m
     class StubOperator:
         def run(self, prompt, **_kwargs):
             captured["prompt"] = prompt
-            return iter([RunOutput(content="One matching transaction was returned.")])
+            return iter([RunOutput(status="COMPLETED", content="One matching transaction was returned.")])
 
     monkeypatch.setattr(agents, "build_operator", lambda *args, **kwargs: StubOperator())
 
@@ -276,7 +277,7 @@ def test_active_transaction_card_keeps_the_edit_operation_in_the_bounded_tool_se
 
     class StubOperator:
         def run(self, *_args, **_kwargs):
-            return iter([RunOutput(content="I need the typed edit operation.")])
+            return iter([RunOutput(status="COMPLETED", content="I need the typed edit operation.")])
 
     def build_stub(*_args, **kwargs):
         captured["operation_ids"] = {
@@ -307,7 +308,7 @@ def test_explicit_read_turn_does_not_mount_unrelated_draft_operations(monkeypatc
 
     class StubOperator:
         def run(self, *_args, **_kwargs):
-            return iter([RunOutput(content="The read remained agentic.")])
+            return iter([RunOutput(status="COMPLETED", content="The read remained agentic.")])
 
     def build_stub(*_args, **kwargs):
         captured["operation_ids"] = {
@@ -343,7 +344,7 @@ def test_analysis_turn_omits_duplicate_search_operation(monkeypatch):
 
     class StubOperator:
         def run(self, *_args, **_kwargs):
-            return iter([RunOutput(content="The analysis stayed agent-selected.")])
+            return iter([RunOutput(status="COMPLETED", content="The analysis stayed agent-selected.")])
 
     def build_stub(*_args, **kwargs):
         captured["operation_ids"] = {
@@ -377,7 +378,7 @@ def test_complete_calculator_scenario_mounts_no_operation_proposals(monkeypatch)
 
     class StubOperator:
         def run(self, *_args, **_kwargs):
-            return iter([RunOutput(content="The calculator remains agent-selected.")])
+            return iter([RunOutput(status="COMPLETED", content="The calculator remains agent-selected.")])
 
     def build_stub(*_args, **kwargs):
         captured["operation_ids"] = {
@@ -411,7 +412,7 @@ def test_social_conversation_keeps_model_and_mounts_no_finance_operations(monkey
 
     class StubOperator:
         def run(self, *_args, **_kwargs):
-            return iter([RunOutput(content="Doing well—glad you're here.")])
+            return iter([RunOutput(status="COMPLETED", content="Doing well—glad you're here.")])
 
     def build_stub(*_args, **kwargs):
         captured["operation_ids"] = {
@@ -439,7 +440,7 @@ def test_explicit_no_record_explanation_mounts_no_operations(monkeypatch):
 
     class StubOperator:
         def run(self, *_args, **_kwargs):
-            return iter([RunOutput(content="Principal is the amount borrowed.")])
+            return iter([RunOutput(status="COMPLETED", content="Principal is the amount borrowed.")])
 
     def build_stub(*_args, **kwargs):
         captured["operation_ids"] = {
@@ -515,6 +516,7 @@ def test_operator_keeps_tool_answer_and_evidence_in_one_run(monkeypatch):
                 yield RunContentEvent(content="You spent ₹1,250 ")
                 yield RunContentEvent(content="across 3 transactions this month.")
                 yield RunOutput(
+                    status="COMPLETED",
                     content="You spent ₹1,250 across 3 transactions this month.",
                     tools=[execution],
                 )
@@ -558,6 +560,7 @@ def test_operator_records_each_provider_request_inside_its_tool_loop(monkeypatch
                     cache_read_tokens=30,
                 ),
                 RunOutput(
+                    status="COMPLETED",
                     content="Here is the answer.",
                     model="operator-model",
                     model_provider="OpenAI",
@@ -626,6 +629,7 @@ def test_operator_recovers_completed_tool_result_missing_from_terminal_copy(monk
             return iter([
                 ToolCallCompletedEvent(tool=completed),
                 RunOutput(
+                    status="COMPLETED",
                     content="No recorded expenses were found, so there is nothing to compare.",
                     tools=[terminal_copy],
                 ),
@@ -654,6 +658,7 @@ def test_operator_streams_and_retains_provider_reasoning(monkeypatch):
                 RunContentEvent(reasoning_content="Keep the prior Housing filter. "),
                 RunContentEvent(content="Here is the contextual answer."),
                 RunOutput(
+                    status="COMPLETED",
                     content="Here is the contextual answer.",
                     reasoning_content="Read the follow-up context. Keep the prior Housing filter. ",
                 ),
@@ -702,7 +707,7 @@ def test_operator_stops_on_strict_filesystem_operation(monkeypatch):
         def run(self, *_args, **_kwargs):
             return iter([
                 ToolCallCompletedEvent(tool=execution),
-                RunOutput(content=None, tools=[execution]),
+                RunOutput(status="COMPLETED", content=None, tools=[execution]),
             ])
 
     monkeypatch.setattr(agents, "build_operator", lambda *args, **kwargs: StubOperator())

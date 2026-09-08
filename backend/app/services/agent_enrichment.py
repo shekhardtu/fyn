@@ -28,6 +28,7 @@ from .agent_run_metrics import (
     end_agent_metric_collection,
 )
 from .agents import suggest_related_questions
+from .provider_errors import AgentExecutionError, ProviderUnavailableError
 from .rollout import AGENT_ENRICHMENT, rollout_assignment
 from .runtime_tools import capability_notes
 
@@ -226,8 +227,12 @@ def _record_failure(
             item = _owned_enrichment(db, enrichment_id, user_id)
             if item is None:
                 return
-            code = type(error).__name__[:80]
-            terminal = item.attempts >= max_attempts
+            code = error.code if isinstance(error, (ProviderUnavailableError, AgentExecutionError)) else type(error).__name__[:80]
+            terminal = (
+                item.attempts >= max_attempts
+                or isinstance(error, AgentExecutionError)
+                or (isinstance(error, ProviderUnavailableError) and not error.retryable)
+            )
             item.status = (
                 AgentEnrichmentStatus.FAILED.value
                 if terminal
@@ -242,7 +247,7 @@ def _record_failure(
                 user_id=item.user_id,
                 conversation_id=item.conversation_id,
                 action_type="suggester",
-                payload_redacted={"errorType": code, "message": str(error)[:300]},
+                payload_redacted={"errorType": type(error).__name__[:80], "code": code, "message": str(error)[:300]},
                 status=ExecutionStatus.FAILED,
             ))
             db.commit()

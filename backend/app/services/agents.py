@@ -60,6 +60,7 @@ from .capabilities import (
 )
 from .finance_time import FinanceRunContext
 from .preferences import AnswerStyle
+from .provider_errors import CheckedOpenAIResponses, ProviderUnavailableError, checked_provider_call, checked_provider_stream
 from .rollout import ANALYSIS_DELEGATION, rollout_assignment
 from .semantic import AnalysisToolProposal, semantic_catalog
 from .sql_analysis import RUN_SQL_TOOL_NAME
@@ -106,7 +107,9 @@ def _responses_model(
         "reasoning_effort": reasoning_effort,
         "reasoning_summary": reasoning_summary,
         "verbosity": verbosity,
-        "max_retries": 1,
+        # The SDK retries all HTTP 429s, including exhausted credits. Retry
+        # decisions belong to the caller after the typed cause is known.
+        "max_retries": 0,
     }
     if prompt_cache_key:
         options["request_params"] = {
@@ -115,7 +118,7 @@ def _responses_model(
         }
     if timeout is not None:
         options["timeout"] = timeout
-    return OpenAIResponses(**options)
+    return CheckedOpenAIResponses(**options)
 
 
 def _operator_prompt_cache_key(
@@ -1304,19 +1307,21 @@ def build_analysis_delegate_tool(
                 ],
                 **FinanceRunContext(current_date, user_timezone, user_id).agno_options(),
             )
-            output = delegate.run(prompt, user_id=str(user_id) if user_id else None)
-            record_agno_run_metrics(
-                output,
-                stage="analysis_delegate",
-                model=settings.analysis_delegate_model,
-                reasoning_profile=agent_reasoning_profile(delegate),
-                prompt_characters=len(prompt),
-                prompt_components={
-                    "recentContext": recent_dialogue,
-                    "currentQuestion": question,
-                    "analysisFocus": analysis_focus,
-                },
-                mounted_tools=mounted_tool_names(delegate),
+            output = checked_provider_call(
+                lambda: delegate.run(prompt, user_id=str(user_id) if user_id else None),
+                on_output=lambda result: record_agno_run_metrics(
+                    result,
+                    stage="analysis_delegate",
+                    model=settings.analysis_delegate_model,
+                    reasoning_profile=agent_reasoning_profile(delegate),
+                    prompt_characters=len(prompt),
+                    prompt_components={
+                        "recentContext": recent_dialogue,
+                        "currentQuestion": question,
+                        "analysisFocus": analysis_focus,
+                    },
+                    mounted_tools=mounted_tool_names(delegate),
+                ),
             )
             grounding = _runtime_tool_grounding(output, available_tools)
             successful = [
@@ -1507,13 +1512,13 @@ def run_operator(
     provider_requests: list[dict[str, Any]] = []
     final_output: RunOutput | None = None
     streamed_live = False
-    stream = operator.run(
+    stream = checked_provider_stream(lambda: operator.run(
         prompt,
         user_id=str(user_id) if user_id else None,
         stream=True,
         stream_events=True,
         yield_run_output=True,
-    )
+    ))
     for event in stream:
         # Capturing two monotonic timestamps and scalar event fields is the
         # only work performed on the response loop. It has no callback, I/O,
@@ -1588,6 +1593,8 @@ def run_operator(
             # part of the customer response and must never delay RUN_FINISHED.
             break
 
+    if final_output is None:
+        raise ProviderUnavailableError("provider_response_incomplete")
     if final_output is not None:
         record_agno_run_metrics(
             final_output,
@@ -1712,18 +1719,20 @@ def repair_grounded_answer(
         "missing_obligations": obligations,
         "typed_evidence": evidence[:300],
     }, ensure_ascii=False, default=str)
-    result = composer.run(repair_prompt)
-    record_agno_run_metrics(
-        result,
-        stage="grounded_answer_repair",
-        model=settings.operator_model,
-        reasoning_profile="low",
-        prompt_characters=len(repair_prompt),
-        prompt_components={
-            "question": question,
-            "originalAnswer": original_answer,
-            "obligations": obligations,
-        },
+    result = checked_provider_call(
+        lambda: composer.run(repair_prompt),
+        on_output=lambda output: record_agno_run_metrics(
+            output,
+            stage="grounded_answer_repair",
+            model=settings.operator_model,
+            reasoning_profile="low",
+            prompt_characters=len(repair_prompt),
+            prompt_components={
+                "question": question,
+                "originalAnswer": original_answer,
+                "obligations": obligations,
+            },
+        ),
     )
     repaired = (
         result.content
@@ -1805,19 +1814,21 @@ def suggest_related_questions(
         f"Question just asked:\n{question}\n\n"
         f"Answer just given:\n{answer}"
     )
-    result = suggester.run(suggestion_prompt)
-    record_agno_run_metrics(
-        result,
-        stage="related_question_suggester",
-        model=settings.suggester_model,
-        reasoning_profile="none",
-        prompt_characters=len(suggestion_prompt),
-        prompt_components={
-            "recentContext": dialogue,
-            "question": question,
-            "answer": answer,
-            "capabilityNotes": capability_notes,
-        },
+    result = checked_provider_call(
+        lambda: suggester.run(suggestion_prompt),
+        on_output=lambda output: record_agno_run_metrics(
+            output,
+            stage="related_question_suggester",
+            model=settings.suggester_model,
+            reasoning_profile="none",
+            prompt_characters=len(suggestion_prompt),
+            prompt_components={
+                "recentContext": dialogue,
+                "question": question,
+                "answer": answer,
+                "capabilityNotes": capability_notes,
+            },
+        ),
     )
     content = result.content if isinstance(result.content, RelatedQuestionSuggestions) else RelatedQuestionSuggestions.model_validate(result.content)
     already_asked = {
@@ -1883,13 +1894,15 @@ def evaluate_reconciliation_match(
         "deterministic_signals": deterministic_signals,
     }
     reconciliation_prompt = json.dumps(payload, default=str)
-    result = reconciler.run(reconciliation_prompt)
-    record_agno_run_metrics(
-        result,
-        stage="reconciliation",
-        model=get_settings().reconciler_model,
-        reasoning_profile="none",
-        prompt_characters=len(reconciliation_prompt),
+    result = checked_provider_call(
+        lambda: reconciler.run(reconciliation_prompt),
+        on_output=lambda output: record_agno_run_metrics(
+            output,
+            stage="reconciliation",
+            model=get_settings().reconciler_model,
+            reasoning_profile="none",
+            prompt_characters=len(reconciliation_prompt),
+        ),
     )
     return (
         result.content
