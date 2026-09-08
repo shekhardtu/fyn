@@ -20,6 +20,7 @@ import { useId, useMemo, useState, type ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { Area, AreaChart, CartesianGrid, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { CategoryExplorer } from "@/components/category-explorer";
+import { DeleteAccountButton } from "@/components/delete-account-button";
 import { FinanceFormDialog } from "@/components/finance-forms";
 import { useUserDefaults } from "@/components/user-defaults";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -104,7 +105,8 @@ function AccountStrip({ accounts, onPlan }: { accounts: OverviewAccountOut[]; on
       {accounts.map((account) => <div key={account.id} className="w-[85%] max-w-72 shrink-0 snap-start rounded-xl border border-line bg-ground p-4 sm:w-64">
         <div className="flex items-center gap-2.5">
           <span className="grid size-9 shrink-0 place-items-center rounded-lg border border-line bg-surface text-secondary"><AccountIcon type={account.accountType} /></span>
-          <div className="min-w-0"><p className="truncate text-control font-semibold text-ink">{account.name}</p><p className="truncate text-note text-ink-muted">{[account.institution, account.mask ? `•••• ${account.mask}` : titleCase(account.accountType)].filter(Boolean).join(" · ")}</p></div>
+          <div className="min-w-0 flex-1"><p className="truncate text-control font-semibold text-ink">{account.name}</p><p className="truncate text-note text-ink-muted">{[account.institution, account.mask ? `•••• ${account.mask}` : titleCase(account.accountType)].filter(Boolean).join(" · ")}</p></div>
+          <DeleteAccountButton account={account} />
         </div>
         <p className="mt-4 font-heading text-title font-semibold tabular-nums text-ink">{formatMoney(account.balanceMinor, account.currency)}</p>
         <p className="mt-1 text-note text-ink-muted">Recorded balance</p>
@@ -509,7 +511,8 @@ export function OverviewPage() {
       return merged;
     });
   }
-  const overview = useQuery({ queryKey: ["overview", month], queryFn: () => loadOverview(month) });
+  // A reload can restore a persisted snapshot from before an account deletion.
+  const overview = useQuery({ queryKey: ["overview", month], queryFn: () => loadOverview(month), refetchOnMount: "always" });
   // This response covers one month. An empty period says nothing about the
   // account's history and must never replace the dashboard with onboarding.
   const noMonthlyActivity = overview.data && overview.data.recentTransactions.length === 0 && overview.data.summary.incomeMinor === 0 && overview.data.summary.spentMinor === 0;

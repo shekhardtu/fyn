@@ -159,6 +159,10 @@ export async function createAccount(payload: AccountCreateIn): Promise<AccountRe
   return conform(contracts.AccountRecordOut, await request("/accounts", { method: "POST", body: JSON.stringify(payload) }), "saved account");
 }
 
+export async function deleteAccount(id: string): Promise<void> {
+  await request(`/accounts/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
 export async function loadOverview(month?: string): Promise<OverviewOut> {
   const query = month ? `?month=${encodeURIComponent(`${month}-01`)}` : "";
   const payload = await request(`/overview${query}`);

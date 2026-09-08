@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 from uuid import UUID, uuid4
 
 import pytest
@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from app.api import router as money_router
 from app.api_finance import router
 from app.database import get_db
-from app.models import Account, AccountBalanceSnapshot, Budget, Category, Goal, GoalContribution, Transaction, User
+from app.models import Account, AccountBalanceSnapshot, Budget, Category, Conversation, Goal, GoalContribution, InvestmentHolding, Loan, Transaction, TransactionDraft, TransactionRevision, User
 from app.security import current_user
 from app.seed import DEFAULT_USER_EMAIL
 from app.services.overview import overview_snapshot
@@ -80,6 +80,81 @@ def test_account_records_currency_signed_balance_and_snapshot(client, db, balanc
     assert snapshot.balance_minor == balance
     assert snapshot.currency == "USD"
     assert db.get(Account, UUID(account["id"])).balance_minor == balance
+
+
+def test_delete_account_removes_balance_history_and_allows_name_reuse(client, db):
+    db.connection().exec_driver_sql("PRAGMA foreign_keys=ON")
+    payload = {"name": "ICICI", "accountType": "bank", "currency": "INR", "balanceMinor": 125_000}
+    account = client.post("/accounts", json=payload).json()
+    response = client.delete(f"/accounts/{account['id']}")
+    assert response.status_code == 204, response.text
+    assert response.content == b""
+    assert client.get("/accounts").json() == []
+    assert db.scalar(select(func.count()).select_from(AccountBalanceSnapshot)) == 0
+    assert client.delete(f"/accounts/{account['id']}").status_code == 404
+    assert client.post("/accounts", json=payload).status_code == 201
+
+
+def test_delete_account_preserves_ledger_transfers_drafts_and_other_financial_records(client, db):
+    db.connection().exec_driver_sql("PRAGMA foreign_keys=ON")
+    user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
+    account = Account(user_id=user.id, name="ICICI", currency="INR", balance_minor=125_000)
+    remaining = Account(user_id=user.id, name="Savings", currency="INR", balance_minor=40_000)
+    conversation = Conversation(user_id=user.id, title="Account deletion")
+    db.add_all([account, remaining, conversation])
+    db.flush()
+    transactions = [
+        Transaction(user_id=user.id, account_id=account.id, transaction_type="expense", amount_minor=1_000, currency="INR", transaction_at=datetime(2026, 9, 8, tzinfo=timezone.utc)),
+        Transaction(user_id=user.id, account_id=account.id, destination_account_id=remaining.id, transaction_type="transfer", amount_minor=2_000, currency="INR"),
+        Transaction(user_id=user.id, account_id=remaining.id, destination_account_id=account.id, transaction_type="transfer", amount_minor=3_000, currency="INR"),
+        Transaction(user_id=user.id, account_id=account.id, transaction_type="expense", amount_minor=500, currency="INR", deleted_at=datetime(2026, 9, 8, tzinfo=timezone.utc)),
+    ]
+    drafts = [
+        TransactionDraft(user_id=user.id, conversation_id=conversation.id, raw_text="Transfer", account_id=account.id, source_account_name=account.name, destination_account_id=remaining.id, destination_account_name=remaining.name),
+        TransactionDraft(user_id=user.id, conversation_id=conversation.id, raw_text="Transfer back", account_id=remaining.id, source_account_name=remaining.name, destination_account_id=account.id, destination_account_name=account.name),
+    ]
+    holding = InvestmentHolding(user_id=user.id, account_id=account.id, name="Fund", current_value_minor=50_000)
+    loan = Loan(user_id=user.id, account_id=account.id, name="Loan", outstanding_principal_minor=100_000, annual_rate_percent=5, remaining_tenure_months=12)
+    snapshot = AccountBalanceSnapshot(user_id=user.id, account_id=account.id, balance_minor=125_000)
+    db.add_all([*transactions, *drafts, holding, loan, snapshot])
+    db.commit()
+    before = overview_snapshot(db, user.id, date(2026, 9, 1), date(2026, 9, 8))["summary"]
+
+    response = client.delete(f"/accounts/{account.id}")
+
+    assert response.status_code == 204, response.text
+    db.expire_all()
+    assert db.scalar(select(func.count()).select_from(Transaction)) == 4
+    assert [item.amount_minor for item in transactions] == [1_000, 2_000, 3_000, 500]
+    assert all(item.row_version == 2 for item in transactions)
+    assert transactions[0].account_id is None
+    assert transactions[1].account_id is None and transactions[1].destination_account_id == remaining.id
+    assert transactions[2].account_id == remaining.id and transactions[2].destination_account_id is None
+    assert transactions[3].account_id is None and transactions[3].deleted_at is not None
+    revisions = list(db.scalars(select(TransactionRevision).where(TransactionRevision.source == "account_deleted")))
+    assert len(revisions) == 4
+    assert all(item.actor_user_id == user.id for item in revisions)
+    assert drafts[0].account_id is None and drafts[0].source_account_name is None
+    assert drafts[0].destination_account_id == remaining.id and drafts[0].destination_account_name == remaining.name
+    assert drafts[1].destination_account_id is None and drafts[1].destination_account_name is None
+    assert drafts[1].account_id == remaining.id and drafts[1].source_account_name == remaining.name
+    assert holding.account_id is None and holding.current_value_minor == 50_000
+    assert loan.account_id is None and loan.outstanding_principal_minor == 100_000
+    assert db.scalar(select(func.count()).select_from(AccountBalanceSnapshot)) == 0
+    assert overview_snapshot(db, user.id, date(2026, 9, 1), date(2026, 9, 8))["summary"] == before
+    assert [item["id"] for item in client.get("/accounts").json()] == [str(remaining.id)]
+
+
+def test_delete_account_rejects_unknown_and_other_owners_accounts(client, db):
+    other = User(email="account-owner@example.test", display_name="Other", currency="INR", timezone="UTC")
+    db.add(other)
+    db.flush()
+    account = Account(user_id=other.id, name="Private", balance_minor=42)
+    db.add(account)
+    db.commit()
+    assert client.delete(f"/accounts/{account.id}").status_code == 404
+    assert client.delete(f"/accounts/{uuid4()}").status_code == 404
+    assert db.get(Account, account.id).balance_minor == 42
 
 
 def test_finance_forms_enforce_owner_and_private_category_boundaries(client, db):
