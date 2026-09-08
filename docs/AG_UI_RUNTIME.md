@@ -131,6 +131,17 @@ The server accepts only one of three reduced commands from a run input:
 2. a validated namespaced Fyn widget action; or
 3. a validated AG-UI interrupt resume.
 
+Planning intake, effect authorization, and execution share the server-owned
+`PlanningCommand` contract. Only a direct, supported action enters the
+deterministic budget/goal workflow. Questions, negated requests, deferred plans,
+and compound commands remain agent-routed; words such as “set” inside a
+discussion cannot independently open a planning action. The executor selects
+its operation from the typed command, not from incidental words in the request
+(for example, “show my budget created yesterday” remains a view). An invalid
+model-selected planning route fails without opening an unrelated amount
+interrupt. Validated budget/goal continuations retain their existing typed
+contracts and authorization; no financial effect ceiling is relaxed.
+
 ## Conversation context and validation
 
 The conversation table remains the authoritative thread history. A standalone

@@ -135,7 +135,7 @@ from .provider_errors import AgentExecutionError, ProviderUnavailableError
 from .reconciliation import attach_observation, ingest_observation, resolve_reconciliation
 from .repositories import UserScopedRepository
 from .turn_policy import EffectAuthorization, TurnIntentContract, authorize_capability, resolve_turn_intent
-from .turn_signals import expects_value_answer, has_amount_comparison, has_explicit_transaction_mutation_cue, looks_like_financial_query
+from .turn_signals import PlanningCommand, expects_value_answer, has_amount_comparison, has_explicit_transaction_mutation_cue, looks_like_financial_query, planning_command
 from .runtime_tools import FINANCIAL_CALCULATOR_TOOL_NAME, build_runtime_tools, capability_notes
 from .semantic import AnalysisPlan, AnalysisToolProposal, AnalysisTransform, FinanceFilter, FinanceQueryPlan
 from .tags import TagRepository
@@ -2459,30 +2459,13 @@ def _draft_or_commit(db: Session, user: User, conversation: Conversation, draft:
 
 
 def _looks_like_planning_command(text: str) -> bool:
-    lowered = text.lower()
-    # A planning noun is not a planning action. "Analyse my expense pattern so
-    # I can save" is a read-only diagnostic; routing it to goal CRUD produced a
-    # completely unrelated "you have no goal" reply after an analysis failure.
-    return bool(
-        re.search(
-            r"\b(?:create|set(?:\s+up)?|setup|start|make|add|contribute|put|update|change|delete|remove|show|list|view|track)\b"
-            r".{0,40}\b(?:budget|goal|savings)\b",
-            lowered,
-        )
-        or re.search(r"\b(?:save|saving)\s+for\b", lowered)
-    )
+    return planning_command(text) is not None
 
 
 def _looks_like_budget_mutation_command(text: str) -> bool:
     """Separate budget writes from read-only planning views at intake."""
-    return bool(
-        re.search(r"\bbudget\b", text, re.I)
-        and re.search(
-            r"\b(?:create|set(?:\s+up)?|setup|make|update|change|lower|raise|delete|remove)\b",
-            text,
-            re.I,
-        )
-    )
+    command = planning_command(text)
+    return command is not None and command.budget_mutation
 
 
 def _goal_name(text: str) -> str:
@@ -2800,20 +2783,30 @@ def _planning_response(
         return _budget_setup_response(db, user, conversation, budget_setup)
     if goal_amount is not None:
         return _goal_amount_response(db, user, conversation, goal_amount)
-    lowered = text.lower()
+    command = planning_command(text)
+    if command is None:
+        return persist_agent_response(
+            db,
+            conversation,
+            "I couldn’t identify a direct budget or goal action in that request. Nothing was changed.",
+            task_status="failed",
+            failure_stage="decision_validation",
+            error_code="planning_command_missing",
+        )
+    is_budget = command.budget_mutation or command is PlanningCommand.BUDGET_VIEW
     today = _local_today(user)
-    parsed_amount = _budget_amount_minor(text) if "budget" in lowered else extract_transaction(text, today=today, default_currency=user.currency).amount_minor
+    parsed_amount = _budget_amount_minor(text) if is_budget else extract_transaction(text, today=today, default_currency=user.currency).amount_minor
     widgets: list[Widget] = []
     pending: PendingAction | None = None
 
-    if "budget" in lowered:
+    if is_budget:
         explicit_path = _explicit_taxonomy_match(db, user.id, text)
         category = explicit_path[0] if explicit_path else None
         existing_budget = db.scalar(select(Budget).where(
             Budget.user_id == user.id,
             Budget.category_id == (category.id if category else None),
         ))
-        if any(token in lowered for token in ("delete", "remove")):
+        if command is PlanningCommand.BUDGET_DELETE:
             if not existing_budget:
                 content = f"You don’t have a {category.name.lower() + ' ' if category else ''}budget to delete."
             else:
@@ -2838,7 +2831,7 @@ def _planning_response(
                 )]
                 content = f"Ready to delete your {existing_budget.name.lower()}."
                 pending = PendingAction(action=WidgetActionId.DELETE_BUDGET, resource_id=str(existing_budget.id))
-        elif any(token in lowered for token in ("set", "create", "make", "limit", "update", "change", "lower", "raise")):
+        elif command is PlanningCommand.BUDGET_SET:
             if not parsed_amount and existing_budget:
                 return _budget_edit_response(db, user, conversation, existing_budget)
             if not parsed_amount:
@@ -2892,7 +2885,7 @@ def _planning_response(
                 actions = _budget_management_actions(budget) if len(budgets) == 1 else []
                 widgets.append(_budget_widget(str(budget.id), budget.name, budget.amount_minor, spent, category.slug if category else None, budget.currency, actions))
             content = f"You have {len(budgets)} active monthly budget{'s' if len(budgets) != 1 else ''}." if budgets else "You don’t have a budget yet. You can say “Set a ₹20,000 food budget.”"
-    elif any(token in lowered for token in ("add", "contribute", "put")) and any(token in lowered for token in ("savings", "goal", "vacation")):
+    elif command is PlanningCommand.GOAL_CONTRIBUTE:
         name = _goal_name(text)
         goal = db.scalar(select(Goal).where(Goal.user_id == user.id, func.lower(Goal.name) == name.lower()))
         if not goal:
@@ -2917,7 +2910,7 @@ def _planning_response(
             widgets = [_goal_widget(str(goal.id), goal.name, goal.target_minor, goal.current_minor, goal.currency, [WidgetAction(id="contribute", label=f"Add {format_money_minor(parsed_amount, goal.currency)}", action=WidgetActionId.CONTRIBUTE_GOAL, style="primary", payload={"goalId": str(goal.id), "amountMinor": parsed_amount}), _cancel_pending_action(str(goal.id))])]
             content = f"Ready to add {format_money_minor(parsed_amount, goal.currency)} to your {goal.name} goal."
             pending = PendingAction(action=WidgetActionId.CONTRIBUTE_GOAL, resource_id=str(goal.id))
-    elif any(token in lowered for token in ("create", "set", "start", "save for", "saving for")):
+    elif command is PlanningCommand.GOAL_CREATE:
         name = _goal_name(text)
         if not parsed_amount:
             return _custom_value_clarification(

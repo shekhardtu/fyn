@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from enum import Enum
 
 
 _FINANCIAL_SUBJECT = re.compile(
     r"\b(?:spend|spent|spending|savings?|breakdown|expenses?|rupees?|money|"
     r"transactions?|income|salary|cash\s+flow|recurring|subscription|afford|"
-    r"emi|interest|sip|investment|budget|loan|invoices?|vendors?|merchants?|"
+    r"emi|interest|sip|investment|budgets?|goals?|loan|invoices?|vendors?|merchants?|"
     r"sheet|spreadsheet|upload(?:ed)?|chart|graph|plot|dashboard|category|categories)\b",
     re.I,
 )
@@ -33,12 +34,92 @@ _AMOUNT_COMPARISON = re.compile(
     re.I,
 )
 _MUTATION_VERB = r"(?:add|change|correct|create|delete|edit|enter|log|make|record|remove|rename|replace|save|set|setup|set\s+up|update)"
+# A command prefix is an instruction to the assistant, not a capability
+# question ("can I"), a future intention ("I will"), or a quoted verb.
+_REQUEST_PREFIX = (
+    r"^\s*(?:(?:okay|ok)[, ]+)?(?:please\s+)?"
+    r"(?:(?:let['’]s|let\s+us)\s+|(?:can|could|would)\s+you\s+(?:please\s+)?|"
+    r"i\s+(?:want|need|would\s+like)\s+to\s+)?"
+)
 _MUTATION_REQUEST = re.compile(
-    rf"^\s*(?:okay[, ]+|ok[, ]+)?(?:please\s+)?{_MUTATION_VERB}\b"
-    rf"|\b(?:can|could|would)\s+(?:you|i)\s+(?:please\s+)?{_MUTATION_VERB}\b"
-    rf"|\b(?:want|need|would\s+like)\s+to\s+{_MUTATION_VERB}\b",
+    rf"{_REQUEST_PREFIX}{_MUTATION_VERB}\b",
     re.I,
 )
+_PLANNING_SUBJECT = re.compile(r"\b(?:budgets?|goals?|savings)\b", re.I)
+_PLANNING_NON_ACTION = re.compile(
+    r"^\s*(?:(?:please\s+)?(?:how|why|what|whether|explain|discuss|if)\b|"
+    r"(?:can|could|should|would)\s+i\b|i\s+(?:will|might|may|plan\s+to)\b)"
+    r"|\b(?:don['’]t|do\s+not|not\s+now|not\s+yet|later|before\s+that|"
+    r"discuss|discussion|explain|whether)\b",
+    re.I,
+)
+_PLANNING_VERB = (
+    r"set\s+up|save\s+for|saving\s+for|"
+    r"create|set|setup|start|make|add|contribute|put|update|change|lower|raise|"
+    r"delete|remove|show|list|view|track"
+)
+_PLANNING_REQUEST = re.compile(
+    rf"{_REQUEST_PREFIX}(?P<verb>{_PLANNING_VERB})\b(?P<target>[^!?;\n]*)[!?]?\s*$",
+    re.I,
+)
+
+
+class PlanningCommand(str, Enum):
+    BUDGET_SET = "budget_set"
+    BUDGET_DELETE = "budget_delete"
+    BUDGET_VIEW = "budget_view"
+    GOAL_CREATE = "goal_create"
+    GOAL_CONTRIBUTE = "goal_contribute"
+    GOAL_VIEW = "goal_view"
+
+    @property
+    def budget_mutation(self) -> bool:
+        return self in {self.BUDGET_SET, self.BUDGET_DELETE}
+
+    @property
+    def mutation(self) -> bool:
+        return self not in {self.BUDGET_VIEW, self.GOAL_VIEW}
+
+
+def planning_command(text: str) -> PlanningCommand | None:
+    """One conservative contract for planning intake, authority, and execution.
+
+    Only direct, single-action requests enter deterministic planning. Questions,
+    deferred intentions, negation and unsupported commands remain agent-routed;
+    their embedded verbs never select a financial operation.
+    """
+    if _PLANNING_NON_ACTION.search(text):
+        return None
+    match = _PLANNING_REQUEST.match(text)
+    if not match:
+        return None
+    verb = " ".join(match["verb"].lower().split())
+    target = match["target"]
+    # Do not select the first action of a compound instruction. The semantic
+    # agent must resolve it through the ordinary authorization boundary.
+    if re.search(rf"(?:\b(?:and|then)\b|[,.])\s+(?:please\s+)?(?:{_PLANNING_VERB})\b", target, re.I):
+        return None
+    subject = _PLANNING_SUBJECT.search(target)
+    if subject is None and verb not in {"save for", "saving for"}:
+        return None
+    subjects = {"budget" if item[0].lower().startswith("budget") else "goal" for item in _PLANNING_SUBJECT.finditer(target)}
+    if len(subjects) > 1:
+        return None
+    budget = subject is not None and subject[0].lower().startswith("budget")
+    if verb in {"show", "list", "view", "track"}:
+        return PlanningCommand.BUDGET_VIEW if budget else PlanningCommand.GOAL_VIEW
+    if budget:
+        if verb in {"delete", "remove"}:
+            return PlanningCommand.BUDGET_DELETE
+        if verb in {"create", "set", "set up", "setup", "start", "make", "add", "update", "change", "lower", "raise"}:
+            return PlanningCommand.BUDGET_SET
+    elif verb in {"add", "contribute", "put"}:
+        return PlanningCommand.GOAL_CONTRIBUTE
+    elif verb in {"create", "set", "set up", "setup", "start", "make", "save for", "saving for"}:
+        return PlanningCommand.GOAL_CREATE
+    return None
+
+
 _TRANSACTION_EVENT = re.compile(
     r"\b(?:bought|credited|deposited|earned|invested|moved|paid|received|spent|transfer|transferred|withdrew)\b",
     re.I,
@@ -124,11 +205,17 @@ def looks_like_financial_query(text: str) -> bool:
 def detect_turn_signals(text: str) -> TurnSignals:
     financial_subject = bool(_FINANCIAL_SUBJECT.search(text))
     amount_comparison = has_amount_comparison(text)
-    mutation_request = bool(_MUTATION_REQUEST.search(text))
+    planning = planning_command(text)
+    planning_discussion = bool(_PLANNING_SUBJECT.search(text) and _PLANNING_NON_ACTION.search(text))
+    mutation_request = not planning_discussion and bool(
+        (planning is not None and planning.mutation) or _MUTATION_REQUEST.search(text)
+    )
     strong_read_request = bool(
         financial_subject
         and (
-            _FINANCIAL_READ_REQUEST.search(text)
+            planning_discussion
+            or (planning is not None and not planning.mutation)
+            or _FINANCIAL_READ_REQUEST.search(text)
             or _FINANCIAL_QUESTION.search(text)
             or (amount_comparison and not mutation_request)
             or re.search(r"\b(?:afford|breakdown|recurring|reconciliation|projection)\b", text, re.I)
