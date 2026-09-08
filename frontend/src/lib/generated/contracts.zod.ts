@@ -5,6 +5,23 @@
  * produced, and stripping unknown keys would discard widget payload fields. */
 import { z } from "zod";
 
+export const AccountCreateIn = z.looseObject({
+  "name": z.string().min(1).max(120),
+  "accountType": z.enum(["bank", "savings", "checking", "credit_card", "cash", "wallet", "investment", "other"]),
+  "currency": z.string().min(3).max(3).regex(new RegExp("^[A-Z]{3}$")),
+  "balanceMinor": z.int().min(-2147483647).max(2147483647),
+  "institution": z.union([z.string().max(120), z.null()]).default(null),
+  "mask": z.union([z.string().max(12), z.null()]).default(null),
+});
+export const AccountRecordOut = z.looseObject({
+  "id": z.uuid(),
+  "name": z.string(),
+  "accountType": z.string(),
+  "currency": z.string(),
+  "balanceMinor": z.int(),
+  "institution": z.union([z.string(), z.null()]).default(null),
+  "mask": z.union([z.string(), z.null()]).default(null),
+});
 export const WidgetLifecycle = z.enum(["pending", "completed", "cancelled"]);
 export const AccountSelectorData = z.looseObject({
   "lifecycle": z.union([WidgetLifecycle, z.null()]).default(null),
@@ -334,6 +351,19 @@ export const BudgetProgressData = z.looseObject({
   "currency": z.string(),
   "categorySlug": z.union([z.string(), z.null()]).default(null),
 });
+export const BudgetRecordOut = z.looseObject({
+  "name": z.string().min(1).max(120),
+  "amountMinor": z.int().gt(0).max(2147483647),
+  "categoryId": z.union([z.uuid(), z.null()]).default(null),
+  "id": z.uuid(),
+  "currency": z.string(),
+  "period": z.string(),
+});
+export const BudgetSaveIn = z.looseObject({
+  "name": z.string().min(1).max(120),
+  "amountMinor": z.int().gt(0).max(2147483647),
+  "categoryId": z.union([z.uuid(), z.null()]).default(null),
+});
 export const CancelPendingActionPayload = z.looseObject({
   "resourceId": z.string().min(1).max(64),
 });
@@ -632,6 +662,10 @@ export const FulfillDocumentRequestsIn = z.looseObject({
   "items": z.array(DocumentRequestFulfillmentItemIn).min(1).max(8),
   "expectedRowVersion": z.int().gt(0),
 });
+export const GoalContributionIn = z.looseObject({
+  "amountMinor": z.int().gt(0).max(2147483647),
+  "requestId": z.uuid(),
+});
 export const GoalProgressData = z.looseObject({
   "lifecycle": z.union([WidgetLifecycle, z.null()]).default(null),
   "completion": z.union([z.record(z.string(), z.unknown()), z.null()]).default(null),
@@ -643,6 +677,19 @@ export const GoalProgressData = z.looseObject({
   "remainingMinor": z.int(),
   "percentComplete": z.number(),
   "currency": z.string(),
+});
+export const GoalRecordOut = z.looseObject({
+  "name": z.string().min(1).max(120),
+  "targetMinor": z.int().gt(0).max(2147483647),
+  "targetDate": z.union([z.iso.date(), z.null()]).default(null),
+  "id": z.uuid(),
+  "currency": z.string(),
+  "currentMinor": z.int(),
+});
+export const GoalSaveIn = z.looseObject({
+  "name": z.string().min(1).max(120),
+  "targetMinor": z.int().gt(0).max(2147483647),
+  "targetDate": z.union([z.iso.date(), z.null()]).default(null),
 });
 export const GoogleSignInIn = z.looseObject({
   "credential": z.string().min(1),
@@ -1272,6 +1319,7 @@ export const TransactionTypeSelectorData = z.looseObject({
 });
 export const TransactionUpdateIn = z.looseObject({
   "amountMinor": z.int().gt(0).max(9000000000000000),
+  "currency": z.union([z.string().min(3).max(3).regex(new RegExp("^[A-Z]{3}$")), z.null()]).default(null),
   "expectedVersion": z.union([z.int().min(1), z.null()]).default(null),
   "merchant": z.union([z.string().max(160), z.null()]).default(null),
   "transactionAt": z.iso.datetime(),
@@ -1308,6 +1356,8 @@ export const UpdateSavedTransactionPayload = z.looseObject({
 });
 
 export const schemas = {
+  AccountCreateIn,
+  AccountRecordOut,
   AccountSelectorData,
   AffordabilityResult,
   AgentActivityData,
@@ -1334,6 +1384,8 @@ export const schemas = {
   BootstrapUser,
   BudgetActionPayload,
   BudgetProgressData,
+  BudgetRecordOut,
+  BudgetSaveIn,
   CancelPendingActionPayload,
   CategoryDirectoryOut,
   CategoryDirectorySubcategoryOut,
@@ -1369,7 +1421,10 @@ export const schemas = {
   FeatureAvailabilityOut,
   FinancialMessageOut,
   FulfillDocumentRequestsIn,
+  GoalContributionIn,
   GoalProgressData,
+  GoalRecordOut,
+  GoalSaveIn,
   GoogleSignInIn,
   HealthOut,
   IdentityOut,

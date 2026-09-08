@@ -90,8 +90,8 @@ export function DashboardsPage() {
     },
   });
 
-  const latestConversation = shell.conversations[0];
-  const openConversation = () => latestConversation && navigate(appPaths.conversation(latestConversation.id));
+  const conversationId = shell.conversations[0]?.id ?? shell.defaultConversationId;
+  const openConversation = () => conversationId && navigate(appPaths.conversation(conversationId, "Show me a chart of my spending by category this month and help me save it to a dashboard."));
   function selectDashboard(next: string) {
     setParams((previous) => {
       const merged = new URLSearchParams(previous);
@@ -130,7 +130,7 @@ export function DashboardsPage() {
       </div> : !dashboards.data?.length ? <SaveChartInvitation
         title="No dashboards yet"
         detail="Ask fyn for an analysis in a conversation, then save its chart to a dashboard. It lands here and refreshes on your live records."
-        canOpen={Boolean(latestConversation)}
+        canOpen={Boolean(conversationId)}
         onOpen={openConversation}
       /> : detail.isPending ? <DashboardsSkeleton /> : detail.isError ? <div role="alert" className="rounded-xl border border-danger-line bg-surface px-6 py-10 text-center">
         <h2 className="font-heading text-title font-semibold text-ink">This dashboard couldn’t be loaded</h2>
@@ -139,7 +139,7 @@ export function DashboardsPage() {
       </div> : !tiles.length ? <SaveChartInvitation
         title="This dashboard is waiting for its first chart"
         detail="Save a chart from any conversation and it takes its place here, re-run live every time you open the page."
-        canOpen={Boolean(latestConversation)}
+        canOpen={Boolean(conversationId)}
         onOpen={openConversation}
       /> : <div className="grid items-start gap-5 xl:grid-cols-2">
         {tiles.map((tile) => <TileCard

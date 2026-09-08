@@ -126,6 +126,8 @@ describe("TransactionEditor", () => {
 
     render(<TransactionEditor transaction={null} categories={categories} saving={false} problem={null} locationAllowed onClose={() => undefined} onSave={onSave} />);
 
+    fireEvent.click(screen.getByText("More details"));
+    fireEvent.click(await screen.findByText("Device location attached"));
     expect(await screen.findByText("Coordinates 12.971599, 77.594566 · accuracy ±18 m")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByLabelText("Transaction location")).toHaveValue("Bengaluru, Karnataka"));
     expect(api.resolveLocationLabel).toHaveBeenCalledWith(12.971599, 77.594566);
@@ -268,5 +270,64 @@ describe("TransactionEditor", () => {
       merchant: "Namma Metro",
       transactionType: "expense",
     }));
+  });
+
+  it("saves the selected entry currency and preserves it when editing a foreign-currency transaction", () => {
+    const onSave = vi.fn();
+    const { unmount } = render(<TransactionEditor transaction={null} categories={categories} saving={false} problem={null} onClose={() => undefined} onSave={onSave} />);
+    fireEvent.change(screen.getByLabelText("Transaction amount"), { target: { value: "12.50" } });
+    chooseOption("Transaction currency", "US dollar (USD)");
+    expect(screen.getByLabelText("Transaction amount")).toHaveValue("12.50");
+    expect(screen.getByText(/Your overview totals use INR/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Add transaction" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ currency: "USD", amountMinor: 1_250 }));
+    unmount();
+    render(<TransactionEditor transaction={{ ...transaction, currency: "USD" }} categories={categories} saving={false} problem={null} onClose={() => undefined} onSave={onSave} />);
+    expect(screen.queryByRole("combobox", { name: "Transaction currency" })).not.toBeInTheDocument();
+    expect(screen.getByText("USD")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ currency: "USD", amountMinor: transaction.amountMinor }));
+  });
+
+  it("keeps amount and merchant when switching entry types and clears expense-only fields", () => {
+    const onSave = vi.fn();
+    render(<TransactionEditor transaction={null} categories={categories} saving={false} problem={null} onClose={() => undefined} onSave={onSave} />);
+    fireEvent.change(screen.getByLabelText("Transaction amount"), { target: { value: "450" } });
+    fireEvent.change(screen.getByLabelText("Merchant"), { target: { value: "Uber" } });
+    chooseOption("Transaction category", "Transport");
+    chooseOption("Transaction subcategory", "Cab");
+    fireEvent.click(screen.getByText("More details"));
+    chooseOption("Spend nature", "Essential");
+
+    fireEvent.click(screen.getByRole("button", { name: "Income" }));
+    expect(screen.getByRole("button", { name: "Income" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByRole("combobox", { name: "Transaction category" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Spend nature" })).not.toBeInTheDocument();
+    expect(onSave).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("combobox", { name: "More transaction types" }));
+    expect(screen.queryByRole("option", { name: "Transfer" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("option", { name: "Refund" }));
+    expect(screen.getByRole("button", { name: "Income" })).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(screen.getByRole("button", { name: "Add transaction" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ amountMinor: 45_000, merchant: "Uber", transactionType: "refund", categoryId: null, subcategoryId: null, spendNature: "unknown" }));
+  });
+
+  it("keeps optional details when their section is collapsed and focuses an invalid amount", () => {
+    const onSave = vi.fn();
+    render(<TransactionEditor transaction={null} categories={categories} saving={false} problem={null} onClose={() => undefined} onSave={onSave} />);
+    fireEvent.click(screen.getByText("More details"));
+    fireEvent.change(screen.getByLabelText("Transaction location"), { target: { value: "Bengaluru" } });
+    chooseOption("Spend nature", "Essential");
+    fireEvent.click(screen.getByText("More details"));
+    expect(screen.getByText("More details").closest("details")).not.toHaveAttribute("open");
+    fireEvent.change(screen.getByLabelText("Transaction amount"), { target: { value: "0" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add transaction" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("greater than zero");
+    expect(screen.getByLabelText("Transaction amount")).toHaveFocus();
+    expect(onSave).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Transaction amount"), { target: { value: "42" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add transaction" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ amountMinor: 4_200, location: "Bengaluru", spendNature: "essential" }));
   });
 });

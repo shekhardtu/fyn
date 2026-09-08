@@ -668,6 +668,7 @@ function TransactionEdit({ widget, onAction, onCreateCategory, onCreateSubcatego
 
   return <Card className="hitl-card"><TransactionForm
     initialValues={{
+      currency: typeof widget.data.currency === "string" ? widget.data.currency : null,
       amountMinor: hasAmount ? num(effectiveAmount) : null,
       merchant: str(submitted.merchant ?? widget.data.merchant),
       transactionAt: str(submitted.transactionAt ?? widget.data.transactionAt),

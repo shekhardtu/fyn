@@ -5,6 +5,7 @@ import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useLocation, useMatch, useNavigate } from "react-router";
 import { SETTINGS_TOAST_PROBLEM, SETTINGS_TOAST_SAVED, SettingsRailIndex } from "@/components/settings-parts";
 import { AccountMenu } from "@/components/account-menu";
+import { useConversationPrompt } from "@/components/conversation-prompt";
 import { UserDefaultsProvider, useUserDefaults } from "@/components/user-defaults";
 import { Button } from "@/components/ui/button";
 import { DocumentTitle } from "@/components/document-title";
@@ -507,7 +508,7 @@ export { useWorkspaceOverlay };
  *  leaving, and the thread being erased are the same event. */
 function UndoToastList() {
   const { toasts } = useToastManager();
-  return toasts.map((slip) => slip.type === SETTINGS_TOAST_SAVED || slip.type === SETTINGS_TOAST_PROBLEM
+  return toasts.map((slip) => slip.type === SETTINGS_TOAST_SAVED || slip.type === SETTINGS_TOAST_PROBLEM || slip.type === "success" || slip.type === "error"
     // Settings reports through the same stack, but a standing instruction that
     // changed is not an entry that was struck: no undo window, no ruled-out
     // line, just what changed and whether it took.
@@ -515,7 +516,7 @@ function UndoToastList() {
       {/* Right padding clears the close, so a message long enough to wrap
           runs under nothing. */}
       <ToastContent className="pr-10">
-        {slip.type === SETTINGS_TOAST_PROBLEM
+        {slip.type === SETTINGS_TOAST_PROBLEM || slip.type === "error"
           ? <TriangleAlert size={16} className="shrink-0 text-danger" />
           : <CheckCircle2 size={16} className="shrink-0 text-secondary" />}
         <ToastTitle className="min-w-0 text-control leading-[1.35] font-medium text-ink-body" />
@@ -1321,6 +1322,10 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   }, []);
   const { headerVisible, updateHeaderForScroll, showHeader, hideHeader } = useAutoHideSiteHeader();
   const textRef = useRef<HTMLTextAreaElement>(null);
+  useConversationPrompt(!loadingThread && !switching, useCallback((prompt: string) => {
+    setInput((current) => current ? `${current}\n\n${prompt}` : prompt);
+    textRef.current?.focus({ preventScroll: true });
+  }, []));
   const fileRef = useRef<HTMLInputElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   // "/" reaches the composer from anywhere in the thread, matching the
@@ -2237,7 +2242,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     </>;
 }
 
-type ShellValue = { navOpen: boolean; openNav: () => void; switching: boolean; dragging: boolean; handleRef: RefObject<ThreadHandle | null>; conversations: ConversationSummary[]; renameThread: (id: string, title: string) => void };
+type ShellValue = { navOpen: boolean; openNav: () => void; switching: boolean; dragging: boolean; handleRef: RefObject<ThreadHandle | null>; conversations: ConversationSummary[]; defaultConversationId: string | null; renameThread: (id: string, title: string) => void };
 const ShellContext = createContext<ShellValue | null>(null);
 
 export function useWorkspaceShell() {
@@ -2472,7 +2477,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
   if (initial.isError) return <WorkspaceUnreachable onRetry={() => initial.refetch()} retrying={initial.isFetching} />;
 
   return <UserDefaultsProvider value={userDefaults}><ToastProvider toastManager={toast} limit={5}>
-    <ShellContext.Provider value={{ navOpen: sidebarOpen, openNav, switching, dragging, handleRef: thread, conversations, renameThread }}>
+    <ShellContext.Provider value={{ navOpen: sidebarOpen, openNav, switching, dragging, handleRef: thread, conversations, defaultConversationId: initial.data?.active_conversation.id ?? null, renameThread }}>
     <div className="app-shell bg-ground text-ink" onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDragging(true); } }} onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }} onDrop={(event) => { if (!event.dataTransfer.files.length) return; event.preventDefault(); setDragging(false); thread.current?.attach(event.dataTransfer.files[0]); }}>
       <div className="relative mx-auto grid h-full max-w-[1600px] md:grid-cols-[var(--rail-w)_1fr]">
         <button type="button" tabIndex={-1} aria-hidden onClick={() => setSidebarOpen(false)} className={cn("fixed inset-0 z-30 bg-scrim/25 backdrop-blur-[2px] transition-opacity duration-300 md:hidden", sidebarOpen ? "opacity-100" : "pointer-events-none opacity-0")} />

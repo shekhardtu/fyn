@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api import router
 from .api_auth import router as auth_router
 from .api_contacts import router as contacts_router
+from .api_finance import router as finance_router
 from .api_lending import router as lending_router
 from .config import get_settings, require_production_auth_config
 from .database import Base, SessionLocal, engine
@@ -253,6 +254,7 @@ app.add_middleware(
 )
 app.include_router(auth_router)
 app.include_router(contacts_router)
+app.include_router(finance_router)
 if settings.personal_lending_available:
     app.include_router(lending_router)
 app.include_router(router)

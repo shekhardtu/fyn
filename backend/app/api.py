@@ -1275,7 +1275,7 @@ def create_manual_transaction(
         transaction = record_manual_transaction(
             db,
             user.id,
-            currency=user.currency,
+            currency=request.currency or user.currency,
             amount_minor=request.amount_minor,
             merchant=request.merchant,
             transaction_at=request.transaction_at,
@@ -1330,8 +1330,11 @@ def update_transaction(
     # side — which is how three fields were once accepted by this endpoint's
     # schema and silently dropped before the row was written. Named arguments
     # make that a type error instead of a quiet omission.
-    if db.scalar(canonical_transactions(user.id).where(Transaction.id == transaction_id)) is None:
+    existing = db.scalar(canonical_transactions(user.id).where(Transaction.id == transaction_id))
+    if existing is None:
         raise HTTPException(status_code=404, detail="Unknown transaction")
+    if request.currency is not None and request.currency != existing.currency:
+        raise HTTPException(status_code=422, detail="Currency cannot be changed on a saved transaction.")
     if request.expected_version is None:
         raise HTTPException(
             status_code=status.HTTP_428_PRECONDITION_REQUIRED,

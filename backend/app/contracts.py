@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from .config import CSV_UPLOAD_MAX_BYTES
 from .contact_schemas import ContactSuggestionOut
+from .finance_schemas import AccountCreateIn, AccountRecordOut, BudgetSaveIn, BudgetRecordOut, GoalSaveIn, GoalRecordOut, GoalContributionIn
 from .domain import EDITABLE_TRANSACTION_TYPES
 from .services.tool_models import AffordabilityResult, InvestmentProjectionResult, LoanPaymentResult, LoanPrepaymentResult
 from .visualization_contracts import VisualEncodingContract, VisualFieldEncoding, VisualizationView
@@ -198,6 +199,13 @@ FRONTEND_CONTRACT_MODELS: tuple[type[BaseModel], ...] = (
     TransactionRevisionOut,
     TransactionUpdateIn,
     LocationResolveOut,
+    AccountCreateIn,
+    AccountRecordOut,
+    BudgetSaveIn,
+    BudgetRecordOut,
+    GoalSaveIn,
+    GoalRecordOut,
+    GoalContributionIn,
     ImportResultOut,
     AgentModelSet,
     HealthOut,

@@ -1175,6 +1175,7 @@ class TransactionUpdateIn(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     amount_minor: int = Field(alias="amountMinor", gt=0, le=MAX_TRANSACTION_AMOUNT_MINOR)
+    currency: str | None = Field(default=None, min_length=3, max_length=3, pattern=r"^[A-Z]{3}$")
     # Optional because the same shape is used for creation. PATCH requires it
     # at the endpoint; POST rejects no stale row because none exists yet.
     expected_version: int | None = Field(default=None, alias="expectedVersion", ge=1)
@@ -1191,6 +1192,11 @@ class TransactionUpdateIn(BaseModel):
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
     location_accuracy: int | None = Field(default=None, alias="locationAccuracy", ge=0)
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_entry_currency(cls, value):
+        return value.strip().upper() if isinstance(value, str) else value
 
 
 class TransactionRevisionChangeOut(BaseModel):

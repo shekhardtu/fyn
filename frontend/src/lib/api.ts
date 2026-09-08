@@ -4,7 +4,8 @@ import { AgentCapabilitiesSchema, type AgentCapabilities, type Message as AgUiMe
 import { API_MOUNT_PATH } from "@/config/api-path";
 import { environment } from "@/config/environment";
 import { agentActivityEventSchema, agentEnrichmentSchema, agentResponseSchema, agentSettingsSchema, agentThreadStateSchema, authStatusSchema, bootstrapSchema, categoryDirectoryEntrySchema, categoryDirectorySchema, categorySubcategorySchema, contactSuggestionSchema, conversationCreatedSchema, conversationPageSchema, conversationSchema, conversationSummarySchema, dashboardDetailSchema, dashboardListSchema, documentAssetSchema, documentRevisionListSchema, importResultSchema, invitationPreviewSchema, loanCommandSchema, locationResolveSchema, otpSentSchema, overviewSchema, parseActionPayload, personalLoanDetailSchema, personalLoanListSchema, privacyStatusSchema, profileSchema, reminderSchema, transactionCategoryHintSchema, transactionListItemSchema, transactionListSchema, transactionRevisionListSchema, type AgentActivityEvent, type AgentEnrichmentOut, type AgentInterruptOut, type AgentResponse, type AgentSettingsOut, type AgentThreadStateOut, type AuthStatusOut, type Bootstrap, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type ContactSuggestionOut, type ConversationCreatedOut, type ConversationOut, type ConversationPage, type ConversationSummary, type CreatePersonalLoanIn, type DashboardDetail, type DashboardSummary, type DocumentAssetOut, type DocumentRevisionOut, type FulfillDocumentRequestsIn, type ImportResult, type InvitationPreviewOut, type LoanCommandOut, type LoanTermProposalIn, type OtpSentOut, type OverviewOut, type PersonalLoanDetailOut, type PersonalLoanListOut, type PrivacyStatusOut, type ProfileOut, type RecordLoanFundingIn, type RecordLoanPaymentIn, type ReminderOut, type SendLoanReminderIn, type TransactionCategoryHintOut, type TransactionListItemOut, type TransactionRevisionOut, type TransactionUpdateIn, type Widget, type WidgetActionId } from "@/lib/protocol";
-import type { AgentClientTelemetryIn } from "@/lib/generated/contracts";
+import type { AccountCreateIn, AccountRecordOut, AgentClientTelemetryIn, BudgetRecordOut, BudgetSaveIn, GoalRecordOut, GoalSaveIn } from "@/lib/generated/contracts";
+import { schemas as contracts } from "@/lib/generated/contracts.zod";
 
 const API_URL = environment.apiUrl;
 
@@ -132,6 +133,30 @@ export async function bootstrap(): Promise<Bootstrap> {
   const result = conform(bootstrapSchema, await request("/bootstrap"), "workspace");
   hydrateFynAgent(result.active_conversation.id, result.active_conversation.messages);
   return result;
+}
+
+export async function loadBudgets(): Promise<BudgetRecordOut[]> {
+  return conform(contracts.BudgetRecordOut.array(), await request("/budgets"), "budget list");
+}
+
+export async function saveBudget(payload: BudgetSaveIn, id?: string): Promise<BudgetRecordOut> {
+  return conform(contracts.BudgetRecordOut, await request(id ? `/budgets/${encodeURIComponent(id)}` : "/budgets", { method: id ? "PATCH" : "POST", body: JSON.stringify(payload) }), "saved budget");
+}
+
+export async function loadGoals(): Promise<GoalRecordOut[]> {
+  return conform(contracts.GoalRecordOut.array(), await request("/goals"), "goal list");
+}
+
+export async function saveGoal(payload: GoalSaveIn, id?: string): Promise<GoalRecordOut> {
+  return conform(contracts.GoalRecordOut, await request(id ? `/goals/${encodeURIComponent(id)}` : "/goals", { method: id ? "PATCH" : "POST", body: JSON.stringify(payload) }), "saved goal");
+}
+
+export async function contributeGoal(id: string, amountMinor: number, requestId: string): Promise<GoalRecordOut> {
+  return conform(contracts.GoalRecordOut, await request(`/goals/${encodeURIComponent(id)}/contributions`, { method: "POST", body: JSON.stringify({ amountMinor, requestId }) }), "updated goal");
+}
+
+export async function createAccount(payload: AccountCreateIn): Promise<AccountRecordOut> {
+  return conform(contracts.AccountRecordOut, await request("/accounts", { method: "POST", body: JSON.stringify(payload) }), "saved account");
 }
 
 export async function loadOverview(month?: string): Promise<OverviewOut> {
