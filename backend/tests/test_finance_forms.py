@@ -128,6 +128,28 @@ def test_goal_contribution_rejects_total_overflow_before_writing(client, db):
     assert db.scalar(select(func.count()).select_from(GoalContribution)) == 0
 
 
+def test_goal_contribution_key_collision_never_changes_either_owners_savings(client, db):
+    other = User(email="savings-other@example.test", display_name="Other", currency="USD", timezone="UTC")
+    db.add(other)
+    db.flush()
+    other_goal = Goal(user_id=other.id, name="Private", target_minor=100_000, current_minor=500, currency="USD")
+    db.add(other_goal)
+    db.flush()
+    request_id = uuid4()
+    db.add(GoalContribution(id=request_id, user_id=other.id, goal_id=other_goal.id, amount_minor=500, currency="USD", contribution_at=date(2026, 9, 8)))
+    db.commit()
+    own_goal = client.post("/goals", json={"name": "Mine", "targetMinor": 100_000}).json()
+    response = client.post(f"/goals/{own_goal['id']}/contributions", json={"amountMinor": 100, "requestId": str(request_id)})
+    assert response.status_code == 409
+    assert client.get("/goals").json()[0]["currentMinor"] == 0
+    assert db.get(Goal, other_goal.id).current_minor == 500
+    assert db.scalar(select(func.count()).select_from(GoalContribution)) == 1
+    # The failed insert leaves the session usable for a new entry.
+    response = client.post(f"/goals/{own_goal['id']}/contributions", json={"amountMinor": 100, "requestId": str(uuid4())})
+    assert response.status_code == 201
+    assert response.json()["currentMinor"] == 100
+
+
 def test_transaction_currency_is_saved_retained_on_edit_and_not_mixed_into_overview(client, db):
     payload = {"amountMinor": 1_250, "merchant": "Coffee", "transactionAt": "2026-09-08T10:00:00Z", "transactionType": "expense", "spendNature": "unknown", "currency": " usd "}
     response = client.post("/transactions", json=payload)

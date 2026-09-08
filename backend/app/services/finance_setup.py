@@ -3,11 +3,13 @@ from __future__ import annotations
 from uuid import UUID
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..event_time import now_utc
 from ..finance_schemas import MAX_FINANCE_AMOUNT_MINOR, AccountCreateIn, BudgetSaveIn, GoalSaveIn
 from ..models import Account, AccountBalanceSnapshot, Budget, Goal, GoalContribution, User
+from .repositories import UserScopedRepository
 from .taxonomy import TaxonomyRepository
 
 
@@ -64,15 +66,23 @@ def contribute_to_goal(db: Session, user: User, goal_id: UUID, amount_minor: int
     goal = db.scalar(select(Goal).where(Goal.id == goal_id, Goal.user_id == user.id).with_for_update())
     if goal is None:
         raise LookupError("Unknown goal")
-    previous = db.get(GoalContribution, request_id)
+    previous = UserScopedRepository(db, user.id).get(GoalContribution, request_id)
     if previous:
         if previous.user_id != user.id or previous.goal_id != goal.id or previous.amount_minor != amount_minor:
             raise FinanceConflict("This savings entry was already recorded with different details. Reopen the form to add another entry.")
         return goal
     if goal.current_minor + amount_minor > MAX_FINANCE_AMOUNT_MINOR:
         raise ValueError(f"Total recorded savings cannot exceed {MAX_FINANCE_AMOUNT_MINOR / 100:,.2f} {goal.currency}.")
+    try:
+        # A caller-supplied key may already belong to another owner. Let the
+        # unique constraint reject that without reading the other owner's row
+        # or changing this goal's progress.
+        with db.begin_nested():
+            db.add(GoalContribution(id=request_id, user_id=user.id, goal_id=goal.id, amount_minor=amount_minor, currency=goal.currency, contribution_at=now_utc()))
+            db.flush()
+    except IntegrityError as error:
+        raise FinanceConflict("This savings entry key is unavailable. Reopen the form to add another entry.") from error
     goal.current_minor += amount_minor
-    db.add(GoalContribution(id=request_id, user_id=user.id, goal_id=goal.id, amount_minor=amount_minor, currency=goal.currency, contribution_at=now_utc()))
     db.flush()
     return goal
 
