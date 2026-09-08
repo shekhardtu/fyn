@@ -21,7 +21,7 @@ const CREATE = "\0create";
  * done here rather than by Base UI so the create row can be appended to the
  * results as just another row the keyboard can reach.
  */
-export function Combobox({ value, onValueChange, options, placeholder = "Choose…", disabled, searchable, searchPlaceholder = "Search…", emptyMessage = "No matches.", onCreate, createHint, triggerClassName, "aria-label": ariaLabel }: {
+export function Combobox({ value, onValueChange, options, placeholder = "Choose…", disabled, searchable, searchPlaceholder = "Search…", emptyMessage = "No matches.", onCreate, createHint, triggerClassName, displayValue, "aria-label": ariaLabel }: {
   value: string;
   onValueChange: (value: string) => void;
   options: ComboboxOption[];
@@ -36,6 +36,8 @@ export function Combobox({ value, onValueChange, options, placeholder = "Choose�
   /** One quiet line under the create row's label, e.g. "as a new subcategory". */
   createHint?: string;
   triggerClassName?: string;
+  /** A short selected value while the menu retains descriptive option labels. */
+  displayValue?: string;
   "aria-label": string;
 }) {
   const [open, setOpen] = useState(false);
@@ -91,7 +93,7 @@ export function Combobox({ value, onValueChange, options, placeholder = "Choose�
       )}
     >
       <BaseCombobox.Value>
-        {(current: Row | null) => current ? <span className="truncate">{current.label}</span> : <span className="truncate text-ink-muted">{placeholder}</span>}
+        {(current: Row | null) => current ? <span className="truncate">{displayValue ?? current.label}</span> : <span className="truncate text-ink-muted">{placeholder}</span>}
       </BaseCombobox.Value>
       <ChevronDown aria-hidden className="size-3.5 shrink-0 text-ink-muted transition-transform duration-[var(--m-enter)] ease-[var(--ease)] group-data-[popup-open]/trigger:rotate-180" />
     </BaseCombobox.Trigger>

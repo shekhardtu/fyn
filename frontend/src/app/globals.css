@@ -1535,6 +1535,16 @@ html[data-focus-modality="keyboard"] .ledger-table-filter:focus-within {
   overflow: hidden;
 }
 
+/* The full-screen entry follows the same visible viewport as the PWA shell,
+   keeping its scroll area and save action reachable above the keyboard. */
+.money-entry-screen {
+  top: var(--viewport-offset);
+  bottom: auto;
+  height: var(--app-height);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
 /* ── The entry dock ───────────────────────────────────────────────────────
    Whatever has not been written yet belongs below the transcript's closing
    rule, so the composer sits there and the transcript stops at it. The band

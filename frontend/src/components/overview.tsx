@@ -1,34 +1,36 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowDownLeft,
-  ArrowDownRight,
   ArrowRight,
   ArrowUpRight,
   CalendarDays,
+  ChevronDown,
+  CircleAlert,
   CreditCard,
   Landmark,
+  MessageSquareText,
   Plus,
   ReceiptText,
   RotateCcw,
-  ScanSearch,
-  Sparkles,
   Target,
+  SlidersHorizontal,
   WalletCards,
 } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
-import { useNavigate, useSearchParams } from "react-router";
+import { Link, useNavigate, useSearchParams } from "react-router";
 import { Area, AreaChart, CartesianGrid, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { CategoryExplorer } from "@/components/category-explorer";
+import { FinanceFormDialog } from "@/components/finance-forms";
 import { useUserDefaults } from "@/components/user-defaults";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
-import { SiteHeader, useAutoHideSiteHeader } from "@/components/ui/site-header";
+import { SiteHeader } from "@/components/ui/site-header";
 import { useWorkspaceShell } from "@/components/workspace";
-import { loadOverview } from "@/lib/api";
+import { loadGoals, loadOverview } from "@/lib/api";
 import { formatCount, formatMoney, formatShortDate } from "@/lib/format";
 import type { OverviewAccountOut, OverviewBudgetOut, OverviewCategoryOut, OverviewOut, OverviewTransactionOut, OverviewTrendPointOut } from "@/lib/generated/contracts";
 import { cn } from "@/lib/utils";
-import { appPaths } from "@/routing/paths";
+import { appPaths, financeFormParams, type FinanceFormKind } from "@/routing/paths";
 
 export type TrendRange = "7" | "30" | "max";
 
@@ -69,35 +71,20 @@ function daysInMonth(day: string) {
   return new Date(Date.UTC(year, month, 0)).getUTCDate();
 }
 
-function percentChange(current: number, previous: number) {
-  if (!previous) return null;
-  return (current - previous) / Math.abs(previous) * 100;
-}
-
-function trendSentence(change: number | null, comparisonLabel: string) {
-  if (change === null) return `No ${comparisonLabel} baseline`;
-  if (change === 0) return `Unchanged from ${comparisonLabel}`;
-  return `${formatCount(Math.abs(change), 1)}% ${change > 0 ? "higher" : "lower"} than ${comparisonLabel}`;
-}
-
 function OverviewSkeleton() {
-  return <div role="status" aria-label="Loading your financial overview" className="space-y-5">
-    <div className="h-24 animate-pulse rounded-xl border border-line bg-surface" />
-    <div className="grid gap-5 lg:grid-cols-12">
-      <div className="h-[28rem] animate-pulse rounded-xl border border-line bg-surface lg:col-span-8" />
-      <div className="h-[28rem] animate-pulse rounded-xl border border-line bg-surface lg:col-span-4" />
-    </div>
-    <div className="grid gap-5 lg:grid-cols-3">
-      {[0, 1, 2].map((item) => <div key={item} className="h-72 animate-pulse rounded-xl border border-line bg-surface" />)}
+  return <div role="status" aria-label="Loading your financial overview" className="space-y-4">
+    <div className="h-60 animate-pulse rounded-2xl border border-line bg-surface sm:h-44" />
+    <div className="grid gap-4 lg:grid-cols-2">
+      {[0, 1].map((item) => <div key={item} className="h-72 animate-pulse rounded-xl border border-line bg-surface" />)}
     </div>
   </div>;
 }
 
 function SectionHeading({ id, eyebrow, title, detail, action }: { id?: string; eyebrow: string; title: string; detail?: string; action?: ReactNode }) {
-  return <div className="flex items-start justify-between gap-4">
+  return <div className="flex flex-wrap items-start justify-between gap-3">
     <div className="min-w-0">
       <p className="ledger-meta">{eyebrow}</p>
-      <h2 id={id} className="mt-1 font-heading text-title font-semibold tracking-[-0.025em] text-ink">{title}</h2>
+      <h2 id={id} className="mt-1 font-heading text-[1.0625rem] font-semibold tracking-[-0.025em] text-ink sm:text-title">{title}</h2>
       {detail ? <p className="mt-1 text-note leading-5 text-ink-muted">{detail}</p> : null}
     </div>
     {action ? <div className="shrink-0">{action}</div> : null}
@@ -111,29 +98,18 @@ function AccountIcon({ type }: { type: string }) {
 }
 
 function AccountStrip({ accounts, onPlan }: { accounts: OverviewAccountOut[]; onPlan: () => void }) {
-  return <section aria-labelledby="linked-accounts-title" className="rounded-xl border border-line bg-surface px-5 py-4 sm:px-6">
-    <div className="flex flex-col gap-4 lg:flex-row lg:items-center">
-      <div className="flex min-w-[11rem] items-center gap-3 lg:border-r lg:border-line lg:pr-6">
-        <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-secondary-tint text-secondary"><WalletCards size={18} /></span>
-        <div>
-          <p className="ledger-meta">Accounts</p>
-          <h2 id="linked-accounts-title" className="mt-0.5 font-heading text-control font-semibold text-ink">{accounts.length ? `${accounts.length} recorded` : "None recorded"}</h2>
+  return <section aria-labelledby="linked-accounts-title" className="min-w-0 rounded-2xl border border-line bg-surface p-4 sm:p-6">
+    <SectionHeading id="linked-accounts-title" eyebrow="Your accounts" title={accounts.length ? `${accounts.length} account${accounts.length === 1 ? "" : "s"}, one view` : "Start with an account"} action={<Button type="button" variant="ghost" size="sm" className="min-h-11" onClick={onPlan}><Plus /> Add account</Button>} />
+    {accounts.length ? <div aria-label="Recorded accounts" tabIndex={0} className="mt-4 flex snap-x snap-mandatory gap-3 overflow-x-auto overscroll-x-contain pb-2">
+      {accounts.map((account) => <div key={account.id} className="w-[85%] max-w-72 shrink-0 snap-start rounded-xl border border-line bg-ground p-4 sm:w-64">
+        <div className="flex items-center gap-2.5">
+          <span className="grid size-9 shrink-0 place-items-center rounded-lg border border-line bg-surface text-secondary"><AccountIcon type={account.accountType} /></span>
+          <div className="min-w-0"><p className="truncate text-control font-semibold text-ink">{account.name}</p><p className="truncate text-note text-ink-muted">{[account.institution, account.mask ? `•••• ${account.mask}` : titleCase(account.accountType)].filter(Boolean).join(" · ")}</p></div>
         </div>
-      </div>
-
-      {accounts.length ? <div className="grid min-w-0 flex-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
-        {accounts.slice(0, 3).map((account) => <div key={account.id} className="flex min-w-0 items-center gap-3 rounded-lg bg-ground px-3 py-2.5">
-          <span className="grid size-8 shrink-0 place-items-center rounded-lg border border-line bg-surface text-secondary"><AccountIcon type={account.accountType} /></span>
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-note font-semibold text-ink">{account.name}</p>
-            <p className="truncate text-meta text-ink-muted">{[account.institution, account.mask ? `•••• ${account.mask}` : titleCase(account.accountType)].filter(Boolean).join(" · ")}</p>
-          </div>
-          <p className="shrink-0 font-heading text-note font-semibold tabular-nums text-ink">{formatMoney(account.balanceMinor, account.currency)}</p>
-        </div>)}
-      </div> : <p className="min-w-0 flex-1 text-control text-ink-muted">Add an account balance in a conversation to see your cash position here.</p>}
-
-      <Button type="button" variant="outline" size="sm" onClick={onPlan}><Plus /> {accounts.length ? "Add account" : "Record account"}</Button>
-    </div>
+        <p className="mt-4 font-heading text-title font-semibold tabular-nums text-ink">{formatMoney(account.balanceMinor, account.currency)}</p>
+        <p className="mt-1 text-note text-ink-muted">Recorded balance</p>
+      </div>)}
+    </div> : <p className="mt-3 text-control leading-6 text-ink-muted">Add an account and its balance with fyn to see it here.</p>}
   </section>;
 }
 
@@ -161,37 +137,37 @@ export function visibleTrend(points: ChartPoint[], range: TrendRange) {
 }
 
 function TrendChart({ overview }: { overview: OverviewOut }) {
-  const [range, setRange] = useState<TrendRange>("7");
+  const [range, setRange] = useState<TrendRange>("max");
   const allPoints = useMemo(() => cumulativeTrend(overview.trend), [overview.trend]);
   const visiblePoints = visibleTrend(allPoints, range);
   const currency = overview.summary.currency;
   const previousLabel = new Intl.DateTimeFormat("en-IN", { month: "short" }).format(new Date(`${overview.period.previousStart}T12:00:00`));
 
-  return <section aria-labelledby="cash-flow-title" className="min-w-0 rounded-xl border border-line bg-surface p-5 sm:p-6 lg:col-span-8">
-    <SectionHeading
-      id="cash-flow-title"
-      eyebrow="Cash flow"
-      title="Your month in motion"
-      detail={`Cumulative movement through ${trendDate.format(new Date(`${overview.period.end}T12:00:00`))}`}
-      action={<div role="group" aria-label="Trend range" className="flex rounded-lg border border-line bg-ground p-0.5">
+  return <section aria-labelledby="cash-flow-title" className="min-w-0 rounded-2xl border border-line bg-surface p-4 sm:p-6">
+    <div className="flex items-center justify-between gap-3">
+      <div className="min-w-0">
+        <h2 id="cash-flow-title" className="font-heading text-control font-semibold text-ink sm:text-title">Your month in motion</h2>
+        <p className="mt-1 hidden text-note text-ink-muted sm:block">Running totals through {trendDate.format(new Date(`${overview.period.end}T12:00:00`))}</p>
+      </div>
+      <div role="group" aria-label="Trend range" className="flex shrink-0 rounded-lg border border-line bg-ground p-0.5">
         {(["7", "30", "max"] as const).map((option) => <button
           key={option}
           type="button"
           aria-pressed={range === option}
           onClick={() => setRange(option)}
-          className={cn("hit-target h-7 rounded-md px-2.5 text-meta font-semibold text-ink-muted transition-colors", range === option && "bg-surface text-ink")}
-        >{option === "max" ? "Max" : `${option}d`}</button>)}
-      </div>}
-    />
+          className={cn("h-11 min-w-11 rounded-md px-2.5 text-note font-semibold text-ink-muted transition-colors", range === option && "bg-surface text-ink")}
+        >{option === "max" ? "Month" : `${option}d`}</button>)}
+      </div>
+    </div>
 
-    <div className="mt-5 flex flex-wrap gap-x-5 gap-y-2 text-meta text-ink-muted" aria-label="Cash flow chart legend">
+    <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-meta text-ink-muted" aria-label="Cash flow chart legend">
       <span className="flex items-center gap-1.5"><i className="size-2 rounded-full bg-money-in" />Income</span>
-      <span className="flex items-center gap-1.5"><i className="size-2 rounded-full bg-money-out" />Expenses</span>
-      <span className="flex items-center gap-1.5"><i className="size-2 rounded-full bg-secondary" />Balance</span>
+      <span className="flex items-center gap-1.5"><i className="size-2 rounded-full bg-money-out" />Spent</span>
+      <span className="flex items-center gap-1.5"><i className="size-2 rounded-full bg-secondary" />Net</span>
       <span className="flex items-center gap-1.5"><i className="h-px w-3 bg-ink-muted" />{previousLabel} expenses</span>
     </div>
 
-    <div className="mt-4 h-[17rem] min-w-0" role="img" aria-label={`Income, expenses, balance and previous-month spending trend for ${overview.period.label}`}>
+    <div className="mt-3 h-[clamp(6rem,calc(100dvh_-_36.25rem),10rem)] min-w-0 sm:h-64" role="img" aria-label={`Cumulative income, expenses, net cash flow and previous-month spending for ${overview.period.label}`}>
       <ResponsiveContainer width="100%" height="100%" minWidth={0}>
         <AreaChart data={visiblePoints} accessibilityLayer margin={{ top: 8, right: 4, left: -10, bottom: 0 }}>
           <defs>
@@ -208,7 +184,7 @@ function TrendChart({ overview }: { overview: OverviewOut }) {
             formatter={(value, name) => [formatMoney(Number(value), currency), String(name)]}
             contentStyle={{ border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)", boxShadow: "var(--shadow-overlay)", fontSize: 12 }}
           />
-          <Area type="monotone" dataKey="balance" name="Balance" stroke="var(--secondary)" strokeWidth={2.5} fill="url(#overviewBalanceFill)" isAnimationActive={false} />
+          <Area type="monotone" dataKey="balance" name="Net cash flow" stroke="var(--secondary)" strokeWidth={2.5} fill="url(#overviewBalanceFill)" isAnimationActive={false} />
           <Line type="monotone" dataKey="income" name="Income" stroke="var(--money-in)" strokeWidth={2} dot={false} isAnimationActive={false} />
           <Line type="monotone" dataKey="expenses" name="Expenses" stroke="var(--money-out)" strokeWidth={2} dot={false} isAnimationActive={false} />
           <Line type="monotone" dataKey="previousExpenses" name={`${previousLabel} expenses`} stroke="var(--ink-muted)" strokeWidth={1.5} strokeDasharray="5 5" dot={false} isAnimationActive={false} />
@@ -218,35 +194,55 @@ function TrendChart({ overview }: { overview: OverviewOut }) {
   </section>;
 }
 
-function MetricRow({ label, value, previous, currency, direction, last }: {
-  label: string;
-  value: number;
-  previous: number;
-  currency: string;
-  direction: "higher-good" | "lower-good";
-  last?: boolean;
-}) {
-  const change = percentChange(value, previous);
-  const difference = value - previous;
-  const favorable = difference === 0 || (direction === "higher-good" ? difference > 0 : difference < 0);
-  const Icon = change === null ? ArrowRight : difference > 0 ? ArrowUpRight : difference < 0 ? ArrowDownRight : ArrowRight;
-  return <div className={cn("px-5 py-5 sm:px-6", !last && "border-b border-line")}>
-    <p className="ledger-meta">{label}</p>
-    <p className={cn("mt-2 font-heading text-[clamp(1.45rem,3vw,1.85rem)] leading-none font-semibold tracking-[-0.04em] tabular-nums", label === "Income" ? "text-money-in" : label === "Expenses" ? "text-money-out" : value < 0 ? "text-money-out" : "text-ink")}>{formatMoney(value, currency)}</p>
-    <p className={cn("mt-3 flex items-center gap-1.5 text-note", favorable ? "text-money-in" : "text-money-out")}>
-      <Icon size={14} />
-      <span>{trendSentence(change, "last month")}</span>
-    </p>
-  </div>;
+function budgetPace(budget: OverviewBudgetOut, overview: OverviewOut) {
+  const elapsedDays = Math.max(1, Number(overview.period.end.slice(-2)));
+  const monthDays = daysInMonth(overview.period.end);
+  const dailyAverage = Math.round(budget.spentMinor / elapsedDays / 100) * 100;
+  const dailyBudget = Math.round(budget.amountMinor / monthDays / 100) * 100;
+  const projected = overview.period.isCurrent ? Math.round(dailyAverage * monthDays) : budget.spentMinor;
+  return { dailyAverage, dailyBudget, projected, projectedVariance: projected - budget.amountMinor };
 }
 
-function MoneySummary({ overview }: { overview: OverviewOut }) {
-  const previousIncome = overview.trend.reduce((sum, point) => sum + point.previousIncomeMinor, 0);
-  const previousBalance = previousIncome - overview.summary.previousSpentMinor;
-  return <section aria-label={`Money summary for ${overview.period.label}`} className="overflow-hidden rounded-xl border border-line bg-surface lg:col-span-4">
-    <MetricRow label="Income" value={overview.summary.incomeMinor} previous={previousIncome} currency={overview.summary.currency} direction="higher-good" />
-    <MetricRow label="Expenses" value={overview.summary.spentMinor} previous={overview.summary.previousSpentMinor} currency={overview.summary.currency} direction="lower-good" />
-    <MetricRow label="Balance" value={overview.summary.netMinor} previous={previousBalance} currency={overview.summary.currency} direction="higher-good" last />
+export function MoneySummary({ overview, onPlan }: { overview: OverviewOut; onPlan: () => void }) {
+  const { summary } = overview;
+  const overall = overview.budgets?.find((budget) => budget.categoryId === null);
+  const pace = overall ? budgetPace(overall, overview) : null;
+  const over = overall && overall.overMinor > 0;
+  const categoryOverruns = overview.budgets?.filter((budget) => budget.categoryId !== null && budget.overMinor > 0) ?? [];
+  return <section aria-label={`Money summary for ${overview.period.label}`} className="overflow-hidden rounded-2xl border border-secondary-line bg-surface">
+    <div className="grid grid-cols-2 xl:grid-cols-1">
+      <div className="bg-secondary-tint px-4 py-4 sm:px-5">
+        <p className="text-control font-medium text-ink-body">Spent this month</p>
+        <p className="mt-1 font-heading text-[clamp(1.4rem,6vw,2rem)] leading-tight font-semibold tracking-[-0.05em] tabular-nums text-ink">{formatMoney(summary.spentMinor, summary.currency)}</p>
+        <p className="mt-2 text-note text-ink-muted">{summary.expenseCount} expense{summary.expenseCount === 1 ? "" : "s"}</p>
+      </div>
+      <div className="grid items-center gap-2 px-4 py-3 sm:grid-cols-2 xl:px-5">
+        <div className="min-w-0">
+          <p className="flex items-center gap-1.5 text-note text-ink-muted"><ArrowDownLeft size={15} className="text-money-in" /> Income</p>
+          <p className="mt-1 font-heading text-control leading-tight font-semibold tracking-tight tabular-nums text-money-in sm:text-title">{formatMoney(summary.incomeMinor, summary.currency)}</p>
+        </div>
+        <div className="min-w-0">
+          <p className="text-note text-ink-muted">Income − expenses</p>
+          <p className={cn("mt-1 font-heading text-control leading-tight font-semibold tracking-tight tabular-nums sm:text-title", summary.netMinor < 0 ? "text-money-out" : "text-ink")}>{formatMoney(summary.netMinor, summary.currency)}</p>
+        </div>
+      </div>
+    </div>
+    <div role="group" aria-label="Budget at a glance" className="border-t border-line px-4 py-2.5 sm:px-5 sm:py-3">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <p className={cn("min-w-0 flex-1 text-note font-semibold sm:text-control", over ? "text-money-out" : "text-ink")}>
+          {overall ? `${formatMoney(over ? overall.overMinor : overall.remainingMinor, overall.currency)} ${over ? "over" : "left in"} monthly budget` : "No overall budget set"}
+        </p>
+        <Button type="button" variant="link" className="min-h-11 px-0 text-note" onClick={onPlan}>{overall ? "Adjust budget" : "Set budget"}<ArrowRight /></Button>
+      </div>
+      {overall ? <>
+        <div role="progressbar" aria-label="Monthly budget used" aria-valuemin={0} aria-valuemax={Math.max(100, Math.ceil(overall.percentUsed))} aria-valuenow={overall.percentUsed} aria-valuetext={`${formatCount(overall.percentUsed, 0)}% of ${formatMoney(overall.amountMinor, overall.currency)}`} className="mt-1 h-1.5 overflow-hidden rounded-full bg-line">
+          <span className={cn("block h-full rounded-full", over ? "bg-money-out" : "bg-secondary")} style={{ width: `${Math.min(100, overall.percentUsed)}%` }} />
+        </div>
+        <p className="mt-2 text-note text-ink-muted">{formatCount(overall.percentUsed, 0)}% of your {formatMoney(overall.amountMinor, overall.currency)} monthly limit used</p>
+      </> : <p className="text-note leading-5 text-ink-muted">Set a limit to track your spending against a budget.</p>}
+      {overview.period.isCurrent && !over && pace && pace.projectedVariance > 0 ? <p aria-label="Budget pace warning" className="mt-3 flex items-start gap-2 text-note leading-5 text-attention"><CircleAlert size={15} className="mt-0.5 shrink-0" />At this pace, spending may finish {formatMoney(pace.projectedVariance, summary.currency)} over budget.</p> : null}
+      {categoryOverruns.length ? <p className="mt-2 flex items-start gap-2 text-note leading-5 text-money-out"><CircleAlert size={15} className="mt-0.5 shrink-0" />{categoryOverruns.length} category budget{categoryOverruns.length === 1 ? " is" : "s are"} over the limit.</p> : null}
+    </div>
   </section>;
 }
 
@@ -289,11 +285,7 @@ function BudgetEmptyAction({ title, detail, onPlan }: { title: string; detail: s
 }
 
 function OverallBudgetPanel({ budget, overview, onPlan }: { budget: OverviewBudgetOut; overview: OverviewOut; onPlan: () => void }) {
-  const elapsedDays = Math.max(1, Number(overview.period.end.slice(-2)));
-  const monthDays = daysInMonth(overview.period.end);
-  const dailyAverage = Math.round(budget.spentMinor / elapsedDays / 100) * 100;
-  const dailyBudget = Math.round(budget.amountMinor / monthDays / 100) * 100;
-  const projected = overview.period.isCurrent ? Math.round(dailyAverage * monthDays) : budget.spentMinor;
+  const { dailyAverage, dailyBudget, projected, projectedVariance } = budgetPace(budget, overview);
   const paceRatio = dailyBudget ? dailyAverage / dailyBudget : 0;
   const chartMax = Math.max(dailyBudget, ...overview.trend.map((point) => point.spentMinor), 1);
   const budgetLine = Math.max(4, Math.min(100, dailyBudget / chartMax * 100));
@@ -302,7 +294,6 @@ function OverallBudgetPanel({ budget, overview, onPlan }: { budget: OverviewBudg
     const spent = state.spent + point.spentMinor;
     return { spent, point: spent > budget.amountMinor ? point : null };
   }, { spent: 0, point: null }).point;
-  const projectedVariance = projected - budget.amountMinor;
   const status = budget.overMinor > 0
     ? crossedOn ? `Budget crossed on ${budgetDate.format(new Date(`${crossedOn.date}T12:00:00`))}` : "The monthly budget has been crossed"
     : !overview.period.isCurrent
@@ -316,9 +307,9 @@ function OverallBudgetPanel({ budget, overview, onPlan }: { budget: OverviewBudg
   return <div className="mt-5 rounded-lg bg-ground p-4">
     <div className="flex items-center justify-between gap-3">
       <p className="text-note font-semibold text-ink-body">Overall spending</p>
-      <Button type="button" variant="link" size="sm" className="h-auto shrink-0 px-0 py-0" onClick={onPlan}>Edit</Button>
+      <Button type="button" variant="link" size="sm" className="min-h-11 shrink-0 px-2" onClick={onPlan}>Edit</Button>
     </div>
-    <div className="mt-2 flex items-baseline justify-between gap-3">
+    <div className="mt-2 flex flex-wrap items-baseline justify-between gap-2">
       <p className="text-note tabular-nums text-ink-muted">{formatMoney(budget.spentMinor, budget.currency)} of {formatMoney(budget.amountMinor, budget.currency)}</p>
       <p className={cn("shrink-0 text-meta font-semibold tabular-nums", over || paceRatio > 1 ? "text-money-out" : "text-money-in")}>
         {formatCount(budget.percentUsed, 0)}% <span aria-hidden>·</span> {paceLabel}
@@ -364,7 +355,7 @@ function OverallBudgetPanel({ budget, overview, onPlan }: { budget: OverviewBudg
   </div>;
 }
 
-export function SpendingLimit({ overview, onPlan }: { overview: OverviewOut; onPlan: () => void }) {
+export function SpendingLimit({ overview, onPlan }: { overview: OverviewOut; onPlan: (budgetId?: string, categoryScope?: boolean) => void }) {
   const [scope, setScope] = useState<"overall" | "categories">("overall");
   const budgets = overview.budgets ?? [];
   const overall = budgets.find((budget) => budget.categoryId === null);
@@ -374,7 +365,9 @@ export function SpendingLimit({ overview, onPlan }: { overview: OverviewOut; onP
   const categoryTitle = categoryBudgets.length
     ? `${categoryBudgets.length} category budget${categoryBudgets.length === 1 ? "" : "s"}`
     : "No category budgets";
-  return <section aria-labelledby="spending-limit-title" className="rounded-xl border border-line bg-surface p-5 sm:p-6">
+  const planOverall = () => onPlan(overall?.id);
+  const planCategory = () => onPlan(undefined, true);
+  return <section aria-labelledby="spending-limit-title" className="min-w-0 rounded-2xl border border-line bg-surface p-4 sm:p-6">
     <SectionHeading
       id="spending-limit-title"
       eyebrow="Monthly spending limit"
@@ -385,79 +378,60 @@ export function SpendingLimit({ overview, onPlan }: { overview: OverviewOut; onP
           type="button"
           aria-pressed={scope === option}
           onClick={() => setScope(option)}
-          className={cn("hit-target h-7 rounded-md px-2.5 text-meta font-semibold text-ink-muted transition-colors", scope === option && "bg-surface text-ink")}
+          className={cn("h-11 rounded-md px-3 text-note font-semibold text-ink-muted transition-colors", scope === option && "bg-surface text-ink")}
         >{option === "overall" ? "Overall" : "Category"}</button>)}
       </div>}
     />
 
-    {scope === "overall" ? (overall ? <OverallBudgetPanel budget={overall} overview={overview} onPlan={onPlan} /> : <BudgetEmptyAction
+    {scope === "overall" ? (overall ? <OverallBudgetPanel budget={overall} overview={overview} onPlan={planOverall} /> : <BudgetEmptyAction
       title="Set overall budget"
       detail={`${formatMoney(overview.summary.spentMinor, overview.summary.currency)} spent in ${overview.period.label} · ${overview.summary.expenseCount} expense${overview.summary.expenseCount === 1 ? "" : "s"}`}
-      onPlan={onPlan}
+      onPlan={planOverall}
     />) : <div className="mt-5">
       {categoryBudgets.length ? <>
         <div className="flex items-center justify-between gap-3">
           <p className="text-meta leading-5 text-ink-muted">Category limits stay independent from the overall cap.</p>
-          <Button type="button" variant="ghost" size="sm" className="shrink-0" onClick={onPlan}><Plus /> Add category</Button>
+          <Button type="button" variant="ghost" size="sm" className="min-h-11 shrink-0" onClick={planCategory}><Plus /> Add category</Button>
         </div>
         <div className="mt-3 max-h-52 space-y-3 overflow-y-auto pr-1">
-          {categoryBudgets.map((budget) => <div key={budget.id} className="rounded-lg bg-ground p-3.5"><BudgetBar budget={budget} label={budget.category ?? budget.name} /></div>)}
+          {categoryBudgets.map((budget) => <div key={budget.id} className="rounded-lg bg-ground p-3.5"><BudgetBar budget={budget} label={budget.category ?? budget.name} /><Button type="button" variant="ghost" className="mt-2 min-h-11" onClick={() => onPlan(budget.id)}>Edit {budget.category ?? budget.name} budget</Button></div>)}
         </div>
       </> : <BudgetEmptyAction
         title="Add category budget"
         detail="Set an independent limit for Food, Transport, Shopping, or another category."
-        onPlan={onPlan}
+      onPlan={planCategory}
       />}
     </div>}
   </section>;
 }
 
-function FinancialHealth({ overview }: { overview: OverviewOut }) {
-  const rawSavingsRate = overview.summary.incomeMinor ? overview.summary.netMinor / overview.summary.incomeMinor * 100 : 0;
-  const savingsRate = Math.max(0, Math.min(100, rawSavingsRate));
-  const daysRemaining = overview.period.isCurrent ? Math.max(0, daysInMonth(overview.period.end) - Number(overview.period.end.slice(-2))) : 0;
-  const healthLabel = overview.summary.incomeMinor === 0 ? "Income not recorded" : rawSavingsRate >= 20 ? "Healthy cushion" : rawSavingsRate >= 0 ? "Watch your pace" : "Spending is ahead";
-
-  return <section aria-labelledby="financial-health-title" className="rounded-xl border border-line bg-surface p-5 sm:p-6">
-    <SectionHeading id="financial-health-title" eyebrow="Financial health" title={healthLabel} detail={overview.period.isCurrent ? `${daysRemaining} day${daysRemaining === 1 ? "" : "s"} remaining this month` : "Completed month"} />
-    <div className="mt-6 flex items-center gap-5">
-      <div className="relative grid size-28 shrink-0 place-items-center rounded-full" style={{ background: `conic-gradient(var(--money-in) ${savingsRate}%, var(--line) 0)` }}>
-        <div className="grid size-[5.4rem] place-items-center rounded-full bg-surface text-center">
-          <div><p className="font-heading text-title font-semibold tabular-nums text-ink">{formatCount(rawSavingsRate, 0)}%</p><p className="text-meta text-ink-muted">saved</p></div>
-        </div>
-      </div>
-      <div className="min-w-0 flex-1 space-y-3">
-        <div><p className="text-meta text-ink-muted">Kept this month</p><p className={cn("mt-0.5 font-heading text-control font-semibold tabular-nums", overview.summary.netMinor < 0 ? "text-money-out" : "text-money-in")}>{formatMoney(overview.summary.netMinor, overview.summary.currency)}</p></div>
-        <div className="border-t border-line pt-3"><p className="text-meta text-ink-muted">Average daily spend</p><p className="mt-0.5 font-heading text-control font-semibold tabular-nums text-ink">{formatMoney(Math.round(overview.summary.spentMinor / Math.max(1, Number(overview.period.end.slice(-2)))), overview.summary.currency)}</p></div>
-      </div>
+function PlanningActions({ onBudget, onGoal, onEditGoal, onContribute }: { onBudget: () => void; onGoal: () => void; onEditGoal: (id: string) => void; onContribute: (id: string) => void }) {
+  const goals = useQuery({ queryKey: ["goals"], queryFn: loadGoals });
+  return <section aria-labelledby="planning-title" className="min-w-0 rounded-2xl border border-line bg-surface p-4 sm:p-6">
+    <SectionHeading id="planning-title" eyebrow="Looking ahead" title="Budgets & goals" detail="Set a limit or work towards something you want." />
+    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+      <Button type="button" variant="outline" className="min-h-12 justify-start px-4" onClick={onBudget}><SlidersHorizontal /> Set budget <ArrowRight className="ml-auto" /></Button>
+      <Button type="button" variant="outline" className="min-h-12 justify-start px-4" onClick={onGoal}><Target /> Set a goal <ArrowRight className="ml-auto" /></Button>
     </div>
-  </section>;
-}
-
-function GoalTracker({ onPlan }: { onPlan: () => void }) {
-  return <section aria-labelledby="goal-tracker-title" className="rounded-xl border border-line bg-surface p-5 sm:p-6">
-    <SectionHeading id="goal-tracker-title" eyebrow="Goal tracker" title="Make the next rupee intentional" action={<Button type="button" variant="ghost" size="sm" onClick={onPlan}><Plus /> Add goal</Button>} />
-    <div className="mt-6 flex items-start gap-4 rounded-lg border border-dashed border-line-strong bg-ground p-4">
-      <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-secondary-tint text-secondary"><Target size={18} /></span>
-      <div>
-        <h3 className="text-control font-semibold text-ink">No active goals yet</h3>
-        <p className="mt-1 text-note leading-5 text-ink-muted">Tell fyn what you are saving for and build a target that fits your cash flow.</p>
-        <Button type="button" variant="link" size="sm" className="mt-2 px-0" onClick={onPlan}>Plan with fyn <ArrowRight /></Button>
-      </div>
-    </div>
+    {goals.isError ? <p role="alert" className="mt-4 text-note text-danger-ink">Goals couldn’t be loaded. <Button type="button" variant="link" className="min-h-11" onClick={() => void goals.refetch()}>Try again</Button></p> : goals.isPending ? <p role="status" className="mt-4 text-note text-ink-muted">Loading goals…</p> : goals.data.length ? <div className="mt-5 space-y-3">{goals.data.map((goal) => <article key={goal.id} aria-label={`Savings goal: ${goal.name}`} className="rounded-xl border border-line bg-ground p-4">
+      <div className="flex items-baseline justify-between gap-3"><h3 className="text-control font-semibold text-ink">{goal.name}</h3><span className="text-note text-ink-muted">{Math.round(goal.currentMinor / goal.targetMinor * 100)}%</span></div>
+      <p className="mt-1 text-note text-ink-muted">{formatMoney(goal.currentMinor, goal.currency)} of {formatMoney(goal.targetMinor, goal.currency)} saved</p>
+      <div role="progressbar" aria-label={`${goal.name} progress`} aria-valuemin={0} aria-valuemax={Math.max(100, Math.round(goal.currentMinor / goal.targetMinor * 100))} aria-valuenow={Math.round(goal.currentMinor / goal.targetMinor * 100)} className="mt-3 h-1.5 overflow-hidden rounded-full bg-line"><div className="h-full rounded-full bg-secondary" style={{ width: `${Math.min(100, goal.currentMinor / goal.targetMinor * 100)}%` }} /></div>
+      {goal.targetDate ? <p className="mt-2 text-meta text-ink-muted">Target: {formatShortDate(goal.targetDate)}</p> : null}
+      <div className="mt-3 flex gap-2"><Button type="button" variant="outline" className="min-h-11" onClick={() => onContribute(goal.id)}><Plus /> Add savings</Button><Button type="button" variant="ghost" className="min-h-11" onClick={() => onEditGoal(goal.id)}>Edit goal</Button></div>
+    </article>)}</div> : <p className="mt-4 text-note text-ink-muted">Your savings goals will appear here.</p>}
   </section>;
 }
 
 function CostAnalysis({ categories, currency, onViewAll }: { categories: OverviewCategoryOut[]; currency: string; onViewAll: () => void }) {
   const visible = categories.slice(0, 5);
-  const total = categories.reduce((sum, category) => sum + category.amountMinor, 0);
-  return <section aria-labelledby="cost-analysis-title" className="rounded-xl border border-line bg-surface p-5 sm:p-6 lg:col-span-2">
-    <SectionHeading id="cost-analysis-title" eyebrow="Cost analysis" title="Where it went" detail={`${categories.length} categor${categories.length === 1 ? "y" : "ies"} this month`} action={<Button type="button" variant="ghost" size="sm" onClick={onViewAll}>Explore <ArrowRight /></Button>} />
-    <p className="mt-5 font-heading text-[1.65rem] font-semibold tracking-[-0.04em] tabular-nums text-ink">{formatMoney(total, currency)}</p>
-    <div className="mt-3 flex h-2 overflow-hidden rounded-full bg-line" aria-hidden>
+  return <section aria-labelledby="cost-analysis-title" className="min-w-0 rounded-2xl border border-line bg-surface p-4 sm:p-6">
+    <SectionHeading id="cost-analysis-title" eyebrow="Spending breakdown" title="Where it went" detail={`${categories.length} categor${categories.length === 1 ? "y" : "ies"} this month`} action={<Button type="button" variant="ghost" size="sm" className="min-h-11" onClick={onViewAll}>Explore <ArrowRight /></Button>} />
+    <div className="mt-4 flex h-2 overflow-hidden rounded-full bg-line" aria-hidden>
       {visible.map((category, index) => <span key={category.id} className="h-full bg-secondary" style={{ width: `${category.sharePercent}%`, opacity: Math.max(0.35, 1 - index * 0.13) }} />)}
     </div>
     <div className="mt-5 space-y-3.5">
+      {!categories.length ? <p className="text-control text-ink-muted">No expenses recorded for this month.</p> : null}
       {visible.map((category, index) => <div key={category.id}>
         <div className="flex items-baseline justify-between gap-4">
           <p className="flex min-w-0 items-center gap-2 text-note font-medium text-ink-body"><i className="size-2 shrink-0 rounded-full bg-secondary" style={{ opacity: Math.max(0.35, 1 - index * 0.13) }} /><span className="truncate">{category.label}</span></p>
@@ -476,14 +450,14 @@ function transactionDirection(transaction: OverviewTransactionOut) {
 
 function TransactionHistory({ transactions, onViewAll }: { transactions: OverviewTransactionOut[]; onViewAll: () => void }) {
   const { timeZone } = useUserDefaults();
-  return <section aria-labelledby="transaction-history-title" className="overflow-hidden rounded-xl border border-line bg-surface lg:col-span-2">
-    <div className="px-5 pt-5 pb-3 sm:px-6 sm:pt-6">
-      <SectionHeading id="transaction-history-title" eyebrow="Recent activity" title="Transaction history" action={<Button type="button" variant="ghost" size="sm" onClick={onViewAll}>View all <ArrowRight /></Button>} />
+  return <section aria-labelledby="transaction-history-title" className="min-w-0 overflow-hidden rounded-2xl border border-line bg-surface">
+    <div className="px-4 pt-4 pb-3 sm:px-6 sm:pt-6">
+      <SectionHeading id="transaction-history-title" eyebrow="Your latest entries" title="Recent activity" action={<Button type="button" variant="ghost" size="sm" className="min-h-11" onClick={onViewAll}>View all <ArrowRight /></Button>} />
     </div>
     {transactions.length ? <div className="divide-y divide-line">
-      {transactions.map((transaction) => {
+      {transactions.slice(0, 5).map((transaction) => {
         const { incoming, Icon } = transactionDirection(transaction);
-        return <button key={transaction.id} type="button" onClick={onViewAll} className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-5 py-3 text-left transition-colors hover:bg-ground sm:px-6">
+        return <button key={transaction.id} type="button" onClick={onViewAll} className="grid min-h-18 w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2.5 px-4 py-3 text-left transition-colors hover:bg-ground active:bg-surface-sunken sm:px-6">
           <span className={cn("grid size-9 place-items-center rounded-lg bg-ground", incoming ? "text-money-in" : "text-money-out")}><Icon size={16} /></span>
           <span className="min-w-0">
             <span className="block truncate text-note font-semibold text-ink">{transaction.merchant ?? titleCase(transaction.transactionType)}</span>
@@ -514,54 +488,89 @@ export function OverviewPage() {
       return merged;
     });
   }
-  const { headerVisible, updateHeaderForScroll } = useAutoHideSiteHeader();
   const overview = useQuery({ queryKey: ["overview", month], queryFn: () => loadOverview(month) });
-  const noFinancialData = overview.data && overview.data.summary.incomeMinor === 0 && overview.data.summary.spentMinor === 0 && overview.data.accounts.length === 0 && (overview.data.budgets?.length ?? 0) === 0;
-  const latestConversation = shell.conversations[0];
-  const openPlanner = () => latestConversation && navigate(appPaths.conversation(latestConversation.id));
+  // This response covers one month. An empty period says nothing about the
+  // account's history and must never replace the dashboard with onboarding.
+  const noMonthlyActivity = overview.data && overview.data.recentTransactions.length === 0 && overview.data.summary.incomeMinor === 0 && overview.data.summary.spentMinor === 0;
+  const previousMonth = months[months.findIndex((option) => option.value === month) + 1];
+  const conversationId = shell.conversations[0]?.id ?? shell.defaultConversationId;
+  const periodLabel = overview.data?.period.label ?? months.find((option) => option.value === month)!.label;
+  const openPlanner = (prompt: string) => {
+    if (conversationId) navigate(appPaths.conversation(conversationId, prompt));
+  };
+  const formParam = params.get("form");
+  const formKind = ["budget", "goal", "account", "contribution"].includes(formParam ?? "") ? formParam as FinanceFormKind : null;
+  const openForm = (kind: FinanceFormKind, id?: string, categoryScope?: boolean) => setParams((previous) => financeFormParams(previous, kind, id, categoryScope ? "category" : undefined));
+  const overallBudget = overview.data?.budgets.find((budget) => budget.categoryId === null);
+  const openBudget = (id?: string, categoryScope?: boolean) => openForm("budget", id, categoryScope);
+  const briefingPrompt = `Review my finances for ${periodLabel}. Summarize my income, expenses, and spending patterns, and explain what needs my attention.`;
+  const addTransactionLink = (className?: string) => <Link to={appPaths.newTransaction} className={cn(buttonVariants({ size: "lg" }), "min-h-12 rounded-xl", className)}><Plus size={18} /> Add transaction</Link>;
 
-  return <main id="main-content" onScroll={(event) => updateHeaderForScroll(event.currentTarget.scrollTop)} className="min-h-0 min-w-0 overflow-y-auto bg-ground">
-    <SiteHeader title="Overview" subtitle="Your money, at a glance" subtitleClassName="hidden sm:block" hidden={!headerVisible} navOpen={shell.navOpen} onOpenNav={shell.openNav} end={<div className="relative">
-      <CalendarDays className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-muted" />
-      <Combobox aria-label="Overview month" value={month} onValueChange={setMonth} options={months} searchPlaceholder="Search months" triggerClassName="h-9 w-auto pl-9 font-medium text-ink-body" />
-    </div>} />
+  return <main id="main-content" className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-ground">
+    <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-y-contain">
+      <SiteHeader title="Overview" subtitle="Your money, at a glance" subtitleClassName="hidden sm:block" navOpen={shell.navOpen} onOpenNav={shell.openNav} end={<div className="relative">
+        <CalendarDays className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-muted" />
+        <Combobox aria-label="Overview month" value={month} onValueChange={setMonth} options={months} searchPlaceholder="Search months" triggerClassName="min-h-11 w-auto max-w-[12.5rem] pl-9 font-medium text-ink-body" />
+      </div>} />
 
-    <div className="mx-auto w-full max-w-[86rem] px-4 py-7 sm:px-6 sm:py-9 lg:px-8">
-      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <p className="ledger-meta">Financial briefing · {overview.data?.period.label ?? "Loading"}</p>
-          <h2 className="mt-2 font-heading text-[clamp(1.7rem,4vw,2.35rem)] leading-tight font-semibold tracking-[-0.045em] text-ink">Here’s where your money stands.</h2>
-          <p className="mt-2 max-w-xl text-body leading-6 text-ink-muted">Cash flow, spending pace, and the records that shaped your month.</p>
+      <div className="mx-auto w-full max-w-6xl px-4 pt-3 pb-6 sm:px-6 sm:py-5 lg:px-8">
+        <div className="mb-5 hidden items-center justify-between gap-4 md:flex">
+          <div>
+            <h2 className="font-heading text-title font-semibold tracking-[-0.025em] text-ink">Monthly overview</h2>
+            <p className="mt-1 text-note text-ink-muted">{overview.data ? `Records through ${trendDate.format(new Date(`${overview.data.period.end}T12:00:00`))}` : "Loading your monthly records"}</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <Button type="button" variant="outline" className="min-h-12" disabled={!conversationId} onClick={() => openPlanner(briefingPrompt)}><MessageSquareText /> Ask fyn</Button>
+            {addTransactionLink()}
+          </div>
         </div>
-        {overview.data ? <p className="flex items-center gap-2 text-note text-ink-muted"><Sparkles size={14} className="text-secondary" /> Updated through {trendDate.format(new Date(`${overview.data.period.end}T12:00:00`))}</p> : null}
+
+        {overview.isPending ? <OverviewSkeleton /> : overview.isError ? <div role="alert" className="rounded-2xl border border-danger-line bg-surface px-5 py-10 text-center">
+          <h2 className="font-heading text-title font-semibold text-ink">We couldn’t open your overview</h2>
+          <p className="mt-2 text-control text-ink-muted">Your records are safe. Try loading your overview again.</p>
+          <Button type="button" variant="outline" className="mt-5 min-h-11" onClick={() => overview.refetch()}><RotateCcw /> Try again</Button>
+        </div> : overview.data ? <div className="space-y-4 sm:space-y-5">
+          <div className="grid items-start gap-3 sm:gap-5 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.4fr)]">
+            <MoneySummary overview={overview.data} onPlan={() => openBudget(overallBudget?.id)} />
+            <TrendChart overview={overview.data} />
+          </div>
+
+          {noMonthlyActivity ? <section aria-label="No activity this month" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-surface p-4 sm:px-5">
+            <div className="min-w-0 flex-1 basis-64">
+              <h2 className="text-control font-semibold text-ink">No transactions in {periodLabel}</h2>
+              <p className="mt-1 text-note leading-5 text-ink-muted">Choose another month, or open Transactions to see records across all dates.</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {previousMonth ? <Button type="button" variant="outline" className="min-h-11" onClick={() => setMonth(previousMonth.value)}><CalendarDays /> View {previousMonth.label}</Button> : null}
+              <Link to={appPaths.transactions} className={cn(buttonVariants({ variant: "link" }), "min-h-11 px-1 text-note")}>All transactions <ArrowRight /></Link>
+            </div>
+          </section> : null}
+
+          <div className="grid items-start gap-4 sm:gap-5 xl:grid-cols-[1.2fr_1fr]">
+            <TransactionHistory transactions={overview.data.recentTransactions} onViewAll={() => navigate(appPaths.transactions)} />
+            <CostAnalysis categories={overview.data.categories} currency={overview.data.summary.currency} onViewAll={() => navigate(appPaths.categories)} />
+          </div>
+
+          <details className="group rounded-2xl border border-line bg-surface">
+            <summary className="flex min-h-14 cursor-pointer list-none items-center gap-3 rounded-2xl px-4 py-3 text-control font-semibold text-ink marker:content-none sm:px-6">
+              <SlidersHorizontal size={18} className="shrink-0 text-secondary" />
+              <span className="min-w-0 flex-1">Budget details<span className="mt-0.5 block text-note font-normal text-ink-muted">Overall and category limits, daily spending pace</span></span>
+              <ChevronDown size={18} className="shrink-0 text-ink-muted transition-transform group-open:rotate-180" />
+            </summary>
+            <div className="border-t border-line p-3 sm:p-4"><SpendingLimit overview={overview.data} onPlan={openBudget} /></div>
+          </details>
+
+          <div className="grid items-start gap-4 sm:gap-5 xl:grid-cols-2">
+            <AccountStrip accounts={overview.data.accounts} onPlan={() => openForm("account")} />
+            <PlanningActions onBudget={() => openBudget(overallBudget?.id)} onGoal={() => openForm("goal")} onEditGoal={(id) => openForm("goal", id)} onContribute={(id) => openForm("contribution", id)} />
+          </div>
+        </div> : null}
       </div>
-
-      {overview.isPending ? <OverviewSkeleton /> : overview.isError ? <div role="alert" className="rounded-xl border border-danger-line bg-surface px-6 py-10 text-center">
-        <h2 className="font-heading text-title font-semibold text-ink">We couldn’t open your overview</h2>
-        <p className="mt-2 text-control text-ink-muted">Your records are safe. Try loading the briefing again.</p>
-        <Button type="button" variant="outline" className="mt-5" onClick={() => overview.refetch()}><RotateCcw /> Try again</Button>
-      </div> : noFinancialData ? <div className="rounded-xl border border-line bg-surface px-6 py-12 text-center">
-        <span className="mx-auto grid size-11 place-items-center rounded-xl bg-secondary-tint text-secondary"><ScanSearch /></span>
-        <h2 className="mt-4 font-heading text-title font-semibold text-ink">Your overview is ready for its first record</h2>
-        <p className="mx-auto mt-2 max-w-md text-control leading-6 text-ink-muted">Record income, an expense, or an account balance in a conversation. Your cash-flow dashboard will arrange itself here automatically.</p>
-        <Button type="button" className="mt-5" disabled={!latestConversation} onClick={openPlanner}>Open a conversation <ArrowRight /></Button>
-        {!latestConversation ? <p className="mt-2 text-note text-ink-muted">Your first conversation is still being prepared — this lights up in a moment.</p> : null}
-      </div> : overview.data ? <div className="space-y-5">
-        <AccountStrip accounts={overview.data.accounts} onPlan={openPlanner} />
-        <div className="grid gap-5 lg:grid-cols-12">
-          <TrendChart overview={overview.data} />
-          <MoneySummary overview={overview.data} />
-        </div>
-        <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
-          <SpendingLimit overview={overview.data} onPlan={openPlanner} />
-          <FinancialHealth overview={overview.data} />
-          <GoalTracker onPlan={openPlanner} />
-        </div>
-        <div className="grid items-start gap-5 lg:grid-cols-4">
-          <CostAnalysis categories={overview.data.categories} currency={overview.data.summary.currency} onViewAll={() => navigate(appPaths.categories)} />
-          <TransactionHistory transactions={overview.data.recentTransactions} onViewAll={() => navigate(appPaths.transactions)} />
-        </div>
-      </div> : null}
     </div>
+    <nav aria-label="Overview quick actions" className="z-20 flex shrink-0 gap-3 border-t border-line bg-surface px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:hidden">
+      {addTransactionLink("min-w-0 flex-1")}
+      <Button type="button" variant="outline" size="lg" className="min-h-12 rounded-xl px-4" disabled={!conversationId} onClick={() => openPlanner(briefingPrompt)}><MessageSquareText size={18} /> Ask fyn</Button>
+    </nav>
+    {formKind ? <FinanceFormDialog key={`${formKind}:${params.get("record") ?? "new"}`} kind={formKind} id={params.get("record") ?? undefined} categoryScope={params.get("scope") === "category"} onClose={() => setParams((previous) => financeFormParams(previous, null), { replace: true })} /> : null}
   </main>;
 }

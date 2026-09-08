@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { cumulativeTrend, ExpenseBreakdown, SpendingLimit, visibleTrend } from "@/components/overview";
+import { cumulativeTrend, ExpenseBreakdown, MoneySummary, SpendingLimit, visibleTrend } from "@/components/overview";
 import type { OverviewCategoryOut, OverviewOut, OverviewTrendPointOut } from "@/lib/generated/contracts";
 
 const categories: OverviewCategoryOut[] = [
@@ -108,6 +108,7 @@ describe("monthly budgets", () => {
     expect(screen.queryByText("Food")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(onPlan).toHaveBeenLastCalledWith("overall");
     fireEvent.click(screen.getByRole("button", { name: "Category" }));
 
     expect(screen.getByRole("heading", { name: "1 category budget" })).toBeVisible();
@@ -116,6 +117,7 @@ describe("monthly budgets", () => {
     expect(screen.getByText(/stay independent from the overall cap/)).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "Add category" }));
+    expect(onPlan).toHaveBeenLastCalledWith(undefined, true);
     expect(onPlan).toHaveBeenCalledTimes(2);
   });
 
@@ -125,6 +127,7 @@ describe("monthly budgets", () => {
 
     expect(screen.getByRole("heading", { name: "No overall limit" })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: /Set overall budget/ }));
+    expect(onPlan).toHaveBeenLastCalledWith(undefined);
 
     fireEvent.click(screen.getByRole("button", { name: "Category" }));
 
@@ -141,5 +144,39 @@ describe("monthly budgets", () => {
 
     expect(screen.getByRole("heading", { name: "No overall limit" })).toBeVisible();
     expect(screen.getByRole("button", { name: /Set overall budget/ })).toBeVisible();
+  });
+
+  it("exposes an exceeded budget in the primary summary before opening details", () => {
+    const onPlan = vi.fn();
+    render(<MoneySummary overview={overview} onPlan={onPlan} />);
+
+    expect(screen.getByText("Spent this month")).toBeVisible();
+    const budget = screen.getByRole("group", { name: "Budget at a glance" });
+    expect(budget).toHaveTextContent("₹17,265 over monthly budget");
+    expect(within(budget).getByRole("progressbar")).toHaveAttribute("aria-valuenow", "157.6");
+    expect(screen.queryByText("Financial health")).not.toBeInTheDocument();
+    fireEvent.click(within(budget).getByRole("button", { name: "Adjust budget" }));
+    expect(onPlan).toHaveBeenCalledOnce();
+  });
+
+  it("separates a current spending projection from actual budget remaining", () => {
+    const data: OverviewOut = { ...overview, budgets: [{ ...overview.budgets[0], amountMinor: 6_000_000, remainingMinor: 1_273_500, overMinor: 0, percentUsed: 78.8 }] };
+    const view = render(<MoneySummary overview={data} onPlan={() => undefined} />);
+
+    expect(screen.getByRole("group", { name: "Budget at a glance" })).toHaveTextContent("₹12,735 left in monthly budget");
+    expect(screen.getByLabelText("Budget pace warning")).toHaveTextContent("At this pace, spending may finish ₹37,681 over budget.");
+
+    view.rerender(<MoneySummary overview={{ ...data, period: { ...data.period, isCurrent: false } }} onPlan={() => undefined} />);
+    expect(screen.queryByLabelText("Budget pace warning")).not.toBeInTheDocument();
+  });
+
+  it("does not invent an overall budget when only a category limit exists", () => {
+    const data = { ...overview, budgets: [{ ...overview.budgets[1], spentMinor: 1_500_000, remainingMinor: 0, overMinor: 300_000, percentUsed: 125 }] };
+    render(<MoneySummary overview={data} onPlan={() => undefined} />);
+
+    expect(screen.getByRole("group", { name: "Budget at a glance" })).toHaveTextContent("No overall budget set");
+    expect(screen.getByText("1 category budget is over the limit.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Set budget" })).toBeEnabled();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
 });

@@ -1,6 +1,7 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { ArrowDownLeft, ArrowUpRight, CheckCircle2, Eye, EyeOff, History, Loader2, PencilLine, Plus, ReceiptText, RotateCcw, Search, Trash2, X } from "lucide-react";
 import { type CSSProperties, type UIEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { GroupedVirtuoso, type Components, type ContextProp, type GroupProps } from "react-virtuoso";
 import { useSearchParams } from "react-router";
 import { CategoryManager, type CategoryUsage } from "@/components/category-manager";
@@ -125,18 +126,21 @@ export function TransactionEditor({ transaction, categories, revisions = [], his
   const requestClose = useCallback(() => closeBehavior.current(), []);
 
   const panelRef = useWorkspaceOverlay(true, requestClose);
-  return <>
+  return createPortal(<>
     <button type="button" tabIndex={-1} aria-hidden onClick={saving ? undefined : requestClose} className="scrim-fade fixed inset-0 z-40 bg-scrim/25 backdrop-blur-[2px]" />
-    <section ref={panelRef} role="dialog" aria-modal="true" aria-labelledby="transaction-editor-title" className="drawer-right fixed inset-y-0 right-0 z-50 flex w-full max-w-lg flex-col border-l border-line bg-surface shadow-[var(--shadow-overlay)]">
-      <div className="flex shrink-0 items-center border-b border-line px-4 pt-[max(1.25rem,env(safe-area-inset-top))] pb-4 sm:px-6">
+    <section ref={panelRef} role="dialog" aria-modal="true" aria-labelledby="transaction-editor-title" className={cn("fixed inset-y-0 right-0 z-[55] flex w-full flex-col", creating ? "money-entry-screen inset-x-0 bg-ground" : "drawer-right max-w-lg border-l border-line bg-surface shadow-[var(--shadow-overlay)]")}>
+      <div className={cn("shrink-0 border-b border-line bg-surface", !creating && "contents")}>
+      <div className={cn("flex shrink-0 items-center px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-4 sm:px-6", creating ? "mx-auto w-full max-w-xl" : "border-b border-line")}>
         <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-secondary-tint text-secondary">{creating ? <Plus size={19} /> : <PencilLine size={19} />}</span>
-        <div className="ml-3 min-w-0"><h2 id="transaction-editor-title" className="font-heading text-title font-semibold text-ink">{creating ? "Add transaction" : "Edit transaction"}</h2><p className="truncate text-note text-ink-muted">{creating ? "Record a confirmed entry" : transaction.merchant ?? titleCase(transaction.transactionType)}</p></div>
+        <div className="ml-3 min-w-0"><h2 id="transaction-editor-title" tabIndex={creating ? -1 : undefined} data-overlay-initial-focus={creating ? "" : undefined} className="font-heading text-title font-semibold text-ink outline-none">{creating ? "Add transaction" : "Edit transaction"}</h2><p className="truncate text-note text-ink-muted">{creating ? "Keep your money picture up to date." : transaction.merchant ?? titleCase(transaction.transactionType)}</p></div>
         <Button type="button" variant="ghost" size="icon-lg" aria-label="Close transaction editor" disabled={saving} onClick={requestClose} className="-mr-1 ml-auto rounded-xl text-ink-muted"><X /></Button>
+      </div>
       </div>
       {transaction ? <div className="shrink-0 border-b border-line bg-ground/40 px-6 py-2"><TransactionIdentifier transactionId={transaction.id} rowVersion={transaction.rowVersion} /></div> : null}
 
       <TransactionForm
         initialValues={{
+          currency: transaction?.currency,
           amountMinor: transaction?.amountMinor,
           merchant: transaction?.merchant,
           transactionAt: transaction?.transactionAt,
@@ -149,6 +153,7 @@ export function TransactionEditor({ transaction, categories, revisions = [], his
         categories={categories}
         transactionTypes={editableTransactionTypes.filter((type) => type !== "transfer" || transaction?.transactionType === "transfer")}
         disabled={saving}
+        density={creating ? "entry" : "page"}
         locationAllowed={locationAllowed}
         captureDeviceLocation={creating}
         problem={problem}
@@ -158,6 +163,7 @@ export function TransactionEditor({ transaction, categories, revisions = [], his
         onSubmit={(values) => {
           if (!values.transactionAt) return;
           onSave({
+            currency: values.currency,
             expectedVersion: transaction?.rowVersion ?? null,
             amountMinor: values.amountMinor,
             merchant: values.merchant,
@@ -172,7 +178,7 @@ export function TransactionEditor({ transaction, categories, revisions = [], his
             locationAccuracy: values.locationAccuracy,
           });
         }}
-        className="panel-scroll min-h-0 flex-1 overflow-y-auto px-4 pt-6 pb-[max(1.75rem,env(safe-area-inset-bottom))] sm:px-6"
+        className={creating ? "flex min-h-0 flex-1 flex-col" : "panel-scroll min-h-0 flex-1 overflow-y-auto px-4 pt-6 pb-[max(1.75rem,env(safe-area-inset-bottom))] sm:px-6"}
         afterFields={transaction ? <TransactionHistory revisions={revisions} loading={historyLoading} currency={transaction.currency} /> : null}
         banner={confirmingDiscard ? <div role="alertdialog" aria-label="Discard unsaved changes" className="mb-4 rounded-lg border border-attention/40 bg-attention-tint px-4 py-3 text-note text-ink-body">
           You have unsaved changes. Throw them away?
@@ -181,13 +187,13 @@ export function TransactionEditor({ transaction, categories, revisions = [], his
             <Button type="button" variant="ghost" size="sm" onClick={() => setConfirmingDiscard(false)}>Keep editing</Button>
           </div>
         </div> : null}
-        renderActions={() => <div className="mt-6 flex gap-2 border-t border-line pt-5">
-          <Button type="submit" size="lg" disabled={saving}>{saving ? <Loader2 className="animate-spin" /> : null}{saving ? (creating ? "Adding…" : "Saving…") : (creating ? "Add transaction" : "Save changes")}</Button>
-          <Button type="button" size="lg" variant="ghost" disabled={saving} onClick={requestClose}>Cancel</Button>
-        </div>}
+        renderActions={({ blocked }) => <div className={cn("border-t border-line bg-surface", creating ? "shrink-0" : "mt-6 pt-5")}><div className={cn("flex gap-3", creating && "mx-auto w-full max-w-xl px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-6")}>
+          <Button type="submit" size="lg" className={creating ? "h-12 flex-1 rounded-xl" : undefined} disabled={blocked}>{saving ? <Loader2 className="animate-spin" /> : creating ? <Plus /> : null}{saving ? (creating ? "Adding…" : "Saving…") : (creating ? "Add transaction" : "Save changes")}</Button>
+          <Button type="button" size="lg" variant="ghost" className={creating ? "h-12 px-5" : undefined} disabled={saving} onClick={requestClose}>Cancel</Button>
+        </div></div>}
       />
     </section>
-  </>;
+  </>, document.body);
 }
 
 const TRANSACTION_PAGE_SIZE = 50;

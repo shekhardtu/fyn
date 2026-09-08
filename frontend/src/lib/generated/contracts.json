@@ -17130,6 +17130,21 @@
           "title": "Amountminor",
           "type": "integer"
         },
+        "currency": {
+          "anyOf": [
+            {
+              "maxLength": 3,
+              "minLength": 3,
+              "pattern": "^[A-Z]{3}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Currency"
+        },
         "expectedVersion": {
           "anyOf": [
             {
@@ -17273,6 +17288,335 @@
         }
       },
       "title": "LocationResolveOut",
+      "type": "object"
+    },
+    "AccountCreateIn": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "accountType": {
+          "enum": [
+            "bank",
+            "savings",
+            "checking",
+            "credit_card",
+            "cash",
+            "wallet",
+            "investment",
+            "other"
+          ],
+          "title": "Accounttype",
+          "type": "string"
+        },
+        "currency": {
+          "maxLength": 3,
+          "minLength": 3,
+          "pattern": "^[A-Z]{3}$",
+          "title": "Currency",
+          "type": "string"
+        },
+        "balanceMinor": {
+          "maximum": 2147483647,
+          "minimum": -2147483647,
+          "title": "Balanceminor",
+          "type": "integer"
+        },
+        "institution": {
+          "anyOf": [
+            {
+              "maxLength": 120,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Institution"
+        },
+        "mask": {
+          "anyOf": [
+            {
+              "maxLength": 12,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mask"
+        }
+      },
+      "required": [
+        "name",
+        "accountType",
+        "currency",
+        "balanceMinor"
+      ],
+      "title": "AccountCreateIn",
+      "type": "object"
+    },
+    "AccountRecordOut": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "accountType": {
+          "title": "Accounttype",
+          "type": "string"
+        },
+        "currency": {
+          "title": "Currency",
+          "type": "string"
+        },
+        "balanceMinor": {
+          "title": "Balanceminor",
+          "type": "integer"
+        },
+        "institution": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Institution"
+        },
+        "mask": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mask"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "accountType",
+        "currency",
+        "balanceMinor"
+      ],
+      "title": "AccountRecordOut",
+      "type": "object"
+    },
+    "BudgetSaveIn": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "amountMinor": {
+          "exclusiveMinimum": 0,
+          "maximum": 2147483647,
+          "title": "Amountminor",
+          "type": "integer"
+        },
+        "categoryId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Categoryid"
+        }
+      },
+      "required": [
+        "name",
+        "amountMinor"
+      ],
+      "title": "BudgetSaveIn",
+      "type": "object"
+    },
+    "BudgetRecordOut": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "amountMinor": {
+          "exclusiveMinimum": 0,
+          "maximum": 2147483647,
+          "title": "Amountminor",
+          "type": "integer"
+        },
+        "categoryId": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Categoryid"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "currency": {
+          "title": "Currency",
+          "type": "string"
+        },
+        "period": {
+          "title": "Period",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "amountMinor",
+        "id",
+        "currency",
+        "period"
+      ],
+      "title": "BudgetRecordOut",
+      "type": "object"
+    },
+    "GoalSaveIn": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "targetMinor": {
+          "exclusiveMinimum": 0,
+          "maximum": 2147483647,
+          "title": "Targetminor",
+          "type": "integer"
+        },
+        "targetDate": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Targetdate"
+        }
+      },
+      "required": [
+        "name",
+        "targetMinor"
+      ],
+      "title": "GoalSaveIn",
+      "type": "object"
+    },
+    "GoalRecordOut": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "targetMinor": {
+          "exclusiveMinimum": 0,
+          "maximum": 2147483647,
+          "title": "Targetminor",
+          "type": "integer"
+        },
+        "targetDate": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Targetdate"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "currency": {
+          "title": "Currency",
+          "type": "string"
+        },
+        "currentMinor": {
+          "title": "Currentminor",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "targetMinor",
+        "id",
+        "currency",
+        "currentMinor"
+      ],
+      "title": "GoalRecordOut",
+      "type": "object"
+    },
+    "GoalContributionIn": {
+      "additionalProperties": false,
+      "properties": {
+        "amountMinor": {
+          "exclusiveMinimum": 0,
+          "maximum": 2147483647,
+          "title": "Amountminor",
+          "type": "integer"
+        },
+        "requestId": {
+          "format": "uuid",
+          "title": "Requestid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "amountMinor",
+        "requestId"
+      ],
+      "title": "GoalContributionIn",
       "type": "object"
     },
     "ImportResultOut": {
@@ -19146,5 +19490,5 @@
     "approve_operation": "OperationActionPayload",
     "cancel_operation": "OperationActionPayload"
   },
-  "schemaHash": "af5ccc6095a2b95f1ae1c6b7b6b98ccc347270483eb56e0800dd6631ee33d1a7"
+  "schemaHash": "3fb877b885ea6967b31927a689c74efd34badf184446c8062fba99d43cdfdea9"
 }

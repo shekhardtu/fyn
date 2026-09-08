@@ -6,7 +6,8 @@ import { appPaths } from "@/routing/paths";
 import { CHANNEL_COPY, CodeExchange } from "@/components/sign-in";
 import { SettingsGroup, settingsProblem, settingsSaved } from "@/components/settings-parts";
 import { Button } from "@/components/ui/button";
-import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
+import { Combobox } from "@/components/ui/combobox";
+import { CURRENCY_OPTIONS } from "@/lib/currencies";
 import { deleteDocumentAsset, documentAssetDownloadUrl, getProfile, isUnauthorized, loadDocumentAssets, removeIdentity, signOut, startLinkCode, updateProfile, uploadDocumentAsset, verifyLinkCode, type OtpChannel, type Profile } from "@/lib/api";
 import type { DocumentAssetOut, IdentityOut } from "@/lib/protocol";
 
@@ -15,21 +16,6 @@ const PROVIDER_COPY: Record<IdentityOut["provider"], { label: string; icon: Reac
   email: { label: "Email address", icon: <Mail /> },
   google: { label: "Google", icon: <GoogleMark /> },
 };
-
-const CURRENCY_OPTIONS: ComboboxOption[] = [
-  { value: "INR", label: "Indian rupee (INR)" },
-  { value: "USD", label: "US dollar (USD)" },
-  { value: "EUR", label: "Euro (EUR)" },
-  { value: "GBP", label: "Pound sterling (GBP)" },
-  { value: "AED", label: "UAE dirham (AED)" },
-  { value: "SGD", label: "Singapore dollar (SGD)" },
-  { value: "AUD", label: "Australian dollar (AUD)" },
-  { value: "CAD", label: "Canadian dollar (CAD)" },
-  { value: "JPY", label: "Japanese yen (JPY)" },
-  { value: "CNY", label: "Chinese yuan (CNY)" },
-  { value: "CHF", label: "Swiss franc (CHF)" },
-  { value: "NZD", label: "New Zealand dollar (NZD)" },
-];
 
 const FALLBACK_TIMEZONES = [
   "Asia/Kolkata",
