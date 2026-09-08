@@ -232,6 +232,30 @@ describe("TransactionEditor", () => {
     expect(screen.queryByRole("option", { name: "Transfer" })).not.toBeInTheDocument();
   });
 
+  it.each(["account_id", "destination_account_id"])("explains a deleted %s in amendment history", (field) => {
+    render(<TransactionEditor
+      transaction={{ ...transaction, rowVersion: 2 }}
+      categories={categories}
+      revisions={[{
+        revisionNumber: 2,
+        source: "account_deleted",
+        reason: null,
+        changes: { [field]: { before: "deleted-account-id", after: null } },
+        createdAt: "2026-08-14T10:15:00Z",
+      }]}
+      saving={false}
+      problem={null}
+      onClose={() => undefined}
+      onSave={() => undefined}
+    />);
+
+    fireEvent.click(screen.getByText("Amendment history"));
+    expect(screen.getByText(/Account deleted/)).toBeVisible();
+    expect(screen.getByText("Link to the deleted account removed. Transaction details were preserved.")).toBeVisible();
+    expect(screen.queryByText(/Created|Initial saved version/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/deleted-account-id/)).not.toBeInTheDocument();
+  });
+
   it("creates a subcategory from inside the dropdown and saves with it", async () => {
     const onSave = vi.fn();
     const created = { id: "3f7a1c9e-8d2b-4e5f-9a6c-1b2d3e4f5a6b", slug: "custom-rickshaw", label: "Rickshaw" };

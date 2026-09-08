@@ -36,6 +36,12 @@ async function mockApp(page: Page, data: OverviewOut | ((url: URL) => OverviewOu
     if (route.request().method() !== "GET") {
       writes.push(path);
       if (financeWrites) {
+        if (route.request().method() === "DELETE" && path.startsWith("/accounts/")) {
+          const index = accounts.findIndex((account) => path === `/accounts/${account.id}`);
+          if (index < 0) { await route.fulfill({ status: 404, json: { detail: "Unknown account" } }); return; }
+          accounts.splice(index, 1);
+          await route.fulfill({ status: 204 }); return;
+        }
         const body = route.request().postDataJSON();
         if (path === "/budgets") {
           const budget = { ...body, id: fixtureId(40 + budgets.length), currency: "INR", period: "monthly" };
@@ -306,6 +312,43 @@ test.describe("direct mobile finance forms", () => {
     });
   }
 });
+
+for (const width of [360, 1440]) {
+  test(`account deletion confirms, refreshes, and reaches the empty state at ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: width === 360 ? 740 : 1000 });
+    await page.emulateMedia({ colorScheme: "dark" });
+    const writes = await mockApp(page, overview, true);
+    await page.goto("/overview");
+    const trigger = page.getByRole("button", { name: "Delete account Everyday account", exact: true });
+    await trigger.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: testInfo.outputPath(`account-cards-${width}.png`) });
+    await trigger.click();
+    const dialog = page.getByRole("alertdialog", { name: "Delete account?" });
+    await expect(dialog).toContainText("Everyday account");
+    await expect(dialog).toContainText("Your transactions will stay");
+    await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
+    await expect(dialog.getByRole("button", { name: "Delete account", exact: true })).toBeInViewport();
+    await page.screenshot({ path: testInfo.outputPath(`delete-account-${width}.png`) });
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+    expect(writes).toEqual([]);
+
+    for (const [index, account] of overview.accounts.entries()) {
+      await page.getByRole("button", { name: `Delete account ${account.name}`, exact: true }).click();
+      await dialog.getByRole("button", { name: "Delete account", exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+      await expect(page.getByRole("button", { name: `Delete account ${account.name}`, exact: true })).toHaveCount(0);
+      const remaining = overview.accounts.length - index - 1;
+      await expect(page.getByRole("heading", { name: remaining ? `${remaining} account${remaining === 1 ? "" : "s"}, one view` : "Start with an account", exact: true })).toBeVisible();
+    }
+    await expect(page.getByRole("button", { name: "Add account", exact: true })).toBeVisible();
+    expect(writes).toEqual(overview.accounts.map((account) => `/accounts/${account.id}`));
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Start with an account" })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
+  });
+}
 
 test("an empty month keeps the dashboard, direct entry, and contextual chat available", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 });

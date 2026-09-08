@@ -2,15 +2,16 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..event_time import now_utc
 from ..finance_schemas import MAX_FINANCE_AMOUNT_MINOR, AccountCreateIn, BudgetSaveIn, GoalSaveIn
-from ..models import Account, AccountBalanceSnapshot, Budget, Goal, GoalContribution, User
+from ..models import Account, AccountBalanceSnapshot, Budget, Goal, GoalContribution, InvestmentHolding, Loan, TransactionDraft, User
 from .repositories import UserScopedRepository
 from .taxonomy import TaxonomyRepository
+from .transactions import detach_account_transactions
 
 
 class FinanceConflict(ValueError):
@@ -97,3 +98,19 @@ def create_account(db: Session, user: User, values: AccountCreateIn) -> Account:
     db.add(AccountBalanceSnapshot(user_id=user.id, account_id=account.id, balance_minor=account.balance_minor, currency=account.currency, observed_at=now_utc(), source_type="manual"))
     db.flush()
     return account
+
+
+def delete_account(db: Session, user: User, account_id: UUID) -> None:
+    _lock_owner(db, user)
+    account = db.scalar(select(Account).where(Account.id == account_id, Account.user_id == user.id).with_for_update())
+    if account is None:
+        raise LookupError("Unknown account")
+    detach_account_transactions(db, user.id, account.id)
+    # Clear draft names too, so resuming a draft cannot recreate the account.
+    db.execute(update(TransactionDraft).where(TransactionDraft.user_id == user.id, TransactionDraft.account_id == account.id).values(account_id=None, source_account_name=None))
+    db.execute(update(TransactionDraft).where(TransactionDraft.user_id == user.id, TransactionDraft.destination_account_id == account.id).values(destination_account_id=None, destination_account_name=None))
+    for model in (InvestmentHolding, Loan):
+        db.execute(update(model).where(model.user_id == user.id, model.account_id == account.id).values(account_id=None))
+    db.execute(delete(AccountBalanceSnapshot).where(AccountBalanceSnapshot.user_id == user.id, AccountBalanceSnapshot.account_id == account.id))
+    db.delete(account)
+    db.flush()

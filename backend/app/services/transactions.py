@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any, TypedDict
 from uuid import UUID
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, or_, select
 from sqlalchemy.orm import Session
 
 from ..domain import MAX_TRANSACTION_AMOUNT_MINOR, SpendNature, TransactionStatus, TransactionType
@@ -107,6 +107,29 @@ def remove_transaction(
     )
     db.flush()
     return transaction
+
+
+def detach_account_transactions(db: Session, user_id: UUID, account_id: UUID) -> None:
+    """Keep the ledger and its audit trail when a recorded account is deleted."""
+    transactions = db.scalars(
+        transaction_log(user_id)
+        .where(or_(Transaction.account_id == account_id, Transaction.destination_account_id == account_id))
+        .order_by(Transaction.id)
+        .with_for_update()
+    )
+    for transaction in transactions:
+        before = transaction_snapshot(db, transaction)
+        _ensure_baseline_revision(db, transaction, before)
+        if transaction.account_id == account_id:
+            transaction.account_id = None
+        if transaction.destination_account_id == account_id:
+            transaction.destination_account_id = None
+        transaction.row_version += 1
+        _record_revision(
+            db, transaction, before=before, after=transaction_snapshot(db, transaction),
+            actor_user_id=user_id, source="account_deleted",
+        )
+    db.flush()
 
 
 def restore_transaction(
