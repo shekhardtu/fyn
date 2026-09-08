@@ -1,10 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowDownLeft,
+  ArrowDownRight,
   ArrowRight,
   ArrowUpRight,
   CalendarDays,
-  ChevronDown,
   CircleAlert,
   CreditCard,
   Landmark,
@@ -16,7 +16,7 @@ import {
   SlidersHorizontal,
   WalletCards,
 } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { useId, useMemo, useState, type ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { Area, AreaChart, CartesianGrid, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { CategoryExplorer } from "@/components/category-explorer";
@@ -167,7 +167,7 @@ function TrendChart({ overview }: { overview: OverviewOut }) {
       <span className="flex items-center gap-1.5"><i className="h-px w-3 bg-ink-muted" />{previousLabel} expenses</span>
     </div>
 
-    <div className="mt-3 h-[clamp(6rem,calc(100dvh_-_36.25rem),10rem)] min-w-0 sm:h-64" role="img" aria-label={`Cumulative income, expenses, net cash flow and previous-month spending for ${overview.period.label}`}>
+    <div className="mt-3 h-[clamp(6rem,calc(100dvh_-_37.25rem),10rem)] min-w-0 sm:h-64" role="img" aria-label={`Cumulative income, expenses, net cash flow and previous-month spending for ${overview.period.label}`}>
       <ResponsiveContainer width="100%" height="100%" minWidth={0}>
         <AreaChart data={visiblePoints} accessibilityLayer margin={{ top: 8, right: 4, left: -10, bottom: 0 }}>
           <defs>
@@ -203,31 +203,52 @@ function budgetPace(budget: OverviewBudgetOut, overview: OverviewOut) {
   return { dailyAverage, dailyBudget, projected, projectedVariance: projected - budget.amountMinor };
 }
 
+function MetricChange({ label, current, previous, lowerIsBetter = false, comparisonId }: { label: string; current: number; previous: number; lowerIsBetter?: boolean; comparisonId: string }) {
+  const difference = current - previous;
+  const percentage = previous === 0 ? null : Math.abs(difference / previous * 100);
+  const favorable = lowerIsBetter ? difference < 0 : difference > 0;
+  const neutral = difference === 0 || percentage === null;
+  const Icon = neutral ? ArrowRight : difference > 0 ? ArrowUpRight : ArrowDownRight;
+  const change = difference === 0 ? "No change" : percentage === null ? "No prior baseline" : `${percentage < 0.1 ? "<0.1" : formatCount(percentage, 1)}% ${difference > 0 ? "higher" : "lower"}`;
+  return <p aria-label={`${label} change from previous period`} aria-describedby={comparisonId} className={cn("mt-1 flex items-start gap-1 text-meta leading-4", neutral ? "text-ink-muted" : favorable ? "text-money-in" : "text-money-out")}>
+    <Icon size={13} aria-hidden className="mt-0.5 shrink-0" /><span>{change}</span>
+  </p>;
+}
+
 export function MoneySummary({ overview, onPlan }: { overview: OverviewOut; onPlan: () => void }) {
   const { summary } = overview;
+  const comparisonId = useId();
+  const previousIncome = overview.trend.reduce((sum, point) => sum + point.previousIncomeMinor, 0);
+  const comparisonStart = new Date(`${overview.period.previousStart}T12:00:00`);
+  const comparisonEnd = new Date(`${overview.period.previousEnd}T12:00:00`);
+  const comparisonRange = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short" }).formatRange(comparisonStart, comparisonEnd);
   const overall = overview.budgets?.find((budget) => budget.categoryId === null);
   const pace = overall ? budgetPace(overall, overview) : null;
   const over = overall && overall.overMinor > 0;
   const categoryOverruns = overview.budgets?.filter((budget) => budget.categoryId !== null && budget.overMinor > 0) ?? [];
   return <section aria-label={`Money summary for ${overview.period.label}`} className="overflow-hidden rounded-2xl border border-secondary-line bg-surface">
     <div className="grid grid-cols-2 xl:grid-cols-1">
-      <div className="bg-secondary-tint px-4 py-4 sm:px-5">
+      <div className="bg-secondary-tint px-4 py-3 sm:px-5 sm:py-4">
         <p className="text-control font-medium text-ink-body">Spent this month</p>
         <p className="mt-1 font-heading text-[clamp(1.4rem,6vw,2rem)] leading-tight font-semibold tracking-[-0.05em] tabular-nums text-ink">{formatMoney(summary.spentMinor, summary.currency)}</p>
+        <MetricChange label="Spending" current={summary.spentMinor} previous={summary.previousSpentMinor} lowerIsBetter comparisonId={comparisonId} />
         <p className="mt-2 text-note text-ink-muted">{summary.expenseCount} expense{summary.expenseCount === 1 ? "" : "s"}</p>
+        <p id={comparisonId} className="mt-1 text-meta leading-4 text-ink-muted">Changes vs {comparisonRange}<span className="sr-only"> {comparisonEnd.getFullYear()}, the previous comparison period.</span></p>
       </div>
-      <div className="grid items-center gap-2 px-4 py-3 sm:grid-cols-2 xl:px-5">
+      <div className="grid items-center gap-1.5 px-4 py-2.5 sm:grid-cols-2 sm:gap-2 sm:py-3 xl:px-5">
         <div className="min-w-0">
           <p className="flex items-center gap-1.5 text-note text-ink-muted"><ArrowDownLeft size={15} className="text-money-in" /> Income</p>
           <p className="mt-1 font-heading text-control leading-tight font-semibold tracking-tight tabular-nums text-money-in sm:text-title">{formatMoney(summary.incomeMinor, summary.currency)}</p>
+          <MetricChange label="Income" current={summary.incomeMinor} previous={previousIncome} comparisonId={comparisonId} />
         </div>
         <div className="min-w-0">
           <p className="text-note text-ink-muted">Income − expenses</p>
           <p className={cn("mt-1 font-heading text-control leading-tight font-semibold tracking-tight tabular-nums sm:text-title", summary.netMinor < 0 ? "text-money-out" : "text-ink")}>{formatMoney(summary.netMinor, summary.currency)}</p>
+          <MetricChange label="Income minus expenses" current={summary.netMinor} previous={previousIncome - summary.previousSpentMinor} comparisonId={comparisonId} />
         </div>
       </div>
     </div>
-    <div role="group" aria-label="Budget at a glance" className="border-t border-line px-4 py-2.5 sm:px-5 sm:py-3">
+    <div role="group" aria-label="Budget at a glance" className="border-t border-line px-4 py-2 sm:px-5 sm:py-3">
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
         <p className={cn("min-w-0 flex-1 text-note font-semibold sm:text-control", over ? "text-money-out" : "text-ink")}>
           {overall ? `${formatMoney(over ? overall.overMinor : overall.remainingMinor, overall.currency)} ${over ? "over" : "left in"} monthly budget` : "No overall budget set"}
@@ -238,9 +259,9 @@ export function MoneySummary({ overview, onPlan }: { overview: OverviewOut; onPl
         <div role="progressbar" aria-label="Monthly budget used" aria-valuemin={0} aria-valuemax={Math.max(100, Math.ceil(overall.percentUsed))} aria-valuenow={overall.percentUsed} aria-valuetext={`${formatCount(overall.percentUsed, 0)}% of ${formatMoney(overall.amountMinor, overall.currency)}`} className="mt-1 h-1.5 overflow-hidden rounded-full bg-line">
           <span className={cn("block h-full rounded-full", over ? "bg-money-out" : "bg-secondary")} style={{ width: `${Math.min(100, overall.percentUsed)}%` }} />
         </div>
-        <p className="mt-2 text-note text-ink-muted">{formatCount(overall.percentUsed, 0)}% of your {formatMoney(overall.amountMinor, overall.currency)} monthly limit used</p>
+        <p className="mt-1 text-note text-ink-muted sm:mt-2">{formatCount(overall.percentUsed, 0)}% of your {formatMoney(overall.amountMinor, overall.currency)} monthly limit used</p>
       </> : <p className="text-note leading-5 text-ink-muted">Set a limit to track your spending against a budget.</p>}
-      {overview.period.isCurrent && !over && pace && pace.projectedVariance > 0 ? <p aria-label="Budget pace warning" className="mt-3 flex items-start gap-2 text-note leading-5 text-attention"><CircleAlert size={15} className="mt-0.5 shrink-0" />At this pace, spending may finish {formatMoney(pace.projectedVariance, summary.currency)} over budget.</p> : null}
+      {overview.period.isCurrent && !over && pace && pace.projectedVariance > 0 ? <p aria-label="Budget pace warning" className="mt-2 flex items-start gap-2 text-note leading-5 text-attention sm:mt-3"><CircleAlert size={15} className="mt-0.5 shrink-0" />At this pace, spending may finish {formatMoney(pace.projectedVariance, summary.currency)} over budget.</p> : null}
       {categoryOverruns.length ? <p className="mt-2 flex items-start gap-2 text-note leading-5 text-money-out"><CircleAlert size={15} className="mt-0.5 shrink-0" />{categoryOverruns.length} category budget{categoryOverruns.length === 1 ? " is" : "s are"} over the limit.</p> : null}
     </div>
   </section>;
@@ -530,7 +551,7 @@ export function OverviewPage() {
           <p className="mt-2 text-control text-ink-muted">Your records are safe. Try loading your overview again.</p>
           <Button type="button" variant="outline" className="mt-5 min-h-11" onClick={() => overview.refetch()}><RotateCcw /> Try again</Button>
         </div> : overview.data ? <div className="space-y-4 sm:space-y-5">
-          <div className="grid items-start gap-3 sm:gap-5 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.4fr)]">
+          <div className="grid gap-3 sm:gap-5 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.4fr)]">
             <MoneySummary overview={overview.data} onPlan={() => openBudget(overallBudget?.id)} />
             <TrendChart overview={overview.data} />
           </div>
@@ -546,21 +567,14 @@ export function OverviewPage() {
             </div>
           </section> : null}
 
-          <div className="grid items-start gap-4 sm:gap-5 xl:grid-cols-[1.2fr_1fr]">
+          <SpendingLimit overview={overview.data} onPlan={openBudget} />
+
+          <div className="grid gap-4 sm:gap-5 xl:grid-cols-[1.2fr_1fr]">
             <TransactionHistory transactions={overview.data.recentTransactions} onViewAll={() => navigate(appPaths.transactions)} />
             <CostAnalysis categories={overview.data.categories} currency={overview.data.summary.currency} onViewAll={() => navigate(appPaths.categories)} />
           </div>
 
-          <details className="group rounded-2xl border border-line bg-surface">
-            <summary className="flex min-h-14 cursor-pointer list-none items-center gap-3 rounded-2xl px-4 py-3 text-control font-semibold text-ink marker:content-none sm:px-6">
-              <SlidersHorizontal size={18} className="shrink-0 text-secondary" />
-              <span className="min-w-0 flex-1">Budget details<span className="mt-0.5 block text-note font-normal text-ink-muted">Overall and category limits, daily spending pace</span></span>
-              <ChevronDown size={18} className="shrink-0 text-ink-muted transition-transform group-open:rotate-180" />
-            </summary>
-            <div className="border-t border-line p-3 sm:p-4"><SpendingLimit overview={overview.data} onPlan={openBudget} /></div>
-          </details>
-
-          <div className="grid items-start gap-4 sm:gap-5 xl:grid-cols-2">
+          <div className="grid gap-4 sm:gap-5 xl:grid-cols-2">
             <AccountStrip accounts={overview.data.accounts} onPlan={() => openForm("account")} />
             <PlanningActions onBudget={() => openBudget(overallBudget?.id)} onGoal={() => openForm("goal")} onEditGoal={(id) => openForm("goal", id)} onContribute={(id) => openForm("contribution", id)} />
           </div>

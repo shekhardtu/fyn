@@ -159,6 +159,51 @@ describe("monthly budgets", () => {
     expect(onPlan).toHaveBeenCalledOnce();
   });
 
+  it("restores spending and negative cash-flow changes against the displayed previous dates", () => {
+    const data = { ...overview, summary: { ...overview.summary, incomeMinor: 0, spentMinor: 5_931_600, netMinor: -5_931_600, previousSpentMinor: 3_451_000 } };
+    render(<MoneySummary overview={data} onPlan={() => undefined} />);
+
+    const spending = screen.getByLabelText("Spending change from previous period");
+    const net = screen.getByLabelText("Income minus expenses change from previous period");
+    expect(spending).toHaveTextContent("71.9% higher");
+    expect(spending).toHaveClass("text-money-out");
+    expect(net).toHaveTextContent("71.9% lower");
+    expect(net).toHaveClass("text-money-out");
+    expect(spending).toHaveAccessibleDescription(/Changes vs 1.*15 Jul/);
+    expect(net).toHaveAccessibleDescription(/Changes vs 1.*15 Jul/);
+  });
+
+  it("treats lower spending and an improving negative cash flow as favorable", () => {
+    const data = { ...overview, summary: { ...overview.summary, incomeMinor: 0, spentMinor: 50_000, netMinor: -50_000, previousSpentMinor: 100_000 } };
+    render(<MoneySummary overview={data} onPlan={() => undefined} />);
+
+    expect(screen.getByLabelText("Spending change from previous period")).toHaveTextContent("50% lower");
+    expect(screen.getByLabelText("Spending change from previous period")).toHaveClass("text-money-in");
+    expect(screen.getByLabelText("Income minus expenses change from previous period")).toHaveTextContent("50% higher");
+    expect(screen.getByLabelText("Income minus expenses change from previous period")).toHaveClass("text-money-in");
+    expect(screen.getByLabelText("Income change from previous period")).toHaveTextContent("No change");
+    expect(screen.getByLabelText("Income change from previous period")).toHaveClass("text-ink-muted");
+  });
+
+  it("uses all comparison days for income and avoids a percentage from a zero baseline", () => {
+    const data = { ...overview, summary: { ...overview.summary, incomeMinor: 150_000, spentMinor: 100_000, netMinor: 50_000, previousSpentMinor: 100_000 }, trend: overview.trend.map((point) => ({ ...point, previousIncomeMinor: 50_000 })) };
+    render(<MoneySummary overview={data} onPlan={() => undefined} />);
+
+    expect(screen.getByLabelText("Income change from previous period")).toHaveTextContent("50% higher");
+    expect(screen.getByLabelText("Income change from previous period")).toHaveClass("text-money-in");
+    expect(screen.getByLabelText("Spending change from previous period")).toHaveTextContent("No change");
+    expect(screen.getByLabelText("Income minus expenses change from previous period")).toHaveTextContent("No prior baseline");
+    expect(screen.getByLabelText("Income minus expenses change from previous period")).toHaveClass("text-ink-muted");
+  });
+
+  it("shows the full previous month for a completed shorter month and preserves small changes", () => {
+    const data = { ...overview, period: { ...overview.period, start: "2026-02-01", end: "2026-02-28", previousStart: "2026-01-01", previousEnd: "2026-01-31", isCurrent: false }, summary: { ...overview.summary, spentMinor: 100_001, previousSpentMinor: 100_000 } };
+    render(<MoneySummary overview={data} onPlan={() => undefined} />);
+
+    expect(screen.getByLabelText("Spending change from previous period")).toHaveTextContent("<0.1% higher");
+    expect(screen.getByLabelText("Spending change from previous period")).toHaveAccessibleDescription(/Changes vs 1.*31 Jan/);
+  });
+
   it("separates a current spending projection from actual budget remaining", () => {
     const data: OverviewOut = { ...overview, budgets: [{ ...overview.budgets[0], amountMinor: 6_000_000, remainingMinor: 1_273_500, overMinor: 0, percentUsed: 78.8 }] };
     const view = render(<MoneySummary overview={data} onPlan={() => undefined} />);

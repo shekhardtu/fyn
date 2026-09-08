@@ -97,6 +97,14 @@ for (const width of [360, 375, 390, 1440]) {
     await mockApp(page);
     await page.goto("/overview");
     await expect(page.getByRole("region", { name: "Money summary for September 2026" })).toBeVisible();
+    await expect(page.getByLabel("Spending change from previous period")).toHaveText(/9.8% lower/);
+    await expect(page.getByLabel("Income change from previous period")).toHaveText(/4.2% higher/);
+    await expect(page.getByLabel("Income minus expenses change from previous period")).toHaveText(/8% higher/);
+    await expect(page.getByText(/Changes vs 1.*8 Aug/)).toBeVisible();
+    await expect(page.getByRole("group", { name: "Spending pace", exact: true })).toBeVisible();
+    const budgetBox = await page.getByRole("region", { name: "₹60,000 limit", exact: true }).boundingBox();
+    const recentBox = await page.getByRole("region", { name: "Recent activity", exact: true }).boundingBox();
+    expect(budgetBox!.y + budgetBox!.height).toBeLessThanOrEqual(recentBox!.y);
     const actions = page.getByRole("navigation", { name: "Overview quick actions" });
     const add = width < 768 ? actions.getByRole("link", { name: "Add transaction" }) : page.getByRole("link", { name: "Add transaction" }).first();
     await expect(add).toBeInViewport();
@@ -116,6 +124,14 @@ for (const width of [360, 375, 390, 1440]) {
       await expect(add).toBeInViewport();
       await expect(page.getByRole("combobox", { name: "Overview month" })).toBeInViewport();
       await page.getByText("Spent this month", { exact: true }).scrollIntoViewIfNeeded();
+    }
+    if (width === 1440) {
+      for (const names of [["Money summary for September 2026", "Your month in motion"], ["Recent activity", "Where it went"], ["4 accounts, one view", "Budgets & goals"]]) {
+        const left = await page.getByRole("region", { name: names[0], exact: true }).boundingBox();
+        const right = await page.getByRole("region", { name: names[1], exact: true }).boundingBox();
+        expect(Math.abs(left!.y - right!.y)).toBeLessThanOrEqual(1);
+        expect(Math.abs(left!.height - right!.height)).toBeLessThanOrEqual(1);
+      }
     }
     expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
     await page.screenshot({ path: testInfo.outputPath(`overview-${width}.png`) });
@@ -244,7 +260,6 @@ test.describe("direct mobile finance forms", () => {
       await expect(editor).toHaveCount(0);
       await expect(page.getByRole("group", { name: "Budget at a glance" })).toContainText("₹65,000");
 
-      await page.locator("summary").filter({ hasText: "Budget details" }).click();
       await page.getByRole("button", { name: "Category", exact: true }).click();
       await page.getByRole("button", { name: /Add category budget/ }).click();
       await page.reload();
