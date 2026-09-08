@@ -35,6 +35,33 @@ calling a multi-request loop a “single model pass.” Collection is in-memory,
 scalar-only, and exception-contained; it performs no callback, I/O, or commit
 inside the provider event loop.
 
+`metrics.requestUsage` is the authoritative **request-level** token subtotal for
+new records. The older top-level counters and `passes` remain Agno logical-pass
+diagnostics for compatibility; never add them to `requestUsage`. Native Responses
+usage is observed before Agno validates a terminal response, including failed or
+incomplete outputs. Streaming updates share one attempt ID, so nested delegates
+and repeated snapshots do not double-count the same attempt. The record includes
+stage, model, operation, timestamp, provider request/response IDs and nullable
+input/output/cache/reasoning counters, but no prompt, response content or keys.
+Embeddings use the same accounting and expose each bounded transient retry;
+billing/authentication failures are not retried.
+
+Coverage is `complete`, `partial`, `unavailable`, `not_used`, or `interrupted`.
+Only `not_used` establishes zero observed provider calls. Partial totals are
+reported subtotals, not estimates of the missing usage, and token completeness
+does not establish an exact dollar cost. Old records without this envelope
+remain explicitly unverified. The activity card shows incomplete coverage even
+when a failed pass produced no Agno metrics; provider-error notices also flag
+incomplete usage. Optional enrichment usage is separate from the answer's usage
+and accumulates across its attempts instead of overwriting them.
+
+The request list is committed with the existing answer/terminal/enrichment
+checkpoints. No new transaction is opened from the provider callback. A process
+exit before its next checkpoint can lose in-memory observations; uncertain run
+recovery and expired enrichment leases therefore mark coverage `interrupted`.
+Reconstructing that gap from provider billing records is a separate operational
+reconciliation task, not something an application token counter can guarantee.
+
 The durable publisher observes lifecycle events in memory and derives queue
 wait, first activity/reasoning/tool/text, first-text-to-finish, total server
 duration, and event counts. This adds no provider call or database round-trip:

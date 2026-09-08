@@ -830,6 +830,35 @@ describe("persisted agent activity", () => {
     expect(details).toHaveTextContent("Generated tool was rejected");
   });
 
+  it.each([
+    ["complete", 60, "60 tokens", false],
+    ["partial", 60, "60 reported tokens", true],
+    ["unavailable", null, "Token usage unavailable", true],
+    ["interrupted", null, "accounting interrupted by a restart", true],
+    ["not_used", 0, "No AI requests", false],
+  ])("shows %s request usage without treating missing counters as zero", (coverage, totalTokens, text, incomplete) => {
+    const widget: Widget = {
+      id: "usage-run", type: "agent_activity", version: 1, actions: [],
+      data: {
+        summary: "Finished", modelPassCount: 0, totalMs: 100, steps: [],
+        metrics: {
+          modelPasses: 0, providerRequestCount: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0,
+          modelDurationMs: null, firstModelTimeToFirstTokenMs: null, costUsd: null, costCoverage: 0,
+          requestUsage: { coverage, requestCount: coverage === "not_used" ? 0 : 2,
+            reportedRequests: totalTokens === 60 ? 1 : 0, totalTokens,
+            inputTokens: totalTokens === 60 ? 50 : null, outputTokens: totalTokens === 60 ? 10 : null },
+        },
+      },
+    };
+    render(<WidgetRenderer widget={widget} onAction={() => undefined} />);
+    const button = screen.getByRole("button");
+    expect(Boolean(within(button).queryByText("Usage incomplete"))).toBe(incomplete);
+    fireEvent.click(button);
+    const details = screen.getByTestId("agent-run-metrics");
+    expect(details).toHaveTextContent(String(text));
+    if (totalTokens === null) expect(details).not.toHaveTextContent("0 tokens");
+  });
+
   it("starts with one reasoning line and expands to the complete multiline transcript", () => {
     const widget: Widget = {
       id: "finished-run",

@@ -91,6 +91,37 @@ export const AgentModelPassMetrics = z.looseObject({
   "timeToFirstTokenMs": z.union([z.number().min(0), z.null()]).default(null),
   "costUsd": z.union([z.number().min(0), z.null()]).default(null),
 });
+export const AgentUsageAttempt = z.looseObject({
+  "inputTokens": z.union([z.int().min(0), z.null()]).default(null),
+  "outputTokens": z.union([z.int().min(0), z.null()]).default(null),
+  "totalTokens": z.union([z.int().min(0), z.null()]).default(null),
+  "cacheReadTokens": z.union([z.int().min(0), z.null()]).default(null),
+  "cacheWriteTokens": z.union([z.int().min(0), z.null()]).default(null),
+  "reasoningTokens": z.union([z.int().min(0), z.null()]).default(null),
+  "attemptId": z.string(),
+  "stage": z.string(),
+  "operation": z.enum(["responses", "embeddings"]),
+  "provider": z.string(),
+  "model": z.string(),
+  "status": z.enum(["started", "completed", "failed", "incomplete", "cancelled"]),
+  "startedAt": z.string(),
+  "requestId": z.union([z.string(), z.null()]).default(null),
+  "responseId": z.union([z.string(), z.null()]).default(null),
+  "durationMs": z.union([z.number().min(0), z.null()]).default(null),
+});
+export const AgentRequestUsage = z.looseObject({
+  "inputTokens": z.union([z.int().min(0), z.null()]).default(null),
+  "outputTokens": z.union([z.int().min(0), z.null()]).default(null),
+  "totalTokens": z.union([z.int().min(0), z.null()]).default(null),
+  "cacheReadTokens": z.union([z.int().min(0), z.null()]).default(null),
+  "cacheWriteTokens": z.union([z.int().min(0), z.null()]).default(null),
+  "reasoningTokens": z.union([z.int().min(0), z.null()]).default(null),
+  "coverage": z.enum(["complete", "partial", "unavailable", "not_used", "interrupted"]),
+  "historyComplete": z.boolean().default(true),
+  "requestCount": z.int().min(0),
+  "reportedRequests": z.int().min(0),
+  "requests": z.array(AgentUsageAttempt),
+});
 export const AgentServerTimingMetrics = z.looseObject({
   "queueWaitMs": z.union([z.number().min(0), z.null()]).default(null),
   "startedToFirstActivityMs": z.union([z.number().min(0), z.null()]).default(null),
@@ -117,6 +148,7 @@ export const AgentRunMetrics = z.looseObject({
   "costUsd": z.union([z.number().min(0), z.null()]).default(null),
   "costCoverage": z.number().min(0).max(1).default(0),
   "passes": z.array(AgentModelPassMetrics).optional(),
+  "requestUsage": z.union([AgentRequestUsage, z.null()]).default(null),
   "server": z.union([AgentServerTimingMetrics, z.null()]).default(null),
   "client": z.union([AgentClientTimingMetrics, z.null()]).default(null),
 });
@@ -270,6 +302,14 @@ export const AgentThreadStateOut = z.looseObject({
   "activeRun": z.union([AgentRunOut, z.null()]).default(null),
   "latestRun": z.union([AgentRunOut, z.null()]).default(null),
   "interrupts": z.array(AgentInterruptOut).optional(),
+});
+export const AgentTokenUsage = z.looseObject({
+  "inputTokens": z.union([z.int().min(0), z.null()]).default(null),
+  "outputTokens": z.union([z.int().min(0), z.null()]).default(null),
+  "totalTokens": z.union([z.int().min(0), z.null()]).default(null),
+  "cacheReadTokens": z.union([z.int().min(0), z.null()]).default(null),
+  "cacheWriteTokens": z.union([z.int().min(0), z.null()]).default(null),
+  "reasoningTokens": z.union([z.int().min(0), z.null()]).default(null),
 });
 export const FeatureAvailabilityOut = z.looseObject({
   "personalLending": z.boolean(),
@@ -1371,13 +1411,16 @@ export const schemas = {
   AgentModelPassMetrics,
   AgentModelSet,
   AgentProviderRequestMetrics,
+  AgentRequestUsage,
   AgentResponse,
   AgentRunMetrics,
   AgentRunOut,
   AgentServerTimingMetrics,
   AgentSettingsOut,
   AgentThreadStateOut,
+  AgentTokenUsage,
   AgentToolCallMetrics,
+  AgentUsageAttempt,
   AuthStatusOut,
   AvoidableExpensesData,
   BootstrapResponse,

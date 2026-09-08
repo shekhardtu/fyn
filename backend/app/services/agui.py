@@ -57,7 +57,8 @@ from .agent_run_metrics import (
     agent_metric_snapshot,
     begin_agent_metric_collection,
     end_agent_metric_collection,
-    non_overlapping_model_duration_ms,
+    interrupt_request_usage,
+    merge_agent_metric_snapshots,
 )
 from .agent_enrichment import enqueue_related_questions
 from .conversation import (
@@ -198,37 +199,7 @@ def _model_pass_count(steps: list[dict[str, Any]]) -> int:
 
 
 def _merge_metric_snapshots(base: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
-    """Join pre-restart and resumed model-pass evidence without estimates."""
-    passes = [*(base.get("passes") or []), *(extra.get("passes") or [])]
-    costs = [item.get("costUsd") for item in passes if item.get("costUsd") is not None]
-    first_token = base.get("firstModelTimeToFirstTokenMs")
-    if first_token is None:
-        first_token = extra.get("firstModelTimeToFirstTokenMs")
-    merged = {
-        "source": "agno_run_output",
-        "modelPasses": len(passes),
-        "providerRequestCount": sum(
-            len(item.get("providerRequests") or []) for item in passes
-        ),
-        "inputTokens": sum(int(item.get("inputTokens") or 0) for item in passes),
-        "outputTokens": sum(int(item.get("outputTokens") or 0) for item in passes),
-        "totalTokens": sum(int(item.get("totalTokens") or 0) for item in passes),
-        "cacheReadTokens": sum(int(item.get("cacheReadTokens") or 0) for item in passes),
-        "cacheWriteTokens": sum(int(item.get("cacheWriteTokens") or 0) for item in passes),
-        "reasoningTokens": sum(int(item.get("reasoningTokens") or 0) for item in passes),
-        "modelDurationMs": non_overlapping_model_duration_ms(passes),
-        "firstModelTimeToFirstTokenMs": first_token,
-        "costUsd": round(sum(float(value) for value in costs), 10) if passes and len(costs) == len(passes) else None,
-        "costCoverage": round(len(costs) / len(passes), 4) if passes else 0.0,
-        "passes": passes,
-    }
-    # Browser and lifecycle telemetry are independent of provider passes and
-    # must survive worker recovery without being interpreted or recomputed.
-    for key in ("server", "client", "rollouts"):
-        value = extra.get(key) or base.get(key)
-        if value is not None:
-            merged[key] = value
-    return merged
+    return merge_agent_metric_snapshots(base, extra)
 
 
 def _agent_metric_snapshot(user_id: UUID) -> dict[str, Any]:
@@ -2157,7 +2128,9 @@ def execute_run(
             failure_stage="provider",
             error_code=error.code,
         )
-        publisher.emit(RunErrorEvent(message=str(error), code=error.code, timestamp=timestamp_ms()))
+        usage = _agent_metric_snapshot(user_id)["requestUsage"]
+        notice = " Token usage is incomplete for this request." if usage["coverage"] in {"partial", "unavailable", "interrupted"} else ""
+        publisher.emit(RunErrorEvent(message=str(error) + notice, code=error.code, timestamp=timestamp_ms()))
         finish(AgentRunStatus.FAILED, error_code=error.code)
     except AgentExecutionError as error:
         publisher.bind_task_outcome("failed", failure_stage=error.failure_stage, error_code=error.code)
@@ -2313,7 +2286,7 @@ def claim_agent_recovery_work(
             sequence = run.last_sequence + 1
             payload = event_payload(
                 RunErrorEvent(
-                    message="fyn AI stopped because the server restarted. No operation was replayed.",
+                    message="fyn AI stopped because the server restarted. No operation was replayed. Token usage may be incomplete.",
                     code="server_restart",
                     timestamp=timestamp_ms(),
                 )
@@ -2332,6 +2305,7 @@ def claim_agent_recovery_work(
             run.failure_stage = "transport"
             run.finished_at = now
             run.error_code = "server_restart"
+            run.metrics = interrupt_request_usage(run.metrics or {})
             run.recovery_phase = None
             run.recovery_payload = {}
             run.recovery_claimed_at = None

@@ -19,10 +19,12 @@ from __future__ import annotations
 import json
 import math
 import re
+import time
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
-from openai import OpenAI
+from openai import APIConnectionError, APIStatusError, OpenAI
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -31,6 +33,8 @@ from ..domain import AnalysisToolStatus
 from ..models import AnalysisToolTemplate, UserAnalysisTool
 from .manifest import native_manifest_fingerprint
 from .semantic_registry import semantic_schema_registry
+from .agent_run_metrics import ProviderUsageAttempt, provider_usage_stage
+from .provider_errors import ProviderUnavailableError
 
 
 # v3: visualization specifications were removed from the plan grammar — every
@@ -154,11 +158,7 @@ def _ensure_embeddings(
             if not template.retrieval_embedding or template.retrieval_embedding_model != settings.embedding_model
         ]
         inputs = [prompt, *[_retrieval_document(template) for template in missing]]
-        response = OpenAI(api_key=settings.openai_api_key, timeout=15, max_retries=1).embeddings.create(
-            model=settings.embedding_model,
-            input=inputs,
-            dimensions=512,
-        )
+        response = _create_embeddings(inputs, settings)
         template_embeddings = response.data[1:]
         if len(template_embeddings) != len(missing):
             raise ValueError("Embedding response did not match the template batch")
@@ -168,6 +168,31 @@ def _ensure_embeddings(
         return response.data[0].embedding
     except Exception:
         return None
+
+
+def _create_embeddings(inputs: list[str], settings: Any) -> Any:
+    # Retain one bounded transient retry, but expose each HTTP attempt and never
+    # retry billing/auth failures. Hidden SDK retries cannot be accounted for.
+    with OpenAI(api_key=settings.openai_api_key, timeout=15, max_retries=0) as client:
+        with provider_usage_stage("template_embedding"):
+            for index in range(2):
+                attempt = ProviderUsageAttempt(settings.embedding_model, "embeddings")
+                try:
+                    response = client.embeddings.create(model=settings.embedding_model, input=inputs, dimensions=512)
+                    attempt.observe(response)
+                    attempt.finish()
+                    return response
+                except (APIConnectionError, APIStatusError) as error:
+                    attempt.finish(error)
+                    status = getattr(error, "status_code", None)
+                    transient = isinstance(error, APIConnectionError) or status in {408, 409, 429} or (status is not None and status >= 500)
+                    if index or not transient or not ProviderUnavailableError.from_error(error).retryable:
+                        raise
+                    time.sleep(0.5)
+                except BaseException as error:
+                    attempt.finish(error)
+                    raise
+    raise RuntimeError("Embedding attempts exhausted")
 
 
 def _cosine_ranking(prompt_embedding: list[float], templates: list[AnalysisToolTemplate]) -> list[UUID]:

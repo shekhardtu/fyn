@@ -76,6 +76,11 @@ checks are still release steps, not claimed as completed here.
 
 ## Remaining work (separate batches)
 
+Follow-up implementation: [provider usage RCA](PROVIDER_USAGE_RCA.md) now covers
+native request capture, retry accumulation and client coverage indicators in a
+separate branch. Release and hard-crash/provider-billing reconciliation remain
+pending; the original plan below is retained as incident history.
+
 Request-level usage accounting remains incomplete. Completed-run aggregates are
 not an authoritative provider billing ledger, especially when a later request
 fails. Implement this separately:

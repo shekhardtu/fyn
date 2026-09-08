@@ -6999,6 +6999,554 @@
       "title": "AgentProviderRequestMetrics",
       "type": "object"
     },
+    "AgentTokenUsage": {
+      "description": "Provider-reported counters; null means unknown, never zero billing.",
+      "properties": {
+        "inputTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Inputtokens"
+        },
+        "outputTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Outputtokens"
+        },
+        "totalTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Totaltokens"
+        },
+        "cacheReadTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cachereadtokens"
+        },
+        "cacheWriteTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cachewritetokens"
+        },
+        "reasoningTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reasoningtokens"
+        }
+      },
+      "title": "AgentTokenUsage",
+      "type": "object"
+    },
+    "AgentUsageAttempt": {
+      "properties": {
+        "inputTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Inputtokens"
+        },
+        "outputTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Outputtokens"
+        },
+        "totalTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Totaltokens"
+        },
+        "cacheReadTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cachereadtokens"
+        },
+        "cacheWriteTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cachewritetokens"
+        },
+        "reasoningTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reasoningtokens"
+        },
+        "attemptId": {
+          "title": "Attemptid",
+          "type": "string"
+        },
+        "stage": {
+          "title": "Stage",
+          "type": "string"
+        },
+        "operation": {
+          "enum": [
+            "responses",
+            "embeddings"
+          ],
+          "title": "Operation",
+          "type": "string"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "started",
+            "completed",
+            "failed",
+            "incomplete",
+            "cancelled"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "startedAt": {
+          "title": "Startedat",
+          "type": "string"
+        },
+        "requestId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Requestid"
+        },
+        "responseId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Responseid"
+        },
+        "durationMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Durationms"
+        }
+      },
+      "required": [
+        "attemptId",
+        "stage",
+        "operation",
+        "provider",
+        "model",
+        "status",
+        "startedAt"
+      ],
+      "title": "AgentUsageAttempt",
+      "type": "object"
+    },
+    "AgentRequestUsage": {
+      "$defs": {
+        "AgentUsageAttempt": {
+          "properties": {
+            "inputTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Inputtokens"
+            },
+            "outputTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Outputtokens"
+            },
+            "totalTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Totaltokens"
+            },
+            "cacheReadTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cachereadtokens"
+            },
+            "cacheWriteTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cachewritetokens"
+            },
+            "reasoningTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reasoningtokens"
+            },
+            "attemptId": {
+              "title": "Attemptid",
+              "type": "string"
+            },
+            "stage": {
+              "title": "Stage",
+              "type": "string"
+            },
+            "operation": {
+              "enum": [
+                "responses",
+                "embeddings"
+              ],
+              "title": "Operation",
+              "type": "string"
+            },
+            "provider": {
+              "title": "Provider",
+              "type": "string"
+            },
+            "model": {
+              "title": "Model",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "started",
+                "completed",
+                "failed",
+                "incomplete",
+                "cancelled"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "startedAt": {
+              "title": "Startedat",
+              "type": "string"
+            },
+            "requestId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Requestid"
+            },
+            "responseId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Responseid"
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Durationms"
+            }
+          },
+          "required": [
+            "attemptId",
+            "stage",
+            "operation",
+            "provider",
+            "model",
+            "status",
+            "startedAt"
+          ],
+          "title": "AgentUsageAttempt",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "inputTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Inputtokens"
+        },
+        "outputTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Outputtokens"
+        },
+        "totalTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Totaltokens"
+        },
+        "cacheReadTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cachereadtokens"
+        },
+        "cacheWriteTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cachewritetokens"
+        },
+        "reasoningTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reasoningtokens"
+        },
+        "coverage": {
+          "enum": [
+            "complete",
+            "partial",
+            "unavailable",
+            "not_used",
+            "interrupted"
+          ],
+          "title": "Coverage",
+          "type": "string"
+        },
+        "historyComplete": {
+          "default": true,
+          "title": "Historycomplete",
+          "type": "boolean"
+        },
+        "requestCount": {
+          "minimum": 0,
+          "title": "Requestcount",
+          "type": "integer"
+        },
+        "reportedRequests": {
+          "minimum": 0,
+          "title": "Reportedrequests",
+          "type": "integer"
+        },
+        "requests": {
+          "items": {
+            "$ref": "#/$defs/AgentUsageAttempt"
+          },
+          "title": "Requests",
+          "type": "array"
+        }
+      },
+      "required": [
+        "coverage",
+        "requestCount",
+        "reportedRequests",
+        "requests"
+      ],
+      "title": "AgentRequestUsage",
+      "type": "object"
+    },
     "AgentModelPassMetrics": {
       "$defs": {
         "AgentProviderRequestMetrics": {
@@ -8017,6 +8565,129 @@
           "title": "AgentProviderRequestMetrics",
           "type": "object"
         },
+        "AgentRequestUsage": {
+          "properties": {
+            "inputTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Inputtokens"
+            },
+            "outputTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Outputtokens"
+            },
+            "totalTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Totaltokens"
+            },
+            "cacheReadTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cachereadtokens"
+            },
+            "cacheWriteTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cachewritetokens"
+            },
+            "reasoningTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reasoningtokens"
+            },
+            "coverage": {
+              "enum": [
+                "complete",
+                "partial",
+                "unavailable",
+                "not_used",
+                "interrupted"
+              ],
+              "title": "Coverage",
+              "type": "string"
+            },
+            "historyComplete": {
+              "default": true,
+              "title": "Historycomplete",
+              "type": "boolean"
+            },
+            "requestCount": {
+              "minimum": 0,
+              "title": "Requestcount",
+              "type": "integer"
+            },
+            "reportedRequests": {
+              "minimum": 0,
+              "title": "Reportedrequests",
+              "type": "integer"
+            },
+            "requests": {
+              "items": {
+                "$ref": "#/$defs/AgentUsageAttempt"
+              },
+              "title": "Requests",
+              "type": "array"
+            }
+          },
+          "required": [
+            "coverage",
+            "requestCount",
+            "reportedRequests",
+            "requests"
+          ],
+          "title": "AgentRequestUsage",
+          "type": "object"
+        },
         "AgentServerTimingMetrics": {
           "description": "Elapsed server timings calculated without storing request content.",
           "properties": {
@@ -8168,6 +8839,175 @@
           ],
           "title": "AgentToolCallMetrics",
           "type": "object"
+        },
+        "AgentUsageAttempt": {
+          "properties": {
+            "inputTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Inputtokens"
+            },
+            "outputTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Outputtokens"
+            },
+            "totalTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Totaltokens"
+            },
+            "cacheReadTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cachereadtokens"
+            },
+            "cacheWriteTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cachewritetokens"
+            },
+            "reasoningTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reasoningtokens"
+            },
+            "attemptId": {
+              "title": "Attemptid",
+              "type": "string"
+            },
+            "stage": {
+              "title": "Stage",
+              "type": "string"
+            },
+            "operation": {
+              "enum": [
+                "responses",
+                "embeddings"
+              ],
+              "title": "Operation",
+              "type": "string"
+            },
+            "provider": {
+              "title": "Provider",
+              "type": "string"
+            },
+            "model": {
+              "title": "Model",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "started",
+                "completed",
+                "failed",
+                "incomplete",
+                "cancelled"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "startedAt": {
+              "title": "Startedat",
+              "type": "string"
+            },
+            "requestId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Requestid"
+            },
+            "responseId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Responseid"
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Durationms"
+            }
+          },
+          "required": [
+            "attemptId",
+            "stage",
+            "operation",
+            "provider",
+            "model",
+            "status",
+            "startedAt"
+          ],
+          "title": "AgentUsageAttempt",
+          "type": "object"
         }
       },
       "properties": {
@@ -8277,6 +9117,17 @@
           },
           "title": "Passes",
           "type": "array"
+        },
+        "requestUsage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentRequestUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "server": {
           "anyOf": [
@@ -8677,6 +9528,129 @@
           "title": "AgentProviderRequestMetrics",
           "type": "object"
         },
+        "AgentRequestUsage": {
+          "properties": {
+            "inputTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Inputtokens"
+            },
+            "outputTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Outputtokens"
+            },
+            "totalTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Totaltokens"
+            },
+            "cacheReadTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cachereadtokens"
+            },
+            "cacheWriteTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cachewritetokens"
+            },
+            "reasoningTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reasoningtokens"
+            },
+            "coverage": {
+              "enum": [
+                "complete",
+                "partial",
+                "unavailable",
+                "not_used",
+                "interrupted"
+              ],
+              "title": "Coverage",
+              "type": "string"
+            },
+            "historyComplete": {
+              "default": true,
+              "title": "Historycomplete",
+              "type": "boolean"
+            },
+            "requestCount": {
+              "minimum": 0,
+              "title": "Requestcount",
+              "type": "integer"
+            },
+            "reportedRequests": {
+              "minimum": 0,
+              "title": "Reportedrequests",
+              "type": "integer"
+            },
+            "requests": {
+              "items": {
+                "$ref": "#/$defs/AgentUsageAttempt"
+              },
+              "title": "Requests",
+              "type": "array"
+            }
+          },
+          "required": [
+            "coverage",
+            "requestCount",
+            "reportedRequests",
+            "requests"
+          ],
+          "title": "AgentRequestUsage",
+          "type": "object"
+        },
         "AgentRunMetrics": {
           "properties": {
             "source": {
@@ -8785,6 +9759,17 @@
               },
               "title": "Passes",
               "type": "array"
+            },
+            "requestUsage": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AgentRequestUsage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             },
             "server": {
               "anyOf": [
@@ -8962,6 +9947,175 @@
             "name"
           ],
           "title": "AgentToolCallMetrics",
+          "type": "object"
+        },
+        "AgentUsageAttempt": {
+          "properties": {
+            "inputTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Inputtokens"
+            },
+            "outputTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Outputtokens"
+            },
+            "totalTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Totaltokens"
+            },
+            "cacheReadTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cachereadtokens"
+            },
+            "cacheWriteTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cachewritetokens"
+            },
+            "reasoningTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reasoningtokens"
+            },
+            "attemptId": {
+              "title": "Attemptid",
+              "type": "string"
+            },
+            "stage": {
+              "title": "Stage",
+              "type": "string"
+            },
+            "operation": {
+              "enum": [
+                "responses",
+                "embeddings"
+              ],
+              "title": "Operation",
+              "type": "string"
+            },
+            "provider": {
+              "title": "Provider",
+              "type": "string"
+            },
+            "model": {
+              "title": "Model",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "started",
+                "completed",
+                "failed",
+                "incomplete",
+                "cancelled"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "startedAt": {
+              "title": "Startedat",
+              "type": "string"
+            },
+            "requestId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Requestid"
+            },
+            "responseId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Responseid"
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Durationms"
+            }
+          },
+          "required": [
+            "attemptId",
+            "stage",
+            "operation",
+            "provider",
+            "model",
+            "status",
+            "startedAt"
+          ],
+          "title": "AgentUsageAttempt",
           "type": "object"
         },
         "WidgetLifecycle": {
@@ -13231,6 +14385,129 @@
           "title": "AgentProviderRequestMetrics",
           "type": "object"
         },
+        "AgentRequestUsage": {
+          "properties": {
+            "inputTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Inputtokens"
+            },
+            "outputTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Outputtokens"
+            },
+            "totalTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Totaltokens"
+            },
+            "cacheReadTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cachereadtokens"
+            },
+            "cacheWriteTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cachewritetokens"
+            },
+            "reasoningTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reasoningtokens"
+            },
+            "coverage": {
+              "enum": [
+                "complete",
+                "partial",
+                "unavailable",
+                "not_used",
+                "interrupted"
+              ],
+              "title": "Coverage",
+              "type": "string"
+            },
+            "historyComplete": {
+              "default": true,
+              "title": "Historycomplete",
+              "type": "boolean"
+            },
+            "requestCount": {
+              "minimum": 0,
+              "title": "Requestcount",
+              "type": "integer"
+            },
+            "reportedRequests": {
+              "minimum": 0,
+              "title": "Reportedrequests",
+              "type": "integer"
+            },
+            "requests": {
+              "items": {
+                "$ref": "#/$defs/AgentUsageAttempt"
+              },
+              "title": "Requests",
+              "type": "array"
+            }
+          },
+          "required": [
+            "coverage",
+            "requestCount",
+            "reportedRequests",
+            "requests"
+          ],
+          "title": "AgentRequestUsage",
+          "type": "object"
+        },
         "AgentRunMetrics": {
           "properties": {
             "source": {
@@ -13339,6 +14616,17 @@
               },
               "title": "Passes",
               "type": "array"
+            },
+            "requestUsage": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AgentRequestUsage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             },
             "server": {
               "anyOf": [
@@ -13516,6 +14804,175 @@
             "name"
           ],
           "title": "AgentToolCallMetrics",
+          "type": "object"
+        },
+        "AgentUsageAttempt": {
+          "properties": {
+            "inputTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Inputtokens"
+            },
+            "outputTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Outputtokens"
+            },
+            "totalTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Totaltokens"
+            },
+            "cacheReadTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cachereadtokens"
+            },
+            "cacheWriteTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cachewritetokens"
+            },
+            "reasoningTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reasoningtokens"
+            },
+            "attemptId": {
+              "title": "Attemptid",
+              "type": "string"
+            },
+            "stage": {
+              "title": "Stage",
+              "type": "string"
+            },
+            "operation": {
+              "enum": [
+                "responses",
+                "embeddings"
+              ],
+              "title": "Operation",
+              "type": "string"
+            },
+            "provider": {
+              "title": "Provider",
+              "type": "string"
+            },
+            "model": {
+              "title": "Model",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "started",
+                "completed",
+                "failed",
+                "incomplete",
+                "cancelled"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "startedAt": {
+              "title": "Startedat",
+              "type": "string"
+            },
+            "requestId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Requestid"
+            },
+            "responseId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Responseid"
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Durationms"
+            }
+          },
+          "required": [
+            "attemptId",
+            "stage",
+            "operation",
+            "provider",
+            "model",
+            "status",
+            "startedAt"
+          ],
+          "title": "AgentUsageAttempt",
           "type": "object"
         }
       },
@@ -14116,6 +15573,129 @@
           "title": "AgentProviderRequestMetrics",
           "type": "object"
         },
+        "AgentRequestUsage": {
+          "properties": {
+            "inputTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Inputtokens"
+            },
+            "outputTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Outputtokens"
+            },
+            "totalTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Totaltokens"
+            },
+            "cacheReadTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cachereadtokens"
+            },
+            "cacheWriteTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cachewritetokens"
+            },
+            "reasoningTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reasoningtokens"
+            },
+            "coverage": {
+              "enum": [
+                "complete",
+                "partial",
+                "unavailable",
+                "not_used",
+                "interrupted"
+              ],
+              "title": "Coverage",
+              "type": "string"
+            },
+            "historyComplete": {
+              "default": true,
+              "title": "Historycomplete",
+              "type": "boolean"
+            },
+            "requestCount": {
+              "minimum": 0,
+              "title": "Requestcount",
+              "type": "integer"
+            },
+            "reportedRequests": {
+              "minimum": 0,
+              "title": "Reportedrequests",
+              "type": "integer"
+            },
+            "requests": {
+              "items": {
+                "$ref": "#/$defs/AgentUsageAttempt"
+              },
+              "title": "Requests",
+              "type": "array"
+            }
+          },
+          "required": [
+            "coverage",
+            "requestCount",
+            "reportedRequests",
+            "requests"
+          ],
+          "title": "AgentRequestUsage",
+          "type": "object"
+        },
         "AgentRunMetrics": {
           "properties": {
             "source": {
@@ -14224,6 +15804,17 @@
               },
               "title": "Passes",
               "type": "array"
+            },
+            "requestUsage": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AgentRequestUsage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             },
             "server": {
               "anyOf": [
@@ -14549,6 +16140,175 @@
             "name"
           ],
           "title": "AgentToolCallMetrics",
+          "type": "object"
+        },
+        "AgentUsageAttempt": {
+          "properties": {
+            "inputTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Inputtokens"
+            },
+            "outputTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Outputtokens"
+            },
+            "totalTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Totaltokens"
+            },
+            "cacheReadTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cachereadtokens"
+            },
+            "cacheWriteTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cachewritetokens"
+            },
+            "reasoningTokens": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reasoningtokens"
+            },
+            "attemptId": {
+              "title": "Attemptid",
+              "type": "string"
+            },
+            "stage": {
+              "title": "Stage",
+              "type": "string"
+            },
+            "operation": {
+              "enum": [
+                "responses",
+                "embeddings"
+              ],
+              "title": "Operation",
+              "type": "string"
+            },
+            "provider": {
+              "title": "Provider",
+              "type": "string"
+            },
+            "model": {
+              "title": "Model",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "started",
+                "completed",
+                "failed",
+                "incomplete",
+                "cancelled"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "startedAt": {
+              "title": "Startedat",
+              "type": "string"
+            },
+            "requestId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Requestid"
+            },
+            "responseId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Responseid"
+            },
+            "durationMs": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Durationms"
+            }
+          },
+          "required": [
+            "attemptId",
+            "stage",
+            "operation",
+            "provider",
+            "model",
+            "status",
+            "startedAt"
+          ],
+          "title": "AgentUsageAttempt",
           "type": "object"
         }
       },
@@ -19490,5 +21250,5 @@
     "approve_operation": "OperationActionPayload",
     "cancel_operation": "OperationActionPayload"
   },
-  "schemaHash": "3fb877b885ea6967b31927a689c74efd34badf184446c8062fba99d43cdfdea9"
+  "schemaHash": "5f7371e28ee7fbdf3eb4132fbbc5f1f1f0bc766b5a6c7be1f1021db87b3da8c2"
 }
