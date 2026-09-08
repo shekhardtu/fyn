@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -93,3 +93,13 @@ def create_account(request: AccountCreateIn, db: Session = Depends(get_db), user
         raise _failure(error) from error
     db.commit()
     return account
+
+
+@router.delete("/accounts/{account_id}", status_code=204)
+def delete_account(account_id: UUID, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    try:
+        finance_setup.delete_account(db, user, account_id)
+    except LookupError as error:
+        raise _failure(error) from error
+    db.commit()
+    return Response(status_code=204)
