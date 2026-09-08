@@ -19,6 +19,7 @@ _FINANCIAL_READ_VERB = re.compile(
 )
 _FINANCIAL_READ_REQUEST = re.compile(
     r"(?:^\s*|(?:[,;]|\band\b|\bthen\b)\s*)"
+    r"(?:(?:similarly|likewise)[, ]+)?"
     r"(?:(?:can|could|would)\s+you\s+)?(?:please\s+)?"
     r"(?:show|list|find|display|filter|summarize|analyse|analyze|compare|calculate|"
     r"review|estimate|project|forecast)\b",
@@ -37,7 +38,7 @@ _MUTATION_VERB = r"(?:add|change|correct|create|delete|edit|enter|log|make|recor
 # A command prefix is an instruction to the assistant, not a capability
 # question ("can I"), a future intention ("I will"), or a quoted verb.
 _REQUEST_PREFIX = (
-    r"^\s*(?:(?:okay|ok)[, ]+)?(?:please\s+)?"
+    r"^\s*(?:(?:similarly|likewise)[, ]+)?(?:(?:okay|ok)[, ]+)?(?:please\s+)?"
     r"(?:(?:let['’]s|let\s+us)\s+|(?:can|could|would)\s+you\s+(?:please\s+)?|"
     r"i\s+(?:want|need|would\s+like)\s+to\s+)?"
 )

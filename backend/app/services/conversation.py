@@ -76,11 +76,11 @@ from ..operations.execution import (
     resolve_current_operation,
     validate_operation_inputs,
 )
-from .finance_time import ambiguous_numeric_date_options, month_bounds, shift_month
+from .finance_time import DateOption, ambiguous_numeric_date_options, month_bounds, resolve_transaction_date, shift_month
 from .analysis_tools import AnalysisToolContext, build_analysis_tools
 from .intelligence import expense_summary
 from .markdown_views import join_blocks, markdown_section, markdown_table, money
-from .accounts import AccountRepository
+from .accounts import AccountRepository, account_name_key
 from .adapters import import_summary
 from .agents import GROUPED_QUERY_OPERATIONS, RECENT_CONTEXT_TURN_LIMIT, STANDALONE_RECENT_CONTEXT_TURN_LIMIT, ClarificationOption, ClarificationRequest, CompilationAssumption, CopilotDecision, QueryInterpretation, ResolvedIntentContract, TaxonomyInterpretation, build_analysis_delegate_tool, contains_internal_analysis_diagnostic, filesystem_operation_decision, releases_prior_scope, repair_grounded_answer, run_operator, suggest_related_questions
 from .analysis_sandbox import PYTHON_TOOL_NAME
@@ -105,6 +105,7 @@ from .continuations import (
     GovernedGoalContinuation,
     GovernedQueryContinuation,
     GovernedTaxonomyContinuation,
+    GovernedTransactionDateContinuation,
     LegacyPromptContinuation,
     parse_clarification_transition,
 )
@@ -1165,6 +1166,8 @@ _TRANSACTION_CLARIFICATION_FIELDS = {
     "category": "category",
     "category_slug": "category",
     "currency": "currency",
+    "date": "transaction_date",
+    "transaction_date": "transaction_date",
     "destination": "destination_account",
     "destination_account": "destination_account",
     "financial_direction": "transaction_type",
@@ -1237,6 +1240,8 @@ def _transaction_clarification_seed(
     # exact HITL boundary the user still needs to resolve.
     if "amount" in conflict_fields:
         extracted.amount_minor = None
+    if "transaction_date" in conflict_fields:
+        extracted.transaction_date = None
     if "transaction_type" in conflict_fields:
         extracted.transaction_type = TransactionType.UNKNOWN
         extracted.category_slug = None
@@ -1262,6 +1267,8 @@ def _transaction_clarification_seed(
     missing_fields = []
     if extracted.amount_minor is None:
         missing_fields.append("amount")
+    if extracted.transaction_date is None:
+        missing_fields.append("transaction_date")
     if extracted.transaction_type == TransactionType.UNKNOWN:
         missing_fields.append("transaction_type")
     if extracted.transaction_type == TransactionType.EXPENSE:
@@ -1286,6 +1293,7 @@ def _clarification_response(
     *,
     custom_budget: BudgetSetupSeed | None = None,
     custom_goal: GoalAmountSeed | None = None,
+    transaction_dates: tuple[DateOption, ...] | None = None,
 ) -> AgentResponse:
     """Persist a generic, resumable ambiguity instead of guessing."""
     clarification_id = uuid4()
@@ -1364,7 +1372,10 @@ def _clarification_response(
             option.resolution,
         )
         transition: ClarificationTransition
-        if option.disposition == "cancel":
+        if transaction_dates is not None:
+            event_date = next(item for item in transaction_dates if item.id == option.id)
+            transition = GovernedTransactionDateContinuation(label=option.label, transaction_date=event_date.start_date)
+        elif option.disposition == "cancel":
             transition = CancelContinuation(label=option.label)
         elif option.taxonomy is not None:
             transition = GovernedTaxonomyContinuation(
@@ -1388,6 +1399,9 @@ def _clarification_response(
         options=transitions,
         allow_custom=clarification.allow_custom,
         custom_strategy=(
+            "transaction_date"
+            if transaction_dates is not None
+            else
             "budget_amount"
             if custom_budget is not None
             else "goal_amount"
@@ -1718,8 +1732,24 @@ def _subcategory_selector(db: Session, draft: TransactionDraft) -> Widget:
     )
 
 
+def _account_is_other_side(draft: TransactionDraft, role: str, account_id: UUID | None, name: str | None) -> bool:
+    if role not in {"source_account", "destination_account"}:
+        raise ValueError("Unknown account role")
+    other_id, other_name = (
+        (draft.destination_account_id, draft.destination_account_name)
+        if role == "source_account" else (draft.account_id, draft.source_account_name)
+    )
+    return bool(
+        (account_id is not None and account_id == other_id)
+        or (account_name_key(name) and account_name_key(name) == account_name_key(other_name))
+    )
+
+
 def _account_selector(db: Session, draft: TransactionDraft, role: str) -> Widget:
-    accounts = list(db.scalars(select(Account).where(Account.user_id == draft.user_id).order_by(Account.name)))
+    accounts = [
+        account for account in db.scalars(select(Account).where(Account.user_id == draft.user_id).order_by(Account.name))
+        if not _account_is_other_side(draft, role, account.id, account.name)
+    ]
     title = "Which account did the money leave?" if role == "source_account" else "Which account received the money?"
     return Widget(
         id=f"account-{role}-{draft.id}-{uuid4()}",
@@ -1734,6 +1764,31 @@ def _account_selector(db: Session, draft: TransactionDraft, role: str) -> Widget
             ),
         ],
     )
+
+
+def _select_draft_account(
+    db: Session, user: User, conversation: Conversation, draft: TransactionDraft,
+    role: str, *, account_id: UUID | None = None, name: str = "",
+) -> AgentResponse:
+    # Validate before creating an account or changing either draft endpoint.
+    _account_is_other_side(draft, role, None, None)
+    repository = AccountRepository(db, user.id)
+    account = repository.get(Account, account_id) if account_id else repository.find_by_name(name)
+    if account_id is not None and account is None:
+        raise ValueError("Unknown account")
+    if _account_is_other_side(draft, role, account.id if account else None, account.name if account else name):
+        return persist_agent_response(
+            db, conversation,
+            "A transfer needs two different accounts. Choose a different account or change the other side.",
+            widgets=[_account_selector(db, draft, role)],
+            pending_action=PendingAction(action=WidgetActionId.SELECT_ACCOUNT, resource_id=str(draft.id)),
+        )
+    account = account or repository.get_or_create(name, draft.currency)
+    if role == "source_account":
+        draft.account_id, draft.source_account_name = account.id, account.name
+    else:
+        draft.destination_account_id, draft.destination_account_name = account.id, account.name
+    return _draft_or_commit(db, user, conversation, draft)
 
 
 def _transaction_type_selector(draft: TransactionDraft) -> Widget:
@@ -1808,7 +1863,10 @@ def _set_ready_if_complete(draft: TransactionDraft) -> None:
         missing.append("subcategory")
     if draft.transaction_type == TransactionType.TRANSFER and not draft.source_account_name:
         missing.append("source_account")
-    if draft.transaction_type == TransactionType.TRANSFER and not draft.destination_account_name:
+    if draft.transaction_type == TransactionType.TRANSFER and (
+        not draft.destination_account_name
+        or _account_is_other_side(draft, "destination_account", draft.destination_account_id, draft.destination_account_name)
+    ):
         missing.append("destination_account")
     draft.missing_fields = missing
     draft.state = DraftState.NEEDS_CLARIFICATION.value if missing else DraftState.READY_FOR_CONFIRMATION.value
@@ -1825,6 +1883,8 @@ def _create_draft(
 ) -> TransactionDraft:
     current = now_utc()
     result = result or extract_transaction(text, today=local_now(user.timezone, current=current).date(), default_currency=user.currency)
+    if "transaction_date" in result.missing_fields:
+        raise ValueError("An unresolved event date cannot become a transaction timestamp")
     transaction_at = resolve_event_time(
         day=result.transaction_date,
         clock=result.transaction_time,
@@ -1865,6 +1925,9 @@ def _create_draft(
         "origin": "explicit" if {"transaction_date", "transaction_time"} & explicit else "inferred",
         "confidence": float(result.confidence),
     }
+    for field in result.context_fields:
+        if field in provenance and field not in explicit and result.context_message_id is not None:
+            provenance[field] = {**provenance[field], "basis": "preceding_transaction", "sourceMessageId": result.context_message_id}
     inferred_fields = [
         field for field in result.inferred_fields
         if field not in {"transaction_date", "transaction_time", "timezone"}
@@ -1901,6 +1964,7 @@ def _create_draft(
     # what they just said in this message.
     if (
         allow_learned_taxonomy
+        and "category" not in result.context_fields
         and draft.transaction_type == TransactionType.EXPENSE.value
         and provenance.get("category", {}).get("origin") != "explicit"
     ):
@@ -2152,6 +2216,64 @@ def _transaction_ids_on_message(message: Message) -> list[UUID]:
         except ValueError:
             continue
     return list(dict.fromkeys(ids))
+
+
+def _similar_transaction_extraction(
+    db: Session, user: User, conversation: Conversation, text: str, today: date,
+    *, before_message: Message | None = None,
+) -> ExtractedTransaction | None:
+    """Bind an explicit new entry to one preceding, server-issued receipt.
+
+    Context supplies only direction/taxonomy. Amount, date, currency, merchant
+    and accounts must come from this turn (or their usual defaults), never an
+    old record or model-selected identity. Normal effect authorization still
+    runs after this extraction.
+    """
+    if (
+        not re.match(r"\s*(?:similarly|likewise)\b", text, re.I)
+        or not has_explicit_transaction_mutation_cue(text)
+        or looks_like_financial_query(text)
+        or _looks_like_planning_command(text)
+        or re.search(r"\b(?:edit|change|update|correct|replace|remove|delete|undo)\b", text, re.I)
+    ):
+        return None
+    result = extract_transaction(text, today=today, default_currency=user.currency)
+    if result.amount_minor is None:
+        return None
+    latest = db.scalar(select(Message).where(
+        Message.conversation_id == conversation.id, Message.role == "assistant",
+        Message.content != "", *_history_only(),
+        *((tuple_(Message.created_at, Message.id) < (before_message.created_at, before_message.id),) if before_message else ()),
+    ).order_by(Message.created_at.desc(), Message.id.desc()).limit(1))
+    ids = _transaction_ids_on_message(latest) if latest else []
+    previous = active_transaction(db, user.id, ids[0]) if len(ids) == 1 else None
+    if previous is None:
+        if "transaction_type" in result.inferred_fields:
+            result.transaction_type = TransactionType.UNKNOWN
+            result.category_slug = result.subcategory_slug = None
+        return result
+    _apply_explicit_taxonomy(db, user, text, result)
+    names_new_purpose = bool(re.search(r"\b(?:for|as|under|to)\s+", text, re.I))
+    if "transaction_type" in result.inferred_fields and not result.category_slug and not result.merchant and not names_new_purpose:
+        result.transaction_type = TransactionType(previous.transaction_type)
+        result.context_fields.append("transaction_type")
+    # Naming a new purpose/payee is not an instruction to reuse old taxonomy.
+    if (
+        result.transaction_type == previous.transaction_type
+        and result.transaction_type != TransactionType.UNKNOWN
+        and not result.category_slug
+        and not result.merchant
+        and not names_new_purpose
+    ):
+        category, subcategory = TaxonomyRepository(db, user.id).path(previous.category_id, previous.subcategory_id)
+        if category and category_slug_matches_transaction_type(result.transaction_type, category.slug):
+            result.category_slug = category.slug
+            result.subcategory_slug = subcategory.slug if subcategory else None
+            result.context_fields.extend(["category", *(("subcategory",) if subcategory else ())])
+    if result.context_fields and latest:
+        result.context_message_id = str(latest.id)
+        result.inferred_fields = list(dict.fromkeys([*result.inferred_fields, *result.context_fields]))
+    return result
 
 
 def _transaction_edit_targets(
@@ -2960,15 +3082,30 @@ def _extracted_from_decision(text: str, decision: CopilotDecision, today: date, 
     # deterministic parser read directly from the user's text to "inferred".
     explicit = interpreted_explicit | set(baseline.explicit_fields)
     transaction_type = interpreted.transaction_type
-    if transaction_type == TransactionType.UNKNOWN and "transaction_type" in baseline.explicit_fields:
+    if "transaction_type" in baseline.explicit_fields:
         transaction_type = baseline.transaction_type
+    elif baseline.transaction_type == TransactionType.UNKNOWN and baseline.amount_minor is not None:
+        transaction_type = TransactionType.UNKNOWN
+        explicit.discard("transaction_type")
     deterministic_amount = parse_amount_minor(text)
     amount_minor = deterministic_amount if deterministic_amount is not None else interpreted.amount_minor
-    transaction_date = interpreted.transaction_date or baseline.transaction_date or today
+    transaction_date = (
+        baseline.transaction_date
+        if "transaction_date" in baseline.explicit_fields or baseline.transaction_date is None
+        else interpreted.transaction_date or baseline.transaction_date
+    )
     merchant = interpreted.merchant or baseline.merchant
     normalized_text = normalize_merchant(text) or ""
     if merchant and (normalize_merchant(merchant) or "") not in normalized_text:
         merchant = baseline.merchant
+    account_names = {
+        "source_account": baseline.source_account or interpreted.source_account,
+        "destination_account": baseline.destination_account or interpreted.destination_account,
+    }
+    for field, name in account_names.items():
+        if transaction_type == TransactionType.UNKNOWN or (name and account_name_key(name) not in account_name_key(text)):
+            account_names[field] = None
+            explicit.discard(field)
     inferred_fields = []
     if "transaction_type" not in explicit:
         inferred_fields.append("transaction_type")
@@ -2995,6 +3132,10 @@ def _extracted_from_decision(text: str, decision: CopilotDecision, today: date, 
         inferred_fields.append("spend_nature")
     category_slug = interpreted.category_slug if "category" in interpreted_explicit else baseline.category_slug or interpreted.category_slug
     subcategory_slug = interpreted.subcategory_slug if "subcategory" in interpreted_explicit else baseline.subcategory_slug or interpreted.subcategory_slug
+    if transaction_type == TransactionType.UNKNOWN:
+        category_slug = subcategory_slug = None
+        explicit.difference_update(TAXONOMY_FIELDS)
+        explicit.difference_update({"source_account", "destination_account"})
     if not category_slug_matches_transaction_type(transaction_type, category_slug):
         # The deterministic path is the fallback authority when the model mixes
         # direction and taxonomy (for example income with Other/Other). If it
@@ -3016,8 +3157,8 @@ def _extracted_from_decision(text: str, decision: CopilotDecision, today: date, 
         # the user's default currency.
         currency=baseline.currency,
         merchant=merchant,
-        source_account=interpreted.source_account or baseline.source_account,
-        destination_account=interpreted.destination_account or baseline.destination_account,
+        source_account=account_names["source_account"],
+        destination_account=account_names["destination_account"],
         transaction_date=transaction_date,
         category_slug=category_slug,
         subcategory_slug=subcategory_slug,
@@ -3029,6 +3170,7 @@ def _extracted_from_decision(text: str, decision: CopilotDecision, today: date, 
         explicit_fields=list(explicit),
         confidence=Decimal(str(interpreted.confidence)),
         inferred_fields=inferred_fields,
+        missing_fields=["transaction_date"] if transaction_date is None else [],
     )
 
 
@@ -4093,7 +4235,7 @@ def _references_prior_analysis(text: str) -> bool:
         )
     references_analysis = bool(re.search(
         r"\b(?:those|these|them|that|same|shown|previous|earlier|former|latter)\b"
-        r"|^\s*(?:and|also|now|then|instead)\b"
+        r"|^\s*(?:and|also|now|then|instead|similarly|likewise)\b"
         r"|\b(?:what|how)\s+about\b",
         reference_text,
         re.I,
@@ -4326,7 +4468,6 @@ def _fast_path_decision(
         ), extracted
     if (
         extracted.amount_minor is not None
-        and extracted.transaction_type != TransactionType.UNKNOWN
         # A contextual write may inherit taxonomy, dates, or even the requested
         # effect. The stateless extractor cannot safely bind those dependencies,
         # but safe deterministic read routes below remain available.
@@ -4337,7 +4478,11 @@ def _fast_path_decision(
             text,
             re.I,
         )
-        and ("transaction_type" in extracted.explicit_fields or (_is_amount_led_shorthand(text) and extracted.category_slug is not None))
+        and (
+            "transaction_type" in extracted.explicit_fields
+            or (extracted.transaction_type == TransactionType.UNKNOWN and has_explicit_transaction_mutation_cue(text))
+            or (_is_amount_led_shorthand(text) and extracted.category_slug is not None)
+        )
     ):
         return CopilotDecision(
             tool=capability_for_primitive("transaction.record@1"),
@@ -5441,6 +5586,20 @@ class _ConversationPrimitiveRuntime:
                 self.user.currency,
             )
         )
+        if "transaction_date" in resolved.missing_fields:
+            date_resolution = resolve_transaction_date(self.text, _local_today(self.user))
+            return _clarification_response(
+                self.db, self.conversation, self.text,
+                ClarificationRequest(
+                    question="Which date should I use for this transaction?",
+                    reason="I need one valid, unambiguous date before saving this transaction.",
+                    conflict_fields=["transaction_date"],
+                    options=[ClarificationOption(id=item.id, label=item.label, resolution=item.start_date.isoformat()) for item in date_resolution.options],
+                    allow_custom=True,
+                    custom_label="Enter date (YYYY-MM-DD)",
+                ),
+                transaction_dates=date_resolution.options,
+            )
         draft = _create_draft(
             self.db,
             self.user,
@@ -5926,6 +6085,11 @@ def handle_clarification_resolution(
         if isinstance(parsed_transition, GovernedGoalContinuation)
         else None
     )
+    transaction_day = (
+        parsed_transition.transaction_date
+        if isinstance(parsed_transition, GovernedTransactionDateContinuation)
+        else None
+    )
     if isinstance(parsed_transition, GovernedTaxonomyContinuation):
         selected_label = parsed_transition.label
     if isinstance(parsed_transition, LegacyPromptContinuation):
@@ -5936,6 +6100,7 @@ def handle_clarification_resolution(
         and taxonomy_contract is None
         and budget_contract is None
         and goal_contract is None
+        and transaction_day is None
     )
     resolved_request = original_request.strip()
     if legacy_prompt_resume:
@@ -5967,6 +6132,7 @@ def handle_clarification_resolution(
                 resolved_taxonomy=taxonomy_contract,
                 resolved_budget=budget_contract,
                 resolved_goal=goal_contract,
+                resolved_transaction_date=transaction_day,
                 clarification_resume=legacy_prompt_resume,
             )
     finally:
@@ -5989,9 +6155,11 @@ def _run_turn(
     resolved_taxonomy: TaxonomyInterpretation | None = None,
     resolved_budget: BudgetSetupContract | None = None,
     resolved_goal: GoalAmountContract | None = None,
+    resolved_transaction_date: date | None = None,
     clarification_resume: bool = False,
 ) -> AgentResponse:
     run_started = perf_counter()
+    extracted: ExtractedTransaction | None
     today = _local_today(user)
     selected_answer_style = answer_style(db, user.id)
     selected_presentation = build_answer_presentation(selected_answer_style)
@@ -6168,6 +6336,18 @@ def _run_turn(
             _is_bare_amount(text) or _is_amount_led_shorthand(text)
         ),
     )
+
+    if resolved_transaction_date is not None:
+        extracted = _similar_transaction_extraction(db, user, conversation, text, today, before_message=user_message) or extract_transaction(text, today=today, default_currency=user.currency)
+        extracted.transaction_date = resolved_transaction_date
+        extracted.missing_fields = [field for field in extracted.missing_fields if field != "transaction_date"]
+        extracted.inferred_fields = [field for field in extracted.inferred_fields if field != "transaction_date"]
+        extracted.explicit_fields = list(dict.fromkeys([*extracted.explicit_fields, "transaction_date"]))
+        return _dispatch_decision(
+            db, user, conversation, text,
+            CopilotDecision(tool=capability_for_primitive("transaction.record@1"), confidence=1.0, reason="Resume with the customer-confirmed event date."),
+            execute, emit, extracted=extracted, intent_contract=turn_intent,
+        )
 
     if resolved_budget is not None:
         decision = CopilotDecision(
@@ -6361,14 +6541,11 @@ def _run_turn(
                 active_draft.subcategory_id = subcategory.id
                 _set_ready_if_complete(active_draft)
                 return execute(WidgetActionId.UPDATE_TRANSACTION_DRAFT.value, "Updating transaction draft", lambda: _draft_or_commit(db, user, conversation, active_draft))
-        elif active_draft.missing_fields[0] == "source_account":
-            active_draft.source_account_name = text.strip()
-            _set_ready_if_complete(active_draft)
-            return execute(WidgetActionId.UPDATE_TRANSACTION_DRAFT.value, "Updating transaction draft", lambda: _draft_or_commit(db, user, conversation, active_draft))
-        elif active_draft.missing_fields[0] == "destination_account":
-            active_draft.destination_account_name = text.strip()
-            _set_ready_if_complete(active_draft)
-            return execute(WidgetActionId.UPDATE_TRANSACTION_DRAFT.value, "Updating transaction draft", lambda: _draft_or_commit(db, user, conversation, active_draft))
+        elif active_draft.missing_fields[0] in {"source_account", "destination_account"}:
+            return execute(
+                WidgetActionId.UPDATE_TRANSACTION_DRAFT.value, "Updating transaction draft",
+                lambda: _select_draft_account(db, user, conversation, active_draft, active_draft.missing_fields[0], name=text),
+            )
         elif active_draft.missing_fields[0] == "amount" and _is_bare_amount(text):
             amount_minor = parse_amount_minor(text)
             if amount_minor:
@@ -6600,6 +6777,15 @@ def _run_turn(
         user.currency,
         context_relationship=context_relationship,
     )
+    if fast_path is None and not clarification_resume:
+        similar_entry = _similar_transaction_extraction(db, user, conversation, text, today, before_message=user_message)
+        if similar_entry is not None:
+            fast_path = (
+                CopilotDecision(
+                    tool=capability_for_primitive("transaction.record@1"), confidence=float(similar_entry.confidence),
+                    reason="Validate a new entry using only bounded preceding-transaction context.",
+                ), similar_entry,
+            )
     normalized_current = " ".join(text.casefold().split())
     repeated_assistant_text = next(
         (
@@ -8108,23 +8294,11 @@ def handle_action(db: Session, user: User, conversation: Conversation, action: s
         return _draft_response(db, conversation, draft)
     if action is WidgetActionId.SELECT_ACCOUNT and draft:
         account_id = payload.get("optionId") or payload.get("accountId")
-        account = owned.get(Account, UUID(str(account_id))) if account_id else None
-        account_name = str(payload.get("accountName") or "").strip()
-        if not account and account_name:
-            account = AccountRepository(db, user.id).get_or_create(account_name, draft.currency)
-        if not account:
-            raise ValueError("Unknown account")
-        role = payload.get("role")
-        if role == "source_account":
-            draft.account_id = account.id
-            draft.source_account_name = account.name
-        elif role == "destination_account":
-            draft.destination_account_id = account.id
-            draft.destination_account_name = account.name
-        else:
-            raise ValueError("Unknown account role")
-        _set_ready_if_complete(draft)
-        return _draft_or_commit(db, user, conversation, draft)
+        return _select_draft_account(
+            db, user, conversation, draft, str(payload.get("role") or ""),
+            account_id=UUID(str(account_id)) if account_id else None,
+            name=str(payload.get("accountName") or ""),
+        )
     if action is WidgetActionId.SAVE_BUDGET:
         budget_amount_minor = int(payload["amountMinor"])
         category_id = UUID(str(payload["categoryId"])) if payload.get("categoryId") else None

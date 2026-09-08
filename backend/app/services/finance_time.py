@@ -9,6 +9,7 @@ from typing import Any
 from uuid import UUID
 
 from dateparser.search import search_dates
+from dateparser import parse as parse_date
 
 
 _NUMBER_WORDS = {
@@ -46,6 +47,78 @@ FINANCE_DATE_POLICY = {
 _ABSOLUTE_DATE_TOKENS = frozenset(
     name.casefold() for name in (*month_name, *month_abbr) if name
 )
+
+_MONTH = r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+_EVENT_DATE = re.compile(
+    rf"\b(?:\d{{4}}-\d{{1,2}}-\d{{1,2}}|\d{{1,2}}[/-]\d{{1,2}}(?:[/-]\d{{4}})?|"
+    rf"\d{{1,2}}(?:st|nd|rd|th)?\s+(?:of\s+)?{_MONTH}(?:\s*,?\s+\d{{4}})?|"
+    rf"{_MONTH}\s+\d{{1,2}}(?:st|nd|rd|th)?(?:\s*,?\s+\d{{4}})?|"
+    r"day before yesterday|yesterday|last night|today|tomorrow|this morning|this evening)\b",
+    re.I,
+)
+
+
+def without_event_dates(text: str) -> str:
+    """Mask date tokens before amount parsing, including invalid dates."""
+    return _EVENT_DATE.sub(lambda match: " " * len(match.group()), text)
+
+
+def resolve_transaction_date(text: str, today: date) -> DateResolution:
+    """Resolve one event day, never a range or a guessed numeric locale.
+
+    Named dates require a day and month; an omitted year uses the most recent
+    occurrence. No date supplied is distinct from an invalid/ambiguous date.
+    The local `today` is supplied by the same user-timezone policy as queries.
+    """
+    matches = list(_EVENT_DATE.finditer(text))
+    if not matches:
+        return DateResolution("none")
+    dates: set[date] = set()
+    for match in matches:
+        token = match.group().casefold()
+        relative = {"day before yesterday": -2, "yesterday": -1, "last night": -1,
+                    "today": 0, "this morning": 0, "this evening": 0, "tomorrow": 1}
+        if token in relative:
+            dates.add(today + timedelta(days=relative[token]))
+            continue
+        numeric = re.fullmatch(r"(\d{1,2})[/-](\d{1,2})[/-](\d{4})", token)
+        if numeric:
+            first, second, year = map(int, numeric.groups())
+            candidates: list[DateOption] = []
+            for option_id, day, month in (("day_month_year", first, second), ("month_day_year", second, first)):
+                try:
+                    value = date(year, month, day)
+                except ValueError:
+                    continue
+                if value not in [option.start_date for option in candidates]:
+                    candidates.append(DateOption(option_id, value.strftime("%d %b %Y"), value, value))
+            if len(candidates) == 2 and len(matches) == 1:
+                return DateResolution("ambiguous", source="numeric_date", options=tuple(candidates))
+            if len(candidates) != 1:
+                return DateResolution("invalid", source="event_date")
+            dates.add(candidates[0].start_date)
+            continue
+        if re.fullmatch(r"\d{4}-\d{1,2}-\d{1,2}", token):
+            try:
+                year, month, day = map(int, token.split("-"))
+                dates.add(date(year, month, day))
+            except ValueError:
+                return DateResolution("invalid", source="event_date")
+            continue
+        if re.fullmatch(r"\d{1,2}[/-]\d{1,2}", token):
+            return DateResolution("invalid", source="event_date")
+        parsed = parse_date(token, languages=["en"], settings={
+            "RELATIVE_BASE": datetime.combine(today, time(hour=12)),
+            "PREFER_DATES_FROM": "past",
+            "REQUIRE_PARTS": ["day", "month"],
+        })
+        if parsed is None:
+            return DateResolution("invalid", source="event_date")
+        dates.add(parsed.date())
+    if len(dates) != 1:
+        return DateResolution("ambiguous", source="multiple_event_dates")
+    value = dates.pop()
+    return DateResolution("resolved", value, value, value.strftime("%d %b %Y"), "event_date")
 
 
 @dataclass(frozen=True)
