@@ -4,7 +4,7 @@ import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -78,6 +78,7 @@ from .continuations import (
     GovernedBudgetContinuation,
     GovernedGoalContinuation,
     GovernedQueryContinuation,
+    GovernedTransactionDateContinuation,
     LegacyPromptContinuation,
 )
 from .extraction import parse_amount_minor
@@ -911,6 +912,8 @@ def _replay_resolved_resume(
     conversation: Conversation,
     entries: list[dict[str, Any]],
 ) -> tuple[AgentResponse, list[AgentInterrupt]]:
+    if not entries:
+        raise ProtocolRunError("A resume must identify an interrupt.", "invalid_resume")
     ids = [str(entry.get("interruptId")) for entry in entries]
     if len(ids) != len(set(ids)):
         raise ProtocolRunError("A resume cannot contain duplicate interrupt ids.", "invalid_resume")
@@ -982,7 +985,11 @@ def _resume_response(
     )
     by_id = {str(interrupt.id): interrupt for interrupt in open_interrupts}
     supplied = {str(entry.get("interruptId")): entry for entry in entries}
-    if not by_id:
+    if not by_id or not (set(supplied) & set(by_id)):
+        # A network retry can arrive after its resolution opened the next
+        # question. Verify the durable prior payload instead of applying it to
+        # that new interrupt. Mixed old/new entries still fail the exact-set
+        # check below.
         return _replay_resolved_resume(db, conversation, entries)
     if set(supplied) != set(by_id):
         raise ProtocolRunError(
@@ -1041,7 +1048,17 @@ def _resume_response(
                 custom_text = str(selected.get("customText") or "").strip()
                 if not envelope.allow_custom or not custom_text:
                     raise ProtocolRunError("Enter the clarification you want fyn AI to use.", "invalid_resume_payload")
-                if envelope.custom_strategy == "budget_amount":
+                if envelope.custom_strategy == "transaction_date":
+                    try:
+                        chosen_date = date.fromisoformat(custom_text)
+                    except ValueError as error:
+                        raise ProtocolRunError("Enter one valid date as YYYY-MM-DD.", "invalid_resume_payload") from error
+                    if chosen_date.isoformat() != custom_text:
+                        raise ProtocolRunError("Enter one valid date as YYYY-MM-DD.", "invalid_resume_payload")
+                    transition = GovernedTransactionDateContinuation(
+                        label=chosen_date.strftime("%d %b %Y"), transaction_date=chosen_date,
+                    )
+                elif envelope.custom_strategy == "budget_amount":
                     amount_minor = parse_amount_minor(custom_text)
                     if amount_minor is None or amount_minor <= 0 or envelope.custom_budget is None:
                         raise ProtocolRunError(
@@ -1214,11 +1231,29 @@ def _resume_response(
     return response, open_interrupts
 
 
+def _protocol_interrupt(stored: AgentInterrupt) -> Interrupt:
+    return Interrupt(
+        id=str(stored.id), reason=stored.reason, message=stored.message,
+        tool_call_id=stored.tool_call_id, response_schema=stored.response_schema,
+        metadata=stored.metadata_payload,
+    )
+
+
 def _pending_interrupt(
     db: Session,
     run: AgentRun,
     response: AgentResponse,
+    *, replayed: bool = False,
 ) -> tuple[AgentInterrupt, Interrupt] | None:
+    if replayed:
+        # Return the committed answer, but advertise the *current* pending
+        # question. Replaying an older step must not clear a newer interrupt
+        # from the client or reopen a closed question.
+        current = db.scalar(select(AgentInterrupt).join(AgentRun, AgentRun.id == AgentInterrupt.run_id).where(
+            AgentRun.user_id == run.user_id, AgentRun.conversation_id == run.conversation_id,
+            AgentInterrupt.status == AgentInterruptStatus.OPEN.value,
+        ))
+        return (current, _protocol_interrupt(current)) if current is not None else None
     pending = response.pending_action
     if pending is None:
         return None
@@ -1234,6 +1269,21 @@ def _pending_interrupt(
     if match is None:
         return None
     widget, action = match
+    existing = db.scalar(
+        select(AgentInterrupt)
+        .join(AgentRun, AgentRun.id == AgentInterrupt.run_id)
+        .where(
+            AgentRun.user_id == run.user_id,
+            AgentRun.conversation_id == run.conversation_id,
+            AgentInterrupt.widget_id == widget.id,
+        )
+    )
+    if existing is not None:
+        # Re-emitting a committed response must not create a second question,
+        # or reopen one the user has already answered.
+        if existing.status != AgentInterruptStatus.OPEN.value:
+            return None
+        return existing, _protocol_interrupt(existing)
     interrupt_id = uuid4()
     tool_call_id = f"fyn-action-{uuid4()}"
     proposed_args = {
@@ -1598,6 +1648,7 @@ def _messages_snapshot(
     *,
     tool_call_id: str,
     tool_args: dict[str, Any],
+    tool_parent_message_id: UUID | None = None,
 ) -> list[dict[str, Any]]:
     rows = list(
         db.scalars(
@@ -1611,7 +1662,7 @@ def _messages_snapshot(
         if row.role not in {"user", "assistant"}:
             continue
         message: dict[str, Any] = {"id": str(row.id), "role": row.role, "content": row.content}
-        if row.id == response.message_id:
+        if row.id == (tool_parent_message_id or response.message_id):
             message["toolCalls"] = [
                 {
                     "id": tool_call_id,
@@ -1633,6 +1684,7 @@ def _emit_response(
     publisher: DurableEventPublisher,
     streamed_message_id: UUID | None = None,
     streamed_text: str = "",
+    *, replayed: bool = False,
 ) -> bool:
     publisher.bind_final_message(response.message_id)
     publisher.bind_task_outcome(
@@ -1662,15 +1714,20 @@ def _emit_response(
         )
     )
 
-    pending = _pending_interrupt(db, run, response)
+    pending = _pending_interrupt(db, run, response, replayed=replayed)
     if pending:
         stored, interrupt = pending
+        pending_message_id = db.scalar(select(AgentRun.final_message_id).where(
+            AgentRun.id == stored.run_id,
+            AgentRun.user_id == run.user_id,
+            AgentRun.conversation_id == run.conversation_id,
+        )) or response.message_id
         args = dict(stored.metadata_payload["proposedArgs"])
         publisher.emit(
             ToolCallStartEvent(
                 tool_call_id=stored.tool_call_id,
                 tool_call_name=FYN_ACTION_TOOL,
-                parent_message_id=message_id,
+                parent_message_id=str(pending_message_id),
                 timestamp=timestamp_ms(),
             )
         )
@@ -1689,7 +1746,7 @@ def _emit_response(
                         "threadId": str(run.conversation_id),
                         "runId": str(run.id),
                         "phase": "interrupted",
-                        "messageId": message_id,
+                        "messageId": str(pending_message_id),
                         "interruptIds": [str(stored.id)],
                     }
                 },
@@ -1703,6 +1760,7 @@ def _emit_response(
                     response,
                     tool_call_id=stored.tool_call_id,
                     tool_args=args,
+                    tool_parent_message_id=pending_message_id,
                 ),
                 timestamp=timestamp_ms(),
             )
@@ -2073,6 +2131,7 @@ def execute_run(
                 publisher,
                 streamed_message_id,
                 "".join(streamed_parts),
+                replayed=bool(resumed_interrupts) and all(item.resolved_by_run_id != run.id for item in resumed_interrupts),
             )
 
         finish(AgentRunStatus.INTERRUPTED if interrupted else AgentRunStatus.SUCCEEDED)

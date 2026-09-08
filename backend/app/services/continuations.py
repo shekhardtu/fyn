@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Annotated, Literal, Union
 from uuid import UUID
 
@@ -49,6 +50,12 @@ class GovernedGoalContinuation(_ContinuationModel):
     goal: GoalAmountContract
 
 
+class GovernedTransactionDateContinuation(_ContinuationModel):
+    kind: Literal["transaction_date"] = "transaction_date"
+    label: str = Field(min_length=1, max_length=100)
+    transaction_date: date
+
+
 class LegacyPromptContinuation(_ContinuationModel):
     """Compatibility path for workflows that do not yet expose typed slots.
 
@@ -68,6 +75,7 @@ ClarificationTransition = Annotated[
         GovernedTaxonomyContinuation,
         GovernedBudgetContinuation,
         GovernedGoalContinuation,
+        GovernedTransactionDateContinuation,
         LegacyPromptContinuation,
     ],
     Field(discriminator="kind"),
@@ -86,7 +94,7 @@ class ClarificationContinuationEnvelope(_ContinuationModel):
     original_request: str = Field(min_length=1, max_length=20_000, alias="originalRequest")
     options: dict[str, ClarificationTransition] = Field(min_length=1, max_length=7)
     allow_custom: bool = Field(default=False, alias="allowCustom")
-    custom_strategy: Literal["route_once", "budget_amount", "goal_amount"] = Field(default="route_once", alias="customStrategy")
+    custom_strategy: Literal["route_once", "budget_amount", "goal_amount", "transaction_date"] = Field(default="route_once", alias="customStrategy")
     custom_budget: BudgetSetupSeed | None = Field(default=None, alias="customBudget")
     custom_goal: GoalAmountSeed | None = Field(default=None, alias="customGoal")
     clarification_depth: int = Field(default=0, ge=0, le=2, alias="clarificationDepth")

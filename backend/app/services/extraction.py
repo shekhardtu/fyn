@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from ..config import DEFAULT_CURRENCY
 from ..domain import FinancialSourceType, SpendNature, TAXONOMY_FIELD_NAMES, TransactionType
 from ..event_time import local_date, now_utc
 from ..taxonomy_catalog import DefaultCategorySlug, taxonomy_path
-from .finance_time import resolve_finance_period
+from .finance_time import resolve_finance_period, resolve_transaction_date, without_event_dates
 
 @dataclass
 class ExtractedTransaction:
@@ -31,6 +31,8 @@ class ExtractedTransaction:
     confidence: Decimal = Decimal("0.50")
     inferred_fields: list[str] = field(default_factory=list)
     missing_fields: list[str] = field(default_factory=list)
+    context_fields: list[str] = field(default_factory=list)
+    context_message_id: str | None = None
     source: FinancialSourceType = FinancialSourceType.MANUAL
 
 
@@ -134,6 +136,7 @@ def infer_expense_category(text: str) -> tuple[str | None, str | None]:
 
 
 def parse_amount_minor(text: str) -> int | None:
+    text = without_event_dates(text)
     # Indian amounts are commonly spoken as a sum of magnitude components:
     # ``6 lakh 40,000`` means 640,000, not merely the first regex token
     # (600,000). Resolve that composition before the single-number parser.
@@ -194,17 +197,26 @@ def parse_amount_minor(text: str) -> int | None:
 
 def classify_type(text: str) -> tuple[TransactionType, bool]:
     lowered = text.lower()
+    def names(*tokens: str) -> bool:
+        return any(re.search(rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])", lowered) for token in tokens)
+
+    # Direction belongs to the event's participants, not its purpose. Salary
+    # can be paid out or received; the noun alone establishes neither.
+    incoming_phrase = r"\b(?:got\s+paid|paid\s+(?:me|us)|got\s+(?:my\s+)?salary)\b"
+    incoming = names("credited", "received", "earned", "income", "earning", "earnings") or bool(re.search(incoming_phrase, lowered))
+    outgoing = names("spent", "bought", "debited", "purchase", "expense", "expenses") or bool(
+        re.search(r"\bpaid\b", re.sub(incoming_phrase, "", lowered))
+    )
+    if incoming and outgoing:
+        return TransactionType.UNKNOWN, False
     if "loan" in lowered and any(token in lowered for token in ("paid", "payment", "toward", "towards")):
         return TransactionType.LOAN_PAYMENT, False
     rules = [
         (TransactionType.REFUND, ("refund", "refunded")),
         (TransactionType.REIMBURSEMENT, ("reimburs",)),
         (TransactionType.INVESTMENT, ("invested", "mutual fund", "sip ", "stocks")),
-        (TransactionType.TRANSFER, ("moved ", "transferred", "transfer ")),
         (TransactionType.CASH_WITHDRAWAL, ("withdrew", "withdrawal", "atm")),
         (TransactionType.CASH_DEPOSIT, ("cash deposit", "deposited cash")),
-        (TransactionType.INCOME, ("salary", "credited", "received", "got paid", "freelance", "income")),
-        (TransactionType.EXPENSE, ("spent", "paid", "bought", "debited", "purchase", "expense", "expenses")),
     ]
     for transaction_type, tokens in rules:
         # Financial event classification is a write boundary. Substring
@@ -213,6 +225,18 @@ def classify_type(text: str) -> tuple[TransactionType, bool]:
         # transaction direction.
         if any(re.search(rf"(?<![a-z0-9]){re.escape(token.strip())}(?![a-z0-9])", lowered) for token in tokens):
             return transaction_type, False
+    if outgoing:
+        return TransactionType.EXPENSE, False
+    if incoming:
+        return TransactionType.INCOME, False
+    if names("moved", "transferred", "transfer"):
+        # A named recipient is not evidence of an owned destination account.
+        # Ask the customer for direction before proposing account creation.
+        if re.search(r"\bto\s+\w", lowered) and not re.search(r"\bfrom\s+.+\s+to\b", lowered):
+            return TransactionType.UNKNOWN, False
+        return TransactionType.TRANSFER, False
+    if names("salary", "freelance"):
+        return TransactionType.UNKNOWN, False
     if parse_amount_minor(text) is not None:
         return TransactionType.EXPENSE, True
     return TransactionType.UNKNOWN, False
@@ -227,16 +251,9 @@ def extract_transaction(text: str, today: date | None = None, default_currency: 
     currency = explicit_currencies[0] if explicit_currencies else default_currency.upper()
     tags = list(dict.fromkeys(match.group(1).strip().casefold() for match in re.finditer(r"#([A-Za-z][A-Za-z0-9_-]{1,39})", text)))[:8]
 
-    transaction_date = today
-    date_inferred = True
-    if "day before yesterday" in lowered:
-        transaction_date = today - timedelta(days=2)
-        date_inferred = False
-    elif "yesterday" in lowered or "last night" in lowered:
-        transaction_date = today - timedelta(days=1)
-        date_inferred = False
-    elif "today" in lowered:
-        date_inferred = False
+    event_date = resolve_transaction_date(text, today)
+    date_inferred = event_date.status == "none"
+    transaction_date = today if date_inferred else event_date.start_date
 
     merchant = None
     for pattern in MERCHANT_PATTERNS:
@@ -280,7 +297,7 @@ def extract_transaction(text: str, today: date | None = None, default_currency: 
             DefaultCategorySlug.INVESTMENT,
             "mutual_fund" if "mutual fund" in lowered or "sip" in lowered else "stocks" if "stock" in lowered else "other",
         )
-    elif merchant:
+    elif transaction_type == TransactionType.EXPENSE and merchant:
         normalized = normalize_merchant(merchant)
         if normalized:
             for alias, mapping in MERCHANT_RULES.items():
@@ -315,7 +332,7 @@ def extract_transaction(text: str, today: date | None = None, default_currency: 
         explicit_fields.append("currency")
     if not type_inferred and transaction_type != TransactionType.UNKNOWN:
         explicit_fields.append("transaction_type")
-    if not date_inferred:
+    if event_date.status == "resolved":
         explicit_fields.append("transaction_date")
     if merchant:
         explicit_fields.append("merchant")
@@ -333,6 +350,8 @@ def extract_transaction(text: str, today: date | None = None, default_currency: 
     missing_fields: list[str] = []
     if amount_minor is None:
         missing_fields.append("amount")
+    if transaction_date is None:
+        missing_fields.append("transaction_date")
     if transaction_type == TransactionType.UNKNOWN:
         missing_fields.append("transaction_type")
     if transaction_type == TransactionType.EXPENSE and not category_slug:
