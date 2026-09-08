@@ -20,9 +20,11 @@ dependencies = [
   "boto3>=1.35,<2",
   # Canonical agreement and evidence-bundle PDF rendering.
   "reportlab>=4.2,<5",
-  "agno>=1.7,<3",
+  # Provider lifecycle hooks are a tested compatibility boundary.
+  "agno==2.9.0",
   "ag-ui-protocol==0.1.19",
-  "openai>=1.68,<3",
+  "openai==2.48.0; python_version < '3.10'",
+  "openai==2.54.0; python_version >= '3.10'",
   # One-time-code delivery to MSG91 and Postmark.
   "httpx>=0.27,<1",
   # Verifies Google ID tokens against Google's published keys, with the key

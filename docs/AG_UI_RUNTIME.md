@@ -86,6 +86,33 @@ response resolves and never awaits that polling from its chat mutation. The
 composer and run outcome therefore cannot depend on optional chips, while a
 completed widget remains persisted on the original message after reload.
 
+### Provider failures
+
+The application checks both native Responses API terminal states and Agno's
+error events/failed outputs. A native `response.failed`, `response.incomplete`,
+or stream ending without `response.completed` cannot become a successful
+partial answer. Streaming and non-streaming callers share safe, typed provider
+errors; guardrail/framework failures remain separate from provider outages.
+
+When a provider fails before answer text is delivered, the governed fallback
+may still complete a valid deterministic task. Its canonical response retains
+an `insight_card` service notice, including after reload, without changing a
+successful save into a failed task. An unresolved AI-dependent request records
+`failure_stage=provider` and the typed error code instead of blaming intent
+resolution. If answer text was already delivered, the run ends with one durable
+`RUN_ERROR`, never a replacement answer under the same message ID. Notices are
+turn-scoped, not global service-health assertions; a later healthy turn does
+not inherit them. Raw provider diagnostics and credentials are not sent to the
+client.
+
+SDK-level automatic retries are disabled for these model calls because a 429
+can mean billing exhaustion, not transient load. The optional enrichment worker
+retries only retryable provider failures within its existing attempt bound;
+billing, authentication, incomplete-output, and guardrail failures are terminal.
+Agno and OpenAI SDK versions are pinned in `backend/pyproject.toml`; Python 3.9
+retains its last compatible SDK version and production Python 3.12 uses the
+separately tested SDK pin.
+
 ## Human-in-the-loop actions
 
 A pending Fyn widget action becomes a standard tool-bound AG-UI interrupt. The proposed action is emitted as the complete tool arguments; the response schema uses the standard `approved` / `editedArgs` shape, and the resumed run emits the actual governed execution response as `TOOL_CALL_RESULT`. While an interrupt is open, the composer pauses and the existing widget is the primary response surface. If that widget is unavailable, both clients render a small design-system fallback that can approve, deny, or cancel without deadlocking the thread.

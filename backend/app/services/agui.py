@@ -82,6 +82,7 @@ from .continuations import (
 )
 from .extraction import parse_amount_minor
 from .planning_contracts import BudgetSetupContract, GoalAmountContract
+from .provider_errors import AgentExecutionError, ProviderUnavailableError
 
 
 FYN_RESPONSE_EVENT = "fyn.response.v1"
@@ -2089,6 +2090,18 @@ def execute_run(
             failure_stage="protocol",
             error_code=error.code,
         )
+        publisher.emit(RunErrorEvent(message=str(error), code=error.code, timestamp=timestamp_ms()))
+        finish(AgentRunStatus.FAILED, error_code=error.code)
+    except ProviderUnavailableError as error:
+        publisher.bind_task_outcome(
+            "failed",
+            failure_stage="provider",
+            error_code=error.code,
+        )
+        publisher.emit(RunErrorEvent(message=str(error), code=error.code, timestamp=timestamp_ms()))
+        finish(AgentRunStatus.FAILED, error_code=error.code)
+    except AgentExecutionError as error:
+        publisher.bind_task_outcome("failed", failure_stage=error.failure_stage, error_code=error.code)
         publisher.emit(RunErrorEvent(message=str(error), code=error.code, timestamp=timestamp_ms()))
         finish(AgentRunStatus.FAILED, error_code=error.code)
     except Exception as error:

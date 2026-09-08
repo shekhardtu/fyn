@@ -200,6 +200,7 @@ def test_operator_preserves_only_successful_installed_tool_execution_as_groundin
         def run(self, *_args, **_kwargs):
             return iter([
                 RunOutput(
+                    status="COMPLETED",
                     content="You have 11 expense categories.",
                     tools=executions,
                 ),
