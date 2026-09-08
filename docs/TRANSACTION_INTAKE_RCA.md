@@ -23,11 +23,11 @@ retry deduplication, explicit-over-model precedence, invalid-date correction,
 and bounded follow-up provenance. Existing conversation/runtime tests also run.
 Tests use a blank provider key and make no paid LLM requests.
 
-Verification on 2026-09-09: the isolated PR checkout passed the full backend
-suite (1,069 tests), including 38 new intake regressions. This excludes unrelated
-account-deletion and composer changes in the shared workspace. The earlier
-shared-workspace suite passed 1,072 tests, with a focused rerun of 183 tests
-after the final account-name grounding guard.
+Verification on 2026-09-09: the isolated RCA checkout initially passed 1,069
+backend tests, including 38 new intake regressions. After incorporating the
+updated `main` at `1422887c47962bf71de80fb4d4f8aa8cb185a295` (account-deletion
+PR 27), the final integration suite passed all 1,072 tests. The RCA PR itself
+still changes only its nine scoped files; in-progress composer work is excluded.
 Ruff, mypy on the changed services, and `git diff --check` passed. Existing
 Python 3.9/deprecated HTTP-status warnings remain. Browser and production smoke
 checks are still release steps, not claimed as completed here.
