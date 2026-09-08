@@ -1,16 +1,21 @@
-"""Request-scoped aggregation of Agno's native run metrics.
+"""Native request usage plus compatible Agno logical-pass diagnostics.
 
-One customer turn may invoke the Operator, Planner, Validator, Binder, repair
-passes, and the optional related-question Suggester. Agno reports usage on each
-``RunOutput``; this module preserves those measurements as one durable turn
-summary without coupling the model helpers to the AG-UI persistence layer.
+A turn can make several provider requests around tools, delegates and repairs.
+Capture each request independently of the final ``RunOutput``. Run and optional
+enrichment workers own separate collections and their existing durable commits;
+model helpers never take ownership of the financial persistence boundary.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+import time
 from typing import Any
+from uuid import uuid4
 
 
 @dataclass
@@ -38,12 +43,173 @@ class _MetricPass:
 @dataclass
 class _MetricCollection:
     passes: list[_MetricPass] = field(default_factory=list)
+    requests: list[dict[str, Any]] = field(default_factory=list)
 
 
 _active_collection: ContextVar[_MetricCollection | None] = ContextVar(
     "fyn_agent_metric_collection",
     default=None,
 )
+_active_stage: ContextVar[str] = ContextVar("fyn_provider_usage_stage", default="model")
+
+
+@contextmanager
+def provider_usage_stage(stage: str) -> Iterator[None]:
+    token = _active_stage.set(stage)
+    try:
+        yield
+    finally:
+        _active_stage.reset(token)
+
+
+_TOKEN_FIELDS = ("inputTokens", "outputTokens", "totalTokens", "cacheReadTokens", "cacheWriteTokens", "reasoningTokens")
+
+
+def _field(value: Any, name: str) -> Any:
+    return value.get(name) if isinstance(value, dict) else getattr(value, name, None)
+
+
+def _reported_tokens(value: Any) -> int | None:
+    # Missing usage is not a zero-cost request. Reject malformed counters too.
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+class ProviderUsageAttempt:
+    """One SDK request attempt; only whitelisted scalars enter the snapshot.
+
+    Capture is in memory. The existing run/enrichment checkpoint owns durability,
+    so telemetry never commits or rolls back a financial transaction.
+    """
+
+    def __init__(self, model: str, operation: str = "responses") -> None:
+        self.started = time.monotonic()
+        self.data: dict[str, Any] = {
+            "attemptId": str(uuid4()), "stage": _active_stage.get()[:80],
+            "operation": operation, "model": str(model)[:160],
+            "provider": "OpenAI", "status": "started",
+            "startedAt": datetime.now(timezone.utc).isoformat(),
+            "requestId": None, "responseId": None, "durationMs": None,
+            **{key: None for key in _TOKEN_FIELDS},
+        }
+        collection = _active_collection.get()
+        if collection is not None:
+            collection.requests.append(self.data)
+
+    def observe(self, response: Any) -> None:
+        try:
+            for source, target in (("_request_id", "requestId"), ("id", "responseId"), ("model", "model")):
+                value = _field(response, source)
+                if isinstance(value, str):
+                    self.data[target] = value[:160]
+            status = _field(response, "status")
+            if self.data["operation"] == "embeddings":
+                status = "completed"
+            if status in {"completed", "failed", "incomplete", "cancelled"}:
+                self.data["status"] = status
+                self.data["durationMs"] = round((time.monotonic() - self.started) * 1000, 1)
+            usage = _field(response, "usage")
+            if usage is None:
+                return
+            embedding = self.data["operation"] == "embeddings"
+            values = {
+                "inputTokens": _field(usage, "prompt_tokens" if embedding else "input_tokens"),
+                "outputTokens": 0 if embedding else _field(usage, "output_tokens"),
+                "totalTokens": _field(usage, "total_tokens"),
+                "cacheReadTokens": _field(_field(usage, "input_tokens_details"), "cached_tokens"),
+                "cacheWriteTokens": _field(_field(usage, "input_tokens_details"), "cache_write_tokens"),
+                "reasoningTokens": _field(_field(usage, "output_tokens_details"), "reasoning_tokens"),
+            }
+            for key, value in values.items():
+                reported = _reported_tokens(value)
+                if reported is not None:
+                    self.data[key] = reported
+        except Exception:
+            # A future SDK shape must never turn observability into a failure.
+            return
+
+    def request_id(self, value: Any) -> None:
+        if isinstance(value, str):
+            self.data["requestId"] = value[:160]
+
+    def finish(self, error: BaseException | None = None) -> None:
+        self.data["durationMs"] = round((time.monotonic() - self.started) * 1000, 1)
+        if self.data["status"] == "started":
+            self.data["status"] = "failed" if error is not None else "incomplete"
+        if error is not None:
+            try:
+                self.request_id(getattr(error, "request_id", None))
+            except Exception:
+                pass
+
+
+def request_usage_snapshot(requests: list[dict[str, Any]], *, uncertain: str | None = None) -> dict[str, Any]:
+    # Updates to a streamed response share an attempt ID. Recovery/retry merging
+    # must not count that same observation twice; a new HTTP call has a new ID.
+    unique = {item["attemptId"]: dict(item) for item in requests}
+    values = list(unique.values())
+    reported = [item for item in values if all(item.get(key) is not None for key in _TOKEN_FIELDS[:3])]
+    coverage = (
+        "interrupted" if uncertain == "interrupted" else
+        "partial" if uncertain and reported else
+        "unavailable" if uncertain else
+        "not_used" if not values else
+        "complete" if len(reported) == len(values) else
+        "partial" if reported else "unavailable"
+    )
+    totals = {}
+    for key in _TOKEN_FIELDS:
+        known = [item[key] for item in values if item.get(key) is not None]
+        totals[key] = sum(known) if known else 0 if coverage == "not_used" else None
+    return {
+        "coverage": coverage, "requestCount": len(values), "reportedRequests": len(reported),
+        "historyComplete": uncertain is None,
+        **totals, "requests": values,
+    }
+
+
+def merge_request_usage(base: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
+    snapshots = [base.get("requestUsage"), extra.get("requestUsage")]
+    uncertain = None
+    for owner, usage in zip((base, extra), snapshots):
+        if (usage and not usage.get("historyComplete", True)) or (not usage and owner):
+            uncertain = "interrupted" if usage and usage.get("coverage") == "interrupted" else uncertain or "unknown"
+    requests = [item for usage in snapshots if usage for item in usage.get("requests", [])]
+    return request_usage_snapshot(requests, uncertain=uncertain)
+
+
+def interrupt_request_usage(metrics: dict[str, Any]) -> dict[str, Any]:
+    """A lost process/lease cannot claim that its persisted subtotal is complete."""
+    return {**metrics, "requestUsage": request_usage_snapshot(
+        (metrics.get("requestUsage") or {}).get("requests", []), uncertain="interrupted",
+    )}
+
+
+def merge_agent_metric_snapshots(base: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
+    """Accumulate restart/retry evidence; native requests are deduplicated by ID."""
+    passes = [*(base.get("passes") or []), *(extra.get("passes") or [])]
+    costs = [item.get("costUsd") for item in passes if item.get("costUsd") is not None]
+    first_token = base.get("firstModelTimeToFirstTokenMs")
+    if first_token is None:
+        first_token = extra.get("firstModelTimeToFirstTokenMs")
+    merged = {
+        "source": "agno_run_output",
+        "modelPasses": len(passes),
+        "providerRequestCount": sum(len(item.get("providerRequests") or []) for item in passes),
+        **{key: sum(int(item.get(key) or 0) for item in passes) for key in _TOKEN_FIELDS},
+        "modelDurationMs": non_overlapping_model_duration_ms(passes),
+        "firstModelTimeToFirstTokenMs": first_token,
+        "costUsd": round(sum(float(value) for value in costs), 10) if passes and len(costs) == len(passes) else None,
+        "costCoverage": round(len(costs) / len(passes), 4) if passes else 0.0,
+        "passes": passes,
+        "requestUsage": merge_request_usage(base, extra),
+    }
+    for key in ("server", "client", "rollouts"):
+        value = extra.get(key) or base.get(key)
+        if value is not None:
+            merged[key] = value
+    if "durationMs" in base or "durationMs" in extra:
+        merged["durationMs"] = sum(float(item.get("durationMs") or 0) for item in (base, extra))
+    return merged
 
 
 def begin_agent_metric_collection() -> Token:
@@ -333,6 +499,10 @@ def agent_metric_snapshot() -> dict[str, Any]:
     exact_cost = round(sum(costs), 10) if passes and len(costs) == len(passes) else None
     return {
         "source": "agno_run_output",
+        "requestUsage": request_usage_snapshot(
+            collection.requests if collection is not None else [],
+            uncertain="legacy" if passes and not (collection and collection.requests) else None,
+        ),
         "modelPasses": len(passes),
         "providerRequestCount": sum(len(item.provider_requests) for item in passes),
         "inputTokens": sum(item.input_tokens for item in passes),

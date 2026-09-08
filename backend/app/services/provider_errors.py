@@ -13,6 +13,9 @@ from agno.run.agent import RunErrorEvent, RunOutput
 from agno.run.base import RunStatus
 from openai import OpenAIError
 
+from .agent_run_metrics import provider_usage_stage
+from .provider_usage import UsageObservedClient
+
 
 _NOTICES = {
     "provider_quota_exhausted": (
@@ -166,10 +169,11 @@ def _check_run_output(output: Any) -> None:
         raise AgentExecutionError("agent_response_incomplete")
 
 
-def checked_provider_call(run: Callable[[], Any], *, on_output: Callable[[Any], None] | None = None) -> Any:
+def checked_provider_call(run: Callable[[], Any], *, on_output: Callable[[Any], None] | None = None, stage: str = "model") -> Any:
     token = _call_failure.set([])
     try:
-        output = run()
+        with provider_usage_stage(stage):
+            output = run()
         if on_output is not None:
             on_output(output)
         _check_run_output(output)
@@ -182,16 +186,17 @@ def checked_provider_call(run: Callable[[], Any], *, on_output: Callable[[Any], 
         _call_failure.reset(token)
 
 
-def checked_provider_stream(run: Callable[[], Iterable[Any]]) -> Iterator[Any]:
+def checked_provider_stream(run: Callable[[], Iterable[Any]], *, stage: str = "model") -> Iterator[Any]:
     """Agno may yield a failure instead of raising; never accept it as a reply."""
     token = _call_failure.set([])
     try:
-        for event in run():
-            if isinstance(event, RunErrorEvent):
-                _check_error_event(event)
-            if isinstance(event, RunOutput):
-                _check_run_output(event)
-            yield event
+        with provider_usage_stage(stage):
+            for event in run():
+                if isinstance(event, RunErrorEvent):
+                    _check_error_event(event)
+                if isinstance(event, RunOutput):
+                    _check_run_output(event)
+                yield event
     except (InputCheckError, OutputCheckError) as error:
         raise AgentExecutionError("agent_validation_failed") from error
     except (ModelProviderError, ModelAuthenticationError, OpenAIError) as error:
@@ -210,6 +215,18 @@ class CheckedOpenAIResponses(OpenAIResponses):
     exceptions retain their SDK causes until normalized, and explicit provider
     failures cannot be mistaken for successful empty/partial model output.
     """
+
+    def get_client(self) -> Any:
+        client = super().get_client()
+        if client.max_retries != 0:
+            client = client.with_options(max_retries=0)
+        return UsageObservedClient(client)
+
+    def get_async_client(self) -> Any:
+        client = super().get_async_client()
+        if client.max_retries != 0:
+            client = client.with_options(max_retries=0)
+        return UsageObservedClient(client, asynchronous=True)
 
     def _check_response(self, response: Any) -> None:
         status = _field(response, "status")

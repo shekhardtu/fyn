@@ -513,6 +513,45 @@ class AgentClientTelemetryIn(AgentClientTimingMetrics):
     schema_version: Literal[1] = Field(default=1, alias="schemaVersion")
 
 
+class AgentTokenUsage(BaseModel):
+    """Provider-reported counters; null means unknown, never zero billing."""
+
+    input_tokens: int | None = Field(default=None, alias="inputTokens", ge=0)
+    output_tokens: int | None = Field(default=None, alias="outputTokens", ge=0)
+    total_tokens: int | None = Field(default=None, alias="totalTokens", ge=0)
+    cache_read_tokens: int | None = Field(default=None, alias="cacheReadTokens", ge=0)
+    cache_write_tokens: int | None = Field(default=None, alias="cacheWriteTokens", ge=0)
+    reasoning_tokens: int | None = Field(default=None, alias="reasoningTokens", ge=0)
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class AgentUsageAttempt(AgentTokenUsage):
+    attempt_id: str = Field(alias="attemptId")
+    stage: str
+    operation: Literal["responses", "embeddings"]
+    provider: str
+    model: str
+    status: Literal["started", "completed", "failed", "incomplete", "cancelled"]
+    started_at: str = Field(alias="startedAt")
+    request_id: str | None = Field(default=None, alias="requestId")
+    response_id: str | None = Field(default=None, alias="responseId")
+    duration_ms: float | None = Field(default=None, alias="durationMs", ge=0)
+
+
+class AgentRequestUsage(AgentTokenUsage):
+    coverage: Literal["complete", "partial", "unavailable", "not_used", "interrupted"]
+    history_complete: bool = Field(default=True, alias="historyComplete")
+    request_count: int = Field(alias="requestCount", ge=0)
+    reported_requests: int = Field(alias="reportedRequests", ge=0)
+    requests: list[AgentUsageAttempt]
+
+    @model_validator(mode="after")
+    def validate_counts(self):
+        if self.request_count != len(self.requests) or self.reported_requests > self.request_count:
+            raise ValueError("Request usage counts must agree with the attempt ledger")
+        return self
+
+
 class AgentRunMetrics(BaseModel):
     source: Literal["agno_run_output"] = "agno_run_output"
     model_passes: int = Field(default=0, alias="modelPasses", ge=0)
@@ -532,6 +571,7 @@ class AgentRunMetrics(BaseModel):
     cost_usd: float | None = Field(default=None, alias="costUsd", ge=0)
     cost_coverage: float = Field(default=0, alias="costCoverage", ge=0, le=1)
     passes: list[AgentModelPassMetrics] = Field(default_factory=list)
+    request_usage: AgentRequestUsage | None = Field(default=None, alias="requestUsage")
     server: AgentServerTimingMetrics | None = None
     client: AgentClientTimingMetrics | None = None
     model_config = ConfigDict(populate_by_name=True)

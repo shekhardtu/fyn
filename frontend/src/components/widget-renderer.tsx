@@ -1092,29 +1092,41 @@ function AgentActivity({ widget }: WidgetProps) {
     ? Math.max(0, Math.trunc(storedPassCount))
     : 0;
   const metrics = widget.data.metrics as AgentRunMetrics | null | undefined;
-  const providerRequestCount = metrics && Number.isFinite(metrics.providerRequestCount)
+  const usage = metrics?.requestUsage;
+  const usageIncomplete = usage && !["complete", "not_used"].includes(usage.coverage);
+  const providerRequestCount = usage?.requestCount ?? (metrics && Number.isFinite(metrics.providerRequestCount)
     ? Math.max(0, Math.trunc(metrics.providerRequestCount))
-    : 0;
+    : 0);
   const routeLabel = providerRequestCount > 0
     ? providerRequestCount === 1
       ? "Single model request"
       : `${providerRequestCount} model requests`
+    : usageIncomplete
+    ? "Usage unavailable"
     : modelPassCount === 0
     ? "Deterministic"
     : modelPassCount === 1
       ? "Single model pass"
       : `${modelPassCount} model passes`;
-  const metricSummary = metrics && metrics.modelPasses > 0
+  const tokenSummary = usage
+    ? usage.coverage === "not_used"
+      ? "No AI requests"
+      : usage.totalTokens === null
+        ? "Token usage unavailable — this does not mean zero consumption"
+        : `${usage.totalTokens.toLocaleString()} ${usageIncomplete ? "reported " : ""}tokens (${usage.inputTokens?.toLocaleString() ?? "unknown"} in / ${usage.outputTokens?.toLocaleString() ?? "unknown"} out)`
+    : metrics ? `${metrics.totalTokens.toLocaleString()} tokens (${metrics.inputTokens.toLocaleString()} in / ${metrics.outputTokens.toLocaleString()} out); request-level coverage unavailable for this older record` : "";
+  const metricSummary = metrics && (metrics.modelPasses > 0 || usage)
     ? [
         providerRequestCount > 0
           ? `${providerRequestCount} provider request${providerRequestCount === 1 ? "" : "s"}`
           : null,
-        `${metrics.totalTokens.toLocaleString()} tokens (${metrics.inputTokens.toLocaleString()} in / ${metrics.outputTokens.toLocaleString()} out)`,
+        tokenSummary,
+        usageIncomplete ? `Usage incomplete: ${usage.reportedRequests} of ${usage.requestCount} observed requests reported usage${usage.coverage === "interrupted" ? "; accounting interrupted by a restart" : ""}` : null,
         metrics.modelDurationMs !== null ? `${formatDuration(metrics.modelDurationMs)} model-path time` : null,
         metrics.firstModelTimeToFirstTokenMs !== null ? `${formatDuration(metrics.firstModelTimeToFirstTokenMs)} first model token` : null,
-        metrics.costUsd !== null
+        !usage && metrics.costUsd !== null
           ? `$${metrics.costUsd.toFixed(6)} provider cost`
-          : `provider cost unavailable (${Math.round(metrics.costCoverage * 100)}% coverage)`,
+          : usage ? "provider cost unavailable" : `provider cost unavailable (${Math.round(metrics.costCoverage * 100)}% coverage)`,
       ].filter(Boolean).join(" · ")
     : "";
   const trace = steps.map((step) => {
@@ -1143,13 +1155,16 @@ function AgentActivity({ widget }: WidgetProps) {
       type="button"
       onClick={() => setOpen((current) => !current)}
       data-inline-disclosure="true"
-      aria-label={activityLabel}
+      aria-label={`${activityLabel}${usageIncomplete ? ", token usage incomplete" : ""}`}
       aria-expanded={open}
       aria-controls={detailsId}
       className={cn("flex min-h-8 w-full min-w-0 items-center gap-2 rounded-lg px-2 text-left text-meta font-medium leading-5 transition-colors hover:bg-surface-sunken", broke ? "text-danger-ink" : "text-ink-muted")}
     >
       {broke ? <TriangleAlert size={14} className="shrink-0" /> : null}
-      <span className={cn("min-w-0 flex-1", broke ? "break-words" : "truncate")}>{summary}</span>
+      <span className="min-w-0 flex-1">
+        <span className={cn("block", broke ? "break-words" : "truncate")}>{summary}</span>
+        {!live && usageIncomplete ? <span className="block font-normal text-danger-ink" title="Some provider usage is missing; displayed counts are only the reported subtotal.">Usage incomplete</span> : null}
+      </span>
       <span className="shrink-0 font-normal text-ink-muted/80">{routeLabel}</span>
       {total > 0 ? <span className="money ml-auto shrink-0 font-normal text-ink-muted/80">{formatDuration(total)}</span> : null}
       <ChevronDown size={14} className={cn("shrink-0 transition-transform duration-[var(--m-enter)] motion-reduce:transition-none", open && "rotate-180")} />
@@ -1167,7 +1182,7 @@ function AgentActivity({ widget }: WidgetProps) {
             <span className="font-semibold text-ink-body">Execution trace</span>
             <span>{routeLabel}</span>
           </div>
-          {metricSummary ? <p className="mt-1 money" data-testid="agent-run-metrics">Agno metrics · {metricSummary}</p> : null}
+          {metricSummary ? <p className="mt-1 money" data-testid="agent-run-metrics">{usage ? "AI usage" : "Agno metrics"} · {metricSummary}</p> : null}
           {trace.length ? <ol className="mt-2 space-y-2.5" aria-label="Complete execution trace">
             {trace.map((step, index) => <li key={`${step.stage}-${index}`} className="grid grid-cols-[1.25rem_minmax(0,1fr)] gap-x-1.5">
               <span className="money text-ink-muted/70">{index + 1}.</span>

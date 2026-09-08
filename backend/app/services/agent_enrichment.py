@@ -26,6 +26,8 @@ from .agent_run_metrics import (
     agent_metric_snapshot,
     begin_agent_metric_collection,
     end_agent_metric_collection,
+    interrupt_request_usage,
+    merge_agent_metric_snapshots,
 )
 from .agents import suggest_related_questions
 from .provider_errors import AgentExecutionError, ProviderUnavailableError
@@ -123,6 +125,8 @@ def claim_agent_enrichment_work(
         )
         if item is None:
             return None
+        if item.status == AgentEnrichmentStatus.RUNNING.value:
+            item.metrics = interrupt_request_usage(item.metrics or {})
         if item.attempts >= max_attempts:
             item.status = AgentEnrichmentStatus.FAILED.value
             item.finished_at = now
@@ -207,7 +211,7 @@ def _complete(
     item.claimed_at = None
     item.finished_at = now_utc()
     item.error_code = error_code
-    item.metrics = metrics
+    item.metrics = merge_agent_metric_snapshots(item.metrics or {}, metrics)
     db.commit()
 
 
@@ -242,7 +246,7 @@ def _record_failure(
             item.available_at = now_utc() + timedelta(seconds=retry_seconds)
             item.finished_at = now_utc() if terminal else None
             item.error_code = code
-            item.metrics = metrics
+            item.metrics = merge_agent_metric_snapshots(item.metrics or {}, metrics)
             db.add(AIAction(
                 user_id=item.user_id,
                 conversation_id=item.conversation_id,

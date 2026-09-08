@@ -1309,6 +1309,7 @@ def build_analysis_delegate_tool(
             )
             output = checked_provider_call(
                 lambda: delegate.run(prompt, user_id=str(user_id) if user_id else None),
+                stage="analysis_delegate",
                 on_output=lambda result: record_agno_run_metrics(
                     result,
                     stage="analysis_delegate",
@@ -1518,7 +1519,7 @@ def run_operator(
         stream=True,
         stream_events=True,
         yield_run_output=True,
-    ))
+    ), stage="operator_response")
     for event in stream:
         # Capturing two monotonic timestamps and scalar event fields is the
         # only work performed on the response loop. It has no callback, I/O,
@@ -1721,6 +1722,7 @@ def repair_grounded_answer(
     }, ensure_ascii=False, default=str)
     result = checked_provider_call(
         lambda: composer.run(repair_prompt),
+        stage="grounded_answer_repair",
         on_output=lambda output: record_agno_run_metrics(
             output,
             stage="grounded_answer_repair",
@@ -1816,6 +1818,7 @@ def suggest_related_questions(
     )
     result = checked_provider_call(
         lambda: suggester.run(suggestion_prompt),
+        stage="related_question_suggester",
         on_output=lambda output: record_agno_run_metrics(
             output,
             stage="related_question_suggester",
@@ -1896,6 +1899,7 @@ def evaluate_reconciliation_match(
     reconciliation_prompt = json.dumps(payload, default=str)
     result = checked_provider_call(
         lambda: reconciler.run(reconciliation_prompt),
+        stage="reconciliation",
         on_output=lambda output: record_agno_run_metrics(
             output,
             stage="reconciliation",

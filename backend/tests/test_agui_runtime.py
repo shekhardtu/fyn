@@ -1867,6 +1867,8 @@ def test_recovery_terminates_an_uncertain_running_command_without_replaying_it(d
     assert queued == []
     assert recovered.status == AgentRunStatus.FAILED.value
     assert recovered.error_code == "server_restart"
+    assert recovered.metrics["requestUsage"]["coverage"] == "interrupted"
+    assert recovered.metrics["requestUsage"]["totalTokens"] is None
     assert terminal.event_type == "RUN_ERROR"
     assert terminal.payload["code"] == "server_restart"
 
@@ -2353,6 +2355,65 @@ def test_related_question_failures_never_harm_the_answer(db, monkeypatch):
     )
     assert record is not None
     assert record.payload_redacted["errorType"] == "RuntimeError"
+
+
+def test_request_usage_is_durable_even_when_no_agno_pass_finishes(db, monkeypatch):
+    from app.services.agent_run_metrics import ProviderUsageAttempt
+    from app.services.provider_errors import ProviderUnavailableError
+
+    user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
+    conversation = get_or_create_conversation(db, user)
+
+    def fail_after_usage(*_args, **_kwargs):
+        attempt = ProviderUsageAttempt("test-model")
+        attempt.observe({"status": "completed", "id": "resp_done", "usage": {
+            "input_tokens": 75, "output_tokens": 25, "total_tokens": 100,
+        }})
+        ProviderUsageAttempt("test-model").finish(RuntimeError("private diagnostic"))
+        raise ProviderUnavailableError()
+
+    monkeypatch.setattr(agui_service, "handle_chat", fail_after_usage)
+    run, live = _execute(db, user, conversation, {"kind": "message", "text": "Hi", "messageId": "usage-failed"})
+    assert run.status == AgentRunStatus.FAILED.value
+    assert run.metrics["modelPasses"] == 0
+    usage = run.metrics["requestUsage"]
+    assert usage["totalTokens"] == 100
+    assert usage["coverage"] == "partial"
+    assert usage["requestCount"] == 2
+    assert [event["type"] for _, event in live].count("RUN_ERROR") == 1
+    assert "Token usage is incomplete" in live[-1][1]["message"]
+
+
+def test_enrichment_retry_retains_usage_from_every_attempt(db, monkeypatch):
+    from app.services.agent_run_metrics import ProviderUsageAttempt
+    from app.services.provider_errors import ProviderUnavailableError
+
+    user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
+    conversation = get_or_create_conversation(db, user)
+    run, _ = _execute(db, user, conversation, {"kind": "message", "text": "Spent ₹300 on coffee today", "messageId": "usage-retry"})
+    calls = []
+    def suggest(*_args, **_kwargs):
+        calls.append(True)
+        ProviderUsageAttempt("test-model").observe({"status": "completed", "usage": {
+            "input_tokens": 75, "output_tokens": 25, "total_tokens": 100,
+        }})
+        if len(calls) == 1:
+            ProviderUsageAttempt("test-model").finish(RuntimeError("disconnected"))
+            raise ProviderUnavailableError()
+        return ["How much did I spend this month?"]
+
+    monkeypatch.setattr(enrichment_service, "suggest_related_questions", suggest)
+    item = _process_one_enrichment(db)
+    assert item.status == AgentEnrichmentStatus.PENDING.value
+    assert item.metrics["requestUsage"]["totalTokens"] == 100
+    item.available_at = now_utc() - timedelta(seconds=1)
+    db.commit()
+    item = _process_one_enrichment(db)
+    assert item.status == AgentEnrichmentStatus.COMPLETED.value
+    assert item.metrics["requestUsage"]["totalTokens"] == 200
+    assert item.metrics["requestUsage"]["requestCount"] == 3
+    assert item.metrics["requestUsage"]["coverage"] == "partial"
+    assert db.get(AgentRun, run.id).status == AgentRunStatus.SUCCEEDED.value
 
 
 def test_explicit_ask_for_question_ideas_answers_with_chips_once(db, monkeypatch):
