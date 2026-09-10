@@ -116,3 +116,41 @@ def test_every_migration_can_be_rolled_back(migrated_database):
         engine.dispose()
 
     assert current is None
+
+
+def test_native_attachment_migration_preserves_original_identity_and_membership(migrated_database):
+    from sqlalchemy.orm import Session
+    from app.models import User, Conversation, Message
+    config = _alembic_config(migrated_database)
+    upgrade(config, "0010_conversation_attachments")
+    engine = sa.create_engine(migrated_database)
+    identifier = uuid.uuid4()
+    try:
+        with Session(engine) as db:
+            user = User(email="native-migration@example.test", display_name="Migration fixture")
+            db.add(user)
+            db.flush()
+            conversation = Conversation(user_id=user.id, title="Original files")
+            db.add(conversation)
+            db.flush()
+            message = Message(conversation_id=conversation.id, role="user", content="Read the statement", widgets=[], citations=[])
+            db.add(message)
+            db.flush()
+            table = sa.Table("conversation_attachments", sa.MetaData(), autoload_with=engine)
+            db.execute(table.insert().values(id=identifier, user_id=user.id, conversation_id=conversation.id, message_id=message.id,
+                filename="statement.pdf", byte_size=120, storage_key="chat/originals/migration-fixture", sha256="a" * 64,
+                status="ready", media_type="application/pdf", read_mode="mixed", reader_version=1,
+                content_metadata={"pageCount": 2, "chunkCount": 1, "readerVersion": 1, "visualPages": [2]}))
+            message_id = message.id
+            db.commit()
+        upgrade(config, "head")
+        with engine.connect() as connection:
+            row = connection.execute(sa.text("SELECT * FROM conversation_attachments WHERE id = :id"), {"id": identifier}).mappings().one()
+            assert row["message_id"] == message_id
+            assert row["storage_key"] == "chat/originals/migration-fixture"
+            assert row["sha256"] == "a" * 64
+            assert row["read_mode"] == "native"
+            assert row["content_metadata"] == {"pageCount": 2}
+            assert "attachment_chunks" not in sa.inspect(connection).get_table_names()
+    finally:
+        engine.dispose()

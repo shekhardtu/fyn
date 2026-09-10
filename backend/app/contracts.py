@@ -4,8 +4,9 @@ import hashlib
 import json
 
 from pydantic import BaseModel
+from .schemas import AttachmentOut, AttachmentUploadIn, AttachmentUploadOut
 
-from .config import CSV_UPLOAD_MAX_BYTES
+from .config import ATTACHMENT_UPLOAD_MAX_BYTES, ATTACHMENTS_PER_MESSAGE, CSV_UPLOAD_MAX_BYTES
 from .contact_schemas import ContactSuggestionOut
 from .finance_schemas import AccountCreateIn, AccountRecordOut, BudgetSaveIn, BudgetRecordOut, GoalSaveIn, GoalRecordOut, GoalContributionIn
 from .domain import EDITABLE_TRANSACTION_TYPES
@@ -122,6 +123,9 @@ from .schemas import (
 
 
 FRONTEND_CONTRACT_MODELS: tuple[type[BaseModel], ...] = (
+    AttachmentOut,
+    AttachmentUploadIn,
+    AttachmentUploadOut,
     ContactSuggestionOut,
     CreatePersonalLoanIn,
     DocumentRequestIn,
@@ -254,6 +258,8 @@ def frontend_contract_bundle() -> dict:
         },
         "limits": {
             "csvUploadBytes": CSV_UPLOAD_MAX_BYTES,
+            "attachmentUploadBytes": ATTACHMENT_UPLOAD_MAX_BYTES,
+            "attachmentsPerMessage": ATTACHMENTS_PER_MESSAGE,
         },
         "schemas": {
             model.__name__: model.model_json_schema(mode="serialization", by_alias=True)

@@ -124,6 +124,9 @@ describe("readComposerEntry", () => {
   });
 
   it("stays silent rather than guessing wrong", () => {
+    expect(readComposerEntry("Review my finances for September 2026. Summarize my income and expenses.")).toBeNull();
+    expect(readComposerEntry("Compare ₹500 of expenses with last month")).toBeNull();
+    expect(readComposerEntry("Can you analyze my 2026 income")).toBeNull();
     expect(readComposerEntry("Show my last 5 transactions")).toBeNull();
     expect(readComposerEntry("How much did I spend this month?")).toBeNull();
     expect(readComposerEntry("")).toBeNull();

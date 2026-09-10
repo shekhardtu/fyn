@@ -3,6 +3,8 @@ import { Check, Clock3, Copy, Ellipsis, Hash, Loader2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { MessageDeliveryTime } from "@/components/message-delivery-time";
 import { Button } from "@/components/ui/button";
+import { AttachmentCard } from "@/components/attachment-card";
+import type { AttachmentOut } from "@/lib/generated/contracts";
 
 type CopyTarget = "message" | "id";
 type CopyState = { target: CopyTarget; result: "copied" | "failed" } | null;
@@ -14,10 +16,11 @@ const PERSISTED_MESSAGE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0
  * so dragging, double-clicking, or long-pressing the bubble can never trigger
  * an unrelated action.
  */
-export function UserMessage({ content, messageId, deliveredAt }: {
+export function UserMessage({ content, messageId, deliveredAt, attachments = [] }: {
   content: string;
   messageId: string;
   deliveredAt: string;
+  attachments?: AttachmentOut[];
 }) {
   const [copyState, setCopyState] = useState<CopyState>(null);
   const revertTimer = useRef<number | undefined>(undefined);
@@ -48,6 +51,7 @@ export function UserMessage({ content, messageId, deliveredAt }: {
   }
 
   return <div className="user-message relative ml-auto w-fit max-w-full">
+    {attachments.length ? <div aria-label="Message attachments" className="mb-2 flex max-w-full flex-wrap justify-end gap-2">{attachments.map((file) => <AttachmentCard key={file.id} file={file} />)}</div> : null}
     <p
       data-message-content
       className="cursor-text select-text break-words whitespace-pre-wrap rounded-xl rounded-br-sm bg-secondary px-4 py-3 text-left text-body leading-6 text-on-secondary"

@@ -10,7 +10,7 @@ import sys
 from typing import Any, ForwardRef, get_type_hints
 
 from agno.tools import tool
-from agno.tools.function import Function
+from agno.tools.function import Function, ToolResult
 from pydantic import BaseModel, create_model
 
 
@@ -135,6 +135,10 @@ def bind_existing_tool(
             result = bound(*args, **kwargs)
         if contract and contract.output_model:
             result = contract.output_model.model_validate(result).model_dump(mode="json", exclude_none=True)
+        # Preserve Agno's native media transport. Converting ToolResult to JSON
+        # would stringify its files/images and silently lose the model input.
+        if isinstance(result, ToolResult):
+            return result
         # Agno tool results must be safe to place in a model message. Converting
         # at this one boundary also handles dates, UUIDs, Decimals and Pydantic
         # values returned by future SSOT functions.

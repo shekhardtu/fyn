@@ -18,6 +18,10 @@ from .provider_usage import UsageObservedClient
 
 
 _NOTICES = {
+    "provider_context_too_large": (
+        "These files and the conversation exceed the model’s reading capacity. "
+        "Send fewer files or split a large document into smaller sections. The originals remain saved."
+    ),
     "provider_quota_exhausted": (
         "Fyn’s AI service has reached its usage limit. Requests that need AI are unavailable "
         "until service capacity is restored. You can still use the app’s transaction forms."
@@ -70,7 +74,7 @@ class ProviderUnavailableError(RuntimeError):
         # Agno retains .type as RunErrorEvent.error_type, even when it catches
         # the exception and replaces RunOutput.content with a plain string.
         self.type = self.code
-        self.title = "AI service unavailable"
+        self.title = "Too much content for one request" if self.code == "provider_context_too_large" else "AI service unavailable"
         self.notice = _NOTICES[self.code]
         self.retryable = self.code in {"provider_rate_limited", "provider_unavailable"}
         super().__init__(f"{self.title}. {self.notice}")
@@ -101,6 +105,8 @@ class ProviderUnavailableError(RuntimeError):
                 return cls(code)
         if codes & _QUOTA_CODES:
             return cls("provider_quota_exhausted")
+        if codes & {"context_length_exceeded", "context_window_exceeded", "context_window_exceeded_error", "ContextWindowExceededError", "input_file_too_large"}:
+            return cls("provider_context_too_large")
         if codes & {"invalid_api_key", "authentication_error", "model_authentication_error"}:
             return cls("provider_authentication_failed")
         if "rate_limit_exceeded" in codes:

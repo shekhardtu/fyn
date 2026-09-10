@@ -24,6 +24,7 @@ from app.services.agent_run_metrics import agent_metric_snapshot, begin_agent_me
     ("organization_usage_limit_exceeded", "provider_quota_exhausted"),
     ("rate_limit_exceeded", "provider_rate_limited"),
     ("invalid_api_key", "provider_authentication_failed"),
+    ("context_length_exceeded", "provider_context_too_large"),
 ])
 def test_structured_provider_codes_are_classified_without_exposing_diagnostics(code, expected):
     response = httpx.Response(429, request=httpx.Request("POST", "https://api.openai.com/v1/responses"))

@@ -45,6 +45,21 @@ beforeEach(() => {
 });
 
 describe("durable agent response handling", () => {
+  it("hands off file IDs alongside effort without embedding file contents in chat", async () => {
+    runAgentMock.mockImplementation(async (input, subscriber) => {
+      expect(input.forwardedProps).toEqual({ fynEffort: "thorough", fynAttachmentIds: ["file-1"] });
+      subscriber.onRunErrorEvent({ event: { message: "Test complete", code: "test" } });
+    });
+    await expect(sendAgentMessage("attachment-thread", "Read the file", undefined, undefined, "thorough", ["file-1"])).rejects.toThrow("Test complete");
+  });
+  it("forwards effort as metadata without rewriting the user's message", async () => {
+    runAgentMock.mockImplementation(async (input, subscriber) => {
+      expect(input.forwardedProps).toEqual({ fynEffort: "thorough" });
+      subscriber.onRunErrorEvent({ event: { message: "Test complete", code: "test" } });
+    });
+    await expect(sendAgentMessage("composer-effort-thread", "Compare my spending", undefined, undefined, "thorough")).rejects.toThrow("Test complete");
+    expect(runAgentMock).toHaveBeenCalledOnce();
+  });
   it("starts an ordinary run without waiting for capability discovery", async () => {
     let releaseCapabilities: ((value: unknown) => void) | undefined;
     fetchMock.mockReturnValueOnce(new Promise((resolve) => { releaseCapabilities = resolve; }));

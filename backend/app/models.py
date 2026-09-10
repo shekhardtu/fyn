@@ -304,6 +304,35 @@ class Message(UUIDPrimaryKeyMixin, ConversationChildMixin, TimestampMixin, Base)
         server_default=func.now(),
     )
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
+    attachments: Mapped[list["ConversationAttachment"]] = relationship(
+        back_populates="message", lazy="selectin", order_by="ConversationAttachment.created_at",
+    )
+
+
+class ConversationAttachment(UUIDPrimaryKeyMixin, UserOwnedMixin, ConversationChildMixin, TimestampMixin, Base):
+    """One immutable R2 original, staged in a thread then bound to one message."""
+    __tablename__ = "conversation_attachments"
+    message_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("messages.id", ondelete="CASCADE"), index=True)
+    filename: Mapped[str] = mapped_column(String(240))
+    byte_size: Mapped[int] = mapped_column(BigInteger)
+    media_type: Mapped[str] = mapped_column(String(80), default="application/octet-stream")
+    storage_key: Mapped[str] = mapped_column(String(240), unique=True)
+    sha256: Mapped[Optional[str]] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(24), default="uploading", index=True)
+    read_mode: Mapped[str] = mapped_column(String(24), default="unavailable")
+    read_error: Mapped[Optional[str]] = mapped_column(String(300))
+    content_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), index=True)
+    message: Mapped[Optional[Message]] = relationship(back_populates="attachments")
+    __table_args__ = (CheckConstraint("byte_size > 0", name="ck_attachment_size_positive"),)
+
+
+class ObjectDeletion(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Transactional outbox: private object cleanup survives domain deletion."""
+    __tablename__ = "object_deletions"
+    storage_key: Mapped[str] = mapped_column(String(240), unique=True)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class AgentRun(UUIDPrimaryKeyMixin, UserOwnedMixin, ConversationChildMixin, TimestampMixin, Base):

@@ -39,7 +39,7 @@ from ag_ui.core import (
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from ..config import get_settings
+from ..config import ATTACHMENTS_PER_MESSAGE, get_settings
 from ..domain import AgentInterruptStatus, AgentRunStatus, DraftState, ExecutionStatus, WidgetActionId
 from ..event_time import now_utc
 from ..models import AgentEvent, AgentInterrupt, AgentRun, Conversation, Message, TransactionDraft, User
@@ -467,6 +467,7 @@ class DurableEventPublisher:
                     )
             if terminal_status is not None:
                 run.status = terminal_status.value
+                _discard_empty_reply(db, run)
                 run.finished_at = terminal_at
                 run.recovery_phase = None
                 run.recovery_payload = {}
@@ -580,11 +581,27 @@ def normalize_run_input(value: RunAgentInput) -> tuple[dict[str, Any], str | Non
                 raise InvalidAgentInput("This Fyn endpoint does not yet accept non-text AG-UI message parts")
             text_parts.append(str(part.text))
         text = "\n".join(text_parts)
+    from .composer_effort import COMPOSER_EFFORTS
+
+    effort = forwarded.get("fynEffort", "auto")
+    if not isinstance(effort, str) or effort not in COMPOSER_EFFORTS:
+        raise InvalidAgentInput("fynEffort must be auto, quick, or thorough")
     validated = ChatRequest(text=text, conversation_id=UUID(value.thread_id))
+    attachment_ids = forwarded.get("fynAttachmentIds", [])
+    if not isinstance(attachment_ids, list) or len(attachment_ids) > ATTACHMENTS_PER_MESSAGE or any(not isinstance(value, str) for value in attachment_ids):
+        raise InvalidAgentInput("fynAttachmentIds must contain at most five attachment IDs")
+    try:
+        attachment_ids = [str(UUID(value)) for value in attachment_ids]
+    except ValueError as error:
+        raise InvalidAgentInput("fynAttachmentIds must contain valid attachment IDs") from error
+    if len(set(attachment_ids)) != len(attachment_ids):
+        raise InvalidAgentInput("Each attachment may be included once")
     return {
         "kind": "message",
         "text": validated.text,
         "messageId": user_message.id,
+        **({"effort": effort} if effort != "auto" else {}),
+        **({"attachmentIds": attachment_ids} if attachment_ids else {}),
     }, user_message.id
 
 
@@ -647,6 +664,15 @@ def _wait_for_blocker(
         time.sleep(0.25)
 
 
+def _discard_empty_reply(db: Session, run: AgentRun) -> None:
+    identifier = run.input_payload.get("sourceAssistantMessageId")
+    if not identifier:
+        return
+    reply = db.get(Message, UUID(identifier))
+    if reply is not None and reply.conversation_id == run.conversation_id and reply.role == "assistant" and not reply.content and not reply.widgets:
+        db.delete(reply)
+
+
 def _update_run(
     session_factory: sessionmaker[Session],
     run_id: UUID,
@@ -667,6 +693,7 @@ def _update_run(
             if run.started_at is None:
                 run.started_at = now
         if status.value in TERMINAL_RUN_STATUSES:
+            _discard_empty_reply(db, run)
             run.finished_at = now
             run.recovery_phase = None
             run.recovery_payload = {}
@@ -2015,15 +2042,30 @@ def execute_run(
             command = run.input_payload
             kind = command.get("kind")
             if kind == "message":
-                response = handle_chat(
-                    db,
-                    user,
-                    conversation,
-                    str(command["text"]),
-                    on_activity,
-                    on_text_delta,
-                    on_reasoning_delta,
-                )
+                from .composer_effort import composer_effort
+
+                source_message = None
+                source_reply = None
+                if command.get("sourceUserMessageId"):
+                    source_message = db.get(Message, UUID(command["sourceUserMessageId"]))
+                    if source_message is None:
+                        raise ValueError("The queued request's source message is no longer available")
+                if command.get("sourceAssistantMessageId"):
+                    source_reply = db.get(Message, UUID(command["sourceAssistantMessageId"]))
+                    if source_reply is None:
+                        raise ValueError("The queued request's reserved reply is no longer available")
+                with composer_effort(command.get("effort", "auto")):
+                    response = handle_chat(
+                        db,
+                        user,
+                        conversation,
+                        str(command["text"]),
+                        on_activity,
+                        on_text_delta,
+                        on_reasoning_delta,
+                        **({"source_user_message": source_message} if source_message is not None else {}),
+                        **({"source_assistant_message": source_reply} if source_reply is not None else {}),
+                    )
                 # The reasoning channel stays empty unless the provider actually
                 # emitted reasoning; the widget summary falls back to the
                 # activity trace on its own without faking a thought stream.
@@ -2275,6 +2317,7 @@ def claim_agent_recovery_work(
             run.recovery_phase = None
             run.recovery_payload = {}
             run.recovery_claimed_at = None
+            _discard_empty_reply(db, run)
             db.commit()
             return AgentRecoveryWork(None, None)
 
@@ -2309,6 +2352,7 @@ def claim_agent_recovery_work(
             run.recovery_phase = None
             run.recovery_payload = {}
             run.recovery_claimed_at = None
+            _discard_empty_reply(db, run)
             db.commit()
             return AgentRecoveryWork(None, None)
 

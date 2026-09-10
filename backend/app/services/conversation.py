@@ -437,6 +437,8 @@ def _prior_grounding_citations(
     ))
     if source is None or not source.citations:
         return []
+    if all(item.get("query", {}).get("source_kind") == "user_attachment" for item in source.citations):
+        return []
     if not _lineage_numbers(reply).issubset(_lineage_numbers(source.content)):
         return []
     try:
@@ -600,11 +602,15 @@ _clarification_resume_guard: ContextVar[dict[str, Any] | None] = ContextVar(
     default=None,
 )
 
-def _reserve_reply(db: Session, conversation: Conversation) -> Message:
+def _reserve_reply(db: Session, conversation: Conversation, source: Message | None = None) -> Message:
     """Writes the empty row this turn's reply will be filled into."""
-    reply = Message(conversation_id=conversation.id, role="assistant", content="", widgets=[], citations=[])
-    db.add(reply)
-    db.flush()
+    reply = source
+    if reply is None:
+        reply = Message(conversation_id=conversation.id, role="assistant", content="", widgets=[], citations=[])
+        db.add(reply)
+        db.flush()
+    elif reply.conversation_id != conversation.id or reply.role != "assistant" or reply.content or reply.widgets:
+        raise ValueError("The reserved assistant message belongs to a different or completed request")
     _reserved_reply.set(reply)
     return reply
 
@@ -642,6 +648,7 @@ def _recent_complete_turn_context(
                 Message.conversation_id == conversation.id,
                 Message.role == "user",
                 Message.id != current_user_message.id,
+                tuple_(Message.created_at, Message.id) < (current_user_message.created_at, current_user_message.id),
                 *_history_only(),
             )
             .order_by(Message.created_at.desc(), Message.id.desc())
@@ -658,6 +665,7 @@ def _recent_complete_turn_context(
                 Message.conversation_id == conversation.id,
                 Message.id != current_user_message.id,
                 tuple_(Message.created_at, Message.id) >= (oldest.created_at, oldest.id),
+                tuple_(Message.created_at, Message.id) < (current_user_message.created_at, current_user_message.id),
                 *_history_only(),
             )
             .order_by(Message.created_at, Message.id)
@@ -5991,6 +5999,9 @@ def handle_chat(
     activity_callback: ActivityCallback | None = None,
     text_delta_callback: TextDeltaCallback | None = None,
     reasoning_delta_callback: ReasoningDeltaCallback | None = None,
+    *,
+    source_user_message: Message | None = None,
+    source_assistant_message: Message | None = None,
 ) -> AgentResponse:
     """Runs one conversational turn, question and answer as a single unit."""
     with _reply_reservation(db):
@@ -6002,11 +6013,13 @@ def handle_chat(
             activity_callback,
             text_delta_callback,
             reasoning_delta_callback,
+            source_user_message=source_user_message,
+            source_assistant_message=source_assistant_message,
         )
         # The turn persisted the question on its way to the answer. Handing the
         # stored ID back with the reply lets the client retire the provisional
         # identity it rendered the sent bubble with.
-        response.user_message_id = db.scalar(
+        response.user_message_id = source_user_message.id if source_user_message is not None else db.scalar(
             select(Message.id)
             .where(
                 Message.conversation_id == conversation.id,
@@ -6150,6 +6163,7 @@ def _run_turn(
     reasoning_delta_callback: ReasoningDeltaCallback | None = None,
     *,
     source_user_message: Message | None = None,
+    source_assistant_message: Message | None = None,
     recent_context_override: list[dict[str, Any]] | None = None,
     resolved_intent: ResolvedIntentContract | None = None,
     resolved_taxonomy: TaxonomyInterpretation | None = None,
@@ -6286,17 +6300,17 @@ def _run_turn(
     if source_user_message is None:
         user_message = Message(conversation_id=conversation.id, role="user", content=text, widgets=[], citations=[])
         db.add(user_message)
-        if conversation.title == "Financial check-in":
-            conversation.title = text[:54] + ("…" if len(text) > 54 else "")
         db.flush()
     else:
         if source_user_message.conversation_id != conversation.id or source_user_message.role != "user":
             raise ValueError("Clarification source message belongs to a different workflow")
         user_message = source_user_message
+    if conversation.title == "Financial check-in":
+        conversation.title = text[:54] + ("…" if len(text) > 54 else "")
     # The answer's place in the transcript is decided here, with the question,
     # rather than whenever the model happens to finish. Two turns in flight at
     # once can then only finish out of order, not read out of order.
-    reserved_reply = _reserve_reply(db, conversation)
+    reserved_reply = _reserve_reply(db, conversation, source_assistant_message)
     emit(
         "request",
         "Request received",
@@ -6988,6 +7002,11 @@ def _run_turn(
                 for tool in runtime_tools
                 if getattr(tool, "name", None) == FINANCIAL_CALCULATOR_TOOL_NAME
             ]
+        from .attachment_tools import AttachmentContext
+        attachment_context = AttachmentContext(db, user.id, conversation.id, user_message.id)
+        attachment_manifest = attachment_context.manifest()
+        if attachment_manifest:
+            runtime_tools = [*runtime_tools, *attachment_context.tools()]
         analysis_context = AnalysisToolContext(
             db=db,
             user_id=user.id,
@@ -7145,6 +7164,7 @@ def _run_turn(
                 user.timezone,
                 recent_context,
                 workflow_context=workflow_context,
+                attachments=attachment_context if attachment_manifest else None,
                 model_id=settings.operator_model,
                 user_id=user.id,
                 runtime_tools=runtime_tools,
@@ -7386,6 +7406,12 @@ def _run_turn(
                     intent_contract=turn_intent,
                 )
             direct_validation_mode = answer_validation_mode(db, user.id)
+            document_citations = [DataReference(
+                label=f"{source.filename} · document interpretation",
+                entity_type="conversation_attachment", entity_ids=[source.id],
+                query={"source_kind": "user_attachment", "interpretation": "native_model",
+                       "conversation_id": str(conversation.id), "filename": source.filename},
+            ) for source in direct_result.attachment_sources]
             contextual_financial_read = bool(
                 prompt_analysis_state
                 and context_relationship
@@ -7405,6 +7431,7 @@ def _run_turn(
                 direct_validation_mode is not AnswerValidationMode.OFF
                 and not direct_result.tool_grounding
                 and not inherited_citations
+                and not document_citations
                 and (looks_like_financial_query(text) or contextual_financial_read)
                 and contains_financial_claim(direct_reply)
             )
@@ -7421,7 +7448,11 @@ def _run_turn(
                     re.I,
                 )
             )
-            direct_mutation_claim = claims_settings_mutation or bool(
+            document_mutation_claim = bool(document_citations and re.search(
+                r"\bI(?:'ve| have)?\s+(?:added|created|deleted|removed|recorded|saved|updated|changed)\b"
+                r"[^.!?\n]{0,60}\b(?:transaction|account|budget|goal|ledger|record)\b", direct_reply, re.I,
+            ))
+            direct_mutation_claim = claims_settings_mutation or document_mutation_claim or bool(
                 not direct_result.tool_grounding
                 and re.search(
                     r"\b(?:added|created|deleted|removed|recorded|saved|updated|changed|set)\b",
@@ -7543,17 +7574,23 @@ def _run_turn(
                     ),
                     validation_confidence=1.0,
                 )
-                response = _dispatch_decision(
-                    db,
-                    user,
-                    conversation,
-                    text,
-                    direct_decision,
-                    execute,
-                    emit,
-                    intent_contract=turn_intent,
-                    inherited_citations=inherited_citations,
-                )
+                if document_citations and not direct_result.tool_grounding:
+                    # Original-document observations have source provenance,
+                    # not deterministic ledger evidence. Required financial
+                    # handoffs and mutation checks above still apply.
+                    emit("attachment_source", "Read the original attachments", ExecutionStatus.COMPLETED,
+                         "native_file_input", "Model interpretation of uploaded documents; no saved-ledger values were verified.")
+                    response = persist_agent_response(db, conversation, direct_reply, citations=document_citations)
+                else:
+                    response = _dispatch_decision(
+                        db, user, conversation, text, direct_decision, execute, emit,
+                        intent_contract=turn_intent, inherited_citations=inherited_citations,
+                    )
+                    if document_citations:
+                        response.citations.extend(document_citations)
+                        stored_reply = db.get(Message, response.message_id)
+                        if stored_reply is not None:
+                            stored_reply.citations = [item.model_dump(mode="json") for item in response.citations]
                 if text_delta_callback and not direct_result.streamed_live:
                     text_delta_callback(response.message_id, response.message)
                 return response

@@ -25,6 +25,7 @@ from ..models import (
     Budget,
     Category,
     Conversation,
+    ConversationAttachment,
     Dashboard,
     DashboardTile,
     DataSource,
@@ -128,6 +129,7 @@ class DependentDataSpec:
 # This order is also a safe explicit deletion order when a database does not
 # enforce every ON DELETE action (for example, a lightweight test database).
 OWNED_USER_DATA: tuple[OwnedDataSpec, ...] = (
+    OwnedDataSpec(ConversationAttachment, redacted_columns=("storage_key",)),
     # Enrichment references runs/messages and must be removed before either
     # parent in databases that do not enforce cascading foreign keys.
     OwnedDataSpec(AgentEnrichment),
@@ -356,6 +358,8 @@ def export_user_data(db: Session, user: User) -> dict[str, Any]:
 def delete_user_data(db: Session, user: User) -> int:
     """Delete all registered relational data and Agno memory for one user."""
     deleted_memories = clear_user_memories(user.id)
+    from .attachments import remove_attachments
+    remove_attachments(db, list(db.scalars(select(ConversationAttachment).where(ConversationAttachment.user_id == user.id))))
     participants = list(db.scalars(select(SharedRecordParticipant).where(
         SharedRecordParticipant.member_user_id == user.id
     )))

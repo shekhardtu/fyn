@@ -23,6 +23,10 @@ retry deduplication, explicit-over-model precedence, invalid-date correction,
 and bounded follow-up provenance. Existing conversation/runtime tests also run.
 Tests use a blank provider key and make no paid LLM requests.
 
+The shared workspace also passed 1,072 backend tests and a focused 183-test
+intake/conversation rerun after the final account-name grounding guard. Those
+local results are retained alongside the isolated PR verification below.
+
 Verification on 2026-09-09: the isolated RCA checkout initially passed 1,069
 backend tests, including 38 new intake regressions. After incorporating the
 updated `main` at `1422887c47962bf71de80fb4d4f8aa8cb185a295` (account-deletion

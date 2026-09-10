@@ -92,6 +92,8 @@ def render_types(bundle: dict) -> str:
                 continue
             output_name = field.serialization_alias or field.alias or name
             optional = "?" if model.__name__ in widget_data_model_names and name in {"lifecycle", "completion"} else ""
+            if model.__name__ == "MessageOut" and name == "attachments":
+                optional = "?"  # Compatible with transcripts cached before file support.
             lines.append(f"  {output_name}{optional}: {ts_type(field.annotation)};")
         lines.append("}")
     lines.append("export interface WidgetDataByType {")

@@ -311,6 +311,29 @@ export const AgentTokenUsage = z.looseObject({
   "cacheWriteTokens": z.union([z.int().min(0), z.null()]).default(null),
   "reasoningTokens": z.union([z.int().min(0), z.null()]).default(null),
 });
+export const AttachmentOut = z.looseObject({
+  "id": z.uuid(),
+  "conversation_id": z.uuid(),
+  "message_id": z.union([z.uuid(), z.null()]),
+  "filename": z.string(),
+  "byte_size": z.int(),
+  "media_type": z.string(),
+  "status": z.enum(["uploading", "ready"]),
+  "read_mode": z.enum(["native", "unavailable"]),
+  "read_error": z.union([z.string(), z.null()]),
+  "content_metadata": z.record(z.string(), z.unknown()),
+  "created_at": z.iso.datetime(),
+});
+export const AttachmentUploadIn = z.looseObject({
+  "filename": z.string().min(1).max(240),
+  "byte_size": z.int().gt(0).max(10485760),
+});
+export const AttachmentUploadOut = z.looseObject({
+  "attachment": AttachmentOut,
+  "upload_url": z.string(),
+  "headers": z.record(z.string(), z.unknown()),
+  "expires_in": z.int(),
+});
 export const FeatureAvailabilityOut = z.looseObject({
   "personalLending": z.boolean(),
 });
@@ -363,6 +386,7 @@ export const MessageOut = z.looseObject({
   "citations": z.array(DataReference),
   "created_at": z.iso.datetime(),
   "delivered_at": z.iso.datetime(),
+  "attachments": z.array(AttachmentOut).optional(),
 });
 export const ConversationOut = z.looseObject({
   "id": z.uuid(),
@@ -1421,6 +1445,9 @@ export const schemas = {
   AgentTokenUsage,
   AgentToolCallMetrics,
   AgentUsageAttempt,
+  AttachmentOut,
+  AttachmentUploadIn,
+  AttachmentUploadOut,
   AuthStatusOut,
   AvoidableExpensesData,
   BootstrapResponse,
