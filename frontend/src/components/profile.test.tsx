@@ -47,7 +47,7 @@ function renderProfile(profile: object = PROFILE) {
       }
       return jsonResponse(profile);
     }
-    if (url.endsWith("/api/document-assets")) return jsonResponse([]);
+    if (url.includes("/api/files?purpose=document")) return jsonResponse([]);
     throw new Error(`Unexpected request: ${url}`);
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

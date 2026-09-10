@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-import io
+
+import pytest
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.api import current_user, router
+from app.api_files import router as files_router
+from file_helpers import upload_file
+
+pytestmark = pytest.mark.usefixtures("file_store")
 from app.database import get_db
 from app.models import SourceRecord, User
 from app.seed import default_user
@@ -19,18 +24,18 @@ CSV_TWO = CSV_ONE + "2026-08-03,Big Basket,900,Groceries\n"
 def client_for(db, user) -> TestClient:
     application = FastAPI()
     application.include_router(router)
+    application.include_router(files_router)
     application.dependency_overrides[get_db] = lambda: db
     application.dependency_overrides[current_user] = lambda: user
     return TestClient(application)
 
 
 def upload(client, body: str, name: str | None = None, filename: str = "expenses.csv"):
-    data = {"name": name} if name else {}
-    return client.post(
-        "/sources/spreadsheet",
-        files={"file": (filename, io.BytesIO(body.encode()), "text/csv")},
-        data=data,
-    )
+    conversation = client.post("/conversations", json={"title": "Source files"}).json()
+    saved = upload_file(client, filename, body.encode(), conversation_id=conversation["id"])
+    if saved.status_code != 200:
+        return saved
+    return client.post("/sources/spreadsheet", json={"file_id": saved.json()["id"], "name": name})
 
 
 def test_upload_reupload_and_annotate_walk_the_manifest_versions(db):
@@ -78,7 +83,7 @@ def test_foreign_sources_return_404_and_bad_uploads_are_typed(db):
     )
     assert forbidden.status_code == 404
 
-    assert upload(owner_client, CSV_ONE, filename="data.xlsx").status_code == 415
+    assert upload(owner_client, CSV_ONE, filename="data.xlsx").status_code == 422
     assert upload(owner_client, "").status_code == 422
     huge = "a,b\n" + "\n".join("1,2" for _ in range(5001))
     assert upload(owner_client, huge).status_code == 422

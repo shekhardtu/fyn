@@ -12,6 +12,8 @@ from pypdf import PdfReader
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
+from file_helpers import upload_file
+from app.api_files import router as files_router
 from app.api_lending import router
 from app.database import get_db
 from app.event_time import now_utc
@@ -60,6 +62,7 @@ def _user(db, *, name: str, email: str | None = None, phone: str | None = None) 
 def _client(db, user: User | None, *, settings=None) -> TestClient:
     application = FastAPI()
     application.include_router(router)
+    application.include_router(files_router)
     application.dependency_overrides[get_db] = lambda: db
     if user is not None:
         application.dependency_overrides[current_user] = lambda: user
@@ -291,14 +294,10 @@ def test_lender_requests_documents_and_borrower_fulfills_from_private_library(db
     assert blocked.status_code == 422
     assert "required documents" in blocked.json()["detail"]
 
-    upload = rahul_client.post(
-        "/document-assets",
-        data={"classification": "transfer_receipt", "description": "UPI transfer receipt"},
-        files={"file": ("transfer.pdf", b"%PDF-1.4\n% transfer receipt\n", "application/pdf")},
-    )
-    assert upload.status_code == 201, upload.text
+    upload = upload_file(rahul_client, "transfer.pdf", b"%PDF-1.4\n% transfer receipt\n", **{"classification": "transfer_receipt", "description": "UPI transfer receipt"})
+    assert upload.status_code == 200, upload.text
     library_asset = upload.json()
-    library = rahul_client.get("/document-assets")
+    library = rahul_client.get("/files")
     assert [item["id"] for item in library.json()] == [library_asset["id"]]
 
     fulfilled = rahul_client.post(
@@ -316,7 +315,7 @@ def test_lender_requests_documents_and_borrower_fulfills_from_private_library(db
     assert replacement["documentRequests"][0]["fulfilledAsset"]["id"] != library_asset["id"]
     assert len(replacement["documentRevision"]["acceptances"]) == 1
     assert replacement["documentRevision"]["acceptances"][0]["participantName"] == "Evidence Rahul"
-    assert [item["id"] for item in rahul_client.get("/document-assets").json()] == [library_asset["id"]]
+    assert [item["id"] for item in rahul_client.get("/files").json()] == [library_asset["id"]]
 
     accepted = hari_client.post(
         f"/loan-agreements/{loan['id']}/accept",
@@ -576,21 +575,13 @@ def test_supporting_document_is_bound_to_revision_and_exported_as_evidence(db, t
     hari_client = _client(db, hari, settings=settings)
     rahul_client = _client(db, rahul, settings=settings)
 
-    uploaded = hari_client.post(
-        "/document-assets",
-        data={"classification": "external_agreement", "description": "Existing signed note"},
-        files={"file": ("signed-note.pdf", b"%PDF-1.4\n% private evidence\n", "application/pdf")},
-    )
-    assert uploaded.status_code == 201, uploaded.text
+    uploaded = upload_file(hari_client, "signed-note.pdf", b"%PDF-1.4\n% private evidence\n", **{"classification": "external_agreement", "description": "Existing signed note"})
+    assert uploaded.status_code == 200, uploaded.text
     asset = uploaded.json()
-    assert asset["originalFilename"] == "signed-note.pdf"
-    assert asset["state"] == "clean"
+    assert asset["filename"] == "signed-note.pdf"
+    assert asset["document_state"] == "clean"
 
-    mismatch = hari_client.post(
-        "/document-assets",
-        data={"classification": "supporting_evidence"},
-        files={"file": ("not-really.pdf", b"\x89PNG\r\n\x1a\ncontent", "application/pdf")},
-    )
+    mismatch = upload_file(hari_client, "not-really.pdf", b"\x89PNG\r\n\x1a\ncontent", **{"classification": "supporting_evidence"})
     assert mismatch.status_code == 422
     assert "do not match" in mismatch.json()["detail"]
 
@@ -623,7 +614,7 @@ def test_supporting_document_is_bound_to_revision_and_exported_as_evidence(db, t
     assert len(revision["acceptances"][0]["userAgentHash"]) == 64
 
     stranger = _user(db, name="Stranger", email="stranger-evidence@example.test")
-    assert _client(db, stranger, settings=settings).get(f"/document-assets/{asset['id']}/download").status_code == 404
+    assert _client(db, stranger, settings=settings).get(f"/files/{asset['id']}/content").status_code == 404
 
     token = loan["invitation"]["sharePath"].rsplit("/", 1)[-1]
     assert rahul_client.post(f"/loan-invitations/{token}/redeem").status_code == 200
@@ -645,7 +636,7 @@ def test_supporting_document_is_bound_to_revision_and_exported_as_evidence(db, t
 
     shared_asset_id = revision["assets"][0]["id"]
     assert shared_asset_id != asset["id"]
-    downloaded = rahul_client.get(f"/document-assets/{shared_asset_id}/download")
+    downloaded = rahul_client.get(f"/files/{shared_asset_id}/content")
     assert downloaded.status_code == 200
     assert downloaded.content.startswith(b"%PDF-1.4")
     saved_asset = db.get(DocumentAsset, UUID(shared_asset_id))

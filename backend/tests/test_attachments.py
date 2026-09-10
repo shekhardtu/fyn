@@ -16,14 +16,15 @@ from pypdf import PdfWriter
 from sqlalchemy import select
 
 from app.api import router as chat_router
-from app.api_attachments import router
-from app.config import ATTACHMENT_UPLOAD_MAX_BYTES as MAX_FILE_BYTES, Settings
+from app.api_files import router
+from app.config import FILE_UPLOAD_MAX_BYTES as MAX_FILE_BYTES, Settings
 from app.database import get_db
 from app.event_time import now_utc
 from app.models import Conversation, ConversationAttachment, Message, ObjectDeletion, User
 from app.schemas import ConversationOut
 from app.security import current_user
-from app.services import attachment_tools, attachments
+from app.services import attachments, files
+from app.services.file_cleanup import cleanup_files
 from app.services.agui import normalize_run_input
 from app.services.attachment_validation import validate_file
 from app.services.attachment_tables import summarize_table
@@ -32,37 +33,8 @@ from app.services.conversation import handle_chat
 from app.services.conversation import _recent_complete_turn_context
 
 
-class FakeStore:
-    objects = None
-
-    def __init__(self, settings):
-        pass
-
-    def upload_url(self, key, size):
-        return "https://r2.invalid/upload"
-
-    def read(self, key, limit, *, digest=None):
-        content = self.objects[key]
-        if len(content) > limit:
-            raise ValueError("too large")
-        return content
-
-    def write(self, key, content, media_type):
-        self.objects[key] = content
-
-    def delete(self, key):
-        self.objects.pop(key, None)
-
-    def download_url(self, key, filename, media_type, *, inline=False):
-        return "https://r2.invalid/private-download"
-
-
 @pytest.fixture()
-def setup(db, monkeypatch):
-    FakeStore.objects = {}
-    monkeypatch.setattr(attachments, "R2ObjectStore", FakeStore)
-    monkeypatch.setattr(attachment_tools, "R2ObjectStore", FakeStore)
-    monkeypatch.setattr("app.api_attachments.R2ObjectStore", FakeStore)
+def setup(db, monkeypatch, file_store):
     user = db.scalar(select(User))
     thread = Conversation(user_id=user.id, title="Files")
     second = Conversation(user_id=user.id, title="Other thread")
@@ -73,13 +45,13 @@ def setup(db, monkeypatch):
     app.include_router(chat_router)
     app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[current_user] = lambda: user
-    return SimpleNamespace(db=db, user=user, thread=thread, second=second, client=TestClient(app), settings=Settings())
+    return SimpleNamespace(db=db, user=user, thread=thread, second=second, client=TestClient(app), settings=Settings(), store=file_store)
 
 
 def save(setup, filename="notes.txt", content=b"Paid 42.25 for lunch"):
-    row, _ = attachments.stage_upload(setup.db, setup.user.id, setup.thread.id, filename, len(content), setup.settings)
-    FakeStore.objects[row.storage_key] = content
-    attachments.complete_upload(setup.db, row, setup.settings)
+    row = attachments.reserve_upload(setup.db, setup.user.id, setup.thread.id, filename, len(content))
+    setup.db.commit()
+    files.store_upload(setup.db, row, io.BytesIO(content), setup.settings)
     setup.db.commit()
     return row
 
@@ -90,26 +62,26 @@ def bind(setup, row):
     return message
 
 
-def test_direct_upload_completion_seals_validated_bytes_and_is_idempotent(setup):
-    base = f"/conversations/{setup.thread.id}/attachments"
-    initial = setup.client.post(base, json={"filename": "../note.txt", "byte_size": 4})
+def test_backend_upload_saves_immutable_bytes_and_identical_retry_is_idempotent(setup):
+    initial = setup.client.post("/files", json={"purpose": "conversation", "conversation_id": str(setup.thread.id), "filename": "../note.txt", "byte_size": 4})
     assert initial.status_code == 201
     data = initial.json()
-    assert data["headers"] == {"Content-Type": "application/octet-stream"}
-    assert "storage_key" not in data["attachment"]
-    row = setup.db.get(ConversationAttachment, UUID(data["attachment"]["id"]))
-    staging = row.storage_key
-    FakeStore.objects[staging] = b"note"
-    done = setup.client.post(f"{base}/{row.id}/complete")
-    assert done.status_code == 200
+    assert "upload_url" not in data and "storage_key" not in data
+    row = setup.db.get(ConversationAttachment, UUID(data["id"]))
+    endpoint = f"/files/{row.id}/content"
+    def upload(content):
+        return setup.client.post(endpoint, content=content, headers={"Content-Type": "application/octet-stream"})
+    done = upload(b"note")
+    assert done.status_code == 200, done.text
     assert done.json()["filename"] == "note.txt"
     assert done.json()["read_mode"] == "native"
-    sealed = row.storage_key
-    assert sealed != staging
-    FakeStore.objects[staging] = b"evil"
-    assert setup.client.post(f"{base}/{row.id}/complete").status_code == 200
-    assert FakeStore.objects[sealed] == b"note"
-    assert done.json()["content_metadata"] == {}
+    assert upload(b"note").status_code == 200
+    assert upload(b"evil").status_code == 409
+    assert setup.store.objects[row.storage_key] == b"note"
+    downloaded = setup.client.get(endpoint)
+    assert downloaded.status_code == 200 and downloaded.content == b"note"
+    assert "location" not in downloaded.headers
+    assert downloaded.headers["Cache-Control"] == "private, no-store"
 
 
 def test_message_and_refresh_preserve_original_attachment(setup):
@@ -167,11 +139,11 @@ def test_queued_attachment_turns_keep_reply_order_and_exclude_future_files(setup
     assert ids == [first.id, first_reply.id, second.id, second_reply.id]
 
 
-def test_other_user_cannot_read_download_or_complete(setup):
+def test_other_user_cannot_read_download_or_upload(setup):
     row = save(setup)
     setup.client.app.dependency_overrides[current_user] = lambda: SimpleNamespace(id=uuid4())
-    base = f"/conversations/{setup.thread.id}/attachments/{row.id}"
-    for route, method in [(base + "/content", "get"), (base + "/complete", "post"), (base, "delete")]:
+    base = f"/files/{row.id}"
+    for route, method in [(base + "/content", "get"), (base + "/content", "post"), (base, "delete")]:
         assert getattr(setup.client, method)(route).status_code == 404
 
 
@@ -180,7 +152,7 @@ def test_native_csv_read_and_exact_whole_file_arithmetic(setup):
     message = bind(setup, row)
     context = AttachmentContext(setup.db, setup.user.id, setup.thread.id, message.id)
     result = context.read_attachment(str(row.id))
-    assert result.files[0].content == FakeStore.objects[row.storage_key]
+    assert result.files[0].content == setup.store.objects[row.storage_key]
     assert json.loads(result.content)["status"] == "original_attached"
     total = context.summarize_attachment_table(str(row.id), "amount")
     assert total["sum"] == "101.99"
@@ -255,7 +227,7 @@ def test_followup_file_tool_reaches_the_same_model_as_native_media(setup):
     assert context.initial_inputs().files == []
     result = bind_existing_tool(context.read_attachment).entrypoint(attachment_id=str(row.id))
     assert isinstance(result, ToolResult)
-    assert result.files[0].content == FakeStore.objects[row.storage_key]
+    assert result.files[0].content == setup.store.objects[row.storage_key]
     model = OpenAIResponses(id="test", api_key="test-key")
     tool_message = ModelMessage(role="tool", tool_call_id="call_read", content=result.content, files=result.files)
     messages = [tool_message]
@@ -273,7 +245,7 @@ def test_generic_unsupported_file_is_saved_with_honest_read_status(setup):
     row = save(setup, "archive.zip", b"PK\x03\x04archive")
     assert row.status == "ready" and row.read_mode == "unavailable"
     assert row.read_error
-    assert setup.client.get(f"/conversations/{setup.thread.id}/attachments/{row.id}/content", follow_redirects=False).status_code == 307
+    assert setup.client.get(f"/files/{row.id}/content", follow_redirects=False).status_code == 200
 
 
 @pytest.mark.parametrize("claims_write", [False, True])
@@ -353,8 +325,8 @@ def test_expiry_and_deletion_remove_rows_and_queue_r2_cleanup(setup):
     key = row.storage_key
     row.expires_at = now_utc() - timedelta(seconds=1)
     setup.db.commit()
-    attachments.cleanup_attachments(setup.db, setup.settings)
-    assert key not in FakeStore.objects
+    cleanup_files(setup.db, setup.settings)
+    assert key not in setup.store.objects
     assert setup.db.get(ConversationAttachment, row.id) is None
 
 
@@ -365,8 +337,8 @@ def test_conversation_deletion_queues_objects_without_losing_cleanup_record(setu
     assert setup.client.delete(f"/conversations/{setup.thread.id}").status_code == 204
     assert setup.db.get(ConversationAttachment, row.id) is None
     assert setup.db.scalar(select(ObjectDeletion).where(ObjectDeletion.storage_key == key))
-    attachments.cleanup_attachments(setup.db, setup.settings)
-    assert key not in FakeStore.objects
+    cleanup_files(setup.db, setup.settings)
+    assert key not in setup.store.objects
 
 
 @pytest.mark.parametrize("ids", [["bad"], [str(uuid4())] * 2, [str(uuid4()) for _ in range(6)], "bad"])
@@ -379,9 +351,9 @@ def test_agui_rejects_invalid_attachment_handoff(ids):
 
 def test_invalid_and_oversized_inputs_do_not_upload(setup):
     for size in (0, MAX_FILE_BYTES + 1):
-        result = setup.client.post(f"/conversations/{setup.thread.id}/attachments", json={"filename": "file.txt", "byte_size": size})
+        result = setup.client.post("/files", json={"purpose": "conversation", "conversation_id": str(setup.thread.id), "filename": "file.txt", "byte_size": size})
         assert result.status_code == 422
-    boundary = setup.client.post(f"/conversations/{setup.thread.id}/attachments", json={"filename": "file.txt", "byte_size": MAX_FILE_BYTES})
+    boundary = setup.client.post("/files", json={"purpose": "conversation", "conversation_id": str(setup.thread.id), "filename": "file.txt", "byte_size": MAX_FILE_BYTES})
     assert boundary.status_code == 201
     with pytest.raises(ValueError):
         validate_file("fake.png", b"not an image")
@@ -392,7 +364,7 @@ def test_invalid_and_oversized_inputs_do_not_upload(setup):
 
 def test_saved_csv_import_uses_explicit_review_and_preserves_attachment(setup):
     row = save(setup, "bank.csv", b"date,description,debit,credit\n2026-09-01,Lunch,50,\n")
-    result = setup.client.post(f"/conversations/{setup.thread.id}/attachments/{row.id}/import")
+    result = setup.client.post("/imports/csv", json={"file_id": str(row.id), "conversation_id": str(setup.thread.id)})
     assert result.status_code == 200
     assert result.json()["agentResponse"]["pendingAction"] is not None
     assert setup.db.get(ConversationAttachment, row.id).message_id is not None

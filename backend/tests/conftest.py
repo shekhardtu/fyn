@@ -29,3 +29,32 @@ def db():
         seed_system_taxonomy(session)
         yield session
     Base.metadata.drop_all(engine)
+
+
+@pytest.fixture()
+def file_store(monkeypatch):
+    import hashlib
+    from app.services import file_cleanup, attachment_tools, document_assets, files
+    from app.services.object_storage import ObjectStorageError
+
+    class MemoryStore:
+        objects = {}
+
+        def __init__(self, settings):
+            pass
+
+        def read(self, key, limit, *, digest=None):
+            content = self.objects[key]
+            if len(content) > limit or (digest and hashlib.sha256(content).hexdigest() != digest):
+                raise ObjectStorageError("The stored file failed its integrity check.")
+            return content
+
+        def write(self, key, content, media_type):
+            self.objects[key] = content
+
+        def delete(self, key):
+            self.objects.pop(key, None)
+
+    for module in (file_cleanup, attachment_tools, document_assets, files):
+        monkeypatch.setattr(module, "R2ObjectStore", MemoryStore)
+    return MemoryStore

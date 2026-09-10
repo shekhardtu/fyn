@@ -1,5 +1,10 @@
 from uuid import uuid4
 
+from app.api_files import router as files_router
+from file_helpers import upload_file
+
+import pytest
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -12,6 +17,8 @@ from app.schemas import Widget, WidgetAction, WidgetType
 from app.seed import DEFAULT_USER_EMAIL
 from app.services.conversation import get_or_create_conversation, handle_action
 
+
+pytestmark = pytest.mark.usefixtures("file_store")
 
 STATEMENT = b"date,description,debit,credit,transaction id\n2026-08-10,TOIT POS,2000,,bank-1\n2026-08-10,Salary,,300000,bank-2\n"
 
@@ -79,15 +86,14 @@ def test_csv_is_staged_confirmed_and_idempotent(db):
 
     application = FastAPI()
     application.include_router(router)
+    application.include_router(files_router)
     application.dependency_overrides[get_db] = lambda: db
     application.dependency_overrides[current_user] = lambda: user
 
     def upload(client):
-        return client.post(
-            "/imports/csv",
-            data={"conversation_id": str(conversation.id)},
-            files={"file": ("statement.csv", STATEMENT, "text/csv")},
-        )
+        saved = upload_file(client, "statement.csv", STATEMENT, conversation_id=conversation.id)
+        assert saved.status_code == 200, saved.text
+        return client.post("/imports/csv", json={"file_id": saved.json()["id"], "conversation_id": str(conversation.id)})
 
     with TestClient(application) as client:
         staged = upload(client)

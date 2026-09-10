@@ -1,3 +1,4 @@
+import { contractLimits } from "@/lib/generated/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -404,7 +405,7 @@ function CreateLoanDrawer({ onClose }: { onClose: () => void }) {
 
   function addFiles(files: FileList | null) {
     if (!files) return;
-    const accepted = Array.from(files).filter((file) => /^(application\/pdf|image\/(png|jpeg))$/.test(file.type) && file.size <= 10 * 1024 * 1024);
+    const accepted = Array.from(files).filter((file) => /^(application\/pdf|image\/(png|jpeg))$/.test(file.type) && file.size > 0 && file.size <= contractLimits.fileUploadBytes);
     setAttachments((current) => [...current, ...accepted.map((file) => ({ id: crypto.randomUUID(), file, classification: "supporting_evidence" as const }))].slice(0, 8));
   }
 

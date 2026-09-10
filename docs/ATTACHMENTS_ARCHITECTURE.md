@@ -35,15 +35,18 @@ returns no partial total when the table exceeds processing limits.
 
 | Module | Responsibility |
 | --- | --- |
-| `object_storage.py` | Shared private R2 transport, bounded reads and digest verification. |
-| `attachments.py` | Ownership, quota reservations, staging, immutable completion, message binding, expiry and deletion outbox. |
+| `api_files.py` | The application's only file HTTP transport: reserve, bounded upload, list, metadata, preview/download and delete. |
+| `files.py` | Shared lifecycle, quota admission and a single `FileOut` projection over existing chat and lending identities. |
+| `file_uploads.py` | Filename normalization, actual-byte limits and hashing. |
+| `file_cleanup.py` | Transactional deletion queue, expiry and retry for R2 and local development files. |
+| `object_storage.py` | Shared private R2 writes, bounded reads and digest verification. |
+| `attachments.py` | Conversation ownership, thread limits, draft identity and immutable message binding. |
 | `attachment_validation.py` | Content type and readability checks. PDF checks count pages and reject encryption; they do not extract page text. |
 | `attachment_processing.py` | Killable validation subprocesses, concurrency and resource bounds. |
 | `attachment_inputs.py` | Convert validated originals into Agno `File`/`Image` inputs with distinct source identities. |
 | `attachment_tools.py` | Authorize the current thread, supply current-message originals, and open earlier files within the same model run. |
 | `attachment_tables.py` | Streaming, complete-source CSV/TSV arithmetic. |
-| `api_attachments.py` | Authenticated upload, completion, listing, download, removal and import endpoints. |
-| `import_previews.py` | Existing governed CSV review and confirmation flow, shared with the legacy upload endpoint. |
+| `import_previews.py` | Existing governed CSV review and confirmation flow, which consumes a saved file ID. |
 
 `use-conversation-attachments.ts` uses React Query for persisted state and local
 state for in-flight bytes/progress/cancellation. `attachment-card.tsx` provides
@@ -59,14 +62,12 @@ sequenceDiagram
     participant R2 as Private R2
     participant DB as PostgreSQL
     participant Agent as Main Operator
-    UI->>API: Initiate upload (filename, byte size)
+    UI->>API: POST /files (filename, byte size, domain context)
     API->>DB: Reserve draft, quota and cleanup records
-    API-->>UI: Attachment ID and signed PUT URL
-    UI->>R2: PUT original bytes
-    UI->>API: Complete upload
-    API->>R2: Read bounded bytes
+    API-->>UI: File ID and uploading status
+    UI->>API: POST /files/{id}/content (original bytes)
     API->>API: Validate file, without text extraction
-    API->>R2: Seal validated original at server-only key
+    API->>R2: Write validated original once
     API->>DB: Save digest, media type and readiness
     UI->>API: AG-UI text and attachment IDs
     API->>DB: Bind files and reserve question/reply positions atomically
@@ -115,24 +116,38 @@ attachment presence does not disable those checks.
 
 ## API and limits
 
-All paths start with `/conversations/{conversationId}/attachments`.
+All file operations across chat, profile documents and lending use `/files`.
 
-| Method / suffix | Purpose |
+| Method | Purpose |
 | --- | --- |
-| `POST /` | Accept `{filename, byte_size}` and return a draft with a 5-minute signed PUT URL. |
-| `POST /{id}/complete` | Validate and seal the original; idempotently return metadata. |
-| `GET /` | List thread files, including unsent drafts. |
-| `GET /{id}/content` | Authorize and redirect to a short-lived download. |
-| `GET /{id}/content?inline=true` | Preview validated PDF/PNG/JPEG/WebP. |
-| `DELETE /{id}` | Remove an unsent draft and schedule object cleanup. |
-| `POST /{id}/import` | Begin explicit CSV review using existing confirmation. |
+| `POST /files` | Reserve ownership, quota, an ID and durable cleanup before any object write. |
+| `POST /files/{id}/content` | Stream raw bytes to the authenticated backend; validate and persist the original. |
+| `GET /files?purpose=conversation&conversation_id=...` | List the current thread's files with pagination. |
+| `GET /files?purpose=document` | List the user's saved private library. |
+| `GET /files/{id}` | Return the common file metadata contract after checking access. |
+| `GET /files/{id}/content` | Download through the backend; no signed URL is returned. |
+| `GET /files/{id}/content?inline=true` | Preview validated PDF/PNG/JPEG/WebP through the backend. |
+| `DELETE /files/{id}` | Revoke a removable draft and commit cleanup intent atomically. |
 
-**10 MB per file (10 × 1024 × 1024 bytes)** is enforced by browser validation,
-request schema, signed upload length and bounded server reads. Backend constants
-also generate the frontend contract. Five files are allowed per message and
-per turn's reading/computation budget; this caps original bytes at 50 MiB.
-Provider context capacity is a separate limit. Context overflow asks the user
-to send fewer files or split a document; it does not silently truncate content.
+`POST /imports/csv` and `POST /sources/spreadsheet` accept saved file IDs;
+they are domain operations and never receive uploaded bytes. Chat/lending rows
+remain authoritative for message membership and revision access. The file API
+does not create a second metadata registry or change existing evidence IDs.
+
+**10 MB per file (10 × 1024 × 1024 bytes)** has one policy source:
+`FILE_UPLOAD_MAX_BYTES`, exported into the generated frontend contract.
+The API authenticates before reading bytes, counts actual streamed bytes even
+without Content-Length, spools to disk, and admits at most four simultaneous
+uploads per worker with a 120-second receive deadline. Validation and R2 work
+run outside the event loop. The shared browser client queues selections with at most two active uploads.
+A reservation survives refresh and gives cancellation
+a concrete ID. Replaying identical bytes is idempotent; replacing a completed
+file with different bytes is rejected. No browser request reaches R2.
+
+Five files are allowed per message and per turn's reading/computation budget;
+this caps original bytes at 50 MiB. Provider context capacity is a separate limit.
+Context overflow asks the user to send fewer files or split a document; it does
+not silently truncate content.
 
 Native inputs support PDF, TXT, Markdown, JSON, CSV, TSV, log files, PNG, JPEG,
 WebP, DOCX, XLSX and PPTX. Password-protected/unreadable documents and unsupported
@@ -157,14 +172,17 @@ from later queued messages. Cancellation/restart cleanup removes unfilled replie
 Unsent drafts expire after 24 hours. Completed drafts return after refresh;
 interrupted uploads ask the user to reattach. User row locks serialize quota
 reservations across workers: 20 unsent files, 100 files per thread and 1 GB of
-originals per user. Staging URLs can write only staging keys. Completion writes
-the exact validated bytes to a server-only original key, and cleanup records
-precede object writes so rollback/crash cannot strand an original unnoticed.
+originals per user across chat and lending. The file service writes the exact
+validated bytes, and cleanup records precede original writes so rollback/crash
+cannot strand an original unnoticed.
 
-Staging objects are cleaned after ten minutes, beyond the signed URL window.
-Conversation/account deletion revokes database access and commits R2 cleanup
-work together. Maintenance drains a bounded batch with retry/backoff. Already
-issued downloads remain usable until their short expiry.
+Legacy staging objects keep their delayed cleanup records during upgrades.
+Conversation/account deletion revokes database access and commits cleanup work
+together, including private lending-library originals. Shared revision evidence
+remains readable by the other participant. Maintenance drains a bounded batch
+with retry/backoff; it retains any live completed file. Local development files
+use the same outbox, so a database rollback cannot leave a live record whose
+bytes were already deleted. Downloads check authorization on every request.
 
 Migration `0011_native_attachment_inputs` follows the already-applied attachment
 schema. It preserves original identities, hashes, ownership and message links,
@@ -172,11 +190,15 @@ converts readable files to `native`, and removes obsolete chunks/reader version.
 A downgrade retains originals but marks affected reading unavailable because
 retired extracted content cannot be reconstructed by a schema rollback.
 
-Direct browser uploads still require the bucket CORS settings from
-[`infra/r2-chat-cors.json`](../infra/r2-chat-cors.json), merged with existing rules.
-The rule includes localhost and `https://fynai.co`. Earlier preflight checks
-returned 403; existing object credentials cannot change that bucket setting.
-This is independent of native model input, which is sent by the backend.
+Migration `0012_shared_file_cleanup` identifies the storage provider on each
+cleanup item; existing entries remain R2 entries. No original file, identity,
+message association or lending evidence is rewritten. Downgrade requires draining
+local cleanup work before returning to a worker that only understands R2.
+
+The browser uses the existing authenticated API origin and its existing CORS
+policy. R2 bucket CORS is no longer a deployment prerequisite. Frontend and API
+must ship this protocol change together; the old conversation/document upload
+routes and presigned response contracts have been removed.
 
 Verification includes live synthetic PDF/image/text input to the configured
 model, and a live follow-up tool returning a PDF to the same agent. Both paths

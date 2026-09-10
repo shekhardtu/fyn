@@ -14,8 +14,8 @@ import io
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile, status
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -26,7 +26,6 @@ from .lending_schemas import (
     ConfirmLoanPaymentIn,
     CreatePersonalLoanIn,
     DocumentRevisionOut,
-    DocumentAssetOut,
     FulfillDocumentRequestsIn,
     InvitationPreviewOut,
     LoanCommandOut,
@@ -59,17 +58,7 @@ from .services.personal_loans import (
     summary_payload,
     verify_projection_integrity,
 )
-from .services.document_assets import (
-    DocumentAssetError,
-    asset_dict,
-    delete_draft_asset,
-    library_assets,
-    owned_draft_asset,
-    presigned_download_url,
-    readable_asset,
-    store_upload,
-    stored_path,
-)
+from .services.document_assets import DocumentAssetError
 from .services.evidence_documents import agreement_pdf, evidence_bundle
 from .services.shared_records import (
     SharedRecordConflict,
@@ -298,65 +287,6 @@ def fulfill_requested_documents(
         output = _command(db, agreement, user, replayed=replayed)
         db.commit()
         return output
-
-
-@router.get("/document-assets", response_model=list[DocumentAssetOut])
-def list_document_assets(
-    db: Session = Depends(get_db),
-    user: User = Depends(current_user),
-) -> list[DocumentAssetOut]:
-    return [DocumentAssetOut.model_validate(asset_dict(asset)) for asset in library_assets(db, user)]
-
-
-@router.post("/document-assets", response_model=DocumentAssetOut, status_code=status.HTTP_201_CREATED)
-def upload_document_asset(
-    file: UploadFile = File(...),
-    classification: str = Form("supporting_evidence"),
-    description: str | None = Form(None),
-    db: Session = Depends(get_db),
-    user: User = Depends(current_user),
-    settings: Settings = Depends(get_settings),
-) -> DocumentAssetOut:
-    with _translated_errors(db):
-        asset = store_upload(
-            db,
-            user=user,
-            upload=file,
-            classification=classification,
-            description=description,
-            settings=settings,
-        )
-        output = DocumentAssetOut.model_validate(asset_dict(asset))
-        db.commit()
-        return output
-
-
-@router.get("/document-assets/{asset_id}/download")
-def download_document_asset(
-    asset_id: UUID,
-    db: Session = Depends(get_db),
-    user: User = Depends(current_user),
-    settings: Settings = Depends(get_settings),
-):
-    with _translated_errors(db):
-        asset = readable_asset(db, asset_id, user)
-        signed_url = presigned_download_url(asset, settings)
-        if signed_url:
-            return RedirectResponse(signed_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
-        return FileResponse(stored_path(asset, settings), media_type=asset.media_type, filename=asset.original_filename)
-
-
-@router.delete("/document-assets/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
-def remove_document_asset(
-    asset_id: UUID,
-    db: Session = Depends(get_db),
-    user: User = Depends(current_user),
-    settings: Settings = Depends(get_settings),
-) -> None:
-    with _translated_errors(db):
-        asset = owned_draft_asset(db, asset_id, user)
-        delete_draft_asset(db, asset, settings)
-        db.commit()
 
 
 @router.post("/loan-agreements/{agreement_id}/term-proposals", response_model=LoanCommandOut)

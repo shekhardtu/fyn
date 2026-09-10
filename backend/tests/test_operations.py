@@ -26,7 +26,7 @@ from agno.models.response import ToolExecution
 from app.services.taxonomy import TaxonomyRepository
 from app.services import agents as agent_service
 from app.services import conversation as conversation_service
-from app.services.capabilities import CapabilityId, capability_invokes
+from app.services.capabilities import CapabilityId
 from app.domain import WidgetActionId
 
 

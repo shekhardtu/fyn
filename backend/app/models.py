@@ -331,6 +331,7 @@ class ObjectDeletion(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """Transactional outbox: private object cleanup survives domain deletion."""
     __tablename__ = "object_deletions"
     storage_key: Mapped[str] = mapped_column(String(240), unique=True)
+    storage_provider: Mapped[str] = mapped_column(String(10), default="r2", server_default="r2")
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
 

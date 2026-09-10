@@ -8,7 +8,6 @@ the deterministic query engine.
 """
 from __future__ import annotations
 
-import io
 import math
 from uuid import UUID
 
@@ -18,6 +17,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, inspect as sqla_inspect, select
 
 from app.api import current_user, router
+from app.api_files import router as files_router
+from file_helpers import upload_file
+
+pytestmark = pytest.mark.usefixtures("file_store")
 from app.database import get_db
 from app.models import SourceRecord, Transaction
 from app.seed import default_user
@@ -27,18 +30,18 @@ from app.services.spreadsheet import QUERY_ROW_CAP, query_source
 def client_for(db, user) -> TestClient:
     application = FastAPI()
     application.include_router(router)
+    application.include_router(files_router)
     application.dependency_overrides[get_db] = lambda: db
     application.dependency_overrides[current_user] = lambda: user
     return TestClient(application)
 
 
 def upload(client, body: str, name: str | None = None, filename: str = "attack.csv"):
-    data = {"name": name} if name else {}
-    return client.post(
-        "/sources/spreadsheet",
-        files={"file": (filename, io.BytesIO(body.encode()), "text/csv")},
-        data=data,
-    )
+    conversation = client.post("/conversations", json={"title": "Source files"}).json()
+    saved = upload_file(client, filename, body.encode(), conversation_id=conversation["id"])
+    if saved.status_code != 200:
+        return saved
+    return client.post("/sources/spreadsheet", json={"file_id": saved.json()["id"], "name": name})
 
 
 def stored_records(db, source_id) -> list[dict]:

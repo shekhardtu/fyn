@@ -4,7 +4,8 @@ import { AgentCapabilitiesSchema, type AgentCapabilities, type Message as AgUiMe
 import { API_MOUNT_PATH } from "@/config/api-path";
 import { environment } from "@/config/environment";
 import { agentActivityEventSchema, agentEnrichmentSchema, agentResponseSchema, agentSettingsSchema, agentThreadStateSchema, authStatusSchema, bootstrapSchema, categoryDirectoryEntrySchema, categoryDirectorySchema, categorySubcategorySchema, contactSuggestionSchema, conversationCreatedSchema, conversationPageSchema, conversationSchema, conversationSummarySchema, dashboardDetailSchema, dashboardListSchema, documentAssetSchema, documentRevisionListSchema, importResultSchema, invitationPreviewSchema, loanCommandSchema, locationResolveSchema, otpSentSchema, overviewSchema, parseActionPayload, personalLoanDetailSchema, personalLoanListSchema, privacyStatusSchema, profileSchema, reminderSchema, transactionCategoryHintSchema, transactionListItemSchema, transactionListSchema, transactionRevisionListSchema, type AgentActivityEvent, type AgentEnrichmentOut, type AgentInterruptOut, type AgentResponse, type AgentSettingsOut, type AgentThreadStateOut, type AuthStatusOut, type Bootstrap, type CategoryDirectoryOut, type CategoryDirectorySubcategoryOut, type ContactSuggestionOut, type ConversationCreatedOut, type ConversationOut, type ConversationPage, type ConversationSummary, type CreatePersonalLoanIn, type DashboardDetail, type DashboardSummary, type DocumentAssetOut, type DocumentRevisionOut, type FulfillDocumentRequestsIn, type ImportResult, type InvitationPreviewOut, type LoanCommandOut, type LoanTermProposalIn, type OtpSentOut, type OverviewOut, type PersonalLoanDetailOut, type PersonalLoanListOut, type PrivacyStatusOut, type ProfileOut, type RecordLoanFundingIn, type RecordLoanPaymentIn, type ReminderOut, type SendLoanReminderIn, type TransactionCategoryHintOut, type TransactionListItemOut, type TransactionRevisionOut, type TransactionUpdateIn, type Widget, type WidgetActionId } from "@/lib/protocol";
-import type { AccountCreateIn, AccountRecordOut, AgentClientTelemetryIn, BudgetRecordOut, BudgetSaveIn, GoalRecordOut, GoalSaveIn } from "@/lib/generated/contracts";
+import type { FileCreateIn, FileOut, AttachmentOut, AccountCreateIn, AccountRecordOut, AgentClientTelemetryIn, BudgetRecordOut, BudgetSaveIn, GoalRecordOut, GoalSaveIn } from "@/lib/generated/contracts";
+import { contractLimits } from "@/lib/generated/contracts";
 import { schemas as contracts } from "@/lib/generated/contracts.zod";
 
 const API_URL = environment.apiUrl;
@@ -99,7 +100,7 @@ async function send(path: string, init?: RequestInit) {
   }
 }
 
-async function request(path: string, init?: RequestInit) {
+export async function request(path: string, init?: RequestInit) {
   const response = await send(path, {
     ...init,
     headers: { "Content-Type": "application/json", ...init?.headers },
@@ -202,29 +203,28 @@ export async function createPersonalLoan(payload: CreatePersonalLoanIn, idempote
   return conform(loanCommandSchema, await lendingMutation("/loan-agreements", "POST", payload, idempotencyKey), "created personal loan");
 }
 
+function documentFile(file: FileOut): DocumentAssetOut {
+  return conform(documentAssetSchema, {
+    id: file.id, originalFilename: file.filename, byteSize: file.byte_size,
+    mediaType: file.media_type, sha256: file.sha256, state: file.document_state,
+    classification: file.classification, description: file.description, createdAt: file.created_at,
+  }, "supporting document");
+}
+
 export async function uploadDocumentAsset(file: File, classification: string, description?: string): Promise<DocumentAssetOut> {
-  const form = new FormData();
-  form.append("file", file);
-  form.append("classification", classification);
-  if (description?.trim()) form.append("description", description.trim());
-  const response = await send("/document-assets", { method: "POST", body: form });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null);
-    throw new ApiError(describe(payload, response.status), response.status);
-  }
-  return conform(documentAssetSchema, await response.json(), "supporting document");
+  return documentFile(await uploadFile(file, { purpose: "document", classification, description }));
 }
 
 export async function loadDocumentAssets(): Promise<DocumentAssetOut[]> {
-  return conform(documentAssetSchema.array(), await request("/document-assets"), "private document repository");
+  return (await listFiles("document")).map(documentFile);
 }
 
 export async function deleteDocumentAsset(assetId: string): Promise<void> {
-  await request(`/document-assets/${encodeURIComponent(assetId)}`, { method: "DELETE" });
+  await deleteFile(assetId);
 }
 
 export function documentAssetDownloadUrl(assetId: string): string {
-  return apiUrl(`/document-assets/${encodeURIComponent(assetId)}/download`);
+  return fileContentUrl(assetId);
 }
 
 export function loanAgreementPdfUrl(loanId: string): string {
@@ -945,44 +945,122 @@ export function openInterrupts(state: AgentThreadStateOut): FynInterrupt[] {
 
 /** Carries the same name `fetch` gives an aborted request, so a cancelled
  *  upload and a cancelled run are recognised the same way upstream. */
-function cancelled() {
-  const error = new Error("The upload was cancelled.");
-  error.name = "AbortError";
-  return error;
+/** One upload policy and authenticated multipart transport for every module. */
+export function validateUploadFile(file: File): void {
+  if (!file.size || file.size > contractLimits.fileUploadBytes) {
+    throw new Error(`Choose a non-empty file up to ${contractLimits.fileUploadBytes / (1024 * 1024)} MB.`);
+  }
 }
 
-/** XHR rather than fetch: a statement can be megabytes, and only XHR reports
- *  upload progress, so the composer can show something real while it climbs. */
-export function uploadCsv(conversationId: string, file: File, onProgress?: (percent: number) => void, signal?: AbortSignal): Promise<ImportResult> {
-  const body = new FormData();
-  body.set("conversation_id", conversationId);
-  body.set("file", file);
+function uploadBytes(path: string, body: File, onProgress?: (percent: number) => void, signal?: AbortSignal): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    const request = new XMLHttpRequest();
-    request.open("POST", apiUrl(`/imports/csv`));
-    // The fetch calls carry the session through `credentials: "include"`; XHR
-    // needs the same thing said its own way or the upload arrives signed out.
-    request.withCredentials = true;
-    // A statement can be megabytes; walking away from the conversation should
-    // stop pushing them. `abort` already rejects, so there is nothing else to do.
-    if (signal) {
-      if (signal.aborted) { request.abort(); reject(cancelled()); return; }
-      signal.addEventListener("abort", () => request.abort(), { once: true });
-    }
-    request.upload.addEventListener("progress", (event) => {
-      if (event.lengthComputable) onProgress?.(Math.min(99, Math.round(event.loaded / event.total * 100)));
-    });
-    request.addEventListener("load", () => {
+    validateUploadFile(body);
+    if (signal?.aborted) { reject(new DOMException("Upload cancelled", "AbortError")); return; }
+    const xhr = new XMLHttpRequest();
+    const abort = () => xhr.abort();
+    xhr.open("POST", apiUrl(path));
+    xhr.withCredentials = true;
+    xhr.timeout = 120_000;
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress?.(Math.min(99, Math.round(event.loaded * 100 / event.total)));
+    };
+    xhr.onload = () => {
       let payload: unknown;
-      try { payload = JSON.parse(request.responseText); } catch { payload = null; }
-      if (request.status < 200 || request.status >= 300) { reject(new ApiError(describe(payload, request.status), request.status)); return; }
+      try { payload = JSON.parse(xhr.responseText); } catch { payload = null; }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new ApiError(describe(payload, xhr.status), xhr.status));
+        return;
+      }
       onProgress?.(100);
-      try { resolve(conform(importResultSchema, payload, "import result")); } catch { reject(new Error("The import finished but the response couldn’t be read. Reload to see where it landed.")); }
-    });
-    request.addEventListener("error", () => reject(new Error(UNREACHABLE)));
-    request.addEventListener("abort", () => reject(cancelled()));
-    request.send(body);
+      resolve(payload);
+    };
+    xhr.onerror = () => reject(new Error(UNREACHABLE));
+    xhr.ontimeout = () => reject(new Error("The upload timed out. Try again."));
+    xhr.onabort = () => reject(new DOMException("Upload cancelled", "AbortError"));
+    xhr.onloadend = () => signal?.removeEventListener("abort", abort);
+    signal?.addEventListener("abort", abort, { once: true });
+    xhr.send(body);
   });
+}
+
+export async function listFiles(purpose: FileCreateIn["purpose"], conversationId?: string): Promise<FileOut[]> {
+  const query = new URLSearchParams({ purpose });
+  if (conversationId) query.set("conversation_id", conversationId);
+  const result: FileOut[] = [];
+  // The library is paged; never silently hide a user's older saved documents.
+  for (let offset = 0; ; offset += 100) {
+    query.set("offset", String(offset));
+    const page = conform(contracts.FileOut.array(), await request(`/files?${query}`), "file list");
+    result.push(...page);
+    if (page.length < 100) return result;
+  }
+}
+
+export function fileContentUrl(id: string, inline = false): string {
+  return apiUrl(`/files/${encodeURIComponent(id)}/content${inline ? "?inline=true" : ""}`);
+}
+
+export async function deleteFile(id: string): Promise<void> {
+  await request(`/files/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export function conversationFile(file: FileOut): AttachmentOut {
+  return conform(contracts.AttachmentOut, file, "conversation file");
+}
+
+const uploadWaiters: Array<() => void> = [];
+let activeUploads = 0;
+
+/** Queue a multi-file selection so it does not overwhelm backend validation. */
+function acquireUpload(signal?: AbortSignal): Promise<() => void> {
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      const index = uploadWaiters.indexOf(start);
+      if (index >= 0) uploadWaiters.splice(index, 1);
+      reject(new DOMException("Upload cancelled", "AbortError"));
+    };
+    const start = () => {
+      signal?.removeEventListener("abort", abort);
+      resolve(() => {
+        const next = uploadWaiters.shift();
+        if (next) next();
+        else activeUploads -= 1;
+      });
+    };
+    if (signal?.aborted) { abort(); return; }
+    if (activeUploads < 2) { activeUploads += 1; start(); }
+    else {
+      uploadWaiters.push(start);
+      signal?.addEventListener("abort", abort, { once: true });
+    }
+  });
+}
+
+export async function uploadFile(file: File, context: Pick<FileCreateIn, "purpose"> & Partial<Omit<FileCreateIn, "filename" | "byte_size" | "purpose">>,
+  onProgress?: (percent: number) => void, signal?: AbortSignal, onReserved?: (file: FileOut) => void): Promise<FileOut> {
+  validateUploadFile(file);
+  const release = await acquireUpload(signal);
+  try {
+    const reserved = conform(contracts.FileOut, await request("/files", {
+      method: "POST", body: JSON.stringify({ ...context, filename: file.name, byte_size: file.size }), signal,
+    }), "file reservation");
+    try {
+      onReserved?.(reserved);
+      return conform(contracts.FileOut, await uploadBytes(`/files/${reserved.id}/content`, file, onProgress, signal), "saved file");
+    } catch (error) {
+      await deleteFile(reserved.id).catch(() => undefined);
+      throw error;
+    }
+  } finally {
+    release();
+  }
+}
+
+export async function previewFileImport(conversationId: string, fileId: string): Promise<ImportResult> {
+  return conform(importResultSchema, await request("/imports/csv", {
+    method: "POST", body: JSON.stringify({ conversation_id: conversationId, file_id: fileId }),
+  }), "import result");
 }
 
 export type PrivacyStatus = PrivacyStatusOut;

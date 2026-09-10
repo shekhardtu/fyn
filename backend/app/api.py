@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 
 
 from ag_ui.core import AgentCapabilities, RunAgentInput
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import and_, delete, func, or_, select
 from pydantic import ValidationError
@@ -17,7 +17,10 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from .database import get_db
 from .event_time import as_utc, local_date_string, local_now, now_utc
-from .config import CSV_UPLOAD_MAX_BYTES, get_settings
+from .config import get_settings
+from .schemas import FileImportIn, SpreadsheetFileIn
+from .api_files import file_errors
+from .services import files as file_service
 from .domain import AgentInterruptStatus, AgentRunStatus, FinancialSourceType, REVOCABLE_SOURCE_TYPES, ReconciliationOutcome, TransactionType
 from .models import (
     AIAction,
@@ -845,18 +848,22 @@ def ingest_message(request: FinancialMessageIn, db: Session = Depends(get_db), u
 
 
 @router.post("/imports/csv", response_model=ImportResultOut)
-async def import_csv(conversation_id: UUID = Form(...), file: UploadFile = File(...), db: Session = Depends(get_db), user: User = Depends(current_user)) -> ImportResultOut:
+def import_csv(request: FileImportIn, db: Session = Depends(get_db), user: User = Depends(current_user)) -> ImportResultOut:
     _ensure_source_active(db, user.id, FinancialSourceType.CSV)
-    conversation = _owned_conversation(db, user, conversation_id)
-    if not file.filename or not file.filename.lower().endswith(".csv"):
-        raise HTTPException(status_code=415, detail="Upload a CSV file")
-    content = await file.read(CSV_UPLOAD_MAX_BYTES + 1)
-    if len(content) > CSV_UPLOAD_MAX_BYTES:
-        raise HTTPException(status_code=413, detail="CSV is limited to 10 MB")
-    try:
-        return preview_csv_import(db, user, conversation, file.filename, content)
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
+    with file_errors(db):
+        from .models import ConversationAttachment
+        from .services import attachments
+        try:
+            conversation = attachments.owned_thread(db, user.id, request.conversation_id, lock=True)
+        except attachments.AttachmentError as error:
+            raise HTTPException(404, str(error)) from error
+        row = file_service.readable(db, user, request.file_id, lock=True)
+        if not isinstance(row, ConversationAttachment) or row.conversation_id != conversation.id:
+            raise HTTPException(404, "File not found in this conversation.")
+        if row.media_type != "text/csv":
+            raise HTTPException(415, "Choose a saved CSV file.")
+        content = file_service.read_content(row, get_settings())
+        return preview_csv_import(db, user, conversation, row.filename, content, attachment=row)
 
 
 def _transaction_list_item(item: Transaction, category: str | None, subcategory: str | None) -> TransactionListItemOut:
@@ -1476,22 +1483,18 @@ def _spreadsheet_source_out(source, manifest) -> SpreadsheetSourceOut:
 
 
 @router.post("/sources/spreadsheet", response_model=SpreadsheetSourceOut)
-async def upload_spreadsheet_source(
-    file: UploadFile = File(...),
-    name: str | None = Form(None),
+def upload_spreadsheet_source(
+    request: SpreadsheetFileIn,
     db: Session = Depends(get_db),
     user: User = Depends(current_user),
 ) -> SpreadsheetSourceOut:
-    """Store a raw tabular source and draft its manifest for confirmation.
-
-    Deliberately distinct from /imports/csv: nothing here becomes canonical
-    transactions. The sheet stays a foreign source with its own manifest.
-    """
-    if not file.filename or not file.filename.lower().endswith(".csv"):
-        raise HTTPException(status_code=415, detail="Upload a CSV file; xlsx arrives with a later phase")
-    content = await file.read(CSV_UPLOAD_MAX_BYTES + 1)
-    if len(content) > CSV_UPLOAD_MAX_BYTES:
-        raise HTTPException(status_code=413, detail="CSV is limited to 10 MB")
+    """Draft a manifest from an owned saved file; bytes enter only through /files."""
+    with file_errors(db):
+        row = file_service.readable(db, user, request.file_id)
+        metadata = file_service.describe(row)
+        if not metadata.filename.lower().endswith(".csv"):
+            raise HTTPException(415, "Choose a CSV file; xlsx arrives with a later phase")
+        content = file_service.read_content(row, get_settings())
     try:
         text_content = content.decode("utf-8-sig")
     except UnicodeDecodeError as error:
@@ -1506,7 +1509,7 @@ async def upload_spreadsheet_source(
     headers, rows = [cell.strip() for cell in parsed[0]], parsed[1:]
     try:
         source, manifest = ensure_spreadsheet_manifest(
-            db, user, (name or file.filename).strip()[:120], headers, rows
+            db, user, (request.name or metadata.filename).strip()[:120], headers, rows
         )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error

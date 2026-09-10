@@ -5,7 +5,6 @@ import importlib.util
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select
 
 from app.event_time import from_local_parts
 from app.models import Transaction, User
