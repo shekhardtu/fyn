@@ -348,3 +348,12 @@ The capabilities endpoint advertises what this implementation actually supports:
 The clients query this declaration rather than assuming support. The server advertises sequence resumability because both clients consume replay-safe cursors, and advertises approve-with-edits because interrupt schemas accept the protocol's `editedArgs`. It does not advertise a maximum execution time because the underlying governed/model operations do not yet have a hard wall-clock kill boundary.
 
 It deliberately reports unsupported capabilities as false: WebSocket, push notifications, binary HTTP, multimodal input/output, arbitrary code execution, and client-provided tool authority. Raw model chain of thought is never exposed. These can evolve independently without changing the core Fyn design system or weakening the finance authority boundary.
+
+## Shared file transport
+
+File bytes enter through `/files` before an AG-UI run. Chat, private documents
+and lending use the same authenticated reserve/upload/download/delete API and
+generated file contract. CSV domain operations consume saved file IDs. The run
+still receives only owned, ready attachment IDs; the backend binds them to the
+canonical message and passes original native inputs to the Operator. See
+[the attachment architecture](ATTACHMENTS_ARCHITECTURE.md) for the lifecycle.

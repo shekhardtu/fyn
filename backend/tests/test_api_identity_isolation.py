@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
-from uuid import uuid4
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from fastapi import FastAPI
@@ -82,8 +81,7 @@ def test_api_enforces_one_identity_boundary_across_user_data(db, monkeypatch):
         }).status_code == 404
         assert client.post(
             "/imports/csv",
-            data={"conversation_id": foreign_id},
-            files={"file": ("foreign.csv", b"date,description,debit\n2026-08-01,test,10\n", "text/csv")},
+            json={"conversation_id": foreign_id, "file_id": str(uuid4())},
         ).status_code == 404
 
         # Rejected chat IDs must not create a replacement thread under the caller.

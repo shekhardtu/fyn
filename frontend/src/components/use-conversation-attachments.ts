@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { validateUploadFile } from "@/lib/api";
 import { attachmentQueryKey, listAttachments, removeAttachment, uploadAttachment } from "@/lib/attachments";
 import type { AttachmentOut } from "@/lib/generated/contracts";
 import { contractLimits } from "@/lib/generated/contracts";
@@ -66,7 +67,7 @@ export function useConversationAttachments(threadId: string) {
     const saved = (client.getQueryData<AttachmentOut[]>(attachmentQueryKey(threadId)) ?? []).filter((item) => !item.message_id && !pending.some((upload) => upload.remoteId === item.id));
     if (files.length + saved.length + pending.length > contractLimits.attachmentsPerMessage) throw new Error("Attach up to five files per message.");
     for (const file of files) {
-      if (!file.size || file.size > contractLimits.attachmentUploadBytes) throw new Error(`${file.name}: choose a non-empty file up to 10 MB.`);
+      validateUploadFile(file);
     }
     files.forEach(start);
   }, [client, threadId, start]);

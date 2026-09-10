@@ -10,8 +10,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 DEFAULT_CURRENCY = "INR"
 DEFAULT_TIMEZONE = "Asia/Kolkata"
 DEFAULT_PHONE_REGION_PREFIX = "+91"
-CSV_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
-ATTACHMENT_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+FILE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
 ATTACHMENTS_PER_MESSAGE = 5
 SESSION_COOKIE_NAME = "fyn_session"
 
@@ -85,13 +84,11 @@ class Settings(BaseSettings):
     # on encrypted object storage without changing the document domain model.
     document_storage_provider: Literal["local", "r2"] = "local"
     document_storage_path: str = str(Path(__file__).resolve().parents[1] / "data" / "document-assets")
-    document_upload_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1024, le=50 * 1024 * 1024)
     r2_account_id: str | None = None
     r2_bucket: str | None = None
     r2_access_key_id: str | None = None
     r2_secret_access_key: str | None = None
     r2_object_prefix: str = "document-evidence"
-    r2_presign_seconds: int = Field(default=300, ge=30, le=3600)
     google_client_id: str | None = None
     operator_model: str = "gpt-5.6-luna"
     # Luna remains a genuine reasoning/tool loop at low effort. Complex work

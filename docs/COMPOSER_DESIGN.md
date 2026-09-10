@@ -142,3 +142,9 @@ A saved CSV offers an explicit review shortcut. The main model reads original
 files directly; exact CSV/TSV calculations separately process every row. See
 [ATTACHMENTS_ARCHITECTURE.md](ATTACHMENTS_ARCHITECTURE.md) for the current
 lifecycle, endpoints, agent handoff, format support and 10 MB per-file limit.
+
+Uploads use the shared `/files` backend API used by profile documents and lending.
+The browser reserves an ID, uploads original bytes with progress, then displays
+server-validated readiness. Preview/download URLs stay on the authenticated API.
+A failed or cancelled upload removes its reservation; restart-safe cleanup handles
+abandoned originals. CSV review consumes the saved file instead of uploading again.

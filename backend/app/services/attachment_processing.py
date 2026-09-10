@@ -33,7 +33,7 @@ def process_file(filename: str, content: bytes) -> ValidatedAttachment:
 
 if __name__ == "__main__":
     from dataclasses import asdict
-    from ..config import ATTACHMENT_UPLOAD_MAX_BYTES as MAX_FILE_BYTES
+    from ..config import FILE_UPLOAD_MAX_BYTES as MAX_FILE_BYTES
     from .attachment_validation import validate_file
     # Production containers run Linux. CPU limits also work on macOS; its
     # virtual-memory accounting does not reliably support RLIMIT_AS.

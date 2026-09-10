@@ -42,7 +42,6 @@ R2_BUCKET=
 R2_ACCESS_KEY_ID=
 R2_SECRET_ACCESS_KEY=
 R2_OBJECT_PREFIX=document-evidence
-R2_PRESIGN_SECONDS=300
 ```
 
 The access key should be restricted to the private document bucket. Run

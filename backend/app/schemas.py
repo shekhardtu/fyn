@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .config import ATTACHMENT_UPLOAD_MAX_BYTES, DEFAULT_CURRENCY
+from .config import FILE_UPLOAD_MAX_BYTES, DEFAULT_CURRENCY
 from .domain import CONVERSATION_TITLE_MAX, MAX_TRANSACTION_AMOUNT_MINOR, ExecutionStatus, FinancialSourceType, IdentityProvider, IdentitySource, ImportStatus, MESSAGE_SOURCE_TYPES, OtpChannel, ReconciliationOutcome, SpendNature, TaxonomyOperation, TransactionStatus, TransactionType, ValueEnum, WidgetActionId
 from .event_time import as_utc, from_local_parts, now_utc
 from .services.tool_models import AffordabilityInput, InvestmentProjectionInput, LoanWithPrepaymentInput
@@ -1023,17 +1023,45 @@ class AttachmentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class AttachmentUploadIn(BaseModel):
+class FileCreateIn(BaseModel):
     filename: str = Field(min_length=1, max_length=240)
-    byte_size: int = Field(gt=0, le=ATTACHMENT_UPLOAD_MAX_BYTES)
+    byte_size: int = Field(gt=0, le=FILE_UPLOAD_MAX_BYTES)
+    model_config = ConfigDict(extra="forbid")
+    purpose: Literal["conversation", "document"]
+    conversation_id: UUID | None = None
+    classification: str = Field(default="supporting_evidence", max_length=50)
+    description: str | None = Field(default=None, max_length=240)
+
+
+class FileOut(BaseModel):
+    id: UUID
+    purpose: Literal["conversation", "document"]
+    filename: str
+    byte_size: int
+    media_type: str
+    sha256: str | None
+    status: Literal["uploading", "ready"]
+    created_at: datetime
+    conversation_id: UUID | None
+    message_id: UUID | None
+    read_mode: Literal["native", "unavailable"]
+    read_error: str | None
+    content_metadata: dict[str, Any]
+    classification: str | None
+    description: str | None
+    document_state: str | None
+
+
+class FileImportIn(BaseModel):
+    file_id: UUID
+    conversation_id: UUID
     model_config = ConfigDict(extra="forbid")
 
 
-class AttachmentUploadOut(BaseModel):
-    attachment: AttachmentOut
-    upload_url: str
-    headers: dict[str, str]
-    expires_in: int
+class SpreadsheetFileIn(BaseModel):
+    file_id: UUID
+    name: str | None = Field(default=None, max_length=120)
+    model_config = ConfigDict(extra="forbid")
 
 
 class MessageOut(BaseModel):

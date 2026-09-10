@@ -14,7 +14,7 @@ from agno.tools.function import ToolResult
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..config import ATTACHMENT_UPLOAD_MAX_BYTES, ATTACHMENTS_PER_MESSAGE, get_settings
+from ..config import FILE_UPLOAD_MAX_BYTES, ATTACHMENTS_PER_MESSAGE, get_settings
 from ..event_time import as_utc
 from ..models import ConversationAttachment, Message
 from .agent_tools import bind_existing_tool
@@ -60,7 +60,7 @@ class AttachmentContext:
         if identifier not in self._content:
             if len(self._content) >= ATTACHMENTS_PER_MESSAGE:
                 raise AttachmentError("This request has reached its five-file reading limit. Ask about the remaining files next.")
-            self._content[identifier] = R2ObjectStore(get_settings()).read(row.storage_key, ATTACHMENT_UPLOAD_MAX_BYTES, digest=row.sha256)
+            self._content[identifier] = R2ObjectStore(get_settings()).read(row.storage_key, FILE_UPLOAD_MAX_BYTES, digest=row.sha256)
         return self._content[identifier]
 
     @property

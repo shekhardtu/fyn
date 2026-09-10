@@ -359,7 +359,14 @@ def delete_user_data(db: Session, user: User) -> int:
     """Delete all registered relational data and Agno memory for one user."""
     deleted_memories = clear_user_memories(user.id)
     from .attachments import remove_attachments
+    from .file_cleanup import schedule_deletion
+    from ..config import get_settings
     remove_attachments(db, list(db.scalars(select(ConversationAttachment).where(ConversationAttachment.user_id == user.id))))
+    # Private library originals must be reclaimed too. Shared evidence retains
+    # its separate revision identity and survives the uploader's account.
+    for asset in db.scalars(select(DocumentAsset).where(DocumentAsset.owner_user_id == user.id,
+                                                       DocumentAsset.document_id.is_(None))):
+        schedule_deletion(db, asset.storage_key, get_settings().document_storage_provider)
     participants = list(db.scalars(select(SharedRecordParticipant).where(
         SharedRecordParticipant.member_user_id == user.id
     )))

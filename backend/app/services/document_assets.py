@@ -3,20 +3,15 @@
 from __future__ import annotations
 
 import hashlib
-import os
-import re
 import shutil
-import tempfile
 from pathlib import Path
-from typing import BinaryIO, Iterable
+from typing import Iterable
 from uuid import UUID, uuid4
 
-from fastapi import UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config import Settings
-from ..event_time import now_utc
 from ..models import (
     DocumentAsset,
     DocumentRevision,
@@ -25,6 +20,8 @@ from ..models import (
     SharedRecordParticipant,
     User,
 )
+from .file_uploads import FileUploadError
+from .object_storage import R2ObjectStore
 from .shared_records import SharedRecordConflict, SharedRecordError, SharedRecordNotFound, payload_hash, record_for_user
 
 
@@ -36,11 +33,10 @@ ALLOWED_CLASSIFICATIONS = {
     "witness_statement",
     "supporting_evidence",
 }
-_TYPE_BY_SUFFIX = {".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
-_SAFE_NAME = re.compile(r"[^A-Za-z0-9._() -]+")
+DOCUMENT_MEDIA_TYPES = {".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
 
 
-class DocumentAssetError(ValueError):
+class DocumentAssetError(FileUploadError):
     pass
 
 
@@ -57,15 +53,9 @@ def _object_key(storage_key: str, settings: Settings) -> str:
     return object_key(storage_key, settings)
 
 
-def _clean_filename(raw: str | None) -> str:
-    name = Path(raw or "document").name.strip()
-    name = _SAFE_NAME.sub("_", name)[:240].strip(" .")
-    return name or "document"
-
-
-def _detected_media_type(filename: str, header: bytes) -> str:
+def validate_media_type(filename: str, header: bytes) -> str:
     suffix = Path(filename).suffix.lower()
-    expected = _TYPE_BY_SUFFIX.get(suffix)
+    expected = DOCUMENT_MEDIA_TYPES.get(suffix)
     if expected is None:
         raise DocumentAssetError("Upload a PDF, JPG, or PNG file.")
     detected = None
@@ -78,85 +68,6 @@ def _detected_media_type(filename: str, header: bytes) -> str:
     if detected != expected:
         raise DocumentAssetError("The file contents do not match its filename. Choose the original PDF, JPG, or PNG.")
     return detected
-
-
-def _copy_limited(source: BinaryIO, destination: BinaryIO, limit: int) -> tuple[int, str, bytes]:
-    size = 0
-    digest = hashlib.sha256()
-    header = b""
-    while True:
-        chunk = source.read(min(1024 * 1024, limit + 1 - size))
-        if not chunk:
-            break
-        if not header:
-            header = chunk[:16]
-        size += len(chunk)
-        if size > limit:
-            raise DocumentAssetError(f"That file is larger than the {limit // (1024 * 1024)} MB limit.")
-        digest.update(chunk)
-        destination.write(chunk)
-    if size == 0:
-        raise DocumentAssetError("The selected file is empty.")
-    return size, digest.hexdigest(), header
-
-
-def store_upload(
-    db: Session,
-    *,
-    user: User,
-    upload: UploadFile,
-    classification: str,
-    description: str | None,
-    settings: Settings,
-) -> DocumentAsset:
-    if classification not in ALLOWED_CLASSIFICATIONS:
-        raise DocumentAssetError("Choose a supported document category.")
-    filename = _clean_filename(upload.filename)
-    storage_root = Path(settings.document_storage_path).resolve()
-    storage_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    storage_key = f"drafts/{uuid4().hex}{Path(filename).suffix.lower()}"
-    target = storage_root / storage_key
-    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd, temporary_name = tempfile.mkstemp(prefix="upload-", dir=storage_root)
-    try:
-        with os.fdopen(fd, "wb") as destination:
-            size, digest, header = _copy_limited(upload.file, destination, settings.document_upload_max_bytes)
-        media_type = _detected_media_type(filename, header)
-        os.chmod(temporary_name, 0o600)
-        if settings.document_storage_provider == "r2":
-            with open(temporary_name, "rb") as source:
-                _r2_client(settings).put_object(
-                    Bucket=settings.r2_bucket,
-                    Key=_object_key(storage_key, settings),
-                    Body=source,
-                    ContentType=media_type,
-                    Metadata={"sha256": digest},
-                )
-            os.unlink(temporary_name)
-        else:
-            os.replace(temporary_name, target)
-    except Exception:
-        try:
-            os.unlink(temporary_name)
-        except FileNotFoundError:
-            pass
-        raise
-
-    asset = DocumentAsset(
-        owner_user_id=user.id,
-        original_filename=filename,
-        media_type=media_type,
-        byte_size=size,
-        sha256=digest,
-        storage_key=storage_key,
-        state="clean",
-        classification=classification,
-        description=(description or "").strip() or None,
-        validated_at=now_utc(),
-    )
-    db.add(asset)
-    db.flush()
-    return asset
 
 
 def asset_dict(asset: DocumentAsset) -> dict:
@@ -179,18 +90,6 @@ def revision_assets(db: Session, revision_id: UUID) -> list[DocumentAsset]:
         .join(DocumentRevisionAsset, DocumentRevisionAsset.asset_id == DocumentAsset.id)
         .where(DocumentRevisionAsset.revision_id == revision_id)
         .order_by(DocumentRevisionAsset.display_order, DocumentAsset.created_at, DocumentAsset.id)
-    ))
-
-
-def library_assets(db: Session, user: User) -> list[DocumentAsset]:
-    return list(db.scalars(
-        select(DocumentAsset)
-        .where(
-            DocumentAsset.owner_user_id == user.id,
-            DocumentAsset.document_id.is_(None),
-            DocumentAsset.state == "clean",
-        )
-        .order_by(DocumentAsset.created_at.desc(), DocumentAsset.id.desc())
     ))
 
 
@@ -284,13 +183,6 @@ def carry_forward_revision_assets(db: Session, *, base_revision_id: UUID, revisi
     return assets
 
 
-def owned_draft_asset(db: Session, asset_id: UUID, user: User) -> DocumentAsset:
-    asset = db.get(DocumentAsset, asset_id)
-    if asset is None or asset.owner_user_id != user.id or asset.document_id is not None:
-        raise SharedRecordNotFound("Document not found")
-    return asset
-
-
 def readable_asset(db: Session, asset_id: UUID, user: User) -> DocumentAsset:
     asset = db.get(DocumentAsset, asset_id)
     if asset is None:
@@ -320,40 +212,8 @@ def stored_path(asset: DocumentAsset, settings: Settings) -> Path:
 
 def read_asset_bytes(asset: DocumentAsset, settings: Settings) -> bytes:
     if settings.document_storage_provider == "r2":
-        response = _r2_client(settings).get_object(Bucket=settings.r2_bucket, Key=_object_key(asset.storage_key, settings))
-        body = response["Body"].read(settings.document_upload_max_bytes + 1)
-        if len(body) != asset.byte_size or hashlib.sha256(body).hexdigest() != asset.sha256:
-            raise SharedRecordConflict("The stored document no longer matches its recorded fingerprint.")
-        return body
+        return R2ObjectStore(settings).read(asset.storage_key, asset.byte_size, digest=asset.sha256)
     data = stored_path(asset, settings).read_bytes()
     if len(data) != asset.byte_size or hashlib.sha256(data).hexdigest() != asset.sha256:
         raise SharedRecordConflict("The stored document no longer matches its recorded fingerprint.")
     return data
-
-
-def presigned_download_url(asset: DocumentAsset, settings: Settings) -> str | None:
-    if settings.document_storage_provider != "r2":
-        return None
-    return _r2_client(settings).generate_presigned_url(
-        "get_object",
-        Params={
-            "Bucket": settings.r2_bucket,
-            "Key": _object_key(asset.storage_key, settings),
-            "ResponseContentType": asset.media_type,
-            "ResponseContentDisposition": f'attachment; filename="{asset.original_filename}"',
-        },
-        ExpiresIn=settings.r2_presign_seconds,
-    )
-
-
-def delete_draft_asset(db: Session, asset: DocumentAsset, settings: Settings) -> None:
-    path = stored_path(asset, settings) if settings.document_storage_provider == "local" else None
-    db.delete(asset)
-    db.flush()
-    if settings.document_storage_provider == "r2":
-        _r2_client(settings).delete_object(Bucket=settings.r2_bucket, Key=_object_key(asset.storage_key, settings))
-    elif path is not None:
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass

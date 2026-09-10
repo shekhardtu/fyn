@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api import router
 from .api_auth import router as auth_router
 from .api_contacts import router as contacts_router
-from .api_attachments import router as attachments_router
+from .api_files import router as files_router
 from .api_finance import router as finance_router
 from .api_lending import router as lending_router
 from .config import get_settings, require_production_auth_config
@@ -41,20 +41,20 @@ _agent_recovery_task: asyncio.Task | None = None
 _agent_enrichment_task: asyncio.Task | None = None
 _operation_watch_task: asyncio.Task | None = None
 _lending_notification_task: asyncio.Task | None = None
-_attachment_cleanup_task: asyncio.Task | None = None
+_file_cleanup_task: asyncio.Task | None = None
 
 
-async def _clean_attachment_objects() -> None:
+async def _clean_file_objects() -> None:
     import logging
-    from .services.attachments import cleanup_attachments
+    from .services.file_cleanup import cleanup_files
     def clean() -> None:
         with SessionLocal() as db:
-            cleanup_attachments(db, settings)
+            cleanup_files(db, settings)
     while True:
         try:
             await asyncio.to_thread(clean)
         except Exception:
-            logging.getLogger(__name__).warning("Attachment cleanup will retry", exc_info=False)
+            logging.getLogger(__name__).warning("File cleanup will retry", exc_info=False)
         await asyncio.sleep(60)
 
 
@@ -201,7 +201,7 @@ async def _deliver_lending_notifications() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global _agent_recovery_task, _agent_enrichment_task, _operation_watch_task, _lending_notification_task
-    global _attachment_cleanup_task
+    global _file_cleanup_task
     # Development-only authentication settings must never reach a real database,
     # so this is checked before the first request rather than at the first
     # sign-in attempt.
@@ -233,17 +233,17 @@ async def lifespan(_: FastAPI):
     # already own execution, so recovery can never race them for the same row.
     _agent_recovery_task = asyncio.create_task(_drain_agent_recovery_backlog(now_utc()))
     _agent_enrichment_task = asyncio.create_task(_drain_agent_enrichment_queue())
-    _attachment_cleanup_task = asyncio.create_task(_clean_attachment_objects())
+    _file_cleanup_task = asyncio.create_task(_clean_file_objects())
     if settings.personal_lending_available and settings.lending_notification_worker_enabled:
         _lending_notification_task = asyncio.create_task(_deliver_lending_notifications())
     try:
         yield
     finally:
-        if _attachment_cleanup_task:
-            _attachment_cleanup_task.cancel()
+        if _file_cleanup_task:
+            _file_cleanup_task.cancel()
             with suppress(asyncio.CancelledError):
-                await _attachment_cleanup_task
-            _attachment_cleanup_task = None
+                await _file_cleanup_task
+            _file_cleanup_task = None
         if _agent_recovery_task:
             _agent_recovery_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -277,7 +277,7 @@ app.add_middleware(
 )
 app.include_router(auth_router)
 app.include_router(contacts_router)
-app.include_router(attachments_router)
+app.include_router(files_router)
 app.include_router(finance_router)
 if settings.personal_lending_available:
     app.include_router(lending_router)

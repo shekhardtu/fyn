@@ -37,12 +37,6 @@ class R2ObjectStore:
         self.settings = settings
         self.client = r2_client(settings)
 
-    def upload_url(self, key: str, size: int) -> str:
-        return self.client.generate_presigned_url("put_object", Params={
-            "Bucket": self.settings.r2_bucket, "Key": object_key(key, self.settings),
-            "ContentType": "application/octet-stream", "ContentLength": size,
-        }, ExpiresIn=300)
-
     def read(self, key: str, limit: int, *, digest: str | None = None) -> bytes:
         response = self.client.get_object(Bucket=self.settings.r2_bucket, Key=object_key(key, self.settings))
         body = response["Body"]
@@ -65,13 +59,3 @@ class R2ObjectStore:
 
     def delete(self, key: str) -> None:
         self.client.delete_object(Bucket=self.settings.r2_bucket, Key=object_key(key, self.settings))
-
-    def download_url(self, key: str, filename: str, media_type: str, *, inline: bool = False) -> str:
-        from urllib.parse import quote
-        disposition = "inline" if inline else "attachment"
-        return self.client.generate_presigned_url("get_object", Params={
-            "Bucket": self.settings.r2_bucket, "Key": object_key(key, self.settings),
-            "ResponseContentType": media_type,
-            "ResponseContentDisposition": f"{disposition}; filename*=UTF-8''{quote(filename, safe='')}",
-            "ResponseCacheControl": "private, no-store",
-        }, ExpiresIn=self.settings.r2_presign_seconds)

@@ -324,16 +324,6 @@ export const AttachmentOut = z.looseObject({
   "content_metadata": z.record(z.string(), z.unknown()),
   "created_at": z.iso.datetime(),
 });
-export const AttachmentUploadIn = z.looseObject({
-  "filename": z.string().min(1).max(240),
-  "byte_size": z.int().gt(0).max(10485760),
-});
-export const AttachmentUploadOut = z.looseObject({
-  "attachment": AttachmentOut,
-  "upload_url": z.string(),
-  "headers": z.record(z.string(), z.unknown()),
-  "expires_in": z.int(),
-});
 export const FeatureAvailabilityOut = z.looseObject({
   "personalLending": z.boolean(),
 });
@@ -706,6 +696,36 @@ export const EditSavedTransactionPayload = z.looseObject({
   "location": z.union([z.string().max(160), z.null()]).default(null),
   "spendNature": z.union([SpendNature, z.null()]).default(null),
   "tags": z.union([z.array(z.string()).max(8), z.null()]).default(null),
+});
+export const FileCreateIn = z.looseObject({
+  "filename": z.string().min(1).max(240),
+  "byte_size": z.int().gt(0).max(10485760),
+  "purpose": z.enum(["conversation", "document"]),
+  "conversation_id": z.union([z.uuid(), z.null()]).default(null),
+  "classification": z.string().max(50).default("supporting_evidence"),
+  "description": z.union([z.string().max(240), z.null()]).default(null),
+});
+export const FileImportIn = z.looseObject({
+  "file_id": z.uuid(),
+  "conversation_id": z.uuid(),
+});
+export const FileOut = z.looseObject({
+  "id": z.uuid(),
+  "purpose": z.enum(["conversation", "document"]),
+  "filename": z.string(),
+  "byte_size": z.int(),
+  "media_type": z.string(),
+  "sha256": z.union([z.string(), z.null()]),
+  "status": z.enum(["uploading", "ready"]),
+  "created_at": z.iso.datetime(),
+  "conversation_id": z.union([z.uuid(), z.null()]),
+  "message_id": z.union([z.uuid(), z.null()]),
+  "read_mode": z.enum(["native", "unavailable"]),
+  "read_error": z.union([z.string(), z.null()]),
+  "content_metadata": z.record(z.string(), z.unknown()),
+  "classification": z.union([z.string(), z.null()]),
+  "description": z.union([z.string(), z.null()]),
+  "document_state": z.union([z.string(), z.null()]),
 });
 export const ReconciliationOutcome = z.enum(["IDEMPOTENT_REPLAY", "MATCHED", "NEEDS_REVIEW", "NOT_MATCHED"]);
 export const ReconciliationResultOut = z.looseObject({
@@ -1259,6 +1279,10 @@ export const SourceRevocationOut = z.looseObject({
   "sourceType": z.string(),
   "active": z.literal(false),
 });
+export const SpreadsheetFileIn = z.looseObject({
+  "file_id": z.uuid(),
+  "name": z.union([z.string().max(120), z.null()]).default(null),
+});
 export const SubcategorySelectorData = z.looseObject({
   "lifecycle": z.union([WidgetLifecycle, z.null()]).default(null),
   "completion": z.union([z.record(z.string(), z.unknown()), z.null()]).default(null),
@@ -1446,8 +1470,6 @@ export const schemas = {
   AgentToolCallMetrics,
   AgentUsageAttempt,
   AttachmentOut,
-  AttachmentUploadIn,
-  AttachmentUploadOut,
   AuthStatusOut,
   AvoidableExpensesData,
   BootstrapResponse,
@@ -1489,6 +1511,9 @@ export const schemas = {
   DraftActionPayload,
   EditSavedTransactionPayload,
   FeatureAvailabilityOut,
+  FileCreateIn,
+  FileImportIn,
+  FileOut,
   FinancialMessageOut,
   FulfillDocumentRequestsIn,
   GoalContributionIn,
@@ -1563,6 +1588,7 @@ export const schemas = {
   SharedRecordEventOut,
   SignOutOut,
   SourceRevocationOut,
+  SpreadsheetFileIn,
   SubcategorySelectorData,
   TaxonomyCancelPayload,
   TaxonomyCreateIn,
