@@ -45,22 +45,16 @@ class DocumentAssetError(ValueError):
 
 
 def _r2_client(settings: Settings):
-    values = (settings.r2_account_id, settings.r2_bucket, settings.r2_access_key_id, settings.r2_secret_access_key)
-    if not all(values):
-        raise DocumentAssetError("Cloudflare R2 document storage is not configured.")
-    import boto3  # type: ignore[import-untyped]
-    return boto3.client(
-        "s3",
-        endpoint_url=f"https://{settings.r2_account_id}.r2.cloudflarestorage.com",
-        aws_access_key_id=settings.r2_access_key_id,
-        aws_secret_access_key=settings.r2_secret_access_key,
-        region_name="auto",
-    )
+    from .object_storage import ObjectStorageError, r2_client
+    try:
+        return r2_client(settings)
+    except ObjectStorageError as error:
+        raise DocumentAssetError(str(error)) from error
 
 
 def _object_key(storage_key: str, settings: Settings) -> str:
-    prefix = settings.r2_object_prefix.strip("/")
-    return f"{prefix}/{storage_key}" if prefix else storage_key
+    from .object_storage import object_key
+    return object_key(storage_key, settings)
 
 
 def _clean_filename(raw: str | None) -> str:

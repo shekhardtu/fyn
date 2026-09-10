@@ -837,8 +837,12 @@ export function sendAgentMessage(
   text: string,
   callbacks?: AgentRunCallbacks,
   signal?: AbortSignal,
+  effort: import("@/lib/composer").ComposerEffort = "auto",
+  attachmentIds: string[] = [],
 ) {
-  return runFynAgent(conversationId, { message: text }, callbacks, signal);
+  return runFynAgent(conversationId, { message: text, ...((effort !== "auto" || attachmentIds.length) ? { forwardedProps: {
+    ...(effort !== "auto" ? { fynEffort: effort } : {}), ...(attachmentIds.length ? { fynAttachmentIds: attachmentIds } : {}),
+  } } : {}) }, callbacks, signal);
 }
 
 export function sendAgentAction(

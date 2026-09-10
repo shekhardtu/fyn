@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
-import { ArrowDown, BrainCircuit, Check, CheckCircle2, Copy, FileText, LayoutDashboard, Loader2, MessageSquareText, Paperclip, ReceiptText, RotateCcw, Route, SendHorizontal, ShieldCheck, Sparkles, Square, SquarePen, Trash2, TriangleAlert, Wrench, X } from "lucide-react";
+import { ArrowDown, BrainCircuit, Check, CheckCircle2, Copy, FileText, LayoutDashboard, Loader2, MessageSquareText, ReceiptText, RotateCcw, Route, ShieldCheck, Sparkles, SquarePen, Trash2, TriangleAlert, Wrench, X } from "lucide-react";
 import { createContext, FormEvent, memo, RefObject, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useLocation, useMatch, useNavigate } from "react-router";
@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { DocumentTitle } from "@/components/document-title";
 import { SiteHeader, useAutoHideSiteHeader } from "@/components/ui/site-header";
 import { Scratchpad } from "@/components/scratchpad";
-import { Textarea } from "@/components/ui/textarea";
+import { ConversationComposer } from "@/components/conversation-composer";
 import { Toast, ToastAction, ToastClose, ToastContent, ToastDescription, ToastPortal, ToastProvider, ToastTitle, ToastViewport, toast, UNDO_WINDOW_MS, useToastManager } from "@/components/ui/toast";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { WidgetRenderer, type WidgetProps } from "@/components/widget-renderer";
@@ -21,9 +21,13 @@ import { MessageDeliveryTime } from "@/components/message-delivery-time";
 import { MessageIdentifier } from "@/components/message-identifier";
 import { UserMessage } from "@/components/user-message";
 import { environment } from "@/config/environment";
-import { bootstrap, cancelAgentRun, createCategory, createConversation, createSubcategory, deleteConversation, flushConversationDeletion, getPrivacyStatus, isUnauthorized, listConversations, loadAgentThreadState, loadConversation, renameConversation, openInterrupts, reconnectAgentRun, resumeAgentInterrupt, sendAgentAction, sendAgentMessage, signOut, uploadCsv, waitForAgentRelatedQuestions, type AgentActivity, type AgentRunPhase, type FynInterrupt } from "@/lib/api";
+import { bootstrap, cancelAgentRun, createCategory, createConversation, createSubcategory, deleteConversation, flushConversationDeletion, getPrivacyStatus, isUnauthorized, listConversations, loadAgentThreadState, loadConversation, renameConversation, openInterrupts, reconnectAgentRun, resumeAgentInterrupt, sendAgentAction, sendAgentMessage, signOut, waitForAgentRelatedQuestions, type AgentActivity, type AgentRunPhase, type FynInterrupt } from "@/lib/api";
 import { AgentRunTelemetry } from "@/lib/agent-telemetry";
-import { formatBytes, formatMoney, readComposerEntry } from "@/lib/format";
+import { useConversationAttachments } from "@/components/use-conversation-attachments";
+import { ConversationFiles } from "@/components/attachment-card";
+import { attachmentQueryKey, previewAttachmentImport } from "@/lib/attachments";
+import type { AttachmentOut } from "@/lib/generated/contracts";
+import { type ComposerEffort } from "@/lib/composer";
 import { takeSharedText } from "@/lib/share-target";
 import { focusedTurnSpacerHeight, transcriptElementOffset } from "@/lib/transcript-scroll";
 import { widgetTypeIds, type AgentResponse, type Bootstrap, type CategoryDirectoryOut, type ConversationOut, type ConversationPage, type ConversationSummary, type Message, type Widget, type WidgetActionId } from "@/lib/protocol";
@@ -32,12 +36,10 @@ import { useScrollEdges } from "@/lib/scroll-edges";
 import { usePlainKey } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
 import { subscribeToViewport } from "@/lib/viewport";
-import { contractLimits } from "@/lib/generated/contracts";
 import { activeWidgetId, completedWidgetIds, mergeAgentResponse, mergeMessageWidget, reconcileUsedWidgetIds, shouldAdoptServerTranscript, transcriptRevision } from "@/lib/widget-state";
 import { interruptActionResolution, recoverInterruptWidget } from "@/lib/interrupt-widget";
 import { appPaths, appRoutePatterns } from "@/routing/paths";
 
-const MAX_UPLOAD_BYTES = contractLimits.csvUploadBytes;
 const JUMP_TO_LATEST_VIEWPORT_RATIO = 0.9;
 const SCROLL_SETTLE_MS = 150;
 /** How close to the scroller's physical bottom still counts as "at the end".
@@ -47,21 +49,12 @@ const SCROLL_SETTLE_MS = 150;
 const AT_END_SLACK_PX = 4;
 
 type Retry =
-  | { kind: "chat"; text: string }
+  | { kind: "chat"; text: string; effort: ComposerEffort }
   | { kind: "action"; widgetId: string; action: WidgetActionId; payload: Record<string, unknown>; markUsed: boolean }
-  | { kind: "upload"; file: File }
   | null;
 
 type CreateCategory = NonNullable<WidgetProps["onCreateCategory"]>;
 type CreateSubcategory = NonNullable<WidgetProps["onCreateSubcategory"]>;
-
-/** Rejects what the importer can't read before spending a round trip on it. */
-function csvProblem(file: File) {
-  if (!/\.csv$/i.test(file.name) && file.type !== "text/csv") return `${file.name} isn’t a CSV file. Export the statement as CSV and attach it again.`;
-  if (file.size === 0) return `${file.name} is empty. Attach a statement that has rows in it.`;
-  if (file.size > MAX_UPLOAD_BYTES) return `${file.name} is ${formatBytes(file.size)}. Attach a statement under ${formatBytes(MAX_UPLOAD_BYTES)}.`;
-  return null;
-}
 
 function prefersReducedMotion() {
   return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -548,66 +541,6 @@ function UndoToastList() {
    must never file a real transaction. */
 const STARTERS = ["Got ₹2 lakh salary today", "How much did I spend this month?", "Where can I cut back?"];
 
-/** One composer, two placements. On a blank conversation it sits in the middle
- *  of the page next to the invitation; once there is a transcript to read it
- *  docks at the bottom. Same element either way, so nothing drifts. */
-function Composer({ variant, value, onValueChange, onSubmit, onStop, textRef, fileRef, onAttach, busy, sending, running, stopping, paused, disabled, dragging, upload }: {
-  variant: "focused" | "docked";
-  value: string;
-  onValueChange: (value: string) => void;
-  onSubmit: (event?: FormEvent) => void;
-  onStop: () => void;
-  textRef: RefObject<HTMLTextAreaElement | null>;
-  fileRef: RefObject<HTMLInputElement | null>;
-  onAttach: (file: File | undefined) => void;
-  busy: boolean;
-  sending: boolean;
-  running: boolean;
-  stopping: boolean;
-  paused: boolean;
-  disabled: boolean;
-  dragging: boolean;
-  upload: { name: string; percent: number } | null;
-}) {
-  const focused = variant === "focused";
-  const { currency } = useUserDefaults();
-  // Recomputed per keystroke, which costs one regex over a short string.
-  const reading = useMemo(() => readComposerEntry(value), [value]);
-  return <form onSubmit={onSubmit} className={cn("pointer-events-auto mx-auto w-full", !focused && "max-w-[var(--column-w)]")}>
-    {upload ? <div role="status" className="mb-2 flex items-center gap-3 rounded-lg border border-line bg-surface px-4 py-3 text-note text-ink-body"><Loader2 size={14} className="shrink-0 animate-spin text-secondary" /><span className="min-w-0 flex-1 truncate">Uploading {upload.name}</span><span className="money shrink-0 text-ink-muted">{upload.percent}%</span><span aria-hidden className="h-1 w-20 shrink-0 overflow-hidden rounded-full bg-surface-sunken"><span data-motion="informational" className="block h-full rounded-full bg-secondary transition-[width] duration-[240ms]" style={{ width: `${upload.percent}%` }} /></span></div> : null}
-    <div data-dropping={dragging || undefined} className="entry-card p-2">
-      {/* 14px of text inset is not arbitrary: it is where a 16px glyph lands
-          inside a 44px control, so the first character of what you write sits
-          on the same vertical as the paperclip below it. */}
-      <Textarea id="composer" ref={textRef} value={value} disabled={disabled || paused} onChange={(event) => onValueChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); onSubmit(); } }} placeholder={disabled ? "Opening conversation…" : paused ? "Respond to the card above to continue…" : focused ? "Spent ₹500 on lunch" : "Ask anything about your finances…"} aria-label="Message fyn AI" aria-describedby="composer-hint" rows={1} className="max-h-36 min-h-10 resize-none border-0 bg-transparent px-3 py-2 text-control leading-6 shadow-none placeholder:text-ink-muted" />
-      <div className="flex items-center gap-2">
-        <input ref={fileRef} type="file" accept=".csv,text/csv" className="sr-only" tabIndex={-1} aria-hidden aria-label="Choose a CSV statement" onChange={(event) => { onAttach(event.target.files?.[0]); event.currentTarget.value = ""; }} />
-        <Tooltip><TooltipTrigger render={<Button type="button" variant="ghost" size="icon" disabled={busy} onClick={() => fileRef.current?.click()} className="shrink-0" aria-label="Attach a CSV statement" />}><Paperclip /></TooltipTrigger><TooltipContent>Attach a CSV statement, or drop one anywhere</TooltipContent></Tooltip>
-        {/* Two things share this line, and only one is ever on it.
-            Ordinarily it is the single piece of small print the composer
-            carries, there because filing happens without asking.
-            The moment what you have typed reads as an amount, it becomes the
-            reading instead — the answer to the only question anyone has while
-            a run is going, given before the run starts. It is also the last
-            chance to correct the figure without filing it first. */}
-        <p id="composer-hint" className="entry-hint -ml-1" aria-live="polite">
-          {reading
-            ? <span key={`${reading.amountMinor}:${reading.kind}`} className="composer-reading">
-              <span className={cn("money font-semibold", reading.kind === "income" ? "text-money-in" : reading.kind === "expense" ? "text-money-out" : "text-ink-body")}>
-                {reading.kind === "income" ? "+" : reading.kind === "expense" ? "−" : ""}{formatMoney(reading.amountMinor, currency)}
-              </span>
-              <span className="truncate text-ink-muted">{reading.kind}</span>
-            </span>
-            : <><CheckCircle2 size={14} className="shrink-0" /><span className="truncate">Complete entries are added automatically</span></>}
-        </p>
-        {running
-          ? <Button type="button" size="icon" variant="outline" disabled={stopping} onClick={onStop} className="ml-auto shrink-0" aria-label={stopping ? "Stopping fyn AI" : "Stop fyn AI"}>{stopping ? <Loader2 className="animate-spin" /> : <Square size={14} fill="currentColor" />}</Button>
-          : <Button type="submit" size="icon" disabled={!value.trim() || busy} className="ml-auto shrink-0" aria-label="Send message">{sending ? <Loader2 className="animate-spin" /> : <SendHorizontal />}</Button>}
-      </div>
-    </div>
-  </form>;
-}
-
 function InterruptFallback({ interrupt, busy, locationAllowed, onResolve }: {
   interrupt: FynInterrupt;
   busy: boolean;
@@ -763,7 +696,7 @@ const MessageArticle = memo(function MessageArticle({ message, focusedPrompt = f
         activity={trace ? <WidgetRenderer widget={trace} disabled onAction={noAction} /> : undefined}
       /> : null}
       {message.content ? message.role === "user"
-        ? <UserMessage content={message.content} messageId={message.id} deliveredAt={message.delivered_at} />
+        ? <UserMessage content={message.content} messageId={message.id} deliveredAt={message.delivered_at} attachments={message.attachments} />
         : <div className="transcript-answer break-words"><MarkdownMessage id={message.id}>{message.content}</MarkdownMessage></div>
       : null}
       {message.content && message.role !== "user" ? <div className="mt-1.5 pl-8">
@@ -1159,7 +1092,7 @@ const Transcript = memo(function Transcript({ messages, agentRun, reasoningSumma
 /** What the shell needs to reach inside the thread for: the rail's Saved
  *  analyses sends a prompt, and a file dropped anywhere lands on the importer.
  *  A handle keeps those two reachable without lifting the thread's state. */
-type ThreadHandle = { sendPrompt: (text: string) => void; attach: (file: File | undefined) => void };
+type ThreadHandle = { sendPrompt: (text: string) => void; attach: (files: File[]) => void };
 
 function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav, switching, dragging, handleRef, onRenameTitle }: {
   initialData: Bootstrap;
@@ -1202,6 +1135,9 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     return created;
   }, [queryClient]);
   const [input, setInput] = useState("");
+  const [effort, setEffort] = useState<ComposerEffort>("auto");
+  const files = useConversationAttachments(conversationId);
+  const { sent: markAttachmentsSent, add: addAttachments } = files;
   // A share from the platform sheet lands as a navigation to "/" carrying the
   // text. Seeded, never sent: the person sees what arrived and decides.
   useEffect(() => {
@@ -1236,7 +1172,6 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   // reconciliation inserts or updates other rows.
   const [focusedPromptId, setFocusedPromptId] = useState<string | null>(null);
   const [openCitations, setOpenCitations] = useState<Set<string>>(new Set());
-  const [upload, setUpload] = useState<{ name: string; percent: number } | null>(null);
   const [atBottom, setAtBottom] = useState(true);
   const [announcement, setAnnouncement] = useState("");
   const agentState = useQuery({
@@ -1277,7 +1212,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     serverRevision: serverTranscriptRevision,
     activeRunId,
     pendingWidget,
-    uploading: upload !== null,
+    uploading: files.drafts.some((item) => item.status === "uploading"),
   });
   if (threadChanged || loadingChanged || adoptServerTranscript) {
     const changedThread = seeded.id !== conversationId;
@@ -1302,7 +1237,6 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     setStreamingText("");
     if (resetViewport) setFocusedPromptId(null);
     setOpenCitations(new Set());
-    setUpload(null);
     // A background refetch of this same transcript is reconciliation, not
     // navigation. Preserve an off-bottom reader's ownership; resetting follow
     // here made every successfully persisted reply jump to the end a second
@@ -1311,7 +1245,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     if (resetViewport) setAtBottom(true);
     setAnnouncement("");
     setLinkCopied(false);
-    if (changedThread) setInput("");
+    if (changedThread) { setInput(""); setEffort("auto"); }
   }
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1412,6 +1346,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     void Promise.all([
       queryClient.invalidateQueries({ queryKey: ["conversations"] }),
       queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] }),
+      queryClient.invalidateQueries({ queryKey: attachmentQueryKey(conversationId) }),
       queryClient.invalidateQueries({ queryKey: ["agent-state", conversationId] }),
       queryClient.invalidateQueries({ queryKey: ["overview"] }),
     ]);
@@ -1531,7 +1466,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   }), [startClientRunTelemetry, updateActivity]);
 
   const chatMutation = useMutation({
-    mutationFn: ({ id, text }: { id: string; text: string }) => sendAgentMessage(id, text, agentRunCallbacks, inFlight.current?.signal),
+    mutationFn: ({ id, text, effort, attachments }: { id: string; text: string; effort: ComposerEffort; attachments: AttachmentOut[] }) => sendAgentMessage(id, text, agentRunCallbacks, inFlight.current?.signal, effort, attachments.map((item) => item.id)),
     onMutate: () => { startClientRunTelemetry(); setAgentRun(idleAgentRun); setReasoningSummary(""); setStreamingText(""); setAnnouncement("fyn AI is working on your message."); },
     onSuccess: (result) => {
       setAgentRun(idleAgentRun);
@@ -1550,8 +1485,10 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
       setStoppingRun(false);
       setMessages((current) => current.filter((message) => !(message.id.startsWith("optimistic-") && message.content === variables.text)));
       if (cause.name === "AbortError") return;
+      void queryClient.invalidateQueries({ queryKey: attachmentQueryKey(conversationId) });
+      void queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] });
       setInput((current) => current || variables.text);
-      failed(cause, { kind: "chat", text: variables.text });
+      failed(cause, { kind: "chat", text: variables.text, effort: variables.effort });
     },
   });
   const actionMutation = useMutation({
@@ -1613,21 +1550,17 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
       failed(cause, null);
     },
   });
-  const uploadMutation = useMutation({
-    mutationFn: (file: File) => uploadCsv(conversationId, file, (percent) => setUpload({ name: file.name, percent }), inFlight.current?.signal),
-    onMutate: (file) => setUpload({ name: file.name, percent: 0 }),
+  const importMutation = useMutation({
+    mutationFn: previewAttachmentImport,
     onSuccess: (result, file) => {
-      setUpload(null);
-      // CSV upload is an explicit change of direction. The API retires any
-      // older interrupt atomically with the preview, so clear the local copy
-      // immediately instead of letting it keep the composer paused until a
-      // thread-state refetch happens to finish.
       setInterrupts([]);
       const deliveredAt = new Date().toISOString();
-      setMessages((current) => [...current, { id: `upload-${Date.now()}`, role: "user", content: `Uploaded ${file.name}`, widgets: [], citations: [], created_at: deliveredAt, delivered_at: deliveredAt }]);
+      const messageId = result.agentResponse.user_message_id ?? `import-${Date.now()}`;
+      markAttachmentsSent([file.id], messageId);
+      setMessages((current) => [...current, { id: messageId, role: "user", content: `Uploaded ${file.filename}`, widgets: [], citations: [], attachments: [file], created_at: deliveredAt, delivered_at: deliveredAt }]);
       succeeded(result.agentResponse);
     },
-    onError: (cause: Error, file) => { setUpload(null); failed(cause, { kind: "upload", file }); },
+    onError: (cause: Error) => failed(cause, null),
   });
 
   // Bound to the mutations' stable members rather than to the result objects,
@@ -1637,7 +1570,6 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   const { mutate: startChat, isPending: chatPending } = chatMutation;
   const { mutate: startAction, isPending: actionPending } = actionMutation;
   const { mutate: resolveInterrupt, isPending: interruptPending } = interruptMutation;
-  const { mutate: startUpload, isPending: uploadPending } = uploadMutation;
 
   const reconnectingRun = useRef<string | null>(null);
   useEffect(() => {
@@ -1671,7 +1603,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   // list has to already exist by the time the list is evaluated.
   const agentRunning = Boolean(activeRunId) && runPhase !== "interrupted" && runPhase !== "succeeded" && runPhase !== "failed";
   const pausedForInterrupt = availableInterrupts.length > 0;
-  const busy = switchingConversation || chatPending || actionPending || interruptPending || uploadPending || agentRunning;
+  const busy = switchingConversation || chatPending || actionPending || interruptPending || agentRunning || importMutation.isPending;
   const activeInteractionWidgetId = useMemo(() => activeWidgetId(messages), [messages]);
   const interruptWidgetId = useMemo(
     () => availableInterrupts.find((interrupt) => interrupt.widgetId === activeInteractionWidgetId)?.widgetId ?? null,
@@ -1785,9 +1717,10 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   // survives a keystroke; that is what lets the memoised thread below bail out.
   // The dependencies are the real ones — they change when a widget is used or a
   // request lands, which is precisely when the thread should redraw.
-  const sendPrompt = useCallback((value: string) => {
+  const sendPrompt = useCallback((value: string, selectedEffort: ComposerEffort = effort, attachedFiles: AttachmentOut[] = []) => {
     const text = value.trim();
-    if (!text || chatPending || actionPending || uploadPending || agentRunning || pausedForInterrupt) return;
+    if (!text || switchingConversation || chatPending || actionPending || interruptPending || agentRunning || pausedForInterrupt) return;
+    if (text.length > 4000) { failed(new Error("Keep your message under 4,000 characters. Nothing was sent."), null); return; }
     setInput(""); setError(null); setRetry(null);
     readerScrolled.current = false;
     unseenLatest.current = false;
@@ -1797,27 +1730,27 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
     const deliveredAt = new Date().toISOString();
     const optimisticId = `optimistic-${Date.now()}`;
     setFocusedPromptId(optimisticId);
-    setMessages((current) => [...current, { id: optimisticId, role: "user", content: text, widgets: [], citations: [], created_at: deliveredAt, delivered_at: deliveredAt }]);
-    startChat({ id: conversationId, text });
-  }, [chatPending, actionPending, uploadPending, agentRunning, pausedForInterrupt, hideHeader, startChat, conversationId, updateJumpControl]);
+    setMessages((current) => [...current, { id: optimisticId, role: "user", content: text, widgets: [], citations: [], attachments: attachedFiles, created_at: deliveredAt, delivered_at: deliveredAt }]);
+    markAttachmentsSent(attachedFiles.map((item) => item.id), optimisticId);
+    startChat({ id: conversationId, text, effort: selectedEffort, attachments: attachedFiles });
+  }, [chatPending, actionPending, interruptPending, agentRunning, pausedForInterrupt, hideHeader, startChat, conversationId, updateJumpControl, effort, switchingConversation, failed, markAttachmentsSent]);
 
   function submit(event?: FormEvent) {
     event?.preventDefault();
-    sendPrompt(input);
+    if (busy || pausedForInterrupt || files.blocked) return;
+    const text = input.trim() || (files.ready.length ? "What can you tell me about these files?" : "");
+    sendPrompt(text, effort, files.ready);
   }
 
-  const attach = useCallback((file: File | undefined) => {
-    if (!file || busy) return;
-    const problem = csvProblem(file);
-    if (problem) { failed(new Error(problem), null); return; }
-    setError(null);
-    setFocusedPromptId(null);
-    readerScrolled.current = false;
-    unseenLatest.current = false;
-    setAtBottom(true);
-    updateJumpControl(false);
-    startUpload(file);
-  }, [busy, failed, startUpload, updateJumpControl]);
+  const attach = useCallback((selected: File[]) => {
+    if (busy || pausedForInterrupt) return;
+    try { addAttachments(selected); setError(null); setRetry(null); }
+    catch (cause) { failed(cause instanceof Error ? cause : new Error("Couldn’t attach that file."), null); }
+  }, [busy, pausedForInterrupt, addAttachments, failed]);
+
+  function removeFile(id: string) {
+    void files.remove(id).catch((cause: Error) => failed(cause, null));
+  }
 
   const handleWidgetAction = useCallback<WidgetAction>((widgetId, action, payload, options) => {
     // Per-row widgets (avoidable expenses, the calculators) opt out of the lock
@@ -1842,11 +1775,10 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
   const retryLast = useCallback(() => {
     if (!retry) return;
     setError(null);
-    if (retry.kind === "chat") sendPrompt(retry.text);
+    if (retry.kind === "chat") sendPrompt(retry.text, retry.effort, files.ready);
     if (retry.kind === "action") { followNextResponse(); setPendingWidget(retry.widgetId); startAction(retry); }
-    if (retry.kind === "upload") startUpload(retry.file);
     setRetry(null);
-  }, [retry, followNextResponse, sendPrompt, startAction, startUpload]);
+  }, [retry, followNextResponse, sendPrompt, startAction, files.ready]);
 
   // Whether the reader is following the conversation, which is not the same as
   // where the scrollbar happens to be. Rows measure themselves after they mount
@@ -2178,13 +2110,14 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
             hidden={!headerVisible}
             navOpen={navOpen}
             onOpenNav={onOpenNav}
-            end={<div className="flex items-center gap-1">
+            end={<div className="flex items-center gap-1"><ConversationFiles files={files.files} loading={files.loading} error={files.error} onRetry={() => { void files.refresh(); }} />
               <Tooltip><TooltipTrigger render={<Button type="button" variant="ghost" size="icon-lg" onClick={copyConversationLink} aria-label={linkCopied ? "Conversation link copied" : "Copy conversation link"} className="rounded-xl text-ink-muted" />}>{linkCopied ? <Check /> : <Copy />}</TooltipTrigger><TooltipContent>{linkCopied ? "Link copied" : "Copy conversation link"}</TooltipContent></Tooltip>
             </div>}
           />
-          {loadingThread ? <div className="mx-auto flex min-h-[calc(100%-3.5rem)] w-full max-w-[var(--column-w)] flex-col px-4 pt-8 pb-10 sm:px-6 sm:pt-12"><ThreadSkeleton /></div> : focusedMode ? <div className="leaf mx-auto flex min-h-[calc(100%-3.5rem)] w-full max-w-[34rem] flex-col justify-center px-4 py-12 sm:px-6">
-            <h2 className="leaf-title">What happened?</h2>
-            <div className="mt-6"><Composer variant="focused" value={input} onValueChange={setInput} onSubmit={submit} onStop={stopAgent} textRef={textRef} fileRef={fileRef} onAttach={attach} busy={busy} sending={chatPending} running={agentRunning} stopping={stoppingRun} paused={pausedForInterrupt} disabled={switchingConversation} dragging={dragging} upload={upload} /></div>
+          {loadingThread ? <div className="mx-auto flex min-h-[calc(100%-3.5rem)] w-full max-w-[var(--column-w)] flex-col px-4 pt-8 pb-10 sm:px-6 sm:pt-12"><ThreadSkeleton /></div> : focusedMode ? <div className="leaf mx-auto flex min-h-[calc(100%-3.5rem)] w-full max-w-[42rem] flex-col justify-center px-4 py-12 sm:px-6">
+            <h2 className="leaf-title">A little clarity for your money.</h2>
+            <p className="mt-3 text-control text-ink-muted">Track a transaction, make sense of your spending, or plan what’s next.</p>
+            <div className="mt-6"><ConversationComposer key={conversationId} variant="focused" value={input} onValueChange={setInput} onSubmit={submit} onStop={stopAgent} textRef={textRef} fileRef={fileRef} onAttach={attach} attachments={files.drafts} onRemoveAttachment={removeFile} onRetryAttachment={files.retry} onImportAttachment={importMutation.mutate} effort={effort} onEffortChange={setEffort} busy={busy} sending={chatPending} running={agentRunning} stopping={stoppingRun} paused={pausedForInterrupt} disabled={switchingConversation} dragging={dragging} /></div>
             {error ? <div role="alert" className="mt-3 flex flex-wrap items-center gap-3 gap-2 rounded-lg border border-danger-line bg-danger-tint px-4 py-3 text-note leading-5 text-danger-ink"><TriangleAlert className="shrink-0" /><span className="min-w-0 flex-1">{error}</span>{retry ? <Button type="button" variant="outline" size="lg" onClick={retryLast} className="rounded-xl border-danger-line text-danger-ink hover:bg-danger-tint"><RotateCcw size={14} /> Try again</Button> : null}</div> : null}
             <p className="leaf-band mt-9">Try</p>
             <div className="mt-1">{STARTERS.map((starter) => <button key={starter} type="button" onClick={() => applyStarter(starter)} className="leaf-example"><span aria-hidden className="ledger-mark" />{starter}</button>)}</div>
@@ -2235,7 +2168,7 @@ function ConversationWorkspace({ initialData, loadingThread, navOpen, onOpenNav,
               followNextResponse();
               resolveInterrupt({ interrupt: fallbackInterrupt, response });
             }} /> : null}
-            <Composer variant="docked" value={input} onValueChange={setInput} onSubmit={submit} onStop={stopAgent} textRef={textRef} fileRef={fileRef} onAttach={attach} busy={busy} sending={chatPending} running={agentRunning} stopping={stoppingRun} paused={pausedForInterrupt} disabled={switchingConversation} dragging={dragging} upload={upload} />
+            <ConversationComposer key={conversationId} variant="docked" value={input} onValueChange={setInput} onSubmit={submit} onStop={stopAgent} textRef={textRef} fileRef={fileRef} onAttach={attach} attachments={files.drafts} onRemoveAttachment={removeFile} onRetryAttachment={files.retry} onImportAttachment={importMutation.mutate} effort={effort} onEffortChange={setEffort} busy={busy} sending={chatPending} running={agentRunning} stopping={stoppingRun} paused={pausedForInterrupt} disabled={switchingConversation} dragging={dragging} />
           </div>
         </> : null}
       </main>
@@ -2478,7 +2411,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
 
   return <UserDefaultsProvider value={userDefaults}><ToastProvider toastManager={toast} limit={5}>
     <ShellContext.Provider value={{ navOpen: sidebarOpen, openNav, switching, dragging, handleRef: thread, conversations, defaultConversationId: initial.data?.active_conversation.id ?? null, renameThread }}>
-    <div className="app-shell bg-ground text-ink" onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDragging(true); } }} onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }} onDrop={(event) => { if (!event.dataTransfer.files.length) return; event.preventDefault(); setDragging(false); thread.current?.attach(event.dataTransfer.files[0]); }}>
+    <div className="app-shell bg-ground text-ink" onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDragging(true); } }} onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }} onDrop={(event) => { if (!event.dataTransfer.files.length) return; event.preventDefault(); setDragging(false); thread.current?.attach(Array.from(event.dataTransfer.files)); }}>
       <div className="relative mx-auto grid h-full max-w-[1600px] md:grid-cols-[var(--rail-w)_1fr]">
         <button type="button" tabIndex={-1} aria-hidden onClick={() => setSidebarOpen(false)} className={cn("fixed inset-0 z-30 bg-scrim/25 backdrop-blur-[2px] transition-opacity duration-300 md:hidden", sidebarOpen ? "opacity-100" : "pointer-events-none opacity-0")} />
         <ConversationRail

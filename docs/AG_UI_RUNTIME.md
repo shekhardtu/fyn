@@ -9,6 +9,23 @@ Fyn uses AG-UI as its only interactive-agent transport.
 
 ## Run lifecycle
 
+The composer may supply `forwardedProps.fynEffort` for a new text message:
+`auto` preserves server defaults, `quick` selects low reasoning, and `thorough`
+selects high reasoning for the Operator and its analysis delegate. The server
+validates the enum, persists the non-default preference in the reduced command,
+and scopes it to that message's execution with a resettable context variable.
+Replay/recovery uses the persisted selection; a new interrupt-resume command
+uses server defaults. Effort never changes tools, approval policy, or financial
+authority, and never rewrites the user's message. Attachments use `forwardedProps.fynAttachmentIds`, validated against private
+thread-owned file resources. Text messages are admitted with their canonical
+message and reserved reply rows, and files bind atomically before queuing.
+The worker reuses `sourceUserMessageId` and `sourceAssistantMessageId`, preserving
+question/answer order even when several requests await execution. Terminal
+cancellation/restart cleanup removes unfilled reply rows. Native file inputs stay outside the 4,000-character
+text boundary. See [attachment architecture](ATTACHMENTS_ARCHITECTURE.md) for
+R2 uploads, native inputs to the main model, follow-up file tools, complete-source
+table computation, and the explicit CSV import flow.
+
 Every accepted command creates a persisted `agent_runs` row. Its ordered AG-UI events are appended to `agent_events`, and any human decision is represented by `agent_interrupts`.
 
 The run keeps the complete reduced input command, links to the canonical final

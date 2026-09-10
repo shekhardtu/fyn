@@ -10,7 +10,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from app.api import _record_import_preview, router
+from app.api import router
+from app.services.import_previews import record_import_preview as _record_import_preview
 from app.database import get_db
 from app.domain import AgentEnrichmentStatus, AgentInterruptStatus, AgentRunStatus, FinancialSourceType, ImportStatus
 from app.event_time import now_utc
@@ -1871,6 +1872,32 @@ def test_recovery_terminates_an_uncertain_running_command_without_replaying_it(d
     assert recovered.metrics["requestUsage"]["totalTokens"] is None
     assert terminal.event_type == "RUN_ERROR"
     assert terminal.payload["code"] == "server_restart"
+
+
+def test_cancellation_and_restart_remove_unfilled_admitted_reply_rows(db):
+    user = db.scalar(select(User).where(User.email == DEFAULT_USER_EMAIL))
+    conversation = get_or_create_conversation(db, user)
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, expire_on_commit=False)
+    for restart in (False, True):
+        source = Message(conversation_id=conversation.id, role="user", content="Read my files", widgets=[], citations=[])
+        reply = Message(conversation_id=conversation.id, role="assistant", content="", widgets=[], citations=[])
+        db.add_all([source, reply])
+        db.flush()
+        source_id, reply_id = source.id, reply.id
+        run = AgentRun(user_id=user.id, conversation_id=conversation.id, status=AgentRunStatus.RUNNING.value,
+                       cancel_requested=False, last_sequence=0, input_payload={"kind": "message", "text": source.content,
+                       "sourceUserMessageId": str(source.id), "sourceAssistantMessageId": str(reply.id)})
+        db.add(run)
+        db.commit()
+        if restart:
+            assert recover_agent_runs(factory) == []
+        else:
+            publisher = DurableEventPublisher(factory, run.id, user.id, 0, lambda _sequence, _event: None)
+            publisher.emit(RunStartedEvent(thread_id=str(conversation.id), run_id=str(run.id)))
+            publisher.finish(AgentRunStatus.CANCELLED, error_code="cancelled")
+        db.expire_all()
+        assert db.scalar(select(Message.id).where(Message.id == reply_id)) is None
+        assert db.get(Message, source_id) is not None
 
 
 def test_recovery_resumes_failed_answer_postprocessing_without_replaying_the_turn(db, monkeypatch):

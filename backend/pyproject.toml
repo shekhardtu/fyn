@@ -20,6 +20,9 @@ dependencies = [
   "boto3>=1.35,<2",
   # Canonical agreement and evidence-bundle PDF rendering.
   "reportlab>=4.2,<5",
+  # Bounded original-document and image validation (no text extraction).
+  "pypdf>=6,<7",
+  "Pillow>=11,<12",
   # Provider lifecycle hooks are a tested compatibility boundary.
   "agno==2.9.0",
   "ag-ui-protocol==0.1.19",
@@ -52,7 +55,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.3,<9",
-  "pypdf>=6,<7",
   "ruff>=0.16,<1",
   "mypy>=1.19,<2",
   "types-dateparser>=1.2,<2",

@@ -6,7 +6,6 @@ from datetime import date, datetime
 import io
 from uuid import UUID, uuid4
 
-import hashlib
 
 from ag_ui.core import AgentCapabilities, RunAgentInput
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, Query, Response, UploadFile, status
@@ -19,7 +18,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from .database import get_db
 from .event_time import as_utc, local_date_string, local_now, now_utc
 from .config import CSV_UPLOAD_MAX_BYTES, get_settings
-from .domain import AgentInterruptStatus, AgentRunStatus, FinancialSourceType, ImportRecordStatus, ImportStatus, REVOCABLE_SOURCE_TYPES, ReconciliationOutcome, TransactionType, WidgetActionId
+from .domain import AgentInterruptStatus, AgentRunStatus, FinancialSourceType, REVOCABLE_SOURCE_TYPES, ReconciliationOutcome, TransactionType
 from .models import (
     AIAction,
     AgentEvent,
@@ -31,8 +30,6 @@ from .models import (
     Conversation,
     Dashboard,
     DashboardTile,
-    Import as ImportJob,
-    ImportRecord,
     Message,
     ReconciliationCandidate,
     Subcategory,
@@ -92,7 +89,6 @@ from .schemas import (
     LocationPreferenceOut,
     ObservationIn,
     OverviewOut,
-    PendingAction,
     ReconciliationResultOut,
     ReconciliationReviewOut,
     PrivacyStatusOut,
@@ -103,10 +99,6 @@ from .schemas import (
     TransactionListItemOut,
     TransactionRevisionOut,
     TransactionUpdateIn,
-    Widget,
-    WidgetAction,
-    WidgetType,
-    WidgetUpdate,
 )
 # Every route below is user-scoped through this one dependency, so protecting
 # it protected all of them at once.
@@ -118,10 +110,10 @@ from .services.intelligence import IntelligenceResult, tool_facing_rows
 from .services.manifest import native_manifest_fingerprint
 from .services.semantic import AnalysisPlan, AnalysisToolProposal
 from .visualization_contracts import VisualEncodingContract, VisualFieldEncoding, VisualizationView
-from .services.adapters import CSVAdapter, MessageAdapter, import_summary
+from .services.adapters import MessageAdapter
+from .services.import_previews import preview_csv_import
 from .services.conversation import (
     get_or_create_conversation,
-    persist_agent_response,
     prepare_widget_action,
     user_conversation,
 )
@@ -425,6 +417,11 @@ def delete_conversation(conversation_id: UUID, db: Session = Depends(get_db), us
     """
     conversation = _owned_conversation(db, user, conversation_id)
     run_ids = select(AgentRun.id).where(AgentRun.conversation_id == conversation_id)
+    from .models import ConversationAttachment
+    from .services.attachments import remove_attachments
+    remove_attachments(db, list(db.scalars(select(ConversationAttachment).where(
+        ConversationAttachment.conversation_id == conversation_id, ConversationAttachment.user_id == user.id,
+    ))))
     db.execute(delete(AgentInterrupt).where(AgentInterrupt.run_id.in_(run_ids)))
     db.execute(delete(AgentEvent).where(AgentEvent.run_id.in_(run_ids)))
     db.execute(delete(AgentRun).where(AgentRun.conversation_id == conversation_id))
@@ -696,6 +693,19 @@ async def run_agent(
         .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
         .limit(1)
     )
+    if input_payload.get("kind") == "message":
+        from .services.attachments import AttachmentError, bind_to_message
+        try:
+            source = bind_to_message(db, user.id, thread_id, input_payload.get("attachmentIds", []), input_payload["text"])
+            input_payload["sourceUserMessageId"] = str(source.id)
+            # Reserve both positions while holding the admission lock. Queued
+            # questions must not appear between an earlier question and reply.
+            reply = Message(conversation_id=thread_id, role="assistant", content="", widgets=[], citations=[])
+            db.add(reply)
+            db.flush()
+            input_payload["sourceAssistantMessageId"] = str(reply.id)
+        except (AttachmentError, ValueError) as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
     run = AgentRun(
         id=run_id,
         user_id=user.id,
@@ -843,92 +853,10 @@ async def import_csv(conversation_id: UUID = Form(...), file: UploadFile = File(
     content = await file.read(CSV_UPLOAD_MAX_BYTES + 1)
     if len(content) > CSV_UPLOAD_MAX_BYTES:
         raise HTTPException(status_code=413, detail="CSV is limited to 10 MB")
-    file_hash = hashlib.sha256(content).hexdigest()
-    existing = db.scalar(select(ImportJob).where(ImportJob.user_id == user.id, ImportJob.source_type == FinancialSourceType.CSV.value, ImportJob.file_hash == file_hash))
-    if existing:
-        widget_updates = supersede_open_interrupts(
-            db,
-            user,
-            conversation,
-            superseded_by="csv_upload",
-        )
-        result = import_summary(existing, idempotent_replay=True)
-        return _record_import_preview(db, conversation, file.filename, result, widget_updates=widget_updates)
     try:
-        rows = CSVAdapter().adapt(content, timezone_name=user.timezone, default_currency=user.currency)
-    except (UnicodeDecodeError, ValueError) as error:
+        return preview_csv_import(db, user, conversation, file.filename, content)
+    except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    widget_updates = supersede_open_interrupts(
-        db,
-        user,
-        conversation,
-        superseded_by="csv_upload",
-    )
-    job = ImportJob(user_id=user.id, source_type=FinancialSourceType.CSV.value, filename=file.filename, file_hash=file_hash, status=ImportStatus.AWAITING_CONFIRMATION, total_records=len(rows))
-    db.add(job)
-    db.commit()
-    db.refresh(job)
-    high_confidence = review = duplicates = 0
-    for row_number, observation, errors in rows:
-        if not observation:
-            db.add(ImportRecord(import_id=job.id, row_number=row_number, status=ImportRecordStatus.INVALID, errors=errors))
-            review += 1
-            continue
-        high_confidence += 1
-        db.add(ImportRecord(import_id=job.id, row_number=row_number, status=ImportRecordStatus.STAGED, errors=[], observation_payload=observation.model_dump(mode="json")))
-    job.high_confidence_records = high_confidence
-    job.review_records = review
-    job.duplicate_records = duplicates
-    job.status = ImportStatus.AWAITING_CONFIRMATION
-    db.commit()
-    result = import_summary(job, idempotent_replay=False)
-    return _record_import_preview(db, conversation, file.filename, result, widget_updates=widget_updates)
-
-
-def _record_import_preview(
-    db: Session,
-    conversation: Conversation,
-    filename: str,
-    result: dict,
-    *,
-    widget_updates: list[WidgetUpdate] | None = None,
-) -> ImportResultOut:
-    user_message = Message(conversation_id=conversation.id, role="user", content=f"Uploaded {filename}", widgets=[], citations=[])
-    db.add(user_message)
-    widget = Widget(
-        id=f"import-{result['importId']}-{uuid4()}",
-        type=WidgetType.IMPORT_REVIEW,
-        data={"title": filename, **result},
-        actions=[] if result["status"] == ImportStatus.COMPLETED else [
-            WidgetAction(id="import", label=f"Import {result['highConfidence']}", action=WidgetActionId.COMMIT_IMPORT, style="primary", payload={"importId": result["importId"]}),
-            WidgetAction(id="cancel", label="Cancel", action=WidgetActionId.CANCEL_PENDING_ACTION, style="ghost", payload={"resourceId": result["importId"]}),
-        ],
-    )
-    content = f"I found {result['total']} row{'s' if result['total'] != 1 else ''}. Review the summary before importing."
-    agent_response = persist_agent_response(
-        db,
-        conversation,
-        content,
-        widgets=[widget],
-        widget_updates=widget_updates,
-        pending_action=PendingAction(
-            action=WidgetActionId.COMMIT_IMPORT,
-            resource_id=result["importId"],
-        ) if widget.actions else None,
-    )
-    # Committed alongside the reply just above, so the ID is durable by here.
-    agent_response.user_message_id = user_message.id
-    response = ImportResultOut(
-        import_id=result["importId"],
-        status=result["status"],
-        total=result["total"],
-        high_confidence=result["highConfidence"],
-        needs_review=result["needsReview"],
-        duplicates=result["duplicates"],
-        idempotent_replay=result["idempotentReplay"],
-        agent_response=agent_response,
-    )
-    return response
 
 
 def _transaction_list_item(item: Transaction, category: str | None, subcategory: str | None) -> TransactionListItemOut:

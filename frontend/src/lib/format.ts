@@ -207,6 +207,8 @@ const MONEY_VERB = /\b(spent|spend|paid|pay|bought|buy|cost|got|received|earned|
 
 export function readComposerEntry(input: string): ComposerReading | null {
   const text = input.toLowerCase();
+  // Questions can contain money words and dates without describing an entry.
+  if (/^\s*(?:(?:please|can you|could you)\s+)?(?:review|summari[sz]e|compare|analy[sz]e|explain|show|find|list|what|which|when|where|why|how|is|are|do|did|should|would|will)\b/.test(text) || text.includes("?")) return null;
   const match = /(?:₹|rs\.?|inr)?\s*(\d[\d,]*(?:\.\d+)?)\s*([a-z]*)/.exec(text);
   if (!match) return null;
 

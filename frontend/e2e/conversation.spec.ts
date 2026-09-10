@@ -375,7 +375,7 @@ test("a conversational correction amends the preceding transaction and links bot
 test("CSV attachment is staged, confirmed, imported, and persistent", async ({ page }) => {
   await page.goto(sharedThreadUrl());
   const chooserPromise = page.waitForEvent("filechooser");
-  await page.getByRole("button", { name: "Attach a CSV statement" }).click();
+  await page.getByRole("button", { name: "Add attachment", exact: true }).click();
   const chooser = await chooserPromise;
   const unique = Date.now();
   await chooser.setFiles({
@@ -383,8 +383,10 @@ test("CSV attachment is staged, confirmed, imported, and persistent", async ({ p
     mimeType: "text/csv",
     buffer: Buffer.from(`date,description,debit,credit,transaction id\n2026-08-08,SWIGGY ONLINE,850,,e2e-${unique}-1\n2026-08-09,Freelance project,,50000,e2e-${unique}-2\n`),
   });
+  await expect(page.getByText("Available to fyn in this conversation", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "Review transactions for import", exact: true }).click();
   await expect(page.getByText("Statement review", { exact: true })).toBeVisible();
-  await expect(page.getByText(`statement-${unique}.csv`, { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: `View statement-${unique}.csv`, exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Import 2", exact: true }).click();
   await expect(page.getByText(`Imported 2 transactions from statement-${unique}.csv.`, { exact: true })).toBeVisible();
   await page.reload();

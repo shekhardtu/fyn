@@ -6,6 +6,17 @@ const deliveredAt = "2026-08-29T10:51:31.799Z";
 const messageId = "613d433c-f804-4328-a429-e0ac3357f400";
 
 describe("user message", () => {
+  it("shows persisted attachments and opens the original without replacing message text", () => {
+    render(<UserMessage content="Review my statement" messageId={messageId} deliveredAt={deliveredAt} attachments={[{
+      id: "46b8e280-2b10-4482-8ecf-932243331dd7", conversation_id: "9f7b7fa1-3e81-4a8d-8cbd-a00b03dd7654", message_id: messageId,
+      filename: "statement.pdf", byte_size: 1024, media_type: "application/pdf", status: "ready", read_mode: "native", read_error: null,
+      content_metadata: { pageCount: 3 }, created_at: deliveredAt,
+    }]} />);
+    fireEvent.click(screen.getByRole("button", { name: "View statement.pdf" }));
+    expect(screen.getByRole("dialog")).toBeVisible();
+    expect(screen.getByRole("link", { name: "Download original" })).toHaveAttribute("href", expect.stringContaining("/content"));
+    expect(screen.getByText("Review my statement")).toBeInTheDocument();
+  });
   afterEach(() => {
     vi.unstubAllGlobals();
   });

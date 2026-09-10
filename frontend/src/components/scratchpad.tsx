@@ -415,7 +415,7 @@ export function Scratchpad({ storageScope }: { storageScope: string }) {
       aria-label="Open scratchpad"
       title="Open scratchpad"
       onClick={() => update((current) => ({ ...current, open: true }))}
-      className="fixed right-4 bottom-[max(5rem,env(safe-area-inset-bottom))] z-[45] size-12 rounded-full opacity-60 shadow-[var(--shadow-overlay)] transition-opacity duration-[180ms] hover:opacity-100 focus-visible:opacity-100 md:right-6 md:bottom-6"
+      className="scratchpad-launcher fixed right-4 bottom-[max(5rem,env(safe-area-inset-bottom))] z-[45] size-12 rounded-full opacity-60 shadow-[var(--shadow-overlay)] transition-opacity duration-[180ms] hover:opacity-100 focus-visible:opacity-100 md:right-6 md:bottom-6"
     >
       <NotebookPen className="size-5!" />
     </Button>;
