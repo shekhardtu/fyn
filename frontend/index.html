@@ -3,6 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="referrer" content="no-referrer" />
+    <!-- Substituted at build time by the fyn-build-version plugin in
+         vite.config.ts as "<package version>+<12-char commit>"; this is what
+         identifies which commit a deployed build came from. -->
     <meta name="application-version" content="__FYN_BUILD_VERSION__" />
     <!-- viewport-fit=cover activates the env(safe-area-inset-*) rules in
          globals.css on notched devices; without it they compute to zero. -->
